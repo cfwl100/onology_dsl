@@ -3368,3 +3368,408 @@ UPDATE 操作用于更新现有对象的属性，支持：
   }
 }
 ```
+
+### 6.3 字段说明
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| **objects** | array | 是 | 对象实例定义数组，详见第2.9节 |
+| **conditions** | object | 否 | 统一条件表达式，用于批量条件更新（详见第2.3节），与 mutation.by/byList 二选一 |
+| **mutation** | object | 是 | 变更定义节点 |
+| mutation.by | object | by/byList/conditions 三选一 | 主键定位（KV 结构），如 `{"id": "prod_001"}` |
+| mutation.byList | array | by/byList/conditions 三选一 | 批量主键定位 |
+| mutation.set | object | set/unset/increment/arrayOps 至少一个 | 要设置的字段及值 |
+| mutation.unset | array | set/unset/increment/arrayOps 至少一个 | 要移除的字段列表 |
+| mutation.increment | object | set/unset/increment/arrayOps 至少一个 | 数值字段递增 |
+| mutation.arrayOps | object | set/unset/increment/arrayOps 至少一个 | 数组操作 |
+| mutation.options | object | 否 | 更新选项 |
+
+### 6.4 更新选项（options）
+
+| 选项 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| updateMode | string | "partial" | partial=部分更新, full=全量替换 |
+| upsertIfNotFound | boolean | false | 不存在时是否创建 |
+| returnUpdated | boolean | false | 是否返回更新后的数据 |
+| returnBeforeState | boolean | false | 是否返回更新前的数据 |
+| validationMode | string | "strict" | strict=严格验证, relaxed=宽松验证 |
+
+### 6.5 单对象更新
+
+#### 6.5.1 简单主键更新
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "UPDATE",
+  "objects": [
+    {
+      "objectType": "Product",
+      "alias": "p",
+      "by": {"id": "prod_001"}
+    }
+  ],
+  "mutation": {
+    "set": {
+      "price": 7999,
+      "status": "active"
+    },
+    "unset": ["discount", "expiredAt"],
+    "increment": {
+      "viewCount": 1,
+      "version": 1
+    }
+  }
+}
+```
+
+**字段说明**：
+
+| 字段 | 说明 |
+|------|------|
+| set | 要设置的字段及新值，覆盖旧值 |
+| unset | 要移除的字段列表，设为 null 或删除 |
+| increment | 数值字段递增，支持正数（增）或负数（减） |
+
+#### 6.5.2 复合主键更新
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "UPDATE",
+  "objects": [
+    {
+      "objectType": "Order",
+      "alias": "o",
+      "by": {"sourceSystem": "ERP", "orderId": "ORD-001"}
+    }
+  ],
+  "mutation": {
+    "set": {
+      "status": "shipped",
+      "shippedAt": "$now()",
+      "trackingNo": "SF123456789"
+    }
+  }
+}
+```
+
+### 6.6 批量条件更新
+
+```json
+{
+  "operation": "UPDATE",
+  "objects": [
+    {
+      "objectType": "Product",
+      "alias": "p"
+    }
+  ],
+  "conditions": {
+    "objectType": "Product",
+    "property": "status",
+    "operator": "EQ",
+    "values": ["inactive"]
+  },
+  "mutation": {
+    "set": {
+      "status": "archived",
+      "archivedAt": "$now()"
+    }
+  }
+}
+```
+
+### 6.7 表达式更新
+
+支持使用表达式动态计算字段值：
+
+```json
+{
+  "operation": "UPDATE",
+  "objects": [
+    {
+      "objectType": "Order",
+      "alias": "o",
+      "by": {"id": "order_001"}
+    }
+  ],
+  "mutation": {
+    "set": {
+      "totalAmount": {
+        "$add": ["$current.totalAmount", "$input.shippingFee"]
+      },
+      "version": {"$inc": 1},
+      "updatedAt": "$now()"
+    }
+  }
+}
+```
+
+**表达式操作符**：
+
+| 操作符 | 说明 | 示例 |
+|--------|------|------|
+| $add | 加法 | `$add: ["$field", 10]` |
+| $sub | 减法 | `$sub: ["$field", 5]` |
+| $multiply | 乘法 | `$multiply: ["$field", 0.9]` |
+| $divide | 除法 | `$divide: ["$field", 2]` |
+| $inc | 递增 | `$inc: 1` |
+| $dec | 递减 | `$dec: 1` |
+| $concat | 字符串拼接 | `$concat: ["$field", "_v2"]` |
+| $upper | 转大写 | `$upper: "$field"` |
+| $lower | 转小写 | `$lower: "$field"` |
+| $now | 当前时间 | `$now()` |
+| $uuid | 生成 UUID | `$uuid()` |
+
+### 6.8 条件更新（case）
+
+根据条件设置不同的值：
+
+```json
+{
+  "operation": "UPDATE",
+  "objects": [
+    {
+      "objectType": "Order",
+      "alias": "o",
+      "by": {"id": "order_001"}
+    }
+  ],
+  "mutation": {
+    "set": {
+      "$case": [
+        {
+          "when": {"gte": {"totalAmount": 1000}},
+          "then": {
+            "level": "vip",
+            "discountRate": 0.15,
+            "points": {"$add": ["$current.points", 100]}
+          }
+        },
+        {
+          "when": {"gte": {"totalAmount": 500}},
+          "then": {
+            "level": "silver",
+            "discountRate": 0.05,
+            "points": {"$add": ["$current.points", 50]}
+          }
+        },
+        {
+          "else": {
+            "level": "normal",
+            "discountRate": 0,
+            "points": {"$add": ["$current.points", 10]}
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+### 6.9 数组更新操作
+
+```json
+{
+  "operation": "UPDATE",
+  "objects": [
+    {
+      "objectType": "Product",
+      "alias": "p",
+      "by": {"id": "prod_001"}
+    }
+  ],
+  "mutation": {
+    "arrayOps": {
+      "tags": {
+        "$push": ["新标签", "热门"]
+      },
+      "prices": {
+        "$push": {
+          "effectiveDate": "$now()",
+          "amount": 99.00
+        }
+      },
+      "viewCount": {
+        "$inc": 1
+      }
+    }
+  }
+}
+```
+
+**数组操作符**：
+
+| 操作符 | 说明 | 示例 |
+|--------|------|------|
+| $push | 追加元素 | `$push: ["a", "b"]` |
+| $pushAll | 追加多个 | `$pushAll: ["a", "b", "c"]` |
+| $pop | 移除末尾 | `$pop: 1` |
+| $shift | 移除开头 | `$shift: -1` |
+| $pull | 移除匹配 | `$pull: {"status": "expired"}` |
+| $addToSet | 添加去重 | `$addToSet: "newItem"` |
+| $pullAll | 移除多个 | `$pullAll: ["a", "b"]` |
+| $inc | 递增 | `$inc: 1` |
+
+### 6.10 并发控制
+
+```json
+{
+  "operation": "UPDATE",
+  "objects": [
+    {
+      "objectType": "Product",
+      "alias": "p",
+      "by": {"id": "prod_001"}
+    }
+  ],
+  "mutation": {
+    "set": {
+      "price": 7999
+    }
+  },
+  "extensions": {
+    "ifMatch": "\"etag-abc123\""
+  }
+}
+```
+
+### 6.11 UPDATE 响应格式
+
+#### 6.11.1 成功响应
+
+```json
+{
+  "success": true,
+  "data": {
+    "updated": [
+      {
+        "objectKey": {"id": "prod_001"},
+        "compositeKey": null,
+        "etag": "\"def456\"",
+        "changedFields": ["price", "updatedAt"]
+      }
+    ],
+    "summary": {
+      "totalMatched": 1,
+      "totalUpdated": 1,
+      "totalSkipped": 0,
+      "totalFailed": 0
+    }
+  },
+  "metadata": {
+    "executionTime": 80
+  }
+}
+```
+
+#### 6.11.2 批量更新响应
+
+```json
+{
+  "success": true,
+  "data": {
+    "updated": [
+      {"objectKey": "prod_001", "changedFields": ["status"]},
+      {"objectKey": "prod_002", "changedFields": ["status"]},
+      {"objectKey": "prod_003", "changedFields": ["status"]}
+    ],
+    "summary": {
+      "totalMatched": 150,
+      "totalUpdated": 150,
+      "totalSkipped": 0,
+      "totalFailed": 0
+    }
+  }
+}
+```
+
+#### 6.11.3 并发冲突响应
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "OPTIMISTIC_LOCK_FAILURE",
+    "message": "对象已被其他操作修改",
+    "details": {
+      "objectType": "Product",
+      "objectKey": {"id": "prod_001"},
+      "expectedEtag": "\"etag-abc123\"",
+      "currentEtag": "\"xyz789\"",
+      "lastModified": "2024-03-01T12:30:00Z"
+    }
+  }
+}
+```
+
+#### 6.11.4 对象不存在响应
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "OBJECT_NOT_FOUND",
+    "message": "对象不存在",
+    "details": {
+      "objectType": "Product",
+      "objectKey": {"id": "prod_999"},
+      "compositeKey": null
+    }
+  }
+}
+```
+
+### 6.12 UPDATE 操作速查
+
+| 场景 | 必填字段 | 说明 |
+|------|----------|------|
+| 单对象（简单主键） | objects[].by, mutation.set | 必须指定主键和更新内容 |
+| 单对象（复合主键） | objects[].by (compositeKey), mutation.set | 复合主键用 KV 结构 |
+| 批量条件更新 | conditions, mutation.set | 根据条件更新多个对象（conditions 详见第2.3节） |
+| 部分更新 | mutation.set | 只更新指定字段 |
+| 全量替换 | mutation.set + options.updateMode: "full" | 替换整个对象 |
+| 递增字段 | mutation.increment | 数值字段递增/递减 |
+| 数组操作 | mutation.arrayOps | 追加/移除数组元素 |
+
+---
+
+## 7. 删除操作（DELETE）
+
+> **前置说明**：DELETE 操作使用统一顶层结构，详见 [第2章统一顶层结构](#2-统一顶层结构)：
+> - `objects` - 对象实例定义，支持主键或条件定位（第2.9节）
+> - `conditions` - 统一条件表达式，用于批量条件删除（第2.3节）
+> - `mutation` - 变更操作定义（本章节）
+
+### 7.1 操作概述
+
+DELETE 操作用于删除对象，支持：
+- 单对象删除（通过 objectKey 或 compositeKey）
+- 批量条件删除（通过 filter）
+- 软删除（标记删除）
+- 硬删除（物理删除）
+- 级联删除关联对象
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     DELETE 操作流程                          │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│   单对象删除：                                              │
+│   target.objectKey + mutation                               │
+│                                                             │
+│   复合主键删除：                                            │
+│   target.compositeKey + mutation                            │
+│                                                             │
+│   批量条件删除：                                            │
+│   conditions + mutation                                     │
+│                                                             │
+│   ┌─────────────────────────────────────────────────────┐   │
+│   │  deleteMode 说明                                    │   │
+│   │  • soft  → 标记 status='deleted'（默认）            │   │
+│   │  • hard  → 物理删除数据                             │   │
+│   └─────────────────────────────────────────────────────┘   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
