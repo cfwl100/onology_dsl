@@ -408,3 +408,450 @@
 ---
 
 **版本说明**：本优化版在保持 11 种操作类型语义与关键示例的前提下，删除重复章节、合并相近示例并统一编号，适合作为后续 Claude Skill 的输入规范。
+
+
+## 9. 关联对象查询（LINKED_OBJECT_QUERY）
+
+> **前置说明**：LIST_LINKED_OBJECTS / GET_LINKED_OBJECT 操作使用统一顶层结构，详见 [第2章统一顶层结构](#2-统一顶层结构)：
+> - `objects` - 对象实例定义（第2.9节）
+> - `conditions` - 统一条件表达式（第2.3节）
+> - `returns` - 返回字段投影（第2.4节）
+> - `orders` - 排序定义（第2.5节）
+> - `linkQuery` - 关联查询专用块（[9.7节](#97-linkquery---关联查询过滤)）
+
+> **说明**：OQL v1.2 移除了 Link 操作（CREATE/UPDATE/DELETE Link），因为本体模型中**属性都在对象上，边上没有属性**。对象之间的关联通过 LinkType 在图数据库中表达，关联本身不带属性。关联对象查询用于通过 LinkType 查询与当前对象关联的其他对象。
+
+**LINKED 操作使用 `linkQuery` 专用块**，可通过 ASSOCIATION_QUERY 实现，保留此快捷操作以便 API 路由兼容。
+
+### 9.1 Operation 类型
+
+OQL 提供了两个专门的关联查询 Operation：
+
+| Operation | 说明 | API 对应 |
+|----------|------|----------|
+| **LIST_LINKED_OBJECTS** | 列出关联对象列表 | `POST /objects/list/linked/{objectType}/{objectKey}/{linkType}` |
+| **GET_LINKED_OBJECT** | 获取特定关联对象 | `POST /objects/query/linked/{objectType}/{objectKey}/{linkType}/{linkedObjectType}` |
+
+### 9.2 LIST_LINKED_OBJECTS - 列出关联对象列表（可被 ASSOCIATION_QUERY 替代）
+
+> **说明**：此操作可通过 ASSOCIATION_QUERY 实现。保留此快捷操作以便 API 路由兼容。
+
+#### 9.2.1 基础结构
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "LIST_LINKED_OBJECTS",
+  "objects": [
+    {
+      "objectType": "Order",
+      "alias": "o",
+      "by": {"id": "order_001"}
+    }
+  ],
+  "relationships": "items"
+}
+```
+
+#### 9.2.2 完整结构
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "LIST_LINKED_OBJECTS",
+  "objects": [
+    {
+      "objectType": "Order",
+      "alias": "o",
+      "by": {"id": "order_001"}
+    }
+  ],
+  "relationships": "items",
+  "conditions": {
+    "objectType": "OrderItem",
+    "property": "status",
+    "operator": "EQ",
+    "values": ["active"]
+  },
+  "returns": {
+    "fields": ["id", "name", "price"]
+  },
+  "orders": [
+    {"field": "createdAt", "direction": "DESC"}
+  ],
+  "maxResults": 10000
+}
+```
+
+#### 9.2.3 字段定义
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| **objects** | array | 是 | 对象实例定义数组，详见第2.9节 |
+| **relationships** | string | 是 | 关联类型标识符 |
+| **conditions** | object | 否 | 统一条件表达式（详见第2.3节） |
+| **returns** | object | 否 | 返回字段投影（详见第2.4节） |
+| **orders** | array | 否 | 排序定义（详见第2.5节） |
+| **maxResults** | integer | 否 | 最大返回数量，默认 100000，最大 100000 |
+
+#### 9.2.4 filterObjectType - 源对象类型属性过滤
+
+在 conditions 中通过 `objectType` 指定源对象类型，使用 `property`、`operator`、`values` 定义过滤条件：
+
+```json
+{
+  "conditions": {
+    "objectType": "OrderItem",
+    "property": "status",
+    "operator": "EQ",
+    "values": ["active"]
+  }
+}
+
+#### 9.2.5 filterLinkType - 关联类型属性过滤
+
+在 conditions 中通过 `objectType` 指定关联类型名称，`property` 指定关联类型属性（如 structRelType、bizRelType）：
+
+​```json
+{
+  "conditions": {
+    "objectType": "items",
+    "property": "structRelType",
+    "operator": "EQ",
+    "values": ["Composition"]
+  }
+}
+
+
+#### 9.2.6 完整示例
+
+> **完整示例**见 [9.6.1 查询订单的所有商品项](#961-查询订单的所有商品项)，该节包含请求与响应的完整示例。
+
+---
+
+### 9.3 GET_LINKED_OBJECT - 获取特定关联对象（可被 ASSOCIATION_QUERY 替代）
+
+> **说明**：此操作可通过 ASSOCIATION_QUERY 实现。保留此快捷操作以便 API 路由兼容。
+
+**使用场景**：基于 relationships 和 linkedObjectKey 查询与源对象关联的特定目标对象。
+
+#### 9.3.1 基础结构
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "GET_LINKED_OBJECT",
+  "objects": [
+    {
+      "objectType": "Order",
+      "alias": "o",
+      "by": {"id": "order_001"}
+    }
+  ],
+  "relationships": "items",
+  "linkQuery": {
+    "linkedObjectKey": {"id": "prod_001"}
+  }
+}
+```
+
+#### 9.3.2 完整结构
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "GET_LINKED_OBJECT",
+  "objects": [
+    {
+      "objectType": "Order",
+      "alias": "o",
+      "by": {"id": "order_001"}
+    }
+  ],
+  "relationships": "items",
+  "linkQuery": {
+    "linkedObjectKey": {"id": "prod_001"}
+  },
+  "conditions": {
+    "relation": "AND",
+    "children": [
+      {"objectType": "OrderItem", "property": "status", "operator": "EQ", "values": ["active"]},
+      {"objectType": "Product", "property": "category", "operator": "EQ", "values": ["electronics"]}
+    ]
+  },
+  "returns": {
+    "fields": ["id", "name", "price", "category", "brand"]
+  }
+}
+```
+
+#### 9.3.3 字段定义
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| **objects** | array | 是 | 对象实例定义数组，详见第2.9节 |
+| **relationships** | string | 是 | 关联类型标识符 |
+| **linkQuery.linkedObjectKey** | object | 是 | 目标对象主键定位，如 `{"id": "prod_001"}` |
+| **conditions** | object | 否 | 统一条件表达式（详见第2.3节），可对源对象类型和目标对象类型进行属性过滤 |
+| **returns** | object | 否 | 返回字段投影（详见第2.4节） |
+
+#### 9.3.4 GET_LINKED_OBJECT 完整示例
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "GET_LINKED_OBJECT",
+  "objects": [
+    {
+      "objectType": "Order",
+      "alias": "o",
+      "by": {"orderNo": "ORD-20240301-001"}
+    }
+  ],
+  "relationships": "items",
+  "linkQuery": {
+    "linkedObjectKey": {"id": "prod_001"}
+  },
+  "conditions": {
+    "relation": "AND",
+    "children": [
+      {"objectType": "OrderItem", "property": "status", "operator": "EQ", "values": ["completed"]},
+      {"objectType": "Product", "property": "brand", "operator": "EQ", "values": ["Apple"]}
+    ]
+  },
+  "returns": {
+    "fields": ["id", "name", "price", "category", "brand"]
+  }
+}
+```
+
+**响应示例**：
+```json
+{
+  "success": true,
+  "data": {
+    "id": "prod_001",
+    "name": "iPhone 16",
+    "price": 7999,
+    "category": "electronics",
+    "brand": "Apple"
+  },
+  "metadata": {
+    "relationships": "items",
+    "sourceObjectType": "Order",
+    "sourceObjectKey": "ORD-20240301-001",
+    "etag": "\"def456\"",
+    "lastModified": "2024-03-01T10:00:00Z"
+  }
+}
+```
+
+#### 9.3.5 关联不存在响应（404 Not Found）
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "LINKED_OBJECT_NOT_FOUND",
+    "message": "关联对象不存在",
+    "details": {
+      "objectType": "Order",
+      "objectKey": {"id": "order_001"},
+      "relationships": "items",
+      "linkedObjectKey": "prod_999"
+    }
+  }
+}
+```
+
+---
+
+### 9.4 反向关联查询
+
+部分关联支持反向查询，即从目标对象查询源对象。
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "LIST_LINKED_OBJECTS",
+  "objects": [
+    {
+      "objectType": "Product",
+      "alias": "p",
+      "by": {"id": "prod_001"}
+    }
+  ],
+  "relationships": "orderItems",
+  "direction": "reverse",
+  "conditions": {
+    "objectType": "Order",
+    "property": "status",
+    "operator": "EQ",
+    "values": ["completed"]
+  },
+  "returns": {
+    "fields": ["id", "orderNo", "status"]
+  },
+  "maxResults": 10000
+}
+```
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| **direction** | string | forward | 查询方向：forward（正向）或 reverse（反向），放在顶层 |
+
+---
+
+### 9.5 关联查询速查
+
+| Operation | objects 必填 | 必填字段 | 说明 |
+|-----------|--------------|----------|------|
+| LIST_LINKED_OBJECTS | objectType, by | relationships | 列出关联对象列表 |
+| GET_LINKED_OBJECT | objectType, by | relationships, linkedObjectType | 获取特定关联对象 |
+
+**GET_LINKED_OBJECT 使用 linkQuery.linkedObjectKey 指定目标对象主键**，用于获取特定关联对象。
+
+---
+
+### 9.6 关联查询完整示例
+
+#### 9.6.1 查询订单的所有商品项
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "LIST_LINKED_OBJECTS",
+  "objects": [
+    {
+      "objectType": "Order",
+      "alias": "o",
+      "by": {"orderNo": "ORD-20240301-001"}
+    }
+  ],
+  "relationships": "items",
+  "conditions": {
+    "objectType": "OrderItem",
+    "property": "status",
+    "operator": "EQ",
+    "values": ["active"]
+  },
+  "returns": {
+    "fields": ["id", "name", "price", "sku"]
+  },
+  "orders": [
+    {"field": "createdAt", "direction": "ASC"}
+  ],
+  "maxResults": 10000
+}
+```
+
+#### 9.6.2 查询用户的所有订单
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "LIST_LINKED_OBJECTS",
+  "objects": [
+    {
+      "objectType": "Customer",
+      "alias": "c",
+      "by": {"id": "cust_001"}
+    }
+  ],
+  "relationships": "orders",
+  "conditions": {
+    "objectType": "Order",
+    "property": "status",
+    "operator": "EQ",
+    "values": ["completed"]
+  },
+  "returns": {
+    "fields": ["id", "orderNo", "amount", "status", "createdAt"]
+  },
+  "orders": [
+    {"field": "createdAt", "direction": "DESC"}
+  ],
+  "maxResults": 10000
+}
+```
+
+#### 9.6.3 获取特定关联对象（带并发控制）
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "GET_LINKED_OBJECT",
+  "objects": [
+    {
+      "objectType": "Order",
+      "alias": "o",
+      "by": {"orderNo": "ORD-20240301-001"}
+    }
+  ],
+  "relationships": "items",
+  "linkQuery": {
+    "linkedObjectKey": "prod_001",
+    "concurrency": {
+      "ifNoneMatch": "\"current-etag\""
+    }
+  },
+  "returns": {
+    "fields": ["id", "name", "price", "specifications"]
+  }
+}
+```
+
+#### 9.6.4 反向查询（某商品的所有订单）
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "LIST_LINKED_OBJECTS",
+  "objects": [
+    {
+      "objectType": "Product",
+      "alias": "p",
+      "by": {"id": "prod_001"}
+    }
+  ],
+  "relationships": "orderItems",
+  "direction": "reverse",
+  "conditions": {
+    "objectType": "Order",
+    "property": "status",
+    "operator": "EQ",
+    "values": ["completed"]
+  },
+  "returns": {
+    "fields": ["id", "orderNo", "customerId", "status"]
+  },
+  "maxResults": 10000
+}
+```
+
+**示例（包含关联属性）**：
+```json
+{
+  "select": {
+    "fields": ["id", "name", "price"],
+    "includeLinkProperties": true
+  }
+}
+```
+
+**响应数据**：
+```json
+{
+  "data": [
+    {
+      "id": "prod_001",
+      "name": "iPhone 16",
+      "price": 7999,
+      "_linkProperties": {
+        "quantity": 2,
+        "price": 7999
+      }
+    }
+  ]
+}
+```
