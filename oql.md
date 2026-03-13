@@ -1248,3 +1248,282 @@ action 定义了查询的执行方式，根据数据源类型有不同的关键�
 }
 ```
 
+#### 10.2.4 字段详细说明
+
+> **说明**：图查询仅支持对象间关系（object-to-object），所有关系均为点与点之间的关联。关系类型定义请参见 [10.2.3.4](#10734-关系类型枚举)。
+>
+> **遍历方向说明**：遍历方向由 `relationships[].sourceObjectType` 和 `relationships[].targetObjectType` 决定，无需额外指定 direction 参数。源对象类型即为遍历的起点类型，目标对象类型即为遍历的终点类型。
+
+##### 10.2.4.1 通用字段引用
+
+ASSOCIATION_QUERY 使用统一顶层结构，以下通用字段的详细说明请参见第2章：
+
+| 字段 | 引用章节 | 说明 |
+|------|----------|------|
+| conditions | [第2.3节](#23-conditions---统一条件表达式) | 统一条件表达式 |
+| returns | [第2.4节](#24-returns---返回字段投影) | 返回字段投影 |
+| orders | [第2.5节](#25-orders---排序定义) | 排序定义 |
+
+##### 10.2.4.2 nGQL 引用符号说明
+
+在 NebulaGraph nGQL 中进行图遍历查询时，`$^` 和 `$$` 是两个核心引用符号：
+
+| 符号 | 指代对象 | 说明 |
+|------|----------|------|
+| `$^` | 起点（源对象） | 引用遍历的起始顶点属性 |
+| `$$` | 终点（目标对象） | 引用遍历的目标顶点属性 |
+| `$-` | 管道输入 | 复合查询中引用管道符前的输出（需使用管道符 `|`） |
+
+**示例**：
+
+```gql
+-- 引用源设备属性（起点）
+$^.d.id AS d_id, $^.d.name AS d_name
+-- 引用目标服务器属性（终点）
+$$.s.id AS s_id, $$.s.name AS s_name
+```
+
+##### 10.2.4.3 relationships 字段详解（ASSOCIATION_QUERY 特有）
+
+`relationships` 定义关联查询的关系类型，是 ASSOCIATION_QUERY 操作的核心字段。
+
+**字段说明**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| name | string | 是 | 关系类型名称（驼峰命名），对应 LinkType |
+| alias | string | 否 | 关系别名，用于 returns 引用 |
+| sourceObjectType | string | 是 | 源对象类型，遍历的起点类型 |
+| targetObjectType | string | 是 | 目标对象类型，遍历的终点类型 |
+| bizRelType | string | 否 | 业务语义类型 |
+| structRelType | string | 否 | UML 结构关系类型 |
+| cardinality | string | 否 | 关系基数 |
+
+##### 10.2.4.4 associationQuery 字段详解（ASSOCIATION_QUERY 特有）
+
+`associationQuery` 是关联查询的专用配置块，定义查询的执行方式和行为。
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| action | enum | 是 | 执行动作类型：match / go / lookup / fetch / select / find / query / get |
+| select | object | 否 | 返回字段投影配置，详见 [10.2.3.4](#10234-associationqueryreturns-参数定义) |
+
+**action 执行动作类型说明**：
+
+| action | 数据源 | 说明 | 原生查询语言关键字 |
+|--------|--------|------|-------------------|
+| `match` | 图数据库 | 模式匹配查询 | `MATCH` |
+| `go` | 图数据库 | 图遍历查询 | `GO ... OVER` |
+| `lookup` | 图数据库/关系数据库 | 索引查询 | `LOOKUP` / 索引命中 |
+| `fetch` | 图数据库 | 属性获取查询 | `FETCH` |
+
+**select 字段说明**：
+
+`select` 用于定义返回的字段投影，包含以下子字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| returns | array | 返回字段定义列表 |
+| returns[].type | string | 类型：object / relationship |
+| returns[].param | string | 变量名称，对应 objects 或 relationships 中的 alias |
+| returns[].fields | array | 要返回的字段列表 |
+| returns[].alias | string | 返回结果别名 |
+| returns[].function | string | 聚合函数：count / avg / max / min / collect |`
+
+---
+
+**后续章节**：
+
+- [10.2.5](#1025-查询场景示例)：查询场景示例
+- [10.2.6](#1026-响应格式)：响应格式
+- [10.2.7](#1027-gql-转换规则)：GQL 转换规则
+- [10.2.8](#1028-association_query-完整示例)：完整示例
+- [10.2.9](#1029-dsl-与-nebulagraph-ngql-对应关系)：DSL 与 nGQL 对应关系
+- [10.2.10](#10210-错误码说明)：错误码说明
+
+#### 10.2.5 查询场景示例
+
+##### 10.2.5.1 示例一：多设备拓扑关系查询
+
+**场景**：运维平台选择 3 台设备，查询它们之间的网络连接关系
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Device",
+      "alias": "d",
+      "by": [
+        {"id": "srv-001"},
+        {"id": "srv-002"},
+        {"id": "srv-003"}
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "name": "connectedTo",
+      "alias": "conn",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Device",
+      "bizRelType": "connectedTo",
+      "structRelType": "Association"
+    },
+    {
+      "name": "dependsOn",
+      "alias": "dep",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Device",
+      "bizRelType": "dependsOn",
+      "structRelType": "Dependency"
+    }
+  ],
+  "returns": [
+    {"type": "object", "param": "d", "fields": ["id", "name", "status", "type"]},
+    {"type": "relationship", "param": "conn", "fields": ["bizRelType", "structRelType", "bandwidth"]},
+    {"type": "relationship", "param": "dep", "fields": ["bizRelType", "structRelType"]}
+  ],
+  "associationQuery": {
+    "action": "go"
+  }
+}
+```
+
+**对应 GQL 语句**：
+
+```gql
+GO FROM ["srv-001", "srv-002", "srv-003"] OVER connectedTo, dependsOn
+YIELD
+  $^.d.id AS d_id, $^.d.name AS d_name,
+  $^.d.status AS d_status, $^.d.type AS d_type,
+  conn.bizRelType AS conn_bizRelType, conn.structRelType AS conn_structRelType,
+  conn.bandwidth AS conn_bandwidth,
+  dep.bizRelType AS dep_bizRelType, dep.structRelType AS dep_structRelType
+```
+
+> **说明**：使用 `$^.d` 引用起始设备（源对象）的属性。`$^` 代表当前遍历的起点，`$$` 代表当前遍历的终点。
+
+##### 10.2.5.2 示例二：条件查询关联对象
+
+**场景**：查询所有状态异常的设备及其关联关系
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Device",
+      "alias": "d",
+      "by": [
+        {"id": "device_001"},
+        {"id": "device_002"}
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "name": "connectedTo",
+      "alias": "conn",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Device",
+      "bizRelType": "connectedTo",
+      "structRelType": "Association"
+    },
+    {
+      "name": "dependsOn",
+      "alias": "dep",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Device",
+      "bizRelType": "dependsOn",
+      "structRelType": "Dependency"
+    }
+  ],
+  "conditions": {
+    "relation": "AND",
+    "children": [
+      {"property": "status", "param": "d", "operator": "EQ", "values": ["error"]},
+      {"property": "cpuUsage", "param": "d", "operator": "GT", "values": [80]}
+    ]
+  },
+  "returns": [
+    {"type": "object", "param": "d", "fields": ["id", "name", "status", "cpuUsage", "location"]},
+    {"type": "relationship", "param": "conn", "fields": ["bizRelType", "structRelType"]},
+    {"type": "relationship", "param": "dep", "fields": ["bizRelType", "structRelType"]}
+  ],
+  "associationQuery": {
+    "action": "go"
+  }
+}
+```
+
+**对应 GQL 语句**：
+
+```gql
+GO FROM ["device_001", "device_002"] OVER connectedTo, dependsOn
+WHERE $^.d.status == "error" AND $^.d.cpuUsage > 80
+YIELD
+  $^.d.id AS d_id, $^.d.name AS d_name,
+  $^.d.status AS d_status, $^.d.cpuUsage AS d_cpuUsage, $^.d.location AS d_location,
+  conn.bizRelType AS conn_bizRelType, conn.structRelType AS conn_structRelType,
+  dep.bizRelType AS dep_bizRelType, dep.structRelType AS dep_structRelType
+```
+
+##### 10.2.5.3 示例三：知识图谱多实体关联查询
+
+**场景**：查询多个产品及其相关的供应商、分类关系
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Product",
+      "alias": "p",
+      "by": [
+        {"id": "prod-001"},
+        {"id": "prod-002"}
+      ]
+    },
+    {
+      "objectType": "Supplier",
+      "alias": "s"
+    },
+    {
+      "objectType": "Category",
+      "alias": "c"
+    }
+  ],
+  "relationships": [
+    {
+      "name": "suppliedBy",
+      "alias": "sb",
+      "sourceObjectType": "Product",
+      "targetObjectType": "Supplier",
+      "bizRelType": "suppliedBy",
+      "structRelType": "Association"
+    },
+    {
+      "name": "belongsTo",
+      "alias": "bt",
+      "sourceObjectType": "Product",
+      "targetObjectType": "Category",
+      "bizRelType": "belongsTo",
+      "structRelType": "Association"
+    }
+  ],
+  "returns": [
+    {"type": "object", "param": "p", "fields": ["id", "name", "price", "sku"]},
+    {"type": "object", "param": "s", "fields": ["id", "name", "contact", "address"]},
+    {"type": "object", "param": "c", "fields": ["id", "name", "parentId"]},
+    {"type": "relationship", "param": "sb", "fields": ["bizRelType"]},
+    {"type": "relationship", "param": "bt", "fields": ["bizRelType"]}
+  ],
+  "associationQuery": {
+    "action": "go"
+  }
+}
+```
