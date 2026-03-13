@@ -2957,3 +2957,414 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
   }
 }
 ```
+
+| mutation.batch[].properties | object | 是 | 单个对象的属性 |
+| mutation.options | object | 否 | 创建选项 |
+
+### 5.4 创建选项（options）
+
+| 选项 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| batchSize | integer | 100 | 每批处理数量 |
+| continueOnFailure | boolean | false | 单个失败时是否继续处理其他 |
+| skipValidation | boolean | false | 跳过数据验证 |
+| generateTimestamps | boolean | true | 自动生成 createdAt/updatedAt |
+| onDuplicateKey | string | "error" | 主键冲突处理：error / update / ignore |
+| returnCreated | boolean | false | 是否返回创建的对象数据 |
+
+### 5.5 单对象创建
+
+#### 5.5.1 指定主键创建
+
+```json
+{
+  "operation": "CREATE",
+  "objects": [
+    {
+      "objectType": "Product",
+      "alias": "p"
+    }
+  ],
+  "mutation": {
+    "data": {
+      "by": {"id": "prod_001"},
+      "properties": {
+        "name": "iPhone 16",
+        "price": 8999,
+        "status": "active",
+        "category": "electronics",
+        "stock": 100
+      }
+    }
+  }
+}
+```
+
+#### 5.5.2 复合主键创建
+
+```json
+{
+  "operation": "CREATE",
+  "objects": [
+    {
+      "objectType": "Order",
+      "alias": "o"
+    }
+  ],
+  "mutation": {
+    "data": {
+      "byComposite": {"sourceSystem": "ERP", "orderId": "ORD-001"},
+      "properties": {
+        "sourceSystem": "ERP",
+        "orderId": "ORD-20240301-001",
+        "customerId": "cust_001",
+        "amount": 19997,
+        "status": "pending"
+      }
+    }
+  }
+}
+```
+
+#### 5.5.3 无指定主键创建（自动生成）
+
+```json
+{
+  "operation": "CREATE",
+  "objects": [
+    {
+      "objectType": "Product",
+      "alias": "p"
+    }
+  ],
+  "mutation": {
+    "data": {
+      "properties": {
+        "name": "新产品",
+        "price": 999,
+        "category": "electronics"
+      }
+    }
+  }
+}
+```
+
+### 5.6 批量创建
+
+#### 5.6.1 批量创建简单主键对象
+
+```json
+{
+  "operation": "CREATE",
+  "objects": [
+    {
+      "objectType": "Product",
+      "alias": "p"
+    }
+  ],
+  "mutation": {
+    "batch": [
+      {
+        "objectKey": {"id": "prod_002"},
+        "properties": {
+          "name": "MacBook Pro",
+          "price": 19999,
+          "category": "electronics"
+        }
+      },
+      {
+        "objectKey": {"id": "prod_003"},
+        "properties": {
+          "name": "iPad",
+          "price": 4999,
+          "category": "electronics"
+        }
+      },
+      {
+        "objectKey": {"id": "prod_004"},
+        "properties": {
+          "name": "Apple Watch",
+          "price": 2999,
+          "category": "wearables"
+        }
+      }
+    ],
+    "options": {
+      "batchSize": 100,
+      "continueOnFailure": true,
+      "returnCreated": true
+    }
+  }
+}
+```
+
+#### 5.6.2 批量创建复合主键对象
+
+```json
+{
+  "operation": "CREATE",
+  "objects": [
+    {
+      "objectType": "OrderItem",
+      "alias": "oi"
+    }
+  ],
+  "mutation": {
+    "batch": [
+      {
+        "compositeKey": {"sourceSystem": "ERP", "orderId": "ORD-001", "productId": "PROD-001"},
+        "properties": {
+          "sourceSystem": "ERP",
+          "orderId": "ORD-001",
+          "productId": "PROD-001",
+          "quantity": 2,
+          "unitPrice": 8999
+        }
+      },
+      {
+        "compositeKey": {"sourceSystem": "ERP", "orderId": "ORD-001", "productId": "PROD-002"},
+        "properties": {
+          "sourceSystem": "ERP",
+          "orderId": "ORD-001",
+          "productId": "PROD-002",
+          "quantity": 1,
+          "unitPrice": 19999
+        }
+      }
+    ]
+  }
+}
+```
+
+### 5.7 批量创建选项示例
+
+```json
+{
+  "operation": "CREATE",
+  "objects": [
+    {
+      "objectType": "Product",
+      "alias": "p"
+    }
+  ],
+  "mutation": {
+    "batch": [...],
+    "options": {
+      "batchSize": 100,
+      "continueOnFailure": true,
+      "skipValidation": false,
+      "generateTimestamps": true,
+      "onDuplicateKey": "update",
+      "returnCreated": true
+    }
+  }
+}
+```
+
+### 5.8 CREATE 响应格式
+
+#### 5.8.1 成功响应
+
+```json
+{
+  "success": true,
+  "data": {
+    "created": [
+      {
+        "objectKey": {"id": "prod_002"},
+        "compositeKey": null,
+        "etag": "\"abc123\"",
+        "object": {
+          "id": "prod_002",
+          "name": "MacBook Pro",
+          "price": 19999,
+          "createdAt": "2024-03-01T10:00:00Z"
+        }
+      }
+    ],
+    "failed": [],
+    "summary": {
+      "totalRequested": 3,
+      "totalCreated": 3,
+      "totalFailed": 0
+    }
+  },
+  "metadata": {
+    "executionTime": 150,
+    "transactionId": "txn_create_001"
+  }
+}
+```
+
+#### 5.8.2 部分失败响应
+
+```json
+{
+  "success": false,
+  "data": {
+    "created": [
+      {
+        "objectKey": {"id": "prod_002"},
+        "etag": "\"abc123\""
+      }
+    ],
+    "failed": [
+      {
+        "index": 1,
+        "objectKey": {"id": "prod_003"},
+        "error": {
+          "code": "VALIDATION_ERROR",
+          "message": "价格不能为空",
+          "field": "price"
+        }
+      },
+      {
+        "index": 2,
+        "objectKey": {"id": "prod_004"},
+        "error": {
+          "code": "DUPLICATE_KEY",
+          "message": "主键已存在",
+          "existingKey": "prod_004"
+        }
+      }
+    ],
+    "summary": {
+      "totalRequested": 3,
+      "totalCreated": 1,
+      "totalFailed": 2
+    }
+  }
+}
+```
+
+#### 5.8.3 主键冲突响应
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "DUPLICATE_KEY",
+    "message": "对象主键已存在",
+    "details": {
+      "objectType": "Product",
+      "objectKey": {"id": "prod_001"},
+      "compositeKey": null
+    }
+  }
+}
+```
+
+### 5.9 字段类型支持（Follow本体模型）
+
+| 类型 | 示例值 | 说明 |
+|------|--------|------|
+| string | "iPhone 16" | 字符串 |
+| integer | 100 | 整数 |
+| number | 99.99 | 浮点数 |
+| boolean | true | 布尔值 |
+| array | ["a", "b", "c"] | 字符串数组 |
+| object | {"key": "value"} | 嵌套对象 |
+| datetime | "2024-03-01T10:00:00Z" | ISO 8601 日期时间 |
+| null | null | 空值 |
+
+### 5.10 CREATE 操作速查
+
+| 场景 | 必填字段 | 可选字段 |
+|------|----------|----------|
+| 单对象（简单主键） | target.objectType, mutation.data.properties | mutation.data.objectKey, options |
+| 单对象（复合主键） | target.objectType, mutation.data.properties | mutation.data.compositeKey, options |
+| 批量创建 | target.objectType, mutation.batch[].properties | mutation.batch[].objectKey, options |
+
+---
+
+## 6. 更新操作（UPDATE）
+
+> **前置说明**：UPDATE 操作使用统一顶层结构，详见 [第2章统一顶层结构](#2-统一顶层结构)：
+> - `objects` - 对象实例定义，支持主键或条件定位（第2.9节）
+> - `conditions` - 统一条件表达式，用于批量条件更新（第2.3节）
+> - `mutation` - 变更操作定义（本章节）
+> - `extensions` - 扩展信息（可选）
+
+UPDATE 操作使用 `mutation` 块定义更新内容，使用 `conditions` 定义批量更新条件。
+
+### 6.1 操作概述
+
+UPDATE 操作用于更新现有对象的属性，支持：
+- 单对象更新（通过 `objects[].by` 指定主键）
+- 批量条件更新（通过顶层 `conditions`）
+- 部分更新（只更新指定字段）
+- 全量替换
+- 表达式更新（计算字段值）
+- 数组操作（追加/移除数组元素）
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     UPDATE 操作流程                          │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│   单对象更新：                                              │
+│   objects[].by + mutation.set/unset/increment               │
+│                                                             │
+│   复合主键更新：                                            │
+│   objects[].by (compositeKey) + mutation.set                │
+│                                                             │
+│   批量条件更新：                                            │
+│   conditions + mutation.set                                 │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 6.2 完整结构定义（JSON Schema）
+
+以下 JSON Schema 定义了 UPDATE 操作的有效结构：
+
+```json
+{
+  "operation": "UPDATE",
+  "objects": [
+    {
+      "objectType": "Product",
+      "alias": "p"
+    }
+  ],
+  "conditions": {...},
+  "mutation": {
+    "type": "object",
+    "properties": {
+      "by": {
+        "type": "object",
+        "description": "单对象主键定位，与 conditions 二选一"
+      },
+      "byList": {
+        "type": "array",
+        "description": "批量主键定位，批量更新多个对象"
+      },
+      "set": {
+        "type": "object",
+        "description": "要设置的字段及值"
+      },
+      "unset": {
+        "type": "array",
+        "description": "要移除的字段列表",
+        "items": {"type": "string"}
+      },
+      "increment": {
+        "type": "object",
+        "description": "数值字段递增（正数）或递减（负数）"
+      },
+      "arrayOps": {
+        "type": "object",
+        "description": "数组操作：push、pop、pull 等"
+      },
+      "options": {
+        "type": "object",
+        "description": "更新选项"
+      }
+    },
+    "anyOf": [
+      {"required": ["by"]},
+      {"required": ["byList"]}
+    ]
+  }
+}
+```
