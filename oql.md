@@ -1956,3 +1956,826 @@ GROUP BY $^.d.id
   }
 }
 ```
+##### 10.2.6.4 跨对象类型响应示例
+
+**场景**：Device.installedOn.Server 关系查询
+
+**响应**：
+```json
+{
+  "success": true,
+  "data": {
+    "objects": [
+      {
+        "id": "device-001",
+        "objectType": "Device",
+        "alias": "d",
+        "name": "Web服务器-1",
+        "properties": {
+          "id": "device-001",
+          "name": "Web服务器-1",
+          "status": "running",
+          "type": "web_server"
+        }
+      },
+      {
+        "id": "server-001",
+        "objectType": "Server",
+        "alias": "s",
+        "name": "应用服务器",
+        "properties": {
+          "id": "server-001",
+          "name": "应用服务器",
+          "cpu": "Intel Xeon",
+          "memory": "64GB"
+        }
+      }
+    ],
+    "relationships": [
+      {
+        "id": "rel-001",
+        "name": "installedOn",
+        "alias": "install",
+        "bizRelType": "installedOn",
+        "structRelType": "Composition",
+        "cardinality": "Many-to-One",
+        "source": {
+          "objectType": "Device",
+          "alias": "d",
+          "id": "device-001"
+        },
+        "target": {
+          "objectType": "Server",
+          "alias": "s",
+          "id": "server-001"
+        },
+        "properties": {
+          "installedAt": "2025-01-15T10:30:00Z",
+          "environment": "production"
+        }
+      }
+    ]
+  },
+  "metadata": {
+    "objectCount": 2,
+    "relationshipCount": 1,
+    "queryDepth": 1,
+    "objectTypes": ["Device", "Server"],
+    "relationships": ["installedOn"],
+    "executionTime": 35
+  }
+}
+```
+
+**说明**：
+- 对象通过 `alias` 字段区分，便于在前端进行渲染和关联展示
+- 关系通过 `source` 和 `target` 字段明确引用源对象和目标对象
+- `properties` 字段包含从 returns 配置中指定的属性值
+- metadata 中汇总了查询统计信息，便于分页和性能监控
+
+#### 10.2.7 GQL 转换规则
+
+##### 10.2.7.1 翻译引擎处理流程
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    ASSOCIATION_QUERY → GQL 翻译流程                  │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  1. 解析 DSL，获取 objectTypes + relationships + returns 配置        │
+│                     ↓                                               │
+│  2. 从本体模型定义中补全 relationship 元信息                         │
+│     - 获取 sourceObjectType / targetObjectType                      │
+│     - 获取 bizRelType / structRelType                               │
+│                     ↓                                               │
+│  3. 根据 returns 配置构建 GQL YIELD 子句                             │
+│     - objects 字段映射为对象属性输出                                  │
+│     - relationships 字段映射为关系属性输出                            │
+│                     ↓                                               │
+│  4. 分析数据源分布（单图空间/多数据源）                               │
+│                     ↓                                               │
+│  5. 根据数据源情况选择处理策略：                                      │
+│     - 单图空间：构建单条 GQL 语句                                    │
+│     - 多数据源：拆分为多个子查询 → 组装结果                          │
+│                     ↓                                               │
+│  6. 执行查询，获取结果                                               │
+│                     ↓                                               │
+│  7. 解析结果，按对象/关系分类，字段投影                              │
+│                     ↓                                               │
+│  8. 返回统一格式                                                     │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**DSL returns → GQL YIELD 映射规则**：
+
+| DSL returns 配置 | GQL YIELD 子句 |
+|-----------------|----------------|
+| `returns[].type: "object"` | `alias.field1 AS alias_field1, alias.field2 AS alias_field2` |
+| `returns[].type: "relationship"` | `alias.attr1 AS alias_attr1, alias.attr2 AS alias_attr2` |
+| 元数据输出 | `$-._src AS _src, $-._dst AS _dst, $-._src_type, $-._dst_type` |
+
+**本体模型查询流程**：
+- 翻译引擎根据 DSL 中的 `relationships[].name` 查询本体模型定义
+- 补全 `sourceObjectType`, `targetObjectType`, `bizRelType`, `structRelType`
+- 如果 DSL 中已指定，则使用 DSL 中的值（优先级更高）
+
+##### 10.2.7.2 多数据源处理策略
+
+**策略一：单图空间查询（转换为单条 GQL）**
+
+当所有对象和关系属于同一个图数据库的同一个图空间时，翻译引擎生成单条 GQL 语句：
+
+```gql
+-- 多设备拓扑查询（Device + connectedTo + dependsOn）
+GO 2 STEPS FROM ["srv-001", "srv-002", "srv-003"]
+OVER connectedTo, dependsOn
+WHERE bizRelType NOT IN ["heartbeat"]
+YIELD
+  $-._src AS src,
+  $-._dst AS dst,
+  connectedTo._type AS bizRelType,
+  dependsOn._type AS bizRelType
+| GROUP BY $-.src, $-.dst
+YIELD $-.src, $-.dst, collect($-.bizRelType) AS bizRelTypes
+```
+
+**策略二：多数据源查询（拆分子查询 + 组装）**
+
+当对象或关系来自不同的数据源时，翻译引擎执行以下流程：
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      多数据源处理流程                                │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  1. 分析 objectTypes + relationships 的数据源分布                    │
+│     ┌─────────────────────────────────────────────┐                 │
+│     │ 数据源A: Device + connectedTo (Nebula)      │                 │
+│     │ 数据源B: Server + installedOn (MySQL)       │                 │
+│     │ 数据源C: 跨数据源关联 (组合关系)              │                 │
+│     └─────────────────────────────────────────────┘                 │
+│                           ↓                                         │
+│  2. 并行执行子查询                                                   │
+│     ┌────────────┐ ┌────────────┐ ┌────────────┐                   │
+│     │ 子查询A    │ │ 子查询B    │ │ 子查询C    │                   │
+│     │ (Nebula)   │ │ (MySQL)    │ │ (Network)  │                   │
+│     └────────────┘ └────────────┘ └────────────┘                   │
+│                           ↓                                         │
+│  3. 关联组装图结构                                                   │
+│     - Device 节点 ← connectedTo → Server 节点                      │
+│     - 按 src/dst ID 进行关联                                         │
+│                           ↓                                         │
+│  4. 返回统一子图结构                                                 │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**多数据源查询示例**：
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Device",
+      "alias": "d",
+      "by": [
+        {"id": "device-001"},
+        {"id": "device-002"}
+      ]
+    },
+    {
+      "objectType": "Server",
+      "alias": "s"
+    }
+  ],
+  "relationships": [
+    {
+      "name": "connectedTo",
+      "alias": "conn",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Device",
+      "bizRelType": "connectedTo"
+    },
+    {
+      "name": "installedOn",
+      "alias": "install",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Server",
+      "bizRelType": "installedOn"
+    }
+  ],
+  "associationQuery": {
+  }
+}
+```
+
+**翻译引擎处理**：
+1. 查询本体模型定义，补全 relationships 元信息
+2. 从 Nebula 查询 Device 节点列表
+3. 从关联数据源查询 connectedTo 和 installedOn 边
+4. 根据 src/dst 引用组装完整图结构
+5. 返回统一格式的子图响应
+
+##### 10.2.7.3 关系类型映射 GQL
+
+**object-to-object 关系查询**（基于 Relationship 本体定义）：
+
+```gql
+-- Device.connectedTo.Device
+GO FROM $-.d.ids OVER connectedTo
+YIELD
+  $^.d.id AS d_id, $^.d.name AS d_name, $^.d.status AS d_status,
+  $$.d.id AS dst_id, $$.d.name AS dst_name, $$.d.status AS dst_status,
+  connectedTo.bizRelType AS conn_bizRelType, connectedTo.structRelType AS conn_structRelType
+```
+
+**跨对象类型关系查询**（基于多 ObjectType 本体定义）：
+
+```gql
+-- Device.installedOn.Server
+GO FROM $-.d.ids OVER installedOn
+YIELD
+  $^.d.id AS d_id, $^.d.name AS d_name, $^.d.status AS d_status,
+  $$.s.id AS s_id, $$.s.name AS s_name, $$.s.ip AS s_ip,
+  installedOn.bizRelType AS install_bizRelType, installedOn.structRelType AS install_structRelType
+```
+
+##### 10.2.7.4 典型场景 GQL 模板
+
+| 场景 | GQL 模板 |
+|------|----------|
+| **单图空间单跳** | `GO FROM $ids OVER $rels YIELD ...` |
+| **单图空间多跳** | `GO N STEPS FROM $ids OVER $rels YIELD ...` |
+| **跨对象类型** | `GO FROM $ids OVER $rel WHERE $-._src_type == "TypeA" AND $-._dst_type == "TypeB"` |
+| **多数据源拆分** | 拆分为多个子查询，组装结果 |
+| **仅出边** | `GO FROM $ids OVER $rels YIELD ...` |
+| **仅入边** | `GO FROM $ids OVER $rels REVERSELY YIELD ...` |
+| **关系类型过滤** | `GO FROM $ids OVER $rels WHERE bizRelType IN [...] YIELD ...` |
+| **深度限制** | `GO 2 STEPS FROM $ids OVER $rels YIELD ...` |
+| **去重** | `GO FROM $ids OVER $rels YIELD DISTINCT ...` |
+
+**翻译引擎处理**：
+1. 从数据源查询对象列表
+2. 从关联数据源查询关系
+3. 根据 source/target 引用组装完整关联结构
+4. 按 returns 配置进行字段投影
+5. 返回统一格式的关联查询响应
+
+##### 10.2.7.5 多对象类型查询 GQL
+
+**跨对象类型查询（单图空间）**：
+
+```gql
+-- Device + Server 关联查询
+GO FROM $-.d.ids OVER connectsTo, installedOn
+YIELD
+  $^.d.id AS d_id, $^.d.name AS d_name, $^.d.status AS d_status,
+  $$.s.id AS s_id, $$.s.name AS s_name, $$.s.ip AS s_ip,
+  connectsTo.bizRelType AS connectsTo_bizRelType,
+  installedOn.bizRelType AS installedOn_bizRelType
+```
+
+**带对象类型过滤的查询**：
+
+```gql
+GO FROM $-.d.ids OVER *
+YIELD
+  $^.d.id AS d_id, $^.d.name AS d_name,
+  $$.s.id AS s_id, $$.s.name AS s_name
+```
+
+
+#### 10.2.8 ASSOCIATION_QUERY 完整示例
+
+**请求**（多对象类型 + 多关系查询）：
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Device",
+      "alias": "d",
+      "by": [
+        {"id": "device-a"},
+        {"id": "device-b"},
+        {"id": "device-c"}
+      ]
+    },
+    {
+      "objectType": "Server",
+      "alias": "s"
+    }
+  ],
+  "relationships": [
+    {
+      "name": "connectedTo",
+      "alias": "conn",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Device",
+      "bizRelType": "connectedTo",
+      "structRelType": "Association"
+    },
+    {
+      "name": "installedOn",
+      "alias": "install",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Server",
+      "bizRelType": "installedOn",
+      "structRelType": "Composition",
+      "cardinality": "Many-to-One"
+    }
+  ],
+  "returns": [
+    {"type": "object", "param": "d", "fields": ["id", "name", "status", "type", "location"]},
+    {"type": "object", "param": "s", "fields": ["id", "name", "ip", "os"]},
+    {"type": "relationship", "param": "conn", "fields": ["bizRelType", "structRelType", "bandwidth"]},
+    {"type": "relationship", "param": "install", "fields": ["bizRelType", "structRelType", "cardinality", "installedAt"]}
+  ],
+  "associationQuery": {
+    "action": "go"
+  }
+}
+```
+
+**对应 GQL 语句**：
+
+```gql
+-- 多对象类型+多关系查询
+GO 2 STEPS FROM ["device-a", "device-b", "device-c"] OVER connectedTo, installedOn
+YIELD
+  $^.d.id AS d_id, $^.d.name AS d_name, $^.d.status AS d_status,
+  $^.d.type AS d_type, $^.d.location AS d_location,
+  $.s.id AS s_id, $.s.name AS s_name, $.s.ip AS s_ip, $.s.os AS s_os,
+  conn.bizRelType AS conn_bizRelType, conn.structRelType AS conn_structRelType,
+  conn.bandwidth AS conn_bandwidth,
+  install.bizRelType AS install_bizRelType, install.structRelType AS install_structRelType,
+  install.cardinality AS install_cardinality, install.installedAt AS install_installedAt
+```
+
+**响应**：
+
+```json
+{
+  "success": true,
+  "data": {
+    "objects": [
+      {
+        "id": "device-a",
+        "objectType": "Device",
+        "alias": "d",
+        "name": "Web服务器",
+        "properties": {
+          "status": "running",
+          "type": "server",
+          "location": "机房A"
+        }
+      },
+      {
+        "id": "device-b",
+        "objectType": "Device",
+        "alias": "d",
+        "name": "数据库",
+        "properties": {
+          "status": "running",
+          "type": "database",
+          "location": "机房A"
+        }
+      },
+      {
+        "id": "device-c",
+        "objectType": "Device",
+        "alias": "d",
+        "name": "负载均衡",
+        "properties": {
+          "status": "running",
+          "type": "loadbalancer",
+          "location": "机房B"
+        }
+      },
+      {
+        "id": "server-001",
+        "objectType": "Server",
+        "alias": "s",
+        "name": "应用服务器",
+        "properties": {
+          "status": "running",
+          "ip": "192.168.1.100",
+          "os": "Ubuntu 22.04"
+        }
+      }
+    ],
+    "relationships": [
+      {
+        "id": "rel-001",
+        "name": "connectedTo",
+        "alias": "conn",
+        "bizRelType": "connectedTo",
+        "structRelType": "Association",
+        "source": {
+          "objectType": "Device",
+          "alias": "d",
+          "id": "device-a"
+        },
+        "target": {
+          "objectType": "Device",
+          "alias": "d",
+          "id": "device-b"
+        },
+        "properties": {
+          "bandwidth": 1000
+        }
+      },
+      {
+        "id": "rel-002",
+        "name": "installedOn",
+        "alias": "install",
+        "bizRelType": "installedOn",
+        "structRelType": "Composition",
+        "cardinality": "Many-to-One",
+        "source": {
+          "objectType": "Device",
+          "alias": "d",
+          "id": "device-a"
+        },
+        "target": {
+          "objectType": "Server",
+          "alias": "s",
+          "id": "server-001"
+        },
+        "properties": {
+          "installedAt": "2025-01-01T00:00:00Z"
+        }
+      }
+    ]
+  },
+  "metadata": {
+    "objectCount": 4,
+    "relationshipCount": 2,
+    "queryDepth": 2,
+    "objectTypes": ["Device", "Server"],
+    "relationships": ["connectedTo", "installedOn"],
+    "executionTime": 67
+  }
+}
+```
+
+**对应的 NebulaGraph GQL**：
+
+```gql
+GO 2 STEPS FROM ["device-a", "device-b", "device-c"] OVER connectedTo, installedOn
+YIELD
+  $^.d.id AS src_id, $^.d.name AS src_name,
+  $.s.id AS dst_id, $.s.name AS dst_name,
+  connectedTo.bizRelType AS conn_bizRelType,
+  connectedTo.structRelType AS conn_structRelType,
+  connectedTo.bandwidth AS conn_bandwidth,
+  installedOn.bizRelType AS install_bizRelType,
+  installedOn.structRelType AS install_structRelType,
+  installedOn.cardinality AS install_cardinality
+```
+
+#### 10.2.9 DSL 与 NebulaGraph nGQL 对应关系
+
+本节说明 OQL DSL 参数与 NebulaGraph 原生 nGQL 语句的对应关系，帮助理解 DSL 到 GQL 的转换逻辑。
+
+##### 10.2.9.1 核心参数对应表
+
+| OQL DSL 参数 | nGQL 语句 | 说明 |
+|-------------|-----------|------|
+| `objects[].by` | `FROM $ids` | 单主键或多主键列表 |
+| `objects[].compositeKey` | `FROM $ids` | 复合主键 |
+| `objects[].conditions` | `WHERE ...` | 起始点过滤条件 |
+| `relationships[].sourceObjectType` / `targetObjectType` | 遍历方向由 source/target 决定 | 源对象为起点，目标对象为终点 |
+| `relationships[].name` | `OVER $relName` | 关系类型 |
+| `associationQuery.conditions` | `WHERE ...` | 过滤条件 |
+| `returns` | `YIELD ... AS ...` | 返回字段定义 |
+| `orders` | `ORDER BY ...` | 排序定义 |
+| `distinct` | `YIELD DISTINCT` | 去重 |
+
+##### 10.2.9.2 action 类型对应关系
+
+ASSOCIATION_QUERY 支持四种查询模式，与 nGQL 的对应关系如下：
+
+| DSL action | nGQL 语句 | 适用场景 |
+|------------|-----------|----------|
+| **match** | `MATCH (v)-[e]->(v2)` | 模式匹配查询，支持复杂图模式 |
+| **go** | `GO N STEPS FROM ... OVER ...` | 多跳遍历查询 |
+| **lookup** | `LOOKUP ON ... WHERE ...` | 索引点查询 |
+| **fetch** | `FETCH PROP ON ...` | 属性获取查询 |
+
+**action: match**（模式匹配）：
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Device",
+      "alias": "d",
+      "by": {"id": "device-001"}
+    }
+  ],
+  "relationships": [
+    {
+      "name": "connectedTo",
+      "alias": "conn",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Device"
+    }
+  ],
+  "returns": [
+    {"type": "object", "param": "d", "fields": ["id", "name", "status"]},
+    {"type": "relationship", "param": "conn", "fields": ["bizRelType"]}
+  ],
+  "associationQuery": {
+    "action": "match"
+  }
+}
+```
+
+**对应 nGQL**：
+
+```gql
+MATCH (d:Device)-[conn:connectedTo]->(d2:Device)
+WHERE id(d) == "device-001"
+YIELD
+  d.id AS Device_id, d.name AS Device_name, d.status AS Device_status,
+  conn.bizRelType AS conn_bizRelType
+```
+
+**action: go**（多跳遍历）：
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Device",
+      "alias": "d",
+      "by": {"id": "device-001"}
+    }
+  ],
+  "relationships": [
+    {
+      "name": "connectedTo",
+      "alias": "conn",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Device"
+    }
+  ],
+  "associationQuery": {
+    "action": "go"
+  }
+}
+```
+
+**对应 nGQL**：
+
+```gql
+GO 2 STEPS FROM "device-001" OVER connectedTo BIDIRECT
+YIELD
+  $^.d.id AS src_id, $.d.id AS dst_id,
+  connectedTo.bizRelType AS conn_bizRelType
+```
+
+**action: lookup**（索引查询）：
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Device",
+      "alias": "d"
+    }
+  ],
+  "conditions": {
+    "property": "name",
+    "param": "d",
+    "operator": "CONTAINS",
+    "values": ["server"]
+  },
+  "returns": [
+    {"type": "object", "param": "d", "fields": ["id", "name", "status"]}
+  ],
+  "associationQuery": {
+    "action": "lookup"
+  }
+}
+```
+
+**对应 nGQL**：
+
+```gql
+LOOKUP ON Device WHERE Device.name CONTAINS "server"
+YIELD id(vertex) AS id, Device.name AS name, Device.status AS status
+```
+
+**action: fetch**（属性获取）：
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Device",
+      "alias": "d",
+      "by": {"id": "device-001"}
+    }
+  ],
+  "returns": [
+    {"type": "object", "param": "d", "fields": ["id", "name", "status", "cpuUsage", "memory"]}
+  ],
+  "associationQuery": {
+    "action": "fetch"
+  }
+}
+```
+
+**对应 nGQL**：
+
+```gql
+FETCH PROP ON Device "device-001"
+YIELD properties(vertex)
+```
+
+##### 10.2.9.3 elements 与 GQL 模式对应
+
+**点边模式定义**：
+
+| DSL elements | nGQL 模式 | 说明 |
+|--------------|-----------|------|
+| `{type: "tag", name: ["Device"], alias: "d"}` | `(d:Device)` | 匹配 Device 类型点 |
+| `{type: "edge", name: ["connectedTo"], alias: "e"}` | `[e:connectedTo]` | 匹配 connectedTo 边 |
+| `{type: "edge", direction: "out"}` | `->` | 出边方向 |
+| `{type: "edge", direction: "in"}` | `<-` | 入边方向 |
+| `{type: "edge", direction: "both"}` | `-` | 双向边 |
+| `{minHop: 1, maxHop: 3}` | `*1..3` | 多跳范围 |
+
+**elements 模式组合示例**：
+
+```json
+{
+  "elements": [
+    {
+      "type": "tag",
+      "name": ["Device"],
+      "alias": "d1"
+    },
+    {
+      "type": "edge",
+      "name": ["connectedTo"],
+      "alias": "e",
+      "direction": "out",
+      "minHop": 1,
+      "maxHop": 2
+    },
+    {
+      "type": "tag",
+      "name": ["Device"],
+      "alias": "d2"
+    }
+  ]
+}
+```
+
+**对应 nGQL**：
+
+```gql
+MATCH (d1:Device)-[e:connectedTo*1..2]->(d2:Device)
+YIELD d1, e, d2
+```
+
+##### 10.2.9.4 conditions 与 GQL WHERE 对应
+
+**conditions 二叉树结构 → WHERE 子句**：
+
+```json
+{
+  "relation": "AND",
+  "children": [
+    { "objectType": "Device", "property": "status", "operator": "EQ", "values": ["running"] },
+    {
+      "relation": "OR",
+      "children": [
+        { "objectType": "Device", "property": "type", "operator": "EQ", "values": ["server"] },
+        { "objectType": "Device", "property": "type", "operator": "EQ", "values": ["router"] }
+      ]
+    }
+  ]
+}
+```
+
+**对应 GQL WHERE**：
+
+```gql
+WHERE d.status == "running" AND (d.type == "server" OR d.type == "router")
+```
+
+**operator → WHERE 运算符映射**：
+
+| DSL operator | GQL | 说明 |
+|-------------|-----|------|
+| EQ | `==` | 等于 |
+| NE | `!=` | 不等于 |
+| GT | `>` | 大于 |
+| GE | `>=` | 大于等于 |
+| LT | `<` | 小于 |
+| LE | `<=` | 小于等于 |
+| IN | `IN` | 在列表中 |
+| NOTIN | `NOT IN` | 不在列表中 |
+| CONTAINS | `CONTAINS` | 字符串包含 |
+| STARTSWITH | `STARTS WITH` | 开头匹配 |
+| ENDSWITH | `ENDS WITH` | 结尾匹配 |
+
+##### 10.2.9.5 returns/orders 与 GQL 投影对应
+
+**returns 函数映射**：
+
+| returns function | GQL YIELD | 说明 |
+|-----------------|-----------|------|
+| `{function: "id", param: "d"}` | `id(d) AS id` | 获取点 ID |
+| `{function: "src", param: "e"}` | `src(e) AS srcId` | 获取边起点 |
+| `{function: "dst", param: "e"}` | `dst(e) AS dstId` | 获取边终点 |
+| `{function: "properties", param: "d"}` | `properties(d) AS props` | 获取所有属性 |
+| `{function: "type", param: "d"}` | `labels(d) AS type` | 获取点类型 |
+| `{function: "count", param: "*"}` | `count(*) AS count` | 计数 |
+| `{function: "avg", property: "cpu", param: "d"}` | `avg(d.cpu) AS avgCpu` | 平均值 |
+| `{function: "max", property: "cpu", param: "d"}` | `max(d.cpu) AS maxCpu` | 最大值 |
+| `{function: "min", property: "cpu", param: "d"}` | `min(d.cpu) AS minCpu` | 最小值 |
+| `{function: "collect", param: "d"}` | `collect(d) AS list` | 合并为列表 |
+
+**orders 排序映射**：
+
+| orders 配置 | GQL ORDER BY |
+|------------|--------------|
+| `{"name": "id", "descending": false}` | `ORDER BY id ASC` |
+| `{"name": "cpuUsage", "descending": true}` | `ORDER BY cpuUsage DESC` |
+| 多字段排序 | `ORDER BY field1 ASC, field2 DESC` |
+
+##### 10.2.9.6 完整 DSL → GQL 转换示例
+
+**DSL 请求**：
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Device",
+      "alias": "d"
+    }
+  ],
+  "relationships": [
+    {
+      "name": "connectedTo",
+      "alias": "conn",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Device"
+    }
+  ],
+  "conditions": {
+    "relation": "AND",
+    "children": [
+      {"property": "status", "param": "d", "operator": "EQ", "values": ["running"]},
+      {"property": "cpuUsage", "param": "d", "operator": "GT", "values": [50]},
+      {"property": "memory", "param": "d", "operator": "LT", "values": [8192]}
+    ]
+  },
+  "returns": [
+    {"type": "object", "param": "d", "fields": ["id", "name", "status", "cpuUsage", "memory"]},
+    {"type": "relationship", "param": "conn", "fields": ["bizRelType", "structRelType"]}
+  ],
+  "orders": [
+    {"param": "d", "property": "name", "descending": false}
+  ],
+  "associationQuery": {
+    "action": "go"
+  }
+}
+```
+
+**对应 nGQL**：
+
+```gql
+GO 2 STEPS FROM $-.ids OVER connectedTo BIDIRECT
+WHERE
+  $^.d.status == "running" AND
+  $^.d.cpuUsage > 50 AND
+  $^.d.memory < 8192
+YIELD
+  Device.id AS d_id, Device.name AS d_name, Device.status AS d_status,
+  Device.cpuUsage AS d_cpuUsage, Device.memory AS d_memory,
+  conn.bizRelType AS conn_bizRelType, conn.structRelType AS conn_structRelType
+ORDER BY d_name ASC
+```
