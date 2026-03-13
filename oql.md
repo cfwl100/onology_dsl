@@ -1527,3 +1527,432 @@ YIELD
   }
 }
 ```
+**对应 GQL 语句**：
+
+```gql
+GO FROM ["prod-001", "prod-002"] OVER suppliedBy, belongsTo
+YIELD
+  $^.p.id AS p_id, $^.p.name AS p_name, $^.p.price AS p_price, $^.p.sku AS p_sku,
+  $$.s.id AS s_id, $$.s.name AS s_name, $$.s.contact AS s_contact, $$.s.address AS s_address,
+  $$.c.id AS c_id, $$.c.name AS c_name, $$.c.parentId AS c_parentId,
+  sb.bizRelType AS sb_bizRelType, bt.bizRelType AS bt_bizRelType
+```
+
+> **说明**：使用 `$^.p` 引用起始产品（源对象），使用 `$$` 引用终点供应商和分类（目标对象）。`$$` 代表当前遍历的终点。
+
+##### 10.2.5.4 示例四：多对象类型+多关系查询
+
+**场景**：查询设备（Device）和服务器（Server）之间的关联关系
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Device",
+      "alias": "d"
+    },
+    {
+      "objectType": "Server",
+      "alias": "s"
+    }
+  ],
+  "relationships": [
+    {
+      "name": "connectedTo",
+      "alias": "conn",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Device",
+      "bizRelType": "connectedTo",
+      "structRelType": "Association"
+    },
+    {
+      "name": "installedOn",
+      "alias": "install",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Server",
+      "bizRelType": "installedOn",
+      "structRelType": "Composition",
+      "cardinality": "Many-to-One"
+    }
+  ],
+  "conditions": {
+    "relation": "AND",
+    "children": [
+      {"objectType": "Device", "property": "status", "operator": "EQ", "values": ["running"]}
+    ]
+  },
+  "returns": [
+    {"type": "object", "param": "d", "fields": ["id", "name", "status", "type", "location"]},
+    {"type": "object", "param": "s", "fields": ["id", "name", "ip", "os", "cpuUsage"]},
+    {"type": "relationship", "param": "install", "fields": ["bizRelType", "structRelType", "cardinality", "installedAt"]}
+  ],
+  "orders": [
+    {"param": "d", "property": "name", "descending": false}
+  ],
+  "associationQuery": {
+    "action": "go"
+  }
+}
+```
+
+**对应 GQL 语句**：
+
+```gql
+GO FROM $-.d.ids OVER installedOn
+WHERE $^.d.status == "running"
+YIELD
+  $^.d.id AS d_id, $^.d.name AS d_name, $^.d.status AS d_status,
+  $^.d.type AS d_type, $^.d.location AS d_location,
+  $$.s.id AS s_id, $$.s.name AS s_name, $$.s.ip AS s_ip,
+  $$.s.os AS s_os, $$.s.cpuUsage AS s_cpuUsage,
+  install.bizRelType AS install_bizRelType, install.structRelType AS install_structRelType,
+  install.cardinality AS install_cardinality, install.installedAt AS install_installedAt
+ORDER BY d_name ASC
+```
+
+##### 10.2.5.5 示例五：聚合查询
+
+**场景**：查询设备的关联数量统计
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Device",
+      "alias": "d",
+      "by": [
+        {"id": "device_001"},
+        {"id": "device_002"},
+        {"id": "device_003"}
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "name": "connectedTo",
+      "alias": "conn",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Device",
+      "bizRelType": "connectedTo",
+      "structRelType": "Association"
+    }
+  ],
+  "returns": [
+    {"type": "object", "param": "d", "fields": ["id", "name"]},
+    {
+      "type": "relationship",
+      "param": "conn",
+      "function": "count",
+      "alias": "connectionCount"
+    }
+  ],
+  "associationQuery": {
+    "action": "go"
+  }
+}
+```
+
+**对应 GQL 语句**：
+
+```gql
+GO FROM ["device_001", "device_002", "device_003"] OVER connectedTo
+YIELD
+  $^.d.id AS d_id, $^.d.name AS d_name,
+  count(conn) AS connectionCount
+GROUP BY $^.d.id
+```
+
+#### 10.2.6 响应格式
+
+##### 10.2.6.1 响应结构规范
+
+关联查询的响应采用以下统一结构（基于本体模型定义）：
+
+```json
+{
+  "success": true,
+  "data": {
+    "objects": [
+      {
+        "id": "obj-001",
+        "objectType": "Device",
+        "alias": "d",
+        "name": "显示名称",
+        "properties": {
+          "status": "running",
+          "type": "server",
+          "location": "机房A"
+        }
+      }
+    ],
+    "relationships": [
+      {
+        "id": "rel-001",
+        "name": "connectedTo",
+        "alias": "conn",
+        "bizRelType": "connectedTo",
+        "structRelType": "Association",
+        "cardinality": "Many-to-One",
+        "source": {
+          "objectType": "Device",
+          "alias": "d",
+          "id": "obj-001"
+        },
+        "target": {
+          "objectType": "Device",
+          "alias": "d",
+          "id": "obj-002"
+        },
+        "properties": {
+          "bandwidth": 1000,
+          "latency": 5
+        }
+      }
+    ]
+  },
+  "metadata": {
+    "objectCount": 10,
+    "relationshipCount": 15,
+    "queryDepth": 2,
+    "objectTypes": ["Device", "Server"],
+    "relationships": ["connectedTo", "installedOn"],
+    "executionTime": 45
+  }
+}
+```
+
+##### 10.2.6.2 响应字段详细说明
+
+| 字段 | 类型 | 说明 | 来源 |
+|------|------|------|------|
+| **success** | boolean | 请求是否成功 | 系统 |
+| **data** | object | 关联查询结果数据 | - |
+| **data.objects** | array | 查询返回的对象列表 | GQL YIELD 结果 |
+| **data.objects[].id** | string | 对象唯一标识（主键值） | GQL 查询结果 |
+| **data.objects[].objectType** | string | 对象类型名称（对应 ObjectType 本体定义） | DSL 配置 |
+| **data.objects[].alias** | string | 对象别名（用于引用关系中的 source/target） | DSL 配置 |
+| **data.objects[].name** | string | 对象显示名称（来自 name 或 display 字段） | GQL 查询结果 |
+| **data.objects[].properties** | object | 对象属性键值对（来自 returns 配置） | GQL YIELD 结果 |
+| **data.relationships** | array | 查询返回的关系列表 | GQL 查询结果 |
+| **data.relationships[].id** | string | 关系唯一标识 | 系统生成 |
+| **data.relationships[].name** | string | 关系类型名称（对应 Relationship 本体定义） | DSL 配置 |
+| **data.relationships[].alias** | string | 关系别名（用于 returns 引用） | DSL 配置 |
+| **data.relationships[].bizRelType** | string | 业务语义类型（如 connectedTo、covers） | DSL/本体 |
+| **data.relationships[].structRelType** | string | UML 结构关系类型（Association/Aggregation/Composition） | DSL/本体 |
+| **data.relationships[].cardinality** | string | 关系基数（One-to-Many/One-to-One/Many-to-One） | 本体定义 |
+| **data.relationships[].source** | object | 源对象引用 | GQL 查询结果 |
+| **data.relationships[].source.objectType** | string | 源对象类型 | GQL 结果 |
+| **data.relationships[].source.alias** | string | 源对象别名 | GQL 结果 |
+| **data.relationships[].source.id** | string | 源对象 ID | GQL 结果 |
+| **data.relationships[].target** | object | 目标对象引用 | GQL 查询结果 |
+| **data.relationships[].target.objectType** | string | 目标对象类型 | GQL 结果 |
+| **data.relationships[].target.alias** | string | 目标对象别名 | GQL 结果 |
+| **data.relationships[].target.id** | string | 目标对象 ID | GQL 结果 |
+| **data.relationships[].properties** | object | 关系属性（来自 returns 配置） | GQL YIELD 结果 |
+| **metadata** | object | 元数据信息 | - |
+| **metadata.objectCount** | integer | 返回的对象总数 | 系统统计 |
+| **metadata.relationshipCount** | integer | 返回的关系总数 | 系统统计 |
+| **metadata.queryDepth** | integer | 实际查询深度（遍历层数） | DSL 配置 |
+| **metadata.objectTypes** | array | 查询涉及的对象类型列表 | DSL 配置 |
+| **metadata.relationships** | array | 查询涉及的关系类型列表 | DSL 配置 |
+| **metadata.executionTime** | integer | 执行时间（毫秒） | 系统统计 |
+
+##### 10.2.6.3 响应示例（完整样例）
+
+**场景**：查询设备间的 connectedTo 关系
+
+**请求**：
+```json
+{
+  "version": "1.8.0",
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Device",
+      "alias": "d",
+      "by": [
+        {"id": "device-001"},
+        {"id": "device-002"},
+        {"id": "device-003"},
+        {"id": "device-004"}
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "name": "connectedTo",
+      "alias": "conn",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Device",
+      "bizRelType": "connectedTo",
+      "structRelType": "Association"
+    }
+  ],
+  "conditions": {
+    "relation": "AND",
+    "children": [
+      {"objectType": "Device", "property": "status", "operator": "EQ", "values": ["running"]}
+    ]
+  },
+  "returns": [
+    {"type": "object", "param": "d", "fields": ["id", "name", "status", "type", "location"]},
+    {"type": "relationship", "param": "conn", "fields": ["bizRelType", "structRelType", "bandwidth"]}
+  ],
+  "associationQuery": {
+    "action": "go"
+  }
+}
+```
+
+**响应**：
+```json
+{
+  "success": true,
+  "data": {
+    "objects": [
+      {
+        "id": "device-001",
+        "objectType": "Device",
+        "alias": "d",
+        "name": "核心交换机",
+        "properties": {
+          "status": "running",
+          "type": "core_switch",
+          "location": "机房A-1F"
+        }
+      },
+      {
+        "id": "device-002",
+        "objectType": "Device",
+        "alias": "d",
+        "name": "汇聚交换机-1",
+        "properties": {
+          "status": "running",
+          "type": "aggregation_switch",
+          "location": "机房A-1F"
+        }
+      },
+      {
+        "id": "device-003",
+        "objectType": "Device",
+        "alias": "d",
+        "name": "汇聚交换机-2",
+        "properties": {
+          "status": "running",
+          "type": "aggregation_switch",
+          "location": "机房A-2F"
+        }
+      },
+      {
+        "id": "device-004",
+        "objectType": "Device",
+        "alias": "d",
+        "name": "接入交换机-1",
+        "properties": {
+          "status": "running",
+          "type": "access_switch",
+          "location": "机房A-1F"
+        }
+      }
+    ],
+    "relationships": [
+      {
+        "id": "rel-001",
+        "name": "connectedTo",
+        "alias": "conn",
+        "bizRelType": "connectedTo",
+        "structRelType": "Association",
+        "cardinality": "Many-to-One",
+        "source": {
+          "objectType": "Device",
+          "alias": "d",
+          "id": "device-001"
+        },
+        "target": {
+          "objectType": "Device",
+          "alias": "d",
+          "id": "device-002"
+        },
+        "properties": {
+          "bandwidth": 10000
+        }
+      },
+      {
+        "id": "rel-002",
+        "name": "connectedTo",
+        "alias": "conn",
+        "bizRelType": "connectedTo",
+        "structRelType": "Association",
+        "cardinality": "Many-to-One",
+        "source": {
+          "objectType": "Device",
+          "alias": "d",
+          "id": "device-001"
+        },
+        "target": {
+          "objectType": "Device",
+          "alias": "d",
+          "id": "device-003"
+        },
+        "properties": {
+          "bandwidth": 10000
+        }
+      },
+      {
+        "id": "rel-003",
+        "name": "connectedTo",
+        "alias": "conn",
+        "bizRelType": "connectedTo",
+        "structRelType": "Association",
+        "cardinality": "Many-to-Many",
+        "source": {
+          "objectType": "Device",
+          "alias": "d",
+          "id": "device-002"
+        },
+        "target": {
+          "objectType": "Device",
+          "alias": "d",
+          "id": "device-004"
+        },
+        "properties": {
+          "bandwidth": 1000
+        }
+      },
+      {
+        "id": "rel-004",
+        "name": "connectedTo",
+        "alias": "conn",
+        "bizRelType": "connectedTo",
+        "structRelType": "Association",
+        "cardinality": "Many-to-Many",
+        "source": {
+          "objectType": "Device",
+          "alias": "d",
+          "id": "device-003"
+        },
+        "target": {
+          "objectType": "Device",
+          "alias": "d",
+          "id": "device-004"
+        },
+        "properties": {
+          "bandwidth": 1000
+        }
+      }
+    ]
+  },
+  "metadata": {
+    "objectCount": 4,
+    "relationshipCount": 4,
+    "queryDepth": 2,
+    "objectTypes": ["Device"],
+    "relationships": ["connectedTo"],
+    "executionTime": 67
+  }
+}
+```
