@@ -3773,3 +3773,77 @@ DELETE 操作用于删除对象，支持：
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
+### 7.2 完整结构定义（JSON Schema）
+
+以下 JSON Schema 定义了 DELETE 操作的有效结构：
+
+```json
+{
+  "operation": "DELETE",
+  "objects": [
+    {
+      "objectType": "Product",
+      "alias": "p"
+    }
+  ],
+  "conditions": {...},
+  "mutation": {
+    "type": "object",
+    "properties": {
+      "by": {
+        "type": "object",
+        "description": "单对象主键定位，与 conditions 二选一"
+      },
+      "deleteMode": {
+        "type": "string",
+        "description": "删除模式：soft=软删除, hard=硬删除",
+        "enum": ["soft", "hard"],
+        "default": "soft"
+      },
+      "cascade": {
+        "type": "boolean",
+        "description": "是否级联删除关联对象",
+        "default": false
+      },
+      "cascadeLinks": {
+        "type": "array",
+        "description": "指定要级联删除的关联类型",
+        "items": {"type": "string"}
+      },
+      "permanent": {
+        "type": "boolean",
+        "description": "永久删除（硬删除后不可恢复）",
+        "default": false
+      },
+      "returnDeleted": {
+        "type": "boolean",
+        "description": "是否返回删除的对象数据",
+        "default": false
+      },
+      "limit": {
+        "type": "integer",
+        "description": "限制删除数量（防止误删）"
+      }
+    },
+    "anyOf": [
+      {"required": ["by"]},
+      {"required": ["conditions"]}
+    ]
+  }
+}
+```
+
+### 7.3 字段说明
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| **objects** | array | 是 | 对象实例定义数组，详见第2.9节 |
+| **conditions** | object | 否 | 统一条件表达式，用于批量条件删除（详见第2.3节），与 mutation.by 二选一 |
+| **mutation** | object | 是 | 变更定义节点 |
+| mutation.by | object | by/conditions 二选一 | 主键定位（KV 结构），如 `{"id": "prod_001"}` |
+| mutation.deleteMode | string | 否 | 删除模式：soft（软删除，默认）或 hard（硬删除） |
+| mutation.cascade | boolean | 否 | 是否级联删除关联对象，默认 false |
+| mutation.cascadeLinks | array | 否 | 指定要级联删除的关联类型 |
+| mutation.permanent | boolean | 否 | 永久删除（不可恢复），默认 false |
+| mutation.returnDeleted | boolean | 否 | 是否返回删除的对象数据，默认 false |
+| mutation.limit | integer | 否 | 限制删除数量（防止误删） |
