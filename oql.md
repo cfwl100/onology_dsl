@@ -855,3 +855,396 @@ OQL 提供了两个专门的关联查询 Operation：
   ]
 }
 ```
+
+## 10. 关联查询（ASSOCIATION_QUERY）
+
+> **说明**：OQL v1.8 新增的图关联查询操作，支持复杂图遍历、多跳关系查询。
+
+> **前置说明**：ASSOCIATION_QUERY 操作使用统一顶层结构，详见 [第2章统一顶层结构](#2-统一顶层结构)：
+> - `objects` - 对象实例定义（第2.2节）
+> - `relationships` - 关系类型定义（本章节 10.2.3.1）
+> - `conditions` - 统一条件表达式（第2.3节）
+> - `returns` - 返回字段投影（第2.4节）
+> - `orders` - 排序定义（第2.5节）
+> - `associationQuery` - 关联查询专用块（本章节 10.2.3.2）
+
+### 10.1 Operation 类型
+
+ASSOCIATION_QUERY 是 OQL v1.8 专门为图关联查询设计的操作类型，支持：
+- **多对象查询**：从多个对象类型出发进行关联查询
+- **多跳关系遍历**：支持 1-N 跳的图遍历
+- **关系过滤**：在关联路径上进行条件筛选
+- **嵌套结果返回**：返回对象和关联关系的完整图结构
+
+---
+
+#### 10.2.1 概述与使用场景
+
+关联查询操作用于**批量多对象 + 多关联关系**的复杂查询场景。当需要给定一组对象（如同一类别的多个设备），查询它们之间的关联关系时，使用 `ASSOCIATION_QUERY` 操作。
+
+**核心概念**：
+
+本体模型定义了对象和关联的图结构：
+- **对象（Object）**：查询的主体，包含对象属性
+- **关系（Relationship）**：对象间的关联，连接对象
+
+**⚠️ 重要约束**：
+
+> 进行关联查询时，必须明确指定要查询的关系类型（`relationships` 字段）。不能仅传入对象集合而忽略关系定义，原因如下：
+> 1. **无法确定遍历路径**：翻译引擎需要根据关系类型构建 GQL 的 OVER 子句
+> 2. **无法保证结果顺序**：对象和关系的先后顺序由关系定义决定
+> 3. **无法返回有意义的关联结果**：缺少关系类型，GQL 无法执行有效的关联查询
+>
+> **注意**：图查询仅支持对象间关系（object-to-object），不支持属性间关系（property-to-property）。
+
+**与其他查询类型的关系**：
+
+`ASSOCIATION_QUERY` 是 OQL 中功能最强大的查询操作类型，可替代以下查询类型：
+
+| 被替代的查询类型        | 替代方式                              | 说明                                                   |
+| ----------------------- | ------------------------------------- | ------------------------------------------------------ |
+| **QUERY**               | `objects[].conditions` + `conditions` | 单对象/列表查询可转换为从单个对象类型出发的关联查询    |
+| **MULTI_OBJECT_QUERY**  | `objects` + relationships             | 多对象联合查询可通过定义关联关系实现                   |
+| **LIST_LINKED_OBJECTS** | `relationships` | 翻译引擎根据 relationships 查找对应的 relationship 定义 |
+| **GET_LINKED_OBJECT**   | `linkedObjectType` + 条件过滤         | 通过指定目标对象类型和过滤条件获取关联对象             |
+
+**说明**：
+- 保留 `QUERY`、`MULTI_OBJECT_QUERY`、`LIST_LINKED_OBJECTS`、`GET_LINKED_OBJECT` 等快捷操作类型是为了：
+  1. **API 路由兼容**：不同 operation 对应不同的 API endpoint
+  2. **请求简洁**：无需定义空的 `relationships` 结构
+  3. **语义清晰**：操作类型即意图，降低使用门槛
+- **AGGREGATE** 无法被替代，因其需要专门的聚合语义（groupBy、metrics 等）
+
+**选择建议**：
+
+- 简单列表查询 → 使用 `QUERY`
+- 跨对象条件查询 → 使用 `MULTI_OBJECT_QUERY`
+- 基于 LinkType 的关联查询 → 使用 `LIST_LINKED_OBJECTS` / `GET_LINKED_OBJECT`
+- 复杂图遍历、多跳查询 → 使用 `ASSOCIATION_QUERY`
+
+**支持的查询模式**：
+
+| 模式               | 说明                                         | 示例                                |
+| ------------------ | -------------------------------------------- | ----------------------------------- |
+| **对象+关系查询**  | 同时指定对象集合和关系类型，精准查询特定关联 | 查询设备间的 connectedTo 关系       |
+| **多对象类型查询** | 跨不同对象类型的关联查询                     | Device → Server 的 installedOn 关系 |
+
+**典型使用场景**：
+
+| 场景       | 说明                                        |
+| ---------- | ------------------------------------------- |
+| 拓扑分析   | 给定一批设备，查询设备间的网络连接/依赖关系 |
+| 知识图谱   | 给定多个实体，查询它们之间的多跳关联关系    |
+| 关联追溯   | 给定异常对象，追溯其关联的影响范围          |
+| 多实体关系 | 查询跨越多种对象类型的关联                  |
+
+**现有能力的对比**：
+
+| 操作                  | 支持多对象  | 支持关系查询 | 返回结果              |
+| --------------------- | ----------- | ------------ | --------------------- |
+| QUERY                 | ✅ 单/多对象 | ❌            | 仅对象属性            |
+| LIST_LINKS            | ❌ 仅单对象  | ✅            | 关联对象              |
+| **ASSOCIATION_QUERY** | ✅ 多对象    | ✅            | 对象+关系完整关联结果 |
+
+#### 10.2.2 Operation 类型
+
+OQL 提供了 `ASSOCIATION_QUERY` 操作类型：
+
+| Operation             | 说明           | API 对应              |
+| --------------------- | -------------- | --------------------- |
+| **ASSOCIATION_QUERY** | 多对象关联查询 | `POST /objects/query` |
+
+#### 10.2.3 完整结构定义
+
+> **使用说明**：本节提供所有 DSL 参数的完整定义汇总。如需了解参数的使用规则、详细约束和示例，请参见后续章节 [10.2.4](#1024-字段详细说明)。
+>
+> **核心约束**：图查询只支持 **对象间关系（object-to-object）**，不支持属性间关系（property-to-property）。所有关系查询均为对象与对象之间的关联。
+
+##### 10.2.3.1 顶层参数定义
+
+| 字段                               | 类型   | 必填 | 说明                                                         |
+| ---------------------------------- | ------ | :--: | ------------------------------------------------------------ |
+| `version`                          | string |  是  | DSL 版本号，固定为 "1.8.0"                                   |
+| `operation`                        | string |  是  | 操作类型，固定为 "ASSOCIATION_QUERY"                         |
+| `objects`                          | array  |  是  | 对象实例数组，包含起始对象定义                               |
+| `objects[].objectType`             | string |  是  | 对象类型标识符                                               |
+| `objects[].alias`                  | string |  否  | 对象别名，用于后续引用                                       |
+| `objects[].objectKey`              | object |  否  | 单主键（KV 结构），如 `{"id": "prod_001"}`，图数据库场景对应 VID |
+| `objects[].compositeKey`           | object |  否  | 复合主键（KV 结构），如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}` |
+| `relationships`                    | array  |  是  | 关系类型数组，指定查询的关系类型                             |
+| `relationships[].name`             | string |  是  | 关系类型名称（驼峰命名）                                     |
+| `relationships[].alias`            | string |  否  | 关系别名，用于 returns 引用                                  |
+| `relationships[].sourceObjectType` | string |  是  | 源对象类型                                                   |
+| `relationships[].targetObjectType` | string |  是  | 目标对象类型                                                 |
+| `relationships[].bizRelType`       | string |  否  | 业务语义类型                                                 |
+| `relationships[].structRelType`    | string |  否  | UML 结构关系类型                                             |
+| `relationships[].cardinality`      | string |  否  | 关系基数                                                     |
+
+**使用规则**：
+
+- `objects` 必填，用于定义查询的起始对象
+- `objects[].objectKey` 单主键，如 `{"id": "prod_001"}`
+- `objects[].compositeKey` 复合主键，如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}`
+- `objectKey` 与 `compositeKey` 二选一，不可同时使用
+- `relationships` 必填，指定要查询的关系类型
+
+- `objects` 必填，用于定义查询的起始对象
+- `objects[].objectKey` 单主键，如 `{"id": "prod_001"}`
+- `objects[].compositeKey` 复合主键，如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}`
+- `objectKey` 与 `compositeKey` 二选一，不可同时使用
+- `relationships` 必填，指定要查询的关系类型
+- 遍历方向由 `relationships[].sourceObjectType` 和 `relationships[].targetObjectType` 决定，无需额外指定 direction
+
+> **使用建议**：对于简单查询场景，可考虑使用更简洁的操作类型：
+> - 单对象/列表查询 → 使用 `QUERY`
+> - 跨对象条件查询 → 使用 `MULTI_OBJECT_QUERY`
+> - 基于 LinkType 的关联查询 → 使用 `LIST_LINKED_OBJECTS` / `GET_LINKED_OBJECT`
+> - 复杂图遍历查询 → 使用 `ASSOCIATION_QUERY`
+
+##### 10.2.3.2 associationQuery 参数定义
+
+| 字段                    | 类型   | 必填 | 说明                                                         |
+| ----------------------- | ------ | :--: | ------------------------------------------------------------ |
+| `action`                | enum   |  是  | 执行动作类型，定义查询/操作的执行方式                        |
+| `conditions`            | object |  否  | 条件表达式对象，支持二叉树结构，统一放在 associationQuery 下 |
+| `conditions.relation`   | string |  否  | 逻辑关系：AND / OR                                           |
+| `conditions.children`   | array  |  否  | 条件子节点列表                                               |
+| `conditions.property`   | string |  是  | 属性名称                                                     |
+| `conditions.objectType` | string |  是  | 对象类型名称，对应 objects 中的 objectType                   |
+| `conditions.operator`   | string |  是  | 比较运算符                                                   |
+| `conditions.values`     | array  |  是  | 右侧操作值列表                                               |
+| `returns`               | array  |  是  | 返回字段定义列表                                             |
+| `orders`                | array  |  否  | 排序定义列表                                                 |
+
+**action 执行动作类型**：
+
+action 定义了查询的执行方式，根据数据源类型有不同的关键字：
+
+| action   | 数据源              | 说明         | 原生查询语言关键字  |
+| -------- | ------------------- | ------------ | ------------------- |
+| `match`  | 图数据库            | 模式匹配查询 | `MATCH`             |
+| `go`     | 图数据库            | 图遍历查询   | `GO ... OVER`       |
+| `lookup` | 图数据库/关系数据库 | 索引查询     | `LOOKUP` / 索引命中 |
+| `fetch`  | 图数据库            | 属性获取查询 | `FETCH`             |
+| `select` | 关系数据库          | 标准查询     | `SELECT`            |
+| `find`   | 文档数据库          | 文档查询     | `find` / `findOne`  |
+| `query`  | 搜索引擎            | 全文检索     | `search` / `query`  |
+| `get`    | 键值存储            | 直接读取     | `GET`               |
+
+**说明**：
+
+- 不同数据源的翻译引擎根据 action 生成对应数据源的原生查询语句
+- 图数据库支持 `match`、`go`、`lookup`、`fetch` 四种动作
+- 关系数据库主要使用 `select`
+- 文档数据库（如 MongoDB）使用 `find`
+- 搜索引擎（如 Elasticsearch）使用 `query`
+- 键值存储使用 `get`
+
+**operator 支持的运算符**：
+
+| 运算符     | 说明       | GQL 对应      |
+| ---------- | ---------- | ------------- |
+| EQ         | 等于       | `==`          |
+| NE         | 不等于     | `!=`          |
+| GT         | 大于       | `>`           |
+| GE         | 大于等于   | `>=`          |
+| LT         | 小于       | `<`           |
+| LE         | 小于等于   | `<=`          |
+| IN         | 在列表中   | `IN`          |
+| NOTIN      | 不在列表中 | `NOT IN`      |
+| CONTAINS   | 包含       | `CONTAINS`    |
+| STARTSWITH | 开头为     | `STARTS WITH` |
+| ENDSWITH   | 结尾为     | `ENDS WITH`   |
+| ISNULL     | 为空       | `IS NULL`     |
+| ISNOTNULL  | 不为空     | `IS NOT NULL` |
+
+##### 10.2.3.3 orders 参数定义
+
+| 字段                  | 类型    | 必填 | 说明                                                         |
+| --------------------- | ------- | :--: | ------------------------------------------------------------ |
+| `orders`              | array   |  否  | 排序定义列表                                                 |
+| `orders[].param`      | string  |  是  | 排序对象别名（对应 objectTypes 或 relationships 中的 alias） |
+| `orders[].property`   | string  |  是  | 排序字段名称                                                 |
+| `orders[].descending` | boolean |  否  | 是否降序，默认 false                                         |
+
+##### 10.2.3.4 associationQuery.returns 参数定义
+
+`returns` 用于定义返回的字段投影，合并了原 select 的功能。
+
+| 字段                 | 类型   | 必填 | 说明                                                   |
+| -------------------- | ------ | :--: | ------------------------------------------------------ |
+| `returns`            | array  |  是  | 返回字段定义列表                                       |
+| `returns[].type`     | string |  是  | 类型：object / relationship                            |
+| `returns[].param`    | string |  是  | 变量名称，对应 objectTypes 或 relationships 中的 alias |
+| `returns[].fields`   | array  |  否  | 要返回的字段列表，null 表示返回全部                    |
+| `returns[].alias`    | string |  否  | 返回结果别名                                           |
+| `returns[].function` | string |  否  | 聚合函数：count / avg / max / min / collect            |
+| `returns[].property` | string |  否  | 聚合属性名称                                           |
+
+**returns 聚合函数**：
+
+| 函数    | 说明       | 示例                                                         |
+| ------- | ---------- | ------------------------------------------------------------ |
+| count   | 计数       | `{function: "count", param: "d", alias: "total"}`            |
+| avg     | 平均值     | `{function: "avg", property: "cpuUsage", param: "d", alias: "avgCpu"}` |
+| max     | 最大值     | `{function: "max", property: "temperature", param: "d", alias: "maxTemp"}` |
+| min     | 最小值     | `{function: "min", property: "temperature", param: "d", alias: "minTemp"}` |
+| collect | 合并为列表 | `{function: "collect", param: "d", alias: "list"}`           |
+
+##### 10.2.3.5 关系类型枚举
+
+**bizRelType 业务语义类型**：
+
+| 业务关系    | 说明     |
+| ----------- | -------- |
+| connectedTo | 连接关系 |
+| covers      | 覆盖关系 |
+| serves      | 服务关系 |
+| groupedWith | 分组关系 |
+
+| 结构关系       | 说明     |
+| -------------- | -------- |
+| Association    | 一般关联 |
+| Aggregation    | 聚合     |
+| Composition    | 组合     |
+| Generalization | 泛化     |
+| Dependency     | 依赖     |
+| Realization    | 实现     |
+
+##### 10.2.3.6 完整 JSON 示例
+
+**示例一（指定起始对象 + 指定关系）**：
+
+```
+{
+  "version": "1.8.0",
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Device",
+      "alias": "d",
+      "by": [
+        {"id": "device_001"},
+        {"id": "device_002"},
+        {"id": "device_003"}
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "name": "connectedTo",
+      "alias": "conn",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Device",
+      "bizRelType": "connectedTo",
+      "structRelType": "Association"
+    }
+  ],
+  "returns": [
+    {"type": "object", "param": "d", "fields": ["id", "name", "status"]},
+    {"type": "relationship", "param": "conn", "fields": ["bizRelType", "structRelType"]}
+  ],
+  "associationQuery": {
+    "action": "go"
+  }
+}
+```
+
+**示例二（条件筛选 + 多对象类型）**：
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Device",
+      "alias": "d",
+      "by": [
+        {"id": "device_001"},
+        {"id": "device_002"}
+      ]
+    },
+    {
+      "objectType": "Server",
+      "alias": "s"
+    }
+  ],
+  "relationships": [
+    {
+      "name": "connectedTo",
+      "alias": "conn",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Device",
+      "bizRelType": "connectedTo",
+      "structRelType": "Association"
+    },
+    {
+      "name": "installedOn",
+      "alias": "install",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Server",
+      "bizRelType": "installedOn",
+      "structRelType": "Composition"
+    }
+  ],
+  "conditions": {
+    "relation": "AND",
+    "children": [
+      {"objectType": "Device", "property": "status", "operator": "EQ", "values": ["running"]},
+      {"objectType": "Device", "property": "cpuUsage", "operator": "GT", "values": [50]}
+    ]
+  },
+  "returns": [
+    {"type": "object", "param": "d", "fields": ["id", "name", "status", "cpuUsage"]},
+    {"type": "object", "param": "s", "fields": ["id", "name", "ip"]},
+    {"type": "relationship", "param": "install", "fields": ["bizRelType", "cardinality"]}
+  ],
+  "orders": [
+    {"param": "d", "property": "name", "descending": false}
+  ],
+  "associationQuery": {
+    "action": "go"
+  }
+}
+```
+
+**示例三（条件查询 + 关联筛选）**：
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Device",
+      "alias": "d",
+      "by": {"id": "device_001"}
+    }
+  ],
+  "relationships": [
+    {
+      "name": "connectedTo",
+      "alias": "conn",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Device",
+      "bizRelType": "connectedTo",
+      "structRelType": "Association"
+    }
+  ],
+  "conditions": {
+    "relation": "AND",
+    "children": [
+      {"property": "cpuUsage", "param": "d", "operator": "GT", "values": [80]}
+    ]
+  },
+  "returns": [
+    {"type": "object", "param": "d", "fields": ["id", "name", "status", "cpuUsage"]},
+    {"type": "relationship", "param": "conn", "fields": ["bizRelType"]}
+  ],
+  "associationQuery": {
+    "action": "go"
+  }
+}
+```
+
