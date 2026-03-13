@@ -2779,3 +2779,197 @@ YIELD
   conn.bizRelType AS conn_bizRelType, conn.structRelType AS conn_structRelType
 ORDER BY d_name ASC
 ```
+> **说明**：使用 `$^.d` 引用起始设备（源对象）的属性。`$^` 代表当前遍历的起点，`$$` 代表当前遍历的终点。
+
+##### 10.2.5.2 示例二：条件查询关联对象
+
+**场景**：查询所有状态异常的设备及其关联关系
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Device",
+      "alias": "d",
+      "by": [
+        {"id": "device_001"},
+        {"id": "device_002"}
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "name": "connectedTo",
+      "alias": "conn",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Device",
+      "bizRelType": "connectedTo",
+      "structRelType": "Association"
+    },
+    {
+      "name": "dependsOn",
+      "alias": "dep",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Device",
+      "bizRelType": "dependsOn",
+      "structRelType": "Dependency"
+    }
+  ],
+  "conditions": {
+    "relation": "AND",
+    "children": [
+      {"property": "status", "param": "d", "operator": "EQ", "values": ["error"]},
+      {"property": "cpuUsage", "param": "d", "operator": "GT", "values": [80]}
+    ]
+  },
+  "returns": [
+    {"type": "object", "param": "d", "fields": ["id", "name", "status", "cpuUsage", "location"]},
+    {"type": "relationship", "param": "conn", "fields": ["bizRelType", "structRelType"]},
+    {"type": "relationship", "param": "dep", "fields": ["bizRelType", "structRelType"]}
+  ],
+  "associationQuery": {
+    "action": "go"
+  }
+}
+```
+
+**对应 GQL 语句**：
+
+```gql
+GO FROM ["device_001", "device_002"] OVER connectedTo, dependsOn
+WHERE $^.d.status == "error" AND $^.d.cpuUsage > 80
+YIELD
+  $^.d.id AS d_id, $^.d.name AS d_name,
+  $^.d.status AS d_status, $^.d.cpuUsage AS d_cpuUsage, $^.d.location AS d_location,
+  conn.bizRelType AS conn_bizRelType, conn.structRelType AS conn_structRelType,
+  dep.bizRelType AS dep_bizRelType, dep.structRelType AS dep_structRelType
+```
+
+##### 10.2.5.3 示例三：知识图谱多实体关联查询
+
+**场景**：查询多个产品及其相关的供应商、分类关系
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Product",
+      "alias": "p",
+      "by": [
+        {"id": "prod-001"},
+        {"id": "prod-002"}
+      ]
+    },
+    {
+      "objectType": "Supplier",
+      "alias": "s"
+    },
+    {
+      "objectType": "Category",
+      "alias": "c"
+    }
+  ],
+  "relationships": [
+    {
+      "name": "suppliedBy",
+      "alias": "sb",
+      "sourceObjectType": "Product",
+      "targetObjectType": "Supplier",
+      "bizRelType": "suppliedBy",
+      "structRelType": "Association"
+    },
+    {
+      "name": "belongsTo",
+      "alias": "bt",
+      "sourceObjectType": "Product",
+      "targetObjectType": "Category",
+      "bizRelType": "belongsTo",
+      "structRelType": "Association"
+    }
+  ],
+  "returns": [
+    {"type": "object", "param": "p", "fields": ["id", "name", "price", "sku"]},
+    {"type": "object", "param": "s", "fields": ["id", "name", "contact", "address"]},
+    {"type": "object", "param": "c", "fields": ["id", "name", "parentId"]},
+    {"type": "relationship", "param": "sb", "fields": ["bizRelType"]},
+    {"type": "relationship", "param": "bt", "fields": ["bizRelType"]}
+  ],
+  "associationQuery": {
+    "action": "go"
+  }
+}
+```
+
+**对应 GQL 语句**：
+
+```gql
+GO FROM ["prod-001", "prod-002"] OVER suppliedBy, belongsTo
+YIELD
+  $^.p.id AS p_id, $^.p.name AS p_name, $^.p.price AS p_price, $^.p.sku AS p_sku,
+  $$.s.id AS s_id, $$.s.name AS s_name, $$.s.contact AS s_contact, $$.s.address AS s_address,
+  $$.c.id AS c_id, $$.c.name AS c_name, $$.c.parentId AS c_parentId,
+  sb.bizRelType AS sb_bizRelType, bt.bizRelType AS bt_bizRelType
+```
+
+> **说明**：使用 `$^.p` 引用起始产品（源对象），使用 `$$` 引用终点供应商和分类（目标对象）。`$$` 代表当前遍历的终点。
+
+##### 10.2.5.4 示例四：多对象类型+多关系查询
+
+**场景**：查询设备（Device）和服务器（Server）之间的关联关系
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Device",
+      "alias": "d"
+    },
+    {
+      "objectType": "Server",
+      "alias": "s"
+    }
+  ],
+  "relationships": [
+    {
+      "name": "connectedTo",
+      "alias": "conn",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Device",
+      "bizRelType": "connectedTo",
+      "structRelType": "Association"
+    },
+    {
+      "name": "installedOn",
+      "alias": "install",
+      "sourceObjectType": "Device",
+      "targetObjectType": "Server",
+      "bizRelType": "installedOn",
+      "structRelType": "Composition",
+      "cardinality": "Many-to-One"
+    }
+  ],
+  "conditions": {
+    "relation": "AND",
+    "children": [
+      {"objectType": "Device", "property": "status", "operator": "EQ", "values": ["running"]}
+    ]
+  },
+  "returns": [
+    {"type": "object", "param": "d", "fields": ["id", "name", "status", "type", "location"]},
+    {"type": "object", "param": "s", "fields": ["id", "name", "ip", "os", "cpuUsage"]},
+    {"type": "relationship", "param": "install", "fields": ["bizRelType", "structRelType", "cardinality", "installedAt"]}
+  ],
+  "orders": [
+    {"param": "d", "property": "name", "descending": false}
+  ],
+  "associationQuery": {
+    "action": "go"
+  }
+}
+```
