@@ -1005,4 +1005,1955 @@ QUERY 操作通过顶层的 `conditions` 进行属性过滤查询，无需指定
 > **说明**：`sourceQuery` 字段定义详见 [第2.5.1节](#251-sourcequery---嵌套查询)，包含完整的字段定义、多层嵌套说明和使用示例。
 
 MULTI_OBJECT_QUERY 操作支持通过顶层 `sourceQuery` 定义嵌套查询，使查询数据源从一个子查询的中间结果集获取。
+**使用约束**：
+- `objects` 和 `sourceQuery` **互斥**，只能使用其一
+- 使用 `sourceQuery` 时，`objects` 可以为空，也可以为其他对象类型，用于满足多对象类型查询的诉求
+- 子查询结构与顶层结构一致，支持多层嵌套
 
+### 2.13.7 同表多对象查询示例
+      {"type": "object", "param": "o", "fields": ["id", "amount", "orderDate"]}
+    ]
+  },
+  "returns": [
+    {"type": "object", "param": "a", "fields": ["id", "name", "region", "amount", "orderDate"]}
+  ]
+}
+```
+
+### 2.14.7 同表多对象查询示例
+
+**场景**：User 和 Customer 两个对象类型对应同一张表 person
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "MULTI_OBJECT_QUERY",
+  "objects": [
+    {"objectType": "User", "alias": "u"},
+    {"objectType": "Customer", "alias": "c"}
+  ],
+  "conditions": {
+    "relation": "OR",
+    "children": [
+      {"objectType": "User", "property": "type", "operator": "EQ", "values": ["admin"]},
+      {"objectType": "Customer", "property": "type", "operator": "EQ", "values": ["vip"]}
+    ]
+  },
+  "returns": [
+    {"type": "object", "param": "u", "fields": ["id", "name", "email"]},
+    {"type": "object", "param": "c", "fields": ["id", "name", "email"]}
+  ]
+}
+```
+
+#### 2.14.7.1 同表多对象联合查询（User + Cell 关联表场景）
+
+**场景**：User 和 Cell 两个对象类型对应同一张物理表 `tbl_user_cell`，通过该表的 `user_id` 和 `cell_id` 字段建立关联。查询条件为 `user = '123' AND cell = '456'`，返回 `cell.volume`。
+
+**表结构说明**：
+```sql
+CREATE TABLE tbl_user_cell (
+    user_id VARCHAR(50),     -- 标识用户
+    cell_id VARCHAR(50),      -- 标识小区
+    cell_volume DECIMAL(10,2), -- 小区容积率
+    cell_name VARCHAR(100),   -- 小区名称
+    PRIMARY KEY (user_id, cell_id)
+);
+```
+
+**DSL 请求**：
+```json
+{
+  "version": "1.8.0",
+  "operation": "MULTI_OBJECT_QUERY",
+  "objects": [
+    {"objectType": "User", "alias": "user"},
+    {"objectType": "Cell", "alias": "cell"}
+  ],
+  "conditions": {
+    "relation": "AND",
+    "children": [
+      {
+        "objectType": "User",
+        "property": "user_id",
+        "operator": "EQ",
+        "values": ["123"]
+      },
+      {
+        "objectType": "Cell",
+        "property": "cell_id",
+        "operator": "EQ",
+        "values": ["456"]
+      }
+    ]
+  },
+  "returns": [
+    {
+      "type": "object",
+      "param": "cell",
+      "fields": ["volume"]
+    }
+  ]
+}
+```
+
+**对应物理 SQL**：
+```sql
+SELECT
+    t.cell_volume AS volume
+FROM tbl_user_cell t
+WHERE t.user_id = '123'
+  AND t.cell_id = '456';
+```
+
+**响应结果**：
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "objectType": "Cell",
+      "rid": "ri.phonograph2-objects.main.object.cell-456",
+      "properties": {
+        "volume": 3.5
+      }
+    }
+  ],
+  "metadata": {
+    "totalCount": 1
+  }
+}
+```
+
+> **说明**：
+> - User 和 Cell 共用同一张物理表 `tbl_user_cell`，但通过不同的字段（`user_id` vs `cell_id`）标识
+> - `conditions` 中需要同时指定 User 的 `user_id` 和 Cell 的 `cell_id` 条件
+> - `returns` 中 `param: "cell"` 表示返回 Cell 对象的属性
+
+#### 2.14.7.2 跨表外键关联查询（User + Cell 外键关联场景）
+
+**场景**：User 和 Cell 是两张独立的表，通过外键关联。User 表通过 `cell_id` 外键指向 Cell 表。查询条件为 `user.id = '123'`，返回关联的 `cell.volume`。
+
+**表结构说明**：
+```sql
+-- 用户表（User），通过 cell_id 外键指向小区
+CREATE TABLE tbl_user (
+    id VARCHAR(50) PRIMARY KEY,      -- 用户ID
+    name VARCHAR(100),                -- 用户名
+    cell_id VARCHAR(50),              -- 外键，关联小区
+    FOREIGN KEY (cell_id) REFERENCES tbl_cell(id)
+);
+
+-- 小区表（Cell）
+CREATE TABLE tbl_cell (
+    id VARCHAR(50) PRIMARY KEY,       -- 小区ID
+    name VARCHAR(100),                -- 小区名
+    volume DECIMAL(10,2),             -- 容积率
+    address VARCHAR(200)              -- 地址
+);
+```
+
+**DSL 请求**：
+```json
+{
+  "version": "1.8.0",
+  "operation": "MULTI_OBJECT_QUERY",
+  "objects": [
+    {"objectType": "User", "alias": "user", "by": {"id": "123"}},
+    {"objectType": "Cell", "alias": "cell"}
+  ],
+  "returns": [
+    {
+      "type": "object",
+      "param": "cell",
+      "fields": ["id", "name", "volume", "address"]
+    }
+  ],
+  "query": {
+    "whereFrom": {
+      "from": "user.cell_id",
+      "to": "cell.id",
+      "operator": "eq"
+    }
+  }
+}
+```
+
+**对应物理 SQL**：
+```sql
+SELECT
+    c.id,
+    c.name,
+    c.volume,
+    c.address
+FROM tbl_cell c
+INNER JOIN tbl_user u ON c.id = u.cell_id
+WHERE u.id = '123';
+```
+
+**响应结果**：
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "objectType": "Cell",
+      "rid": "ri.phonograph2-objects.main.object.cell-456",
+      "properties": {
+        "id": "456",
+        "name": "阳光小区",
+        "volume": 3.5,
+        "address": "XX路XX号"
+      }
+    }
+  ],
+  "metadata": {
+    "totalCount": 1,
+    "sourceObjects": ["User", "Cell"]
+  }
+}
+```
+
+> **说明**：
+> - User 和 Cell 是两张独立的表，通过外键 `user.cell_id = cell.id` 关联
+> - `query.whereFrom` 用于定义跨表关联条件（`from`: 来源对象属性，`to`: 目标对象字段）
+> - `conditions` 可省略，关联条件由 `whereFrom` 自动生成 JOIN 逻辑
+> - 外键关联支持 `INNER JOIN`（默认）、`LEFT JOIN`、`RIGHT JOIN` 可通过 `joinType` 配置
+
+---
+
+### 2.14.8 跨对象条件查询示例（用户→小区）
+
+**场景**：通过用户 id 查询该用户关联的小区
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "MULTI_OBJECT_QUERY",
+  "objects": [
+    {"objectType": "User", "alias": "user", "by": {"id": "user_001"}},
+    {"objectType": "Community", "alias": "community"}
+  ],
+  "returns": [
+    {"type": "object", "param": "community", "fields": ["id", "name", "address"]}
+  ],
+  "query": {
+    "whereFrom": {
+      "from": "user.id",
+      "to": "community.ownerId",
+      "operator": "eq"
+    }
+  }
+}
+```
+
+### 2.14.9 多对象查询响应格式
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "objectType": "Community",
+      "rid": "ri.phonograph2-objects.main.object.comm-001",
+      "properties": {
+        "id": "comm-001",
+        "name": "阳光小区",
+        "address": "XX路XX号",
+        "ownerId": "user_001"
+      }
+    },
+    {
+      "objectType": "Community",
+      "rid": "ri.phonograph2-objects.main.object.comm-002",
+      "properties": {
+        "id": "comm-002",
+        "name": "幸福小区",
+        "address": "YY路YY号",
+        "ownerId": "user_001"
+      }
+    }
+  ],
+  "metadata": {
+    "totalCount": 2,
+    "sourceObjects": ["User", "Community"]
+  }
+}
+```
+
+---
+
+### 2.14.10 MySQL SQL 转换示例
+
+以下展示 MULTI_OBJECT_QUERY 如何转换为 MySQL SQL 查询语句。
+
+#### 2.6.9.1 示例一：同表多对象查询
+
+**场景**：User 和 Customer 两个对象类型对应同一个数据库表 `persons`
+
+**DSL 请求**：
+```json
+{
+  "version": "1.8.0",
+  "operation": "MULTI_OBJECT_QUERY",
+  "objects": [
+    {"objectType": "User", "alias": "u"},
+    {"objectType": "Customer", "alias": "c"}
+  ],
+  "conditions": {
+    "relation": "OR",
+    "children": [
+      {"objectType": "User", "property": "type", "operator": "EQ", "values": ["admin"]},
+      {"objectType": "Customer", "property": "type", "operator": "EQ", "values": ["vip"]}
+    ]
+  },
+  "returns": [
+    {"type": "object", "param": "u", "fields": ["id", "name", "email"]},
+    {"type": "object", "param": "c", "fields": ["id", "name", "email"]}
+  ]
+}
+```
+
+**转换为 MySQL SQL**：
+
+```sql
+-- 查询同一个表，根据 type 字段区分对象类型
+SELECT
+    id,
+    name,
+    email,
+    type,
+    CASE
+        WHEN type = 'admin' THEN 'User'
+        WHEN type = 'vip' THEN 'Customer'
+        ELSE type
+    END AS objectType
+FROM persons
+WHERE
+    type IN ('admin', 'vip')
+ORDER BY id;
+```
+
+**或使用 UNION 方式**：
+
+```sql
+-- 方式一：UNION 查询
+(SELECT id, name, email, 'admin' AS type, 'User' AS objectType FROM persons WHERE type = 'admin')
+UNION ALL
+(SELECT id, name, email, 'vip' AS type, 'Customer' AS objectType FROM persons WHERE type = 'vip')
+ORDER BY id;
+
+-- 方式二：UNION ALL 查询（保留所有匹配记录）
+(SELECT id, name, email, type, 'User' AS objectType FROM persons WHERE type = 'admin')
+UNION ALL
+(SELECT id, name, email, type, 'Customer' AS objectType FROM persons WHERE type = 'vip')
+ORDER BY id;
+```
+
+**响应结果**：
+
+| id | name | email | type | objectType |
+|----|------|-------|------|------------|
+| 1 | 张三 | zhangsan@example.com | admin | User |
+| 2 | 李四 | lisi@example.com | vip | Customer |
+
+---
+
+#### 2.6.9.2 示例二：跨对象条件查询（whereFrom）
+
+**场景**：通过用户 id 查询该用户关联的小区（User.id = Community.ownerId）
+
+**DSL 请求**：
+```json
+{
+  "version": "1.8.0",
+  "operation": "MULTI_OBJECT_QUERY",
+  "objects": [
+    {"objectType": "User", "alias": "user", "by": {"id": "user_001"}},
+    {"objectType": "Community", "alias": "community"}
+  ],
+  "returns": [
+    {"type": "object", "param": "community", "fields": ["id", "name", "address"]}
+  ],
+  "query": {
+    "whereFrom": {
+      "from": "user.id",
+      "to": "community.ownerId",
+      "operator": "eq"
+    }
+  }
+}
+```
+
+**转换为 MySQL SQL**：
+
+```sql
+-- 假设 User 表和 Community 表通过 ownerId 关联
+SELECT
+    c.id,
+    c.name,
+    c.address
+FROM users u
+INNER JOIN communities c ON u.id = c.owner_id
+WHERE u.id = 'user_001';
+```
+
+**响应结果**：
+
+| id | name | address |
+|----|------|---------|
+| comm-001 | 阳光小区 | XX路XX号 |
+| comm-002 | 幸福小区 | YY路YY号 |
+
+---
+
+#### 2.6.9.3 示例三：跨对象条件查询（多条件过滤）
+
+**场景**：查询状态为"运行中"的设备所在机房的信息
+
+**DSL 请求**：
+```json
+{
+  "version": "1.8.0",
+  "operation": "MULTI_OBJECT_QUERY",
+  "objects": [
+    {"objectType": "Device", "alias": "device"},
+    {"objectType": "EquipmentRoom", "alias": "room"}
+  ],
+  "conditions": {
+    "children": [
+      {"objectType": "Device", "property": "status", "operator": "EQ", "values": ["running"]}
+    ]
+  },
+  "returns": [
+    {"type": "object", "param": "room", "fields": ["id", "name", "location"]}
+  ],
+  "query": {
+    "whereFrom": {
+      "from": "device.roomId",
+      "to": "room.id",
+      "operator": "eq"
+    }
+  }
+}
+```
+
+**转换为 MySQL SQL**：
+
+```sql
+-- 关联查询设备与机房
+SELECT
+    r.id,
+    r.name,
+    r.location
+FROM devices d
+INNER JOIN equipment_rooms r ON d.room_id = r.id
+WHERE d.status = 'running'
+ORDER BY r.name;
+```
+
+**或使用子查询**：
+
+```sql
+-- 使用子查询方式
+SELECT
+    r.id,
+    r.name,
+    r.location
+FROM equipment_rooms r
+WHERE r.id IN (
+    SELECT d.room_id
+    FROM devices d
+    WHERE d.status = 'running'
+)
+ORDER BY r.name;
+```
+
+**响应结果**：
+
+| id | name | location |
+|----|------|---------|
+| room-001 | 主机房 | A座1楼 |
+| room-002 | 备机房 | B座2楼 |
+
+---
+
+#### 2.6.9.4 示例四：objects + conditions 组合查询
+
+**场景**：查询指定用户组下的所有设备及其关联的机房
+
+**DSL 请求**：
+```json
+{
+  "version": "1.8.0",
+  "operation": "MULTI_OBJECT_QUERY",
+  "objects": [
+    {
+      "objectType": "Device",
+      "alias": "d"
+    },
+    {
+      "objectType": "EquipmentRoom",
+      "alias": "r"
+    }
+  ],
+  "conditions": {
+    "relation": "AND",
+    "children": [
+      {"objectType": "Device", "property": "groupId", "operator": "EQ", "values": ["group-001"]}
+    ]
+  },
+  "returns": [
+    {"type": "object", "param": "d", "fields": ["id", "name", "status"]},
+    {"type": "object", "param": "r", "fields": ["name"]}
+  ],
+  "query": {
+    "whereFrom": {
+      "from": "d.roomId",
+      "to": "r.id",
+      "operator": "eq"
+    }
+  }
+}
+```
+
+**转换为 MySQL SQL**：
+
+```sql
+-- 组合 conditions 和 whereFrom 条件
+SELECT
+    d.id,
+    d.name,
+    d.status,
+    r.name AS room_name
+FROM devices d
+INNER JOIN equipment_rooms r ON d.room_id = r.id
+WHERE d.group_id = 'group-001'
+ORDER BY d.name;
+```
+
+**响应结果**：
+
+| id | name | status | room_name |
+|----|------|--------|-----------|
+| device-001 | Web服务器 | running | 主机房 |
+| device-002 | 数据库 | running | 主机房 |
+
+---
+
+#### 2.6.9.5 SQL 转换规则总结
+
+| OQL 场景 | MySQL 转换方式 |
+|----------|----------------|
+| 同表多对象（UNION） | 使用 `UNION` 或 `UNION ALL` 合并多个对象的查询结果 |
+| 跨对象条件（whereFrom） | 使用 `INNER JOIN` 或 `LEFT JOIN` 关联查询 |
+| 跨对象 + 过滤 | `JOIN` 配合 `WHERE` 条件过滤 |
+| 单对象 conditions 查询 | 直接在 `WHERE` 子句中使用过滤条件 |
+| 多条件组合 | 使用 `AND`/`OR` 构建复杂 WHERE 条件 |
+
+---
+
+## 3. 查询操作（QUERY）
+
+> **前置说明**：QUERY 操作使用统一顶层结构，详见 [第2章统一顶层结构](#2-统一顶层结构)：
+> - `objects` - 对象实例定义（第2.9节）
+> - `conditions` - 统一条件表达式（第2.3节）
+> - `returns` - 返回字段投影（第2.4节）
+> - `orders` - 排序定义（第2.5节）
+> - `maxResults` - 结果限制（第2.5.4节）
+
+QUERY 操作使用统一顶层结构，通过 `conditions` 定义过滤条件，通过 `returns` 定义返回字段：
+
+### 3.1 查询结构
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "QUERY",
+  "objects": [
+    { "objectType": "Product", "alias": "p", "by": {"id": "prod_001"} }
+  ],
+  "conditions": {
+    "objectType": "Product",
+    "property": "status",
+    "operator": "EQ",
+    "values": ["active"]
+  },
+  "returns": [
+    {"type": "object", "param": "p", "fields": ["id", "name", "price"]}
+  ],
+  "orders": [
+    {"param": "p", "property": "createdAt", "descending": true}
+  ],
+  "maxResults": 100000
+}
+```
+
+### 3.1.1 sourceQuery 嵌套查询
+
+> **说明**：`sourceQuery` 字段定义详见 [第2.5.1节](#251-sourcequery---嵌套查询)。
+
+QUERY 操作支持通过顶层 `sourceQuery` 定义嵌套查询，使查询数据源从一个子查询的中间结果集获取。
+
+**使用约束**：
+- `objects` 和 `sourceQuery` **互斥**，只能使用其一
+- 使用 `sourceQuery` 时，`objects` 仅用于定义输出结果的对象类型和别名
+- `sourceQuery[].outputAs` 为必填，用于在外层查询中引用子查询结果
+
+**示例 1：嵌套 QUERY 查询**
+
+```json
+{
+  "operation": "QUERY",
+  "objects": [
+    {"objectType": "OrderStat", "alias": "o"}
+  ],
+  "sourceQuery": [{
+    "outputAs": "order_sub",
+    "operation": "QUERY",
+    "objects": [{"objectType": "Order", "alias": "r"}],
+    "conditions": {
+      "objectType": "Order",
+      "property": "status",
+      "operator": "EQ",
+      "values": ["completed"]
+    },
+    "returns": ["id", "amount", "customerId", "region"]
+  }],
+  "returns": [
+    {"type": "object", "param": "o", "fields": ["id", "amount", "customerId", "region"]}
+  ]
+}
+```
+
+**示例 2：嵌套 MULTI_OBJECT_QUERY 查询**
+
+```json
+{
+  "operation": "QUERY",
+  "objects": [
+    {"objectType": "RevenueReport", "alias": "r"}
+  ],
+  "sourceQuery": [{
+    "outputAs": "revenue_source",
+    "operation": "MULTI_OBJECT_QUERY",
+    "objects": [
+      {"objectType": "Customer", "alias": "c"},
+      {"objectType": "Order", "alias": "o"}
+    ],
+    "conditions": {
+      "relation": "AND",
+      "children": [
+        {"objectType": "Order", "property": "status", "operator": "EQ", "values": ["completed"]}
+      ]
+    },
+    "returns": [
+      {"type": "object", "param": "c", "fields": ["id", "name", "region"]},
+      {"type": "object", "param": "o", "fields": ["id", "amount", "orderDate"]}
+    ]
+  }],
+  "returns": [
+    {"type": "object", "param": "r", "fields": ["id", "name", "region", "amount", "orderDate"]}
+  ]
+}
+```
+
+**多层嵌套说明**：
+
+`sourceQuery` 支持多层嵌套，即在子查询中可以再包含 `sourceQuery`。嵌套层级的子对象结构与顶层完全一致。
+
+**结构示例**：
+```json
+{
+  "operation": "QUERY",
+  "objects": [{"objectType": "Final", "alias": "f"}],
+  "sourceQuery": [{
+    "outputAs": "level1",
+    "operation": "QUERY",
+    "objects": [{"objectType": "Level1", "alias": "l1"}],
+    "sourceQuery": [{
+      "outputAs": "level2",
+      "operation": "MULTI_OBJECT_QUERY",
+      "objects": [...],
+      "sourceQuery": [{
+        "outputAs": "level3",
+        "operation": "AGGREGATE",
+        "objects": [...]
+      }]
+    }]
+  }]
+}
+```
+
+> **详细说明**：多层嵌套的完整定义和使用示例请参阅 [第2.5.1节](#251-sourcequery---嵌套查询)。
+
+### 3.2 QUERY 专用语法
+
+QUERY 操作使用统一顶层结构（详见第2章），本节仅说明与 QUERY 操作相关的差异化内容。
+
+| 通用字段 | 说明 | 引用章节 |
+|----------|------|----------|
+| `objects` | 对象实例定义 | 第2.9节 |
+| `conditions` | 统一条件表达式 | 第2.3节 |
+| `returns` | 返回字段投影 | 第2.4节 |
+| `orders` | 排序定义 | 第2.5节 |
+| `maxResults` | 结果限制 | 第2.5.4节 |
+
+QUERY 操作使用 `query` 专用块定义查询参数，但实际使用中 query 块通常是空的，查询条件通过 `conditions` 定义。
+
+**完整查询示例**：
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "QUERY",
+  "objects": [
+    {
+      "objectType": "Order",
+      "alias": "o"
+    }
+  ],
+  "conditions": {
+    "relation": "AND",
+    "children": [
+      {"objectType": "Order", "property": "status", "operator": "EQ", "values": ["completed"]},
+      {"objectType": "Order", "property": "createdAt", "operator": "GTE", "values": ["2024-01-01T00:00:00Z"]}
+    ]
+  },
+  "returns": [
+    {
+      "type": "object",
+      "param": "o",
+      "fields": ["id", "orderNo", "amount", "status"]
+    }
+  ],
+  "orders": [
+    {"param": "o", "property": "createdAt", "descending": true}
+  ],
+  "maxResults": 10000
+}
+```
+
+### 3.3 时序属性查询（TIMESERIES_QUERY）
+
+#### 3.4.1 时序属性概述
+
+时序属性具有以下特征：
+- **时间戳（Timestamp）**：表示该值发生的具体时间
+- **值（Value）**：在该时间点上的测量量
+- **有序性**：数据按时间顺序排列
+- **seriesIdProperty**：用于匹配时序数据的对象属性键
+
+**元数据配置**（在对象模型中定义）：
+
+```json
+{
+  "propertyName": "fanSpeed",
+  "dataType": "time series",
+  "seriesIdProperty": "machineId",
+  "units": "RPM",
+  "interpolation": "LINEAR"
+}
+```
+
+#### 3.4.2 时序查询结构
+
+```json
+{
+  "operation": "QUERY",
+  "objects": [
+    {
+      "objectType": "Machine",
+      "alias": "m"
+    }
+  ],
+  "conditions": {
+    "objectType": "Machine",
+    "property": "status",
+    "operator": "EQ",
+    "values": ["active"]
+  },
+  "returns": [
+    {
+      "type": "object",
+      "param": "m",
+      "fields": ["id", "name"],
+      "timeseries": {
+        "property": "fanSpeed",
+        "from": "2026-02-07T00:00:00Z",
+        "to": "2026-02-07T23:59:59Z",
+        "orderBy": "ASC",
+        "limit": 100
+      }
+    }
+  ]
+}
+```
+
+> **说明**：时间格式统一使用 ISO 8601，翻译引擎根据本体模型配置自动转换为对应数据源的格式。
+
+#### 3.4.3 timeseries 配置字段
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|:----:|:----:|------|
+| property | string | 是 | 时序属性名，如 `fanSpeed`、`temperature` |
+| from | string | 否 | 开始时间（ISO 8601 格式） |
+| to | string | 否 | 结束时间（ISO 8601 格式） |
+| orderBy | string | 否 | 排序方向：`ASC`（升序）或 `DESC`（降序），默认 ASC |
+| limit | integer | 否 | 最大返回点数，默认 100 |
+| interpolation | string | 否 | 插值方法：LINEAR / NEAREST / PREVIOUS / NEXT / NONE |
+
+#### 3.4.4 时序数据返回格式
+
+**响应结构**：
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "objectType": "Machine",
+      "rid": "ri.phonograph2-objects.main.object.machine-001",
+      "properties": {
+        "id": "machine-001",
+        "name": "Web服务器-1",
+        "fanSpeed": {
+          "2026-02-07T17:53:00Z": 1000,
+          "2026-02-07T17:54:00Z": 1005,
+          "2026-02-07T17:55:00Z": 1020
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "queryTimeRange": {
+      "from": "2026-02-07T00:00:00Z",
+      "to": "2026-02-07T23:59:59Z"
+    },
+    "dataPointCount": 3
+  }
+}
+```
+
+**时序属性返回格式**：
+
+时序属性值以 `{timestamp: value}` 的 KV 结构返回，按时间排序：
+
+| 格式 | 示例 |
+|------|------|
+| ASC 升序 | `{"2026-02-07T17:53:00Z": 1000, "2026-02-07T17:54:00Z": 1005}` |
+| DESC 降序 | `{"2026-02-07T17:55:00Z": 1020, "2026-02-07T17:54:00Z": 1005}` |
+
+#### 3.7.5 完整时序查询示例
+
+**请求**：
+
+```json
+{
+  "version": "1.8.0",
+  "operation": "QUERY",
+  "objects": [
+    {
+      "objectType": "Machine",
+      "alias": "m"
+    }
+  ],
+  "conditions": {
+    "objectType": "Machine",
+    "property": "machineType",
+    "operator": "EQ",
+    "values": ["server"]
+  },
+  "returns": [
+    {
+      "type": "object",
+      "param": "m",
+      "fields": ["id", "name"],
+      "timeseries": {
+        "property": "fanSpeed",
+        "from": "2026-02-07T00:00:00Z",
+        "to": "2026-02-07T23:59:59Z",
+        "orderBy": "ASC",
+        "limit": 50
+      }
+    }
+  ]
+}
+```
+
+**响应**：
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "rid": "ri.phonograph2-objects.main.object.M-001",
+      "properties": {
+        "id": "M-001",
+        "name": "Web服务器-1",
+        "fanSpeed": {
+          "2026-02-07T17:53:00Z": 1000,
+          "2026-02-07T17:54:00Z": 1005,
+          "2026-02-07T17:55:00Z": 1020,
+          "2026-02-07T17:56:00Z": 980
+        }
+      }
+    },
+    {
+      "rid": "ri.phonograph2-objects.main.object.M-002",
+      "properties": {
+        "id": "M-002",
+        "name": "数据库服务器",
+        "fanSpeed": {
+          "2026-02-07T17:53:00Z": 1500,
+          "2026-02-07T17:54:00Z": 1800,
+          "2026-02-07T17:55:00Z": 1700
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "queryTimeRange": {
+      "from": "2026-02-07T00:00:00Z",
+      "to": "2026-02-07T23:59:59ZZ"
+    },
+    "dataPointCount": 7
+  }
+}
+```
+
+#### 3.6.6 时序查询转换为 GQL
+
+**NebulaGraph 时序查询**：
+
+```gql
+LOOKUP ON Machine
+WHERE Machine.machineType == "server"
+YIELD Machine.id AS id, Machine.name AS name
+| GO FROM $-.id OVER has_metric
+WHERE has_metric.timestamp >= datetime('2026-02-07T00:00:00Z')
+  AND has_metric.timestamp <= datetime('2026-02-07T23:59:59Z')
+YIELD
+  $-.id AS machineId,
+  has_metric.timestamp AS timestamp,
+  has_metric.value AS value
+ORDER BY timestamp ASC
+LIMIT 50
+```
+
+**结果组装**（翻译引擎内部处理）：
+
+```json
+{
+  "id": "M-001",
+  "fanSpeed": {
+    "2026-02-07T17:53:00Z": 1000,
+    "2026-02-07T17:54:00Z": 1005
+  }
+}
+```
+
+---
+
+## 4. 聚合操作（AGGREGATE）
+
+> **重要说明**：AGGREGATE 操作**仅支持单一对象类型**的聚合查询。`objects` 数组中只能包含一个对象配置，聚合计算的所有字段必须来自同一个对象类型。如需对多个对象类型进行聚合分析，请使用应用层处理或先进行数据预处理。
+
+> **前置说明**：AGGREGATE 操作使用统一顶层结构（详见 [第2章统一顶层结构](#2-统一顶层结构)），聚合计算通过 `returns` 中的 `function` 字段定义。
+
+### 4.1 聚合结构
+
+> **约束说明**：AGGREGATE 操作仅支持单一对象类型，`objects` 中只能配置一个对象。
+
+`returns` 节点用于定义分组聚合查询，聚合函数通过 `function` 字段指定：
+
+#### 4.1.1 完整结构定义（JSON Schema）
+
+以下 JSON Schema 定义了 AGGREGATE 操作的有效结构，支持嵌套 `sourceQuery`：
+
+```json
+{
+  "operation": "AGGREGATE",
+  "objects": [
+    {
+      "objectType": "OutputObject",
+      "alias": "o"
+    }
+  ],
+  "sourceQuery": [{
+    "outputAs": "intermediate_table",
+    "operation": "QUERY",
+    "objects": [{ "objectType": "SourceObject", "alias": "s" }],
+    "conditions": {...},
+    "returns": [...]
+  }],
+  "conditions": {...},
+  "returns": [
+    {
+      "type": "object",
+      "param": "o",
+      "fields": ["category", "region"],
+      "function": "groupBy"
+    },
+    {
+      "type": "object",
+      "param": "o",
+      "field": "amount",
+      "function": "sum",
+      "alias": "totalAmount"
+    },
+    {
+      "type": "object",
+      "param": "o",
+      "field": "id",
+      "function": "count",
+      "alias": "orderCount"
+    }
+  ],
+  "having": {...},
+  "orders": [...],
+  "maxResults": 100000
+}
+```
+
+      "fields": ["category"],
+      "function": "groupBy"
+    },
+    {
+      "type": "object",
+      "param": "o",
+      "field": "amount",
+      "function": "sum",
+      "alias": "totalAmount"
+    },
+    {
+      "type": "object",
+      "param": "o",
+      "field": "id",
+      "function": "count",
+      "alias": "orderCount"
+    }
+  ]
+}
+```
+
+哪些库不支持，哪些库支持？
+
+**返回结果**：
+
+```json
+{
+  "data": [
+    {
+      "metrics": [
+        {"name": "totalAmount", "value": 150000},
+        {"name": "orderCount", "value": 150}
+      ],
+      "group": {
+        "category": "electronics"
+      }
+    },
+    {
+      "metrics": [
+        {"name": "totalAmount", "value": 80000},
+        {"name": "orderCount", "value": 200}
+      ],
+      "group": {
+        "category": "clothing"
+      }
+    }
+  ]
+}
+```
+
+#### 4.1.4 多字段分组示例
+
+```json
+{
+  "operation": "AGGREGATE",
+  "objects": [{ "objectType": "Order", "alias": "o" }],
+  "returns": [
+    {
+      "type": "object",
+      "param": "o",
+      "fields": ["region", "category", "status"],
+      "function": "groupBy"
+    },
+    {
+      "type": "object",
+      "param": "o",
+      "field": "amount",
+      "function": "sum",
+      "alias": "totalSales"
+    },
+    {
+      "type": "object",
+      "param": "o",
+      "field": "amount",
+      "function": "avg",
+      "alias": "avgSales"
+    }
+  ]
+}
+```
+
+**返回结构**：
+
+```json
+{
+  "data": [
+    {
+      "metrics": [
+        {"name": "totalSales", "value": 50000},
+        {"name": "avgSales", "value": 2500}
+      ],
+      "group": {
+        "region": "华东",
+        "category": "electronics",
+        "status": "completed"
+      }
+    }
+  ]
+}
+```
+
+#### 4.1.5 无分组聚合（全局聚合）
+
+如果 `function: groupBy` 不存在，返回整个数据集的聚合结果：
+
+```json
+{
+  "operation": "AGGREGATE",
+  "objects": [
+    { "objectType": "Order", "alias": "o" }
+  ],
+  "returns": [
+    {
+      "type": "object",
+      "param": "o",
+      "field": "amount",
+      "function": "sum",
+      "alias": "grandTotal"
+    },
+    {
+      "type": "object",
+      "param": "o",
+      "field": "amount",
+      "function": "avg",
+      "alias": "avgOrderValue"
+    },
+    {
+      "type": "object",
+      "param": "o",
+      "field": "id",
+      "function": "count",
+      "alias": "totalOrders"
+    },
+    {
+      "type": "object",
+      "param": "o",
+      "field": "amount",
+      "function": "min",
+      "alias": "minOrder"
+    },
+    {
+      "type": "object",
+      "param": "o",
+      "field": "amount",
+      "function": "max",
+      "alias": "maxOrder"
+    }
+  ]
+}
+```
+
+**返回结果**：
+
+```json
+{
+  "data": [
+    {
+      "metrics": [
+        {"name": "grandTotal", "value": 230000},
+        {"name": "avgOrderValue", "value": 1150},
+        {"name": "totalOrders", "value": 200},
+        {"name": "minOrder", "value": 50},
+        {"name": "maxOrder", "value": 5000}
+      ],
+      "group": {}
+    }
+  ]
+}
+```
+
+#### 4.1.6 带 conditions 的聚合示例
+
+```json
+{
+  "operation": "AGGREGATE",
+  "objects": [
+    { "objectType": "Order", "alias": "o" }
+  ],
+  "conditions": {
+    "objectType": "Order",
+    "property": "status",
+    "operator": "EQ",
+    "values": ["completed"]
+  },
+  "returns": [
+    {
+      "type": "object",
+      "param": "o",
+      "fields": ["category"],
+      "function": "groupBy"
+    },
+    {
+      "type": "object",
+      "param": "o",
+      "field": "amount",
+      "function": "sum",
+      "alias": "totalAmount"
+    },
+    {
+      "type": "object",
+      "param": "o",
+      "field": "amount",
+      "function": "count",
+      "alias": "highValueOrders"
+    }
+  ]
+}
+```
+
+#### 4.1.7 distinct 去重示例
+
+```json
+{
+  "operation": "AGGREGATE",
+  "objects": [
+    { "objectType": "Order", "alias": "o" }
+  ],
+  "returns": [
+    {
+      "type": "object",
+      "param": "o",
+      "fields": ["customerId"],
+      "function": "groupBy"
+    },
+    {
+      "type": "object",
+      "param": "o",
+      "field": "orderId",
+      "function": "count",
+      "alias": "totalOrders"
+    },
+    {
+      "type": "object",
+      "param": "o",
+      "field": "productId",
+      "function": "countDistinct",
+      "alias": "uniqueProducts"
+    },
+    {
+      "type": "object",
+      "param": "o",
+      "field": "city",
+      "function": "countDistinct",
+      "alias": "uniqueCities"
+    }
+  ]
+}
+```
+
+#### 4.1.8 having - 聚合后过滤示例
+
+```json
+{
+  "operation": "AGGREGATE",
+  "objects": [{ "objectType": "Order", "alias": "o" }],
+  "returns": [
+    {
+      "type": "object",
+      "param": "o",
+      "fields": ["category"],
+      "function": "groupBy"
+    },
+    {
+      "type": "object",
+      "param": "o",
+      "field": "amount",
+      "function": "sum",
+      "alias": "totalSales"
+    },
+    {
+      "type": "object",
+      "param": "o",
+      "field": "id",
+      "function": "count",
+      "alias": "orderCount"
+    }
+  ],
+  "having": {
+    "and": [
+      {"gte": {"totalSales": 10000}},
+      {"gte": {"orderCount": 50}}
+    ]
+  }
+}
+```
+
+**说明**：`conditions` 与 `having` 的区别：
+- `conditions` - 在聚合前过滤源数据
+- `having` - 对聚合结果进行过滤
+
+#### 4.1.9 聚合结果排序示例
+
+```json
+{
+  "operation": "AGGREGATE",
+  "objects": [{ "objectType": "Order", "alias": "o" }],
+  "returns": [
+    {
+      "type": "object",
+      "param": "o",
+      "fields": ["category"],
+      "function": "groupBy"
+    },
+    {
+      "type": "object",
+      "param": "o",
+      "field": "amount",
+      "function": "sum",
+      "alias": "totalSales"
+    }
+  ],
+  "orders": [
+    {"field": "totalSales", "direction": "DESC"}
+  ],
+  "maxResults": 10
+}
+```
+
+#### 4.1.10 嵌套查询聚合
+
+AGGREGATE 操作支持通过顶层 `sourceQuery` 定义嵌套查询，使聚合数据源从一个子查询的中间结果集获取。
+
+**使用约束**：
+- `objects` 和 `sourceQuery` **互斥**，只能使用其一
+- 使用 `sourceQuery` 时，`objects` 仅用于定义输出结果的对象类型和别名
+- 聚合字段 (`field`) 引用 `sourceQuery.returns` 中定义的返回字段名称
+
+**适用场景**：
+- 需要先通过复杂条件查询获取对象子集，再进行聚合统计
+- 需要从源对象经过子查询过滤后，再对结果进行汇总分析
+- 需要对查询结果进行二次加工后再聚合
+
+**DSL 结构**：
+
+在顶层 `sourceQuery` 中定义嵌套查询：
+
+```json
+{
+  "operation": "AGGREGATE",
+  "objects": [
+    {
+      "objectType": "OutputObject",
+      "alias": "o"
+    }
+  ],
+  "sourceQuery": [{
+    "outputAs": "order_sub",
+    "operation": "QUERY",
+    "objects": [{ "objectType": "SourceObject", "alias": "s" }],
+    "conditions": {...},
+    "returns": [...]
+  }],
+  "returns": [
+    {
+      "type": "object",
+      "param": "o",
+      "field": "resultField",
+      "function": "sum",
+      "alias": "totalSum"
+    }
+  ]
+}
+```
+
+**sourceQuery 字段说明**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| **sourceQuery** | array | 否（与 objects 二选一） | 嵌套查询定义数组，查询结果作为聚合数据源 |
+| **sourceQuery[].outputAs** | string | 是 | 中间表名，供外层查询引用（如 "order_sub"） |
+| **sourceQuery[].operation** | enum | 是 | 查询类型：`QUERY` 或 `MULTI_OBJECT_QUERY` |
+| **sourceQuery[].objects** | array | 是 | 子查询的目标对象配置 |
+| **sourceQuery[].conditions** | object | 否 | 子查询的条件表达式 |
+| **sourceQuery[].returns** | array | 否 | 子查询的返回字段定义（聚合字段来源） |
+| **sourceQuery[].orders** | array | 否 | 子查询的排序规则 |
+| **sourceQuery[].maxResults** | integer | 否 | 子查询返回的最大记录数，默认 100000 |
+
+**使用约束**：
+- `objects` 和 `sourceQuery` **互斥**，只能使用其一
+- 使用 `sourceQuery` 时，`objects` 仅用于定义输出结果的对象类型和别名
+- `sourceQuery.outputAs` 为必填，用于在外层查询中引用子查询结果
+- 聚合字段 (`field`) 引用 `sourceQuery.returns` 中定义的返回字段名称
+- 外层查询通过 `outputAs` 作为表名访问子查询结果
+
+**SQL 转换示意**：
+
+```sql
+-- 子查询：sourceQuery
+SELECT id, amount, customerId
+FROM "Order" AS r
+WHERE r.status = 'completed'
+
+-- 外层查询：使用 outputAs 作为中间表
+SELECT
+  SUM(amount) AS totalSales,
+  COUNT(id) AS orderCount
+FROM order_sub
+```
+
+**示例 1：嵌套 QUERY 聚合**
+
+```json
+{
+  "operation": "AGGREGATE",
+  "objects": [
+    {
+      "objectType": "OrderStat",
+      "alias": "o"
+    }
+  ],
+  "sourceQuery": [{
+    "outputAs": "order_sub",
+    "operation": "QUERY",
+    "objects": [{ "objectType": "Order", "alias": "r" }],
+    "conditions": {
+      "objectType": "Order",
+      "property": "status",
+      "operator": "EQ",
+      "values": ["completed"]
+    },
+    "returns": [
+      {"type": "object", "param": "r", "fields": ["id", "amount", "customerId"]}
+    ]
+  },
+  "returns": [
+    {
+      "type": "object",
+      "param": "o",
+      "field": "amount",
+      "function": "sum",
+      "alias": "totalSales"
+    },
+    {
+      "type": "object",
+      "param": "o",
+      "field": "id",
+      "function": "count",
+      "alias": "orderCount"
+    }
+  ]
+}
+```
+
+**示例 2：嵌套 MULTI_OBJECT_QUERY 聚合**
+
+```json
+{
+  "operation": "AGGREGATE",
+  "objects": [
+    {
+      "objectType": "RevenueAnalysis",
+      "alias": "a"
+    }
+  ],
+  "sourceQuery": [{
+    "outputAs": "revenue_source",
+    "operation": "MULTI_OBJECT_QUERY",
+    "objects": [
+      { "objectType": "Customer", "alias": "c" },
+      { "objectType": "Order", "alias": "o" }
+    ],
+    "conditions": {
+      "relation": "AND",
+      "children": [
+        {"objectType": "Order", "property": "status", "operator": "EQ", "values": ["completed"]}
+      ]
+    },
+    "returns": [
+      {"type": "object", "param": "c", "fields": ["id", "name", "region"]},
+      {"type": "object", "param": "o", "fields": ["id", "amount", "orderDate"]}
+    ]
+  },
+  "returns": [
+    {
+      "type": "object",
+      "param": "a",
+      "fields": ["region"],
+      "function": "groupBy"
+    },
+    {
+      "type": "object",
+      "param": "a",
+      "field": "amount",
+      "function": "sum",
+      "alias": "totalRevenue"
+    },
+    {
+      "type": "object",
+      "param": "a",
+      "field": "amount",
+      "function": "avg",
+      "alias": "avgOrderValue"
+    },
+    {
+      "type": "object",
+      "param": "a",
+      "field": "id",
+      "function": "countDistinct",
+      "alias": "customerCount"
+    }
+  ]
+}
+```
+
+**示例 3：带分组维度的嵌套查询聚合**
+
+```json
+{
+  "operation": "AGGREGATE",
+  "objects": [
+    {
+      "objectType": "RegionReport",
+      "alias": "r"
+    }
+  ],
+  "sourceQuery": [{
+    "outputAs": "sales_report",
+    "operation": "QUERY",
+    "objects": [{ "objectType": "SalesOrder", "alias": "s" }],
+    "conditions": {
+      "objectType": "SalesOrder",
+      "property": "orderDate",
+      "operator": "BETWEEN",
+      "values": ["2024-01-01", "2024-12-31"]
+    },
+    "returns": ["region", "category", "amount", "quantity"]
+  }],
+  "aggregations": {
+    "groupBy": {
+      "fields": ["region", "category"]
+    },
+    "aggregations": [
+      {
+        "field": "amount",
+        "function": "sum",
+        "alias": "regionalSales"
+      },
+      {
+        "field": "quantity",
+        "function": "sum",
+        "alias": "totalQuantity"
+      }
+    ]
+  }
+}
+```
+
+**响应结果**：
+
+```json
+{
+  "data": [
+    {
+      "metrics": [
+        {"name": "regionalSales", "value": 150000},
+        {"name": "totalQuantity", "value": 500}
+      ],
+      "group": {
+        "region": "华东",
+        "category": "电子产品"
+      }
+    },
+    {
+      "metrics": [
+        {"name": "regionalSales", "value": 85000},
+        {"name": "totalQuantity", "value": 320}
+      ],
+      "group": {
+        "region": "华东",
+        "category": "服装"
+      }
+    }
+  ]
+}
+```
+
+> **说明**：
+> - `sourceQuery` 的执行结果作为聚合计算的数据源
+> - `objects` 仅用于定义输出结果的对象类型和别名
+> - 聚合字段 (`field`) 引用 `sourceQuery.returns` 中定义的返回字段名称
+> - `objects` 和 `sourceQuery` 互斥，只能使用其一
+
+---
+
+### 4.2 聚合函数
+
+| 函数 | 说明 | 输入类型 | 输出类型 |
+|------|------|----------|----------|
+| count | 计数 | 任意 | integer |
+| countDistinct | 去重计数 | 任意 | integer |
+| sum | 求和 | numeric | numeric |
+| avg | 平均值 | numeric | double |
+| min | 最小值 | 任意 | 同输入 |
+| max | 最大值 | 任意 | 同输入 |
+| first | 第一个 | 任意 | 同输入 |
+| last | 最后一个 | 任意 | 同输入 |
+| arrayAgg | 聚合为数组 | 任意 | array |
+
+#### 4.2.1 聚合响应结构
+
+聚合操作的响应采用以下结构：
+
+```json
+{
+  "data": [
+    {
+      "metrics": [
+        {
+          "name": "metricAlias",
+          "value": 123
+        }
+      ],
+      "group": {
+        "fieldName": "groupValue"
+      }
+    }
+  ]
+}
+```
+
+**响应结构说明**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| data | array | 聚合结果数组 |
+| data[].metrics | array | 指标数组，每个指标包含名称和值 |
+| data[].metrics[].name | string | 指标别名（对应 aggregation 中的 alias） |
+| data[].metrics[].value | number | 聚合计算结果值 |
+| data[].group | object | 分组键值对，key 为字段名，value 为该组的分组值 |
+
+#### 4.2.2 完整响应示例
+
+**请求**：
+```json
+{
+  "operation": "AGGREGATE",
+  "objects": [{ "objectType": "Employee", "alias": "e" }],
+  "aggregations": {
+    "groupBy": {
+      "fields": ["city", "department"]
+    },
+    "aggregations": [
+      {
+        "field": "tenure",
+        "function": "min",
+        "alias": "min_tenure"
+      },
+      {
+        "field": "tenure",
+        "function": "avg",
+        "alias": "avg_tenure"
+      },
+      {
+        "field": "id",
+        "function": "count",
+        "alias": "headcount"
+      }
+    ]
+  }
+}
+```
+
+**响应**：
+```json
+{
+  "data": [
+    {
+      "metrics": [
+        {
+          "name": "min_tenure",
+          "value": 1
+        },
+        {
+          "name": "avg_tenure",
+          "value": 3.5
+        },
+        {
+          "name": "headcount",
+          "value": 45
+        }
+      ],
+      "group": {
+        "city": "New York City",
+        "department": "Engineering"
+      }
+    },
+    {
+      "metrics": [
+        {
+          "name": "min_tenure",
+          "value": 2
+        },
+        {
+          "name": "avg_tenure",
+          "value": 4.2
+        },
+        {
+          "name": "headcount",
+          "value": 32
+        }
+      ],
+      "group": {
+        "city": "San Francisco",
+        "department": "Engineering"
+      }
+    },
+    {
+      "metrics": [
+        {
+          "name": "min_tenure",
+          "value": 0
+        },
+        {
+          "name": "avg_tenure",
+          "value": 1.8
+        },
+        {
+          "name": "headcount",
+          "value": 28
+        }
+      ],
+      "group": {
+        "city": "New York City",
+        "department": "Sales"
+      }
+    }
+  ]
+}
+```
+
+#### 4.2.3 全局聚合响应（无分组）
+
+```json
+{
+  "data": [
+    {
+      "metrics": [
+        {
+          "name": "totalSales",
+          "value": 1500000
+        },
+        {
+          "name": "avgOrderValue",
+          "value": 1250.5
+        },
+        {
+          "name": "orderCount",
+          "value": 1200
+        },
+        {
+          "name": "minOrder",
+          "value": 50
+        },
+        {
+          "name": "maxOrder",
+          "value": 9999
+        }
+      ],
+      "group": {}
+    }
+  ]
+}
+```
+
+#### 4.2.4 带分组的聚合响应
+
+```json
+{
+  "data": [
+    {
+      "metrics": [
+        {
+          "name": "totalSales",
+          "value": 500000
+        },
+        {
+          "name": "orderCount",
+          "value": 500
+        }
+      ],
+      "group": {
+        "category": "Electronics",
+        "region": "华东"
+      }
+    },
+    {
+      "metrics": [
+        {
+          "name": "totalSales",
+          "value": 300000
+        },
+        {
+          "name": "orderCount",
+          "value": 350
+        }
+      ],
+      "group": {
+        "category": "Clothing",
+        "region": "华东"
+      }
+    }
+  ],
+  "metadata": {
+    "totalGroups": 8,
+    "hasMore": true,
+    "nextOffset": 2
+  }
+}
+```
+
+---
+
+### 4.3 聚合示例
+
+```json
+{
+  "operation": "AGGREGATE",
+  "objects": [{ "objectType": "Order", "alias": "o" }],
+  "conditions": {
+    "objectType": "Order",
+    "property": "status",
+    "operator": "EQ",
+    "values": ["completed"]
+  },
+  "aggregations": {
+    "groupBy": {
+      "fields": ["product.category", "region"]
+    },
+    "aggregations": [
+      {
+        "field": "amount",
+        "function": "sum",
+        "alias": "totalSales"
+      },
+      {
+        "field": "id",
+        "function": "count",
+        "alias": "orderCount"
+      },
+      {
+        "field": "amount",
+        "function": "avg",
+        "alias": "avgAmount"
+      }
+    ]
+  }
+}
+```
+
+---
+
+## 5. 创建操作（CREATE）
+
+> **前置说明**：CREATE 操作使用统一顶层结构，详见 [第2章统一顶层结构](#2-统一顶层结构)：
+> - `objects` - 对象实例定义（第2.9节）
+> - `mutation` - 变更操作定义（本章节）
+> - `extensions` - 扩展信息（可选）
+
+CREATE 操作使用 `mutation` 块定义创建数据，支持单对象创建和批量创建。
+
+### 5.1 操作概述
+
+CREATE 操作用于创建新对象，支持单对象创建和批量创建。
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     CREATE 操作流程                          │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│   ┌──────────────┐     ┌──────────────┐     ┌───────────┐  │
+│   │ 单对象创建    │     │ 批量创建     │     │ 响应返回  │  │
+│   │ data{}       │────▶│ batch[]      │────▶│ created[] │  │
+│   └──────────────┘     └──────────────┘     └───────────┘  │
+│                                                             │
+│   主键处理：                                               │
+│   • 指定 objectKey → 使用指定主键                          │
+│   • 指定 compositeKey → 使用复合主键                       │
+│   • 不指定主键 → 系统自动生成主键                          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 5.2 完整结构定义（JSON Schema）
+
+以下 JSON Schema 定义了 CREATE 操作的有效结构：
+
+```json
+{
+  "operation": "CREATE",
+  "objects": [
+    {
+      "objectType": "Product",
+      "alias": "p"
+    }
+  ],
+  "mutation": {
+    "type": "object",
+    "properties": {
+      "data": {
+        "type": "object",
+        "description": "单对象创建数据",
+        "properties": {
+          "objectKey": {
+            "type": "object",
+            "description": "对象主键（简单主键），若不指定则自动生成"
+          },
+          "compositeKey": {
+            "type": "object",
+            "description": "复合主键，KV 结构"
+          },
+          "properties": {
+            "type": "object",
+            "description": "对象属性键值对"
+          }
+        }
+      },
+      "batch": {
+        "type": "array",
+        "description": "批量创建数据数组",
+        "items": {
+          "type": "object",
+          "properties": {
+            "objectKey": {"type": "object"},
+            "compositeKey": {"type": "object"},
+            "properties": {"type": "object"}
+          }
+        }
+      },
+      "options": {
+        "type": "object",
+        "description": "创建选项"
+      }
+    },
+    "oneOf": [
+      {"required": ["data"]},
+      {"required": ["batch"]}
+    ]
+  }
+}
+```
