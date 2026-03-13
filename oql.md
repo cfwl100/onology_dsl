@@ -3847,3 +3847,4 @@ DELETE 操作用于删除对象，支持：
 | mutation.permanent | boolean | 否 | 永久删除（不可恢复），默认 false |
 | mutation.returnDeleted | boolean | 否 | 是否返回删除的对象数据，默认 false |
 | mutation.limit | integer | 否 | 限制删除数量（防止误删） |
+
