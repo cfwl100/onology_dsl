@@ -123,58 +123,99 @@
 ```json
 {
   "version": "1.0",
-  "operation": "QUERY | MULTI_OBJECT_QUERY | AGGREGATE | ASSOCIATION_QUERY | LIST_LINKED_OBJECTS | GET_LINKED_OBJECT | CREATE | UPDATE | DELETE | UPSERT | BATCH",
-
-  "====== 顶层字段（通用） ======",
-  "objects": [
-    {
-      "objectType": "Product",
-      "alias": "p",
-      "by": {"id": "prod_001"},
-      "byList": [{"id": "prod_001"}, {"id": "prod_002"}],
-      "byComposite": {"sourceSystem": "ERP", "orderNo": "ORD-001"}
-    }
-  ],
+  "operation": "<OPERATION>",
+  "objects": [...],
   "relationships": [...],
   "conditions": {...},
   "returns": [...],
   "orders": [...],
   "maxResults": 100000,
 
-  "====== 操作专用块（按 operation 激活） ======",
-  "query": {},              // QUERY / MULTI_OBJECT_QUERY 专用
-  "aggregations": {},       // AGGREGATE 专用
-  "associationQuery": {},   // ASSOCIATION_QUERY 专用
-  "linkQuery": {},          // LIST/GET LINKED 专用
-  "mutation": {},           // CREATE/UPDATE/DELETE/UPSERT/BATCH 专用
+  "sourceQuery": [...],
 
-  "options": {},
-  "extensions": {}
+  "query": {...},
+  "aggregations": {...},
+  "associationQuery": {...},
+  "linkQuery": {...},
+  "mutation": {...},
+
+  "options": {...},
+  "extensions": {...}
 }
 ```
 
+> 该结构仅展示顶层框架；各字段的嵌套子字段与约束见 [2.2 完整语法结构元素说明](#22-完整语法结构元素说明字段类型必填说明)。
+
 > **说明**：第1.0 版本移除了 `targets` 字段，将多对象查询能力统一到 `objects` 数组中。通过 `objects[].byList` 支持批量主键查询，通过多个对象类型配置支持多对象联合查询。
 
-> **兼容性说明（避免歧义）**：历史示例中可能出现 `target` / `by` / `byComposite` 命名。
+> **兼容性说明（避免歧义）**：历史示例中可能出现 `target` 单对象写法。
 > - 规范主写法：`objects[]` + `by` / `byComposite`
-> - 兼容别名：`by` ≈ `by`，`byComposite` ≈ `byComposite`
+> - 兼容历史：`target` 可等价映射为 `objects[0]`
 > - 新增/改写示例优先使用规范主写法；保留旧写法仅用于说明历史兼容行为
 
-### 2.2 顶层字段定义（通用）
+### 2.2 完整语法结构元素说明（字段/类型/必填/说明）
+
+> 下表汇总第 2 章涉及的完整语法结构元素，统一按「字段 / 类型 / 必填 / 说明」呈现，覆盖顶层字段、常用嵌套字段与操作专用块的关键子字段，便于用户查看“字段全景”。
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|:----:|------|
-| **objects** | array | 是 | 对象实例数组，定义查询的目标对象 |
+| **version** | string | 否 | DSL 版本，建议固定为 `1.0` |
+| **operation** | enum | 是 | 操作类型：`QUERY`、`MULTI_OBJECT_QUERY`、`AGGREGATE`、`ASSOCIATION_QUERY`、`LIST_LINKED_OBJECTS`、`GET_LINKED_OBJECT`、`CREATE`、`UPDATE`、`DELETE`、`UPSERT`、`BATCH` |
+| **objects** | array | 是（常规） | 对象实例数组，定义查询或写入的目标对象 |
 | **objects[].objectType** | string | 是 | 对象类型标识符 |
-| **objects[].alias** | string | 否 | 对象别名，用于后续引用 |
-| **objects[].by** | object | 否 | 单主键定位，如 `{"id": "prod_001"}` |
-| **objects[].byList** | array | 否 | 批量主键列表，用于图数据库一次查询多个点（VID），如 `[{"id": "a"}, {"id": "b"}]` |
+| **objects[].alias** | string | 否 | 对象别名，用于 `returns`/`orders`/条件引用 |
+| **objects[].by** | object | 否 | 单主键定位键值对，如 `{"id": "prod_001"}` |
+| **objects[].byList** | array<object> | 否 | 批量主键定位列表，如 `[{"id": "a"}, {"id": "b"}]` |
 | **objects[].byComposite** | object | 否 | 复合主键定位，如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}` |
-| **relationships** | array | 否 | 关系类型数组，ASSOCIATION_QUERY 必填 |
-| **conditions** | object | 否 | 统一的条件表达式（扁平化语法） |
+| **relationships** | array | 否（ASSOCIATION_QUERY 时常用） | 关系类型定义数组 |
+| **relationships[].name** | string | 条件必填 | 关系类型名称（ASSOCIATION_QUERY 时必填） |
+| **relationships[].alias** | string | 否 | 关系别名，用于 `returns` 引用 |
+| **relationships[].sourceObjectType** | string | 条件必填 | 源对象类型（ASSOCIATION_QUERY 时必填） |
+| **relationships[].targetObjectType** | string | 条件必填 | 目标对象类型（ASSOCIATION_QUERY 时必填） |
+| **relationships[].bizRelType** | string | 否 | 业务语义关系类型 |
+| **relationships[].structRelType** | string | 否 | 结构关系类型（如 `Association` / `Composition`） |
+| **conditions** | object | 否 | 统一条件表达式根节点 |
+| **conditions.relation** | enum | 否 | 逻辑关系：`AND` / `OR` / `NOT` |
+| **conditions.children** | array<object> | 否 | 子条件数组（嵌套条件树） |
+| **conditions.children[].relation** | enum | 否 | 子树逻辑关系（用于继续嵌套） |
+| **conditions.children[].children** | array<object> | 否 | 更深层子条件数组（递归） |
+| **conditions.objectType** | string | 否 | 条件作用对象类型 |
+| **conditions.property** | string | 否 | 条件字段名 |
+| **conditions.operator** | enum | 否 | 操作符（如 `EQ`、`IN`、`GT`、`LIKE`） |
+| **conditions.values** | array<any> | 否 | 条件值数组 |
 | **returns** | array | 否 | 返回字段定义列表 |
+| **returns[].type** | enum | 否 | 返回实体类型：`object` / `relationship` |
+| **returns[].param** | string | 否 | 目标别名（对象别名或关系别名） |
+| **returns[].fields** | array<string> | 否 | 返回字段列表 |
+| **returns[].field** | string | 否 | 单字段（聚合时常用） |
+| **returns[].function** | string | 否 | 聚合/函数（如 `sum`、`count`、`groupBy`） |
+| **returns[].alias** | string | 否 | 返回列别名 |
 | **orders** | array | 否 | 排序定义列表 |
+| **orders[].param** | string | 是（使用排序时） | 排序目标别名 |
+| **orders[].property** | string | 是（使用排序时） | 排序字段 |
+| **orders[].descending** | boolean | 否 | 是否降序，默认 `false` |
 | **maxResults** | integer | 否 | 最大返回数量，默认 100000 |
+| **sourceQuery** | array | 否（与 objects 原则上二选一） | 嵌套查询定义，子查询结果作为外层数据源 |
+| **sourceQuery[].outputAs** | string | 是 | 子查询输出别名，供外层引用 |
+| **sourceQuery[].operation** | enum | 是 | 子查询操作类型：`QUERY`、`MULTI_OBJECT_QUERY`、`AGGREGATE` |
+| **sourceQuery[].objects** | array | 是 | 子查询对象定义（结构同顶层 `objects`） |
+| **sourceQuery[].conditions** | object | 否 | 子查询条件定义（结构同顶层 `conditions`） |
+| **sourceQuery[].returns** | array | 否 | 子查询返回字段（结构同顶层 `returns`） |
+| **sourceQuery[].orders** | array | 否 | 子查询排序（结构同顶层 `orders`） |
+| **sourceQuery[].maxResults** | integer | 否 | 子查询最大返回数，默认 100000 |
+| **sourceQuery[].sourceQuery** | array | 否 | 多层嵌套子查询（递归） |
+| **query** | object | 条件必填 | `QUERY` / `MULTI_OBJECT_QUERY` 专用块（详见第 3、4 章） |
+| **aggregations** | object | 条件必填 | `AGGREGATE` 专用块（详见第 5 章） |
+| **associationQuery** | object | 条件必填 | `ASSOCIATION_QUERY` 专用块（详见第 6 章） |
+| **linkQuery** | object | 条件必填 | `LIST_LINKED_OBJECTS` / `GET_LINKED_OBJECT` 专用块（详见第 7 章） |
+| **mutation** | object | 条件必填 | `CREATE` / `UPDATE` / `DELETE` / `UPSERT` / `BATCH` 专用块 |
+| **mutation.data** | object | 否（CREATE/UPSERT 常用） | 新建数据体 |
+| **mutation.data.properties** | object | 否 | 待写入属性键值 |
+| **mutation.set** | object | 否（UPDATE/UPSERT 常用） | 更新字段键值 |
+| **mutation.where** | object | 否 | 写入操作补充过滤条件 |
+| **mutation.items** | array<object> | 否（BATCH 常用） | 批处理子操作列表 |
+| **options** | object | 否 | 执行选项（超时、并发、重试等） |
+| **extensions** | object | 否 | 业务扩展字段，用于非标准能力注入 |
 
 ### 2.3 conditions - 统一条件表达式
 
@@ -503,15 +544,7 @@ conditions 定义统一的条件表达式，使用二叉树结构表示复杂条
 }
 ```
 
-**objects 完整字段定义**：
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|:----:|------|
-| `objectType` | string | 是 | 对象类型标识符 |
-| `alias` | string | 否 | 对象别名，用于后续引用 |
-| `by` | object | 否 | 单主键定位，如 `{"id": "prod_001"}` |
-| `byList` | array | 否 | 批量主键列表，如 `[{"id": "a"}, {"id": "b"}]`，用于图数据库一次查询多个点 |
-| `byComposite` | object | 否 | 复合主键，如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}` |
+> `objects` 字段清单与约束见 [2.2 完整语法结构元素说明](#22-完整语法结构元素说明字段类型必填说明)。
 
 > **说明**：`conditions` 统一放在顶层，不放在对象内部。详见 [2.3 conditions](#23-统一条件表达式)。
 
@@ -589,16 +622,7 @@ conditions 定义统一的条件表达式，使用二叉树结构表示复杂条
 }
 ```
 
-**relationships 字段定义**：
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|:----:|------|
-| `name` | string | 是 | 关系类型名称（驼峰命名） |
-| `alias` | string | 否 | 关系别名，用于 returns 引用 |
-| `sourceObjectType` | string | 是 | 源对象类型（遍历起点） |
-| `targetObjectType` | string | 是 | 目标对象类型（遍历终点） |
-| `bizRelType` | string | 否 | 业务语义类型 |
-| `structRelType` | string | 否 | UML 结构关系类型 |
+> `relationships` 字段清单与约束见 [2.2 完整语法结构元素说明](#22-完整语法结构元素说明字段类型必填说明)。
 
 ---
 
