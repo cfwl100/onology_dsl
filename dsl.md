@@ -6,9 +6,11 @@
 
 - 第 1 章：设计原则与多数据源映射
 - 第 2 章：统一顶层结构与通用字段（`objects` / `conditions` / `returns` / `orders`）
-- 第 3-11 章：各操作类型（查询、聚合、写入、关联、批量）
-- 第 12-13 章：执行选项与表达式
-- 第 14-16 章：完整示例与 DSL→物理查询转换
+- 第 3 章：查询操作（QUERY）
+- 第 4 章：多对象查询（MULTI_OBJECT_QUERY）
+- 第 5-12 章：聚合、写入、关联、批量等操作
+- 第 13-14 章：执行选项与表达式
+- 第 15-18 章：完整示例、类型总览与转换示例
 - 附录：关键字速查与字段参考
 
 > 建议阅读顺序：先读第 2 章统一结构，再按操作类型阅读对应章节。
@@ -100,6 +102,21 @@
 > **设计原则**：OQL DSL 采用**顶层通用字段 + 操作专用块**的统一结构设计。
 > - 顶层字段（通用）：所有操作共享的结构
 > - 操作专用块（按 operation 激活）：根据 operation 类型选择性使用
+
+本章按“整体结构 → 通用字段 → 语法模块”的顺序说明 DSL 语法，便于从任意操作类型快速定位必填项、可选项和组合约束。
+
+### 2.0 模块化阅读指引
+
+| 模块 | 核心字段 | 作用 | 适用操作 |
+|------|----------|------|----------|
+| 对象定位模块 | `objects` / `by` / `byList` / `byComposite` | 定义查询或写入的对象范围 | 全部操作 |
+| 关系模块 | `relationships` | 定义关系类型和方向信息 | ASSOCIATION_QUERY / LINKED_OBJECT_QUERY |
+| 条件模块 | `conditions` | 定义过滤条件与逻辑组合 | 查询、聚合、部分写入 |
+| 投影模块 | `returns` | 定义返回字段和别名 | 查询、聚合、关联查询 |
+| 排序模块 | `orders` | 定义排序字段和方向 | 查询、关联查询 |
+| 嵌套查询模块 | `sourceQuery` | 用子查询结果作为外层输入 | QUERY / MULTI_OBJECT_QUERY / AGGREGATE |
+| 操作专用模块 | `query` / `aggregations` / `associationQuery` / `linkQuery` / `mutation` | 承载各 operation 的专用能力 | 按 operation 激活 |
+
 
 ### 2.1 完整结构定义
 
@@ -947,627 +964,6 @@ QUERY 操作通过顶层的 `conditions` 进行属性过滤查询，无需指定
 
 ---
 
-### 2.13 多对象查询（MULTI_OBJECT_QUERY）
-
-当需要在一个查询请求中查询多个对象的属性时，使用 `MULTI_OBJECT_QUERY` 操作类型。
-
-### 2.13.1 使用场景
-
-1. **同表多对象查询**：多个对象类型对应同一个数据库表，合并查询返回
-2. **跨对象条件查询**：对象A的属性作为对象B的过滤条件（如用户→小区）
-3. **关联属性聚合**：从不同对象类型聚合数据进行联合分析
-
-### 2.13.2 objects 字段定义（多对象定位）
-
-> **说明**：`objects` 字段定义详见 [第2.2节顶层字段定义](#22-顶层字段定义通用)。
-
-多对象查询通过 `objects` 数组定义目标对象，支持多种定位方式：
-
-```json
-{
-  "objects": [
-    {
-      "objectType": "User",
-      "alias": "u"
-    },
-    {
-      "objectType": "Community",
-      "alias": "c"
-    }
-  ]
-}
-```
-
-### 2.13.3 query 块结构（whereFrom 跨对象条件查询）
-
-`query` 块用于定义多对象查询的条件，`whereFrom` 用于跨对象条件查询：
-
-```json
-{
-  "operation": "MULTI_OBJECT_QUERY",
-  "objects": [
-    {"objectType": "User", "alias": "u"},
-    {"objectType": "Community", "alias": "c"}
-  ],
-  "conditions": {
-    "objectType": "Community",
-    "property": "status",
-    "operator": "EQ",
-    "values": ["active"]
-  },
-  "returns": [
-    {"type": "object", "param": "c", "fields": ["id", "name", "address"]}
-  ],
-  "query": {
-    "whereFrom": {
-      "from": "u.id",
-      "to": "c.userId",
-      "operator": "eq"
-    }
-  }
-}
-```
-
-**query.whereFrom 字段定义**：
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|:----:|------|
-| query.whereFrom.from | string | 是 | 来源对象属性（格式：alias.field 或 objectType.field） |
-| query.whereFrom.to | string | 是 | 目标对象过滤字段 |
-| query.whereFrom.operator | string | 否 | 比较操作符，默认 eq |
-
-### 2.13.4 conditions 统一条件表达式
-
-> **说明**：`conditions` 字段定义详见 [第2.3节](#23-conditions---统一条件表达式)。
-
-### 2.13.5 returns 返回字段投影
-
-> **说明**：`returns` 字段定义详见 [第2.4节](#24-returns---返回字段投影)。
-
-### 2.13.6 sourceQuery 嵌套查询
-
-> **说明**：`sourceQuery` 字段定义详见 [第2.5.1节](#251-sourcequery---嵌套查询)，包含完整的字段定义、多层嵌套说明和使用示例。
-
-MULTI_OBJECT_QUERY 操作支持通过顶层 `sourceQuery` 定义嵌套查询，使查询数据源从一个子查询的中间结果集获取。
-
-**使用约束**：
-- 原则上 `objects` 与 `sourceQuery` 应二选一；若同层同时出现，则 `sourceQuery` 作为输入数据源，`objects` 仅作为输出对象声明
-- 使用 `sourceQuery` 时，`objects` 可以为空，也可以为其他对象类型，用于满足多对象类型查询的诉求
-- 子查询结构与顶层结构一致，支持多层嵌套
-
-### 2.13.7 同表多对象查询示例
-
-**场景**：User 和 Customer 两个对象类型对应同一张表 person
-
-```json
-{
-  "version": "1.0",
-  "operation": "MULTI_OBJECT_QUERY",
-  "objects": [
-    {"objectType": "User", "alias": "u"},
-    {"objectType": "Customer", "alias": "c"}
-  ],
-  "conditions": {
-    "relation": "OR",
-    "children": [
-      {"objectType": "User", "property": "type", "operator": "EQ", "values": ["admin"]},
-      {"objectType": "Customer", "property": "type", "operator": "EQ", "values": ["vip"]}
-    ]
-  },
-  "returns": [
-    {"type": "object", "param": "u", "fields": ["id", "name", "email"]},
-    {"type": "object", "param": "c", "fields": ["id", "name", "email"]}
-  ]
-}
-```
-
-#### 2.13.7.1 同表多对象联合查询（User + Cell 关联表场景）
-
-**场景**：User 和 Cell 两个对象类型对应同一张物理表 `tbl_user_cell`，通过该表的 `user_id` 和 `cell_id` 字段建立关联。查询条件为 `user = '123' AND cell = '456'`，返回 `cell.volume`。
-
-**表结构说明**：
-```sql
-CREATE TABLE tbl_user_cell (
-    user_id VARCHAR(50),     -- 标识用户
-    cell_id VARCHAR(50),      -- 标识小区
-    cell_volume DECIMAL(10,2), -- 小区容积率
-    cell_name VARCHAR(100),   -- 小区名称
-    PRIMARY KEY (user_id, cell_id)
-);
-```
-
-**DSL 请求**：
-```json
-{
-  "version": "1.0",
-  "operation": "MULTI_OBJECT_QUERY",
-  "objects": [
-    {"objectType": "User", "alias": "user"},
-    {"objectType": "Cell", "alias": "cell"}
-  ],
-  "conditions": {
-    "relation": "AND",
-    "children": [
-      {
-        "objectType": "User",
-        "property": "user_id",
-        "operator": "EQ",
-        "values": ["123"]
-      },
-      {
-        "objectType": "Cell",
-        "property": "cell_id",
-        "operator": "EQ",
-        "values": ["456"]
-      }
-    ]
-  },
-  "returns": [
-    {
-      "type": "object",
-      "param": "cell",
-      "fields": ["volume"]
-    }
-  ]
-}
-```
-
-**对应物理 SQL**：
-```sql
-SELECT
-    t.cell_volume AS volume
-FROM tbl_user_cell t
-WHERE t.user_id = '123'
-  AND t.cell_id = '456';
-```
-
-**响应结果**：
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "objectType": "Cell",
-      "rid": "ri.phonograph2-objects.main.object.cell-456",
-      "properties": {
-        "volume": 3.5
-      }
-    }
-  ],
-  "metadata": {
-    "totalCount": 1
-  }
-}
-```
-
-> **说明**：
-> - User 和 Cell 共用同一张物理表 `tbl_user_cell`，但通过不同的字段（`user_id` vs `cell_id`）标识
-> - `conditions` 中需要同时指定 User 的 `user_id` 和 Cell 的 `cell_id` 条件
-> - `returns` 中 `param: "cell"` 表示返回 Cell 对象的属性
-
-#### 2.13.7.2 跨表外键关联查询（User + Cell 外键关联场景）
-
-**场景**：User 和 Cell 是两张独立的表，通过外键关联。User 表通过 `cell_id` 外键指向 Cell 表。查询条件为 `user.id = '123'`，返回关联的 `cell.volume`。
-
-**表结构说明**：
-```sql
--- 用户表（User），通过 cell_id 外键指向小区
-CREATE TABLE tbl_user (
-    id VARCHAR(50) PRIMARY KEY,      -- 用户ID
-    name VARCHAR(100),                -- 用户名
-    cell_id VARCHAR(50),              -- 外键，关联小区
-    FOREIGN KEY (cell_id) REFERENCES tbl_cell(id)
-);
-
--- 小区表（Cell）
-CREATE TABLE tbl_cell (
-    id VARCHAR(50) PRIMARY KEY,       -- 小区ID
-    name VARCHAR(100),                -- 小区名
-    volume DECIMAL(10,2),             -- 容积率
-    address VARCHAR(200)              -- 地址
-);
-```
-
-**DSL 请求**：
-```json
-{
-  "version": "1.0",
-  "operation": "MULTI_OBJECT_QUERY",
-  "objects": [
-    {"objectType": "User", "alias": "user", "by": {"id": "123"}},
-    {"objectType": "Cell", "alias": "cell"}
-  ],
-  "returns": [
-    {
-      "type": "object",
-      "param": "cell",
-      "fields": ["id", "name", "volume", "address"]
-    }
-  ],
-  "query": {
-    "whereFrom": {
-      "from": "user.cell_id",
-      "to": "cell.id",
-      "operator": "eq"
-    }
-  }
-}
-```
-
-**对应物理 SQL**：
-```sql
-SELECT
-    c.id,
-    c.name,
-    c.volume,
-    c.address
-FROM tbl_cell c
-INNER JOIN tbl_user u ON c.id = u.cell_id
-WHERE u.id = '123';
-```
-
-**响应结果**：
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "objectType": "Cell",
-      "rid": "ri.phonograph2-objects.main.object.cell-456",
-      "properties": {
-        "id": "456",
-        "name": "阳光小区",
-        "volume": 3.5,
-        "address": "XX路XX号"
-      }
-    }
-  ],
-  "metadata": {
-    "totalCount": 1,
-    "sourceObjects": ["User", "Cell"]
-  }
-}
-```
-
-> **说明**：
-> - User 和 Cell 是两张独立的表，通过外键 `user.cell_id = cell.id` 关联
-> - `query.whereFrom` 用于定义跨表关联条件（`from`: 来源对象属性，`to`: 目标对象字段）
-> - `conditions` 可省略，关联条件由 `whereFrom` 自动生成 JOIN 逻辑
-> - 外键关联支持 `INNER JOIN`（默认）、`LEFT JOIN`、`RIGHT JOIN` 可通过 `joinType` 配置
-
----
-
-### 2.13.8 跨对象条件查询示例（用户→小区）
-
-**场景**：通过用户 id 查询该用户关联的小区
-
-```json
-{
-  "version": "1.0",
-  "operation": "MULTI_OBJECT_QUERY",
-  "objects": [
-    {"objectType": "User", "alias": "user", "by": {"id": "user_001"}},
-    {"objectType": "Community", "alias": "community"}
-  ],
-  "returns": [
-    {"type": "object", "param": "community", "fields": ["id", "name", "address"]}
-  ],
-  "query": {
-    "whereFrom": {
-      "from": "user.id",
-      "to": "community.ownerId",
-      "operator": "eq"
-    }
-  }
-}
-```
-
-### 2.13.9 多对象查询响应格式
-
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "objectType": "Community",
-      "rid": "ri.phonograph2-objects.main.object.comm-001",
-      "properties": {
-        "id": "comm-001",
-        "name": "阳光小区",
-        "address": "XX路XX号",
-        "ownerId": "user_001"
-      }
-    },
-    {
-      "objectType": "Community",
-      "rid": "ri.phonograph2-objects.main.object.comm-002",
-      "properties": {
-        "id": "comm-002",
-        "name": "幸福小区",
-        "address": "YY路YY号",
-        "ownerId": "user_001"
-      }
-    }
-  ],
-  "metadata": {
-    "totalCount": 2,
-    "sourceObjects": ["User", "Community"]
-  }
-}
-```
-
----
-
-### 2.13.10 MySQL SQL 转换示例
-
-以下展示 MULTI_OBJECT_QUERY 如何转换为 MySQL SQL 查询语句。
-
-#### 2.13.10.1 示例一：同表多对象查询
-
-**场景**：User 和 Customer 两个对象类型对应同一个数据库表 `persons`
-
-**DSL 请求**：
-```json
-{
-  "version": "1.0",
-  "operation": "MULTI_OBJECT_QUERY",
-  "objects": [
-    {"objectType": "User", "alias": "u"},
-    {"objectType": "Customer", "alias": "c"}
-  ],
-  "conditions": {
-    "relation": "OR",
-    "children": [
-      {"objectType": "User", "property": "type", "operator": "EQ", "values": ["admin"]},
-      {"objectType": "Customer", "property": "type", "operator": "EQ", "values": ["vip"]}
-    ]
-  },
-  "returns": [
-    {"type": "object", "param": "u", "fields": ["id", "name", "email"]},
-    {"type": "object", "param": "c", "fields": ["id", "name", "email"]}
-  ]
-}
-```
-
-**转换为 MySQL SQL**：
-
-```sql
--- 查询同一个表，根据 type 字段区分对象类型
-SELECT
-    id,
-    name,
-    email,
-    type,
-    CASE
-        WHEN type = 'admin' THEN 'User'
-        WHEN type = 'vip' THEN 'Customer'
-        ELSE type
-    END AS objectType
-FROM persons
-WHERE
-    type IN ('admin', 'vip')
-ORDER BY id;
-```
-
-**或使用 UNION 方式**：
-
-```sql
--- 方式一：UNION 查询
-(SELECT id, name, email, 'admin' AS type, 'User' AS objectType FROM persons WHERE type = 'admin')
-UNION ALL
-(SELECT id, name, email, 'vip' AS type, 'Customer' AS objectType FROM persons WHERE type = 'vip')
-ORDER BY id;
-
--- 方式二：UNION ALL 查询（保留所有匹配记录）
-(SELECT id, name, email, type, 'User' AS objectType FROM persons WHERE type = 'admin')
-UNION ALL
-(SELECT id, name, email, type, 'Customer' AS objectType FROM persons WHERE type = 'vip')
-ORDER BY id;
-```
-
-**响应结果**：
-
-| id | name | email | type | objectType |
-|----|------|-------|------|------------|
-| 1 | 张三 | zhangsan@example.com | admin | User |
-| 2 | 李四 | lisi@example.com | vip | Customer |
-
----
-
-#### 2.13.10.2 示例二：跨对象条件查询（whereFrom）
-
-**场景**：通过用户 id 查询该用户关联的小区（User.id = Community.ownerId）
-
-**DSL 请求**：
-```json
-{
-  "version": "1.0",
-  "operation": "MULTI_OBJECT_QUERY",
-  "objects": [
-    {"objectType": "User", "alias": "user", "by": {"id": "user_001"}},
-    {"objectType": "Community", "alias": "community"}
-  ],
-  "returns": [
-    {"type": "object", "param": "community", "fields": ["id", "name", "address"]}
-  ],
-  "query": {
-    "whereFrom": {
-      "from": "user.id",
-      "to": "community.ownerId",
-      "operator": "eq"
-    }
-  }
-}
-```
-
-**转换为 MySQL SQL**：
-
-```sql
--- 假设 User 表和 Community 表通过 ownerId 关联
-SELECT
-    c.id,
-    c.name,
-    c.address
-FROM users u
-INNER JOIN communities c ON u.id = c.owner_id
-WHERE u.id = 'user_001';
-```
-
-**响应结果**：
-
-| id | name | address |
-|----|------|---------|
-| comm-001 | 阳光小区 | XX路XX号 |
-| comm-002 | 幸福小区 | YY路YY号 |
-
----
-
-#### 2.13.10.3 示例三：跨对象条件查询（多条件过滤）
-
-**场景**：查询状态为"运行中"的设备所在机房的信息
-
-**DSL 请求**：
-```json
-{
-  "version": "1.0",
-  "operation": "MULTI_OBJECT_QUERY",
-  "objects": [
-    {"objectType": "Device", "alias": "device"},
-    {"objectType": "EquipmentRoom", "alias": "room"}
-  ],
-  "conditions": {
-    "children": [
-      {"objectType": "Device", "property": "status", "operator": "EQ", "values": ["running"]}
-    ]
-  },
-  "returns": [
-    {"type": "object", "param": "room", "fields": ["id", "name", "location"]}
-  ],
-  "query": {
-    "whereFrom": {
-      "from": "device.roomId",
-      "to": "room.id",
-      "operator": "eq"
-    }
-  }
-}
-```
-
-**转换为 MySQL SQL**：
-
-```sql
--- 关联查询设备与机房
-SELECT
-    r.id,
-    r.name,
-    r.location
-FROM devices d
-INNER JOIN equipment_rooms r ON d.room_id = r.id
-WHERE d.status = 'running'
-ORDER BY r.name;
-```
-
-**或使用子查询**：
-
-```sql
--- 使用子查询方式
-SELECT
-    r.id,
-    r.name,
-    r.location
-FROM equipment_rooms r
-WHERE r.id IN (
-    SELECT d.room_id
-    FROM devices d
-    WHERE d.status = 'running'
-)
-ORDER BY r.name;
-```
-
-**响应结果**：
-
-| id | name | location |
-|----|------|---------|
-| room-001 | 主机房 | A座1楼 |
-| room-002 | 备机房 | B座2楼 |
-
----
-
-#### 2.13.10.4 示例四：objects + conditions 组合查询
-
-**场景**：查询指定用户组下的所有设备及其关联的机房
-
-**DSL 请求**：
-```json
-{
-  "version": "1.0",
-  "operation": "MULTI_OBJECT_QUERY",
-  "objects": [
-    {
-      "objectType": "Device",
-      "alias": "d"
-    },
-    {
-      "objectType": "EquipmentRoom",
-      "alias": "r"
-    }
-  ],
-  "conditions": {
-    "relation": "AND",
-    "children": [
-      {"objectType": "Device", "property": "groupId", "operator": "EQ", "values": ["group-001"]}
-    ]
-  },
-  "returns": [
-    {"type": "object", "param": "d", "fields": ["id", "name", "status"]},
-    {"type": "object", "param": "r", "fields": ["name"]}
-  ],
-  "query": {
-    "whereFrom": {
-      "from": "d.roomId",
-      "to": "r.id",
-      "operator": "eq"
-    }
-  }
-}
-```
-
-**转换为 MySQL SQL**：
-
-```sql
--- 组合 conditions 和 whereFrom 条件
-SELECT
-    d.id,
-    d.name,
-    d.status,
-    r.name AS room_name
-FROM devices d
-INNER JOIN equipment_rooms r ON d.room_id = r.id
-WHERE d.group_id = 'group-001'
-ORDER BY d.name;
-```
-
-**响应结果**：
-
-| id | name | status | room_name |
-|----|------|--------|-----------|
-| device-001 | Web服务器 | running | 主机房 |
-| device-002 | 数据库 | running | 主机房 |
-
----
-
-#### 2.13.10.5 SQL 转换规则总结
-
-| OQL 场景 | MySQL 转换方式 |
-|----------|----------------|
-| 同表多对象（UNION） | 使用 `UNION` 或 `UNION ALL` 合并多个对象的查询结果 |
-| 跨对象条件（whereFrom） | 使用 `INNER JOIN` 或 `LEFT JOIN` 关联查询 |
-| 跨对象 + 过滤 | `JOIN` 配合 `WHERE` 条件过滤 |
-| 单对象 conditions 查询 | 直接在 `WHERE` 子句中使用过滤条件 |
-| 多条件组合 | 使用 `AND`/`OR` 构建复杂 WHERE 条件 |
-
----
-
 ## 3. 查询操作（QUERY）
 
 > **前置说明**：QUERY 操作使用统一顶层结构，详见 [第2章统一顶层结构](#2-统一顶层结构)：
@@ -1575,7 +971,7 @@ ORDER BY d.name;
 > - `conditions` - 统一条件表达式（第2.3节）
 > - `returns` - 返回字段投影（第2.4节）
 > - `orders` - 排序定义（第2.5节）
-> - `maxResults` - 结果限制（第2.5.4节）
+> - `maxResults` - 结果限制（第2.2节字段定义与第2.12节示例）
 
 QUERY 操作使用统一顶层结构，通过 `conditions` 定义过滤条件，通过 `returns` 定义返回字段：
 
@@ -1971,19 +1367,642 @@ LIMIT 50
 
 ---
 
-## 4. 聚合操作（AGGREGATE）
+
+
+## 4. 多对象查询（MULTI_OBJECT_QUERY）
+
+当需要在一个查询请求中查询多个对象的属性时，使用 `MULTI_OBJECT_QUERY` 操作类型。
+
+### 4.1 使用场景
+
+1. **同表多对象查询**：多个对象类型对应同一个数据库表，合并查询返回
+2. **跨对象条件查询**：对象A的属性作为对象B的过滤条件（如用户→小区）
+3. **关联属性聚合**：从不同对象类型聚合数据进行联合分析
+
+### 4.2 objects 字段定义（多对象定位）
+
+> **说明**：`objects` 字段定义详见 [第2.2节顶层字段定义](#22-顶层字段定义通用)。
+
+多对象查询通过 `objects` 数组定义目标对象，支持多种定位方式：
+
+```json
+{
+  "objects": [
+    {
+      "objectType": "User",
+      "alias": "u"
+    },
+    {
+      "objectType": "Community",
+      "alias": "c"
+    }
+  ]
+}
+```
+
+### 4.3 query 块结构（whereFrom 跨对象条件查询）
+
+`query` 块用于定义多对象查询的条件，`whereFrom` 用于跨对象条件查询：
+
+```json
+{
+  "operation": "MULTI_OBJECT_QUERY",
+  "objects": [
+    {"objectType": "User", "alias": "u"},
+    {"objectType": "Community", "alias": "c"}
+  ],
+  "conditions": {
+    "objectType": "Community",
+    "property": "status",
+    "operator": "EQ",
+    "values": ["active"]
+  },
+  "returns": [
+    {"type": "object", "param": "c", "fields": ["id", "name", "address"]}
+  ],
+  "query": {
+    "whereFrom": {
+      "from": "u.id",
+      "to": "c.userId",
+      "operator": "eq"
+    }
+  }
+}
+```
+
+**query.whereFrom 字段定义**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| query.whereFrom.from | string | 是 | 来源对象属性（格式：alias.field 或 objectType.field） |
+| query.whereFrom.to | string | 是 | 目标对象过滤字段 |
+| query.whereFrom.operator | string | 否 | 比较操作符，默认 eq |
+
+### 4.4 conditions 统一条件表达式
+
+> **说明**：`conditions` 字段定义详见 [第2.3节](#23-conditions---统一条件表达式)。
+
+### 4.5 returns 返回字段投影
+
+> **说明**：`returns` 字段定义详见 [第2.4节](#24-returns---返回字段投影)。
+
+### 4.6 sourceQuery 嵌套查询
+
+> **说明**：`sourceQuery` 字段定义详见 [第2.5.1节](#251-sourcequery---嵌套查询)，包含完整的字段定义、多层嵌套说明和使用示例。
+
+MULTI_OBJECT_QUERY 操作支持通过顶层 `sourceQuery` 定义嵌套查询，使查询数据源从一个子查询的中间结果集获取。
+
+**使用约束**：
+- 原则上 `objects` 与 `sourceQuery` 应二选一；若同层同时出现，则 `sourceQuery` 作为输入数据源，`objects` 仅作为输出对象声明
+- 使用 `sourceQuery` 时，`objects` 可以为空，也可以为其他对象类型，用于满足多对象类型查询的诉求
+- 子查询结构与顶层结构一致，支持多层嵌套
+
+### 4.7 同表多对象查询示例
+
+**场景**：User 和 Customer 两个对象类型对应同一张表 person
+
+```json
+{
+  "version": "1.0",
+  "operation": "MULTI_OBJECT_QUERY",
+  "objects": [
+    {"objectType": "User", "alias": "u"},
+    {"objectType": "Customer", "alias": "c"}
+  ],
+  "conditions": {
+    "relation": "OR",
+    "children": [
+      {"objectType": "User", "property": "type", "operator": "EQ", "values": ["admin"]},
+      {"objectType": "Customer", "property": "type", "operator": "EQ", "values": ["vip"]}
+    ]
+  },
+  "returns": [
+    {"type": "object", "param": "u", "fields": ["id", "name", "email"]},
+    {"type": "object", "param": "c", "fields": ["id", "name", "email"]}
+  ]
+}
+```
+
+#### 4.7.1 同表多对象联合查询（User + Cell 关联表场景）
+
+**场景**：User 和 Cell 两个对象类型对应同一张物理表 `tbl_user_cell`，通过该表的 `user_id` 和 `cell_id` 字段建立关联。查询条件为 `user = '123' AND cell = '456'`，返回 `cell.volume`。
+
+**表结构说明**：
+```sql
+CREATE TABLE tbl_user_cell (
+    user_id VARCHAR(50),     -- 标识用户
+    cell_id VARCHAR(50),      -- 标识小区
+    cell_volume DECIMAL(10,2), -- 小区容积率
+    cell_name VARCHAR(100),   -- 小区名称
+    PRIMARY KEY (user_id, cell_id)
+);
+```
+
+**DSL 请求**：
+```json
+{
+  "version": "1.0",
+  "operation": "MULTI_OBJECT_QUERY",
+  "objects": [
+    {"objectType": "User", "alias": "user"},
+    {"objectType": "Cell", "alias": "cell"}
+  ],
+  "conditions": {
+    "relation": "AND",
+    "children": [
+      {
+        "objectType": "User",
+        "property": "user_id",
+        "operator": "EQ",
+        "values": ["123"]
+      },
+      {
+        "objectType": "Cell",
+        "property": "cell_id",
+        "operator": "EQ",
+        "values": ["456"]
+      }
+    ]
+  },
+  "returns": [
+    {
+      "type": "object",
+      "param": "cell",
+      "fields": ["volume"]
+    }
+  ]
+}
+```
+
+**对应物理 SQL**：
+```sql
+SELECT
+    t.cell_volume AS volume
+FROM tbl_user_cell t
+WHERE t.user_id = '123'
+  AND t.cell_id = '456';
+```
+
+**响应结果**：
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "objectType": "Cell",
+      "rid": "ri.phonograph2-objects.main.object.cell-456",
+      "properties": {
+        "volume": 3.5
+      }
+    }
+  ],
+  "metadata": {
+    "totalCount": 1
+  }
+}
+```
+
+> **说明**：
+> - User 和 Cell 共用同一张物理表 `tbl_user_cell`，但通过不同的字段（`user_id` vs `cell_id`）标识
+> - `conditions` 中需要同时指定 User 的 `user_id` 和 Cell 的 `cell_id` 条件
+> - `returns` 中 `param: "cell"` 表示返回 Cell 对象的属性
+
+#### 4.7.2 跨表外键关联查询（User + Cell 外键关联场景）
+
+**场景**：User 和 Cell 是两张独立的表，通过外键关联。User 表通过 `cell_id` 外键指向 Cell 表。查询条件为 `user.id = '123'`，返回关联的 `cell.volume`。
+
+**表结构说明**：
+```sql
+-- 用户表（User），通过 cell_id 外键指向小区
+CREATE TABLE tbl_user (
+    id VARCHAR(50) PRIMARY KEY,      -- 用户ID
+    name VARCHAR(100),                -- 用户名
+    cell_id VARCHAR(50),              -- 外键，关联小区
+    FOREIGN KEY (cell_id) REFERENCES tbl_cell(id)
+);
+
+-- 小区表（Cell）
+CREATE TABLE tbl_cell (
+    id VARCHAR(50) PRIMARY KEY,       -- 小区ID
+    name VARCHAR(100),                -- 小区名
+    volume DECIMAL(10,2),             -- 容积率
+    address VARCHAR(200)              -- 地址
+);
+```
+
+**DSL 请求**：
+```json
+{
+  "version": "1.0",
+  "operation": "MULTI_OBJECT_QUERY",
+  "objects": [
+    {"objectType": "User", "alias": "user", "by": {"id": "123"}},
+    {"objectType": "Cell", "alias": "cell"}
+  ],
+  "returns": [
+    {
+      "type": "object",
+      "param": "cell",
+      "fields": ["id", "name", "volume", "address"]
+    }
+  ],
+  "query": {
+    "whereFrom": {
+      "from": "user.cell_id",
+      "to": "cell.id",
+      "operator": "eq"
+    }
+  }
+}
+```
+
+**对应物理 SQL**：
+```sql
+SELECT
+    c.id,
+    c.name,
+    c.volume,
+    c.address
+FROM tbl_cell c
+INNER JOIN tbl_user u ON c.id = u.cell_id
+WHERE u.id = '123';
+```
+
+**响应结果**：
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "objectType": "Cell",
+      "rid": "ri.phonograph2-objects.main.object.cell-456",
+      "properties": {
+        "id": "456",
+        "name": "阳光小区",
+        "volume": 3.5,
+        "address": "XX路XX号"
+      }
+    }
+  ],
+  "metadata": {
+    "totalCount": 1,
+    "sourceObjects": ["User", "Cell"]
+  }
+}
+```
+
+> **说明**：
+> - User 和 Cell 是两张独立的表，通过外键 `user.cell_id = cell.id` 关联
+> - `query.whereFrom` 用于定义跨表关联条件（`from`: 来源对象属性，`to`: 目标对象字段）
+> - `conditions` 可省略，关联条件由 `whereFrom` 自动生成 JOIN 逻辑
+> - 外键关联支持 `INNER JOIN`（默认）、`LEFT JOIN`、`RIGHT JOIN` 可通过 `joinType` 配置
+
+---
+
+### 4.8 跨对象条件查询示例（用户→小区）
+
+**场景**：通过用户 id 查询该用户关联的小区
+
+```json
+{
+  "version": "1.0",
+  "operation": "MULTI_OBJECT_QUERY",
+  "objects": [
+    {"objectType": "User", "alias": "user", "by": {"id": "user_001"}},
+    {"objectType": "Community", "alias": "community"}
+  ],
+  "returns": [
+    {"type": "object", "param": "community", "fields": ["id", "name", "address"]}
+  ],
+  "query": {
+    "whereFrom": {
+      "from": "user.id",
+      "to": "community.ownerId",
+      "operator": "eq"
+    }
+  }
+}
+```
+
+### 4.9 多对象查询响应格式
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "objectType": "Community",
+      "rid": "ri.phonograph2-objects.main.object.comm-001",
+      "properties": {
+        "id": "comm-001",
+        "name": "阳光小区",
+        "address": "XX路XX号",
+        "ownerId": "user_001"
+      }
+    },
+    {
+      "objectType": "Community",
+      "rid": "ri.phonograph2-objects.main.object.comm-002",
+      "properties": {
+        "id": "comm-002",
+        "name": "幸福小区",
+        "address": "YY路YY号",
+        "ownerId": "user_001"
+      }
+    }
+  ],
+  "metadata": {
+    "totalCount": 2,
+    "sourceObjects": ["User", "Community"]
+  }
+}
+```
+
+---
+
+### 4.10 MySQL SQL 转换示例
+
+以下展示 MULTI_OBJECT_QUERY 如何转换为 MySQL SQL 查询语句。
+
+#### 4.10.1 示例一：同表多对象查询
+
+**场景**：User 和 Customer 两个对象类型对应同一个数据库表 `persons`
+
+**DSL 请求**：
+```json
+{
+  "version": "1.0",
+  "operation": "MULTI_OBJECT_QUERY",
+  "objects": [
+    {"objectType": "User", "alias": "u"},
+    {"objectType": "Customer", "alias": "c"}
+  ],
+  "conditions": {
+    "relation": "OR",
+    "children": [
+      {"objectType": "User", "property": "type", "operator": "EQ", "values": ["admin"]},
+      {"objectType": "Customer", "property": "type", "operator": "EQ", "values": ["vip"]}
+    ]
+  },
+  "returns": [
+    {"type": "object", "param": "u", "fields": ["id", "name", "email"]},
+    {"type": "object", "param": "c", "fields": ["id", "name", "email"]}
+  ]
+}
+```
+
+**转换为 MySQL SQL**：
+
+```sql
+-- 查询同一个表，根据 type 字段区分对象类型
+SELECT
+    id,
+    name,
+    email,
+    type,
+    CASE
+        WHEN type = 'admin' THEN 'User'
+        WHEN type = 'vip' THEN 'Customer'
+        ELSE type
+    END AS objectType
+FROM persons
+WHERE
+    type IN ('admin', 'vip')
+ORDER BY id;
+```
+
+**或使用 UNION 方式**：
+
+```sql
+-- 方式一：UNION 查询
+(SELECT id, name, email, 'admin' AS type, 'User' AS objectType FROM persons WHERE type = 'admin')
+UNION ALL
+(SELECT id, name, email, 'vip' AS type, 'Customer' AS objectType FROM persons WHERE type = 'vip')
+ORDER BY id;
+
+-- 方式二：UNION ALL 查询（保留所有匹配记录）
+(SELECT id, name, email, type, 'User' AS objectType FROM persons WHERE type = 'admin')
+UNION ALL
+(SELECT id, name, email, type, 'Customer' AS objectType FROM persons WHERE type = 'vip')
+ORDER BY id;
+```
+
+**响应结果**：
+
+| id | name | email | type | objectType |
+|----|------|-------|------|------------|
+| 1 | 张三 | zhangsan@example.com | admin | User |
+| 2 | 李四 | lisi@example.com | vip | Customer |
+
+---
+
+#### 4.10.2 示例二：跨对象条件查询（whereFrom）
+
+**场景**：通过用户 id 查询该用户关联的小区（User.id = Community.ownerId）
+
+**DSL 请求**：
+```json
+{
+  "version": "1.0",
+  "operation": "MULTI_OBJECT_QUERY",
+  "objects": [
+    {"objectType": "User", "alias": "user", "by": {"id": "user_001"}},
+    {"objectType": "Community", "alias": "community"}
+  ],
+  "returns": [
+    {"type": "object", "param": "community", "fields": ["id", "name", "address"]}
+  ],
+  "query": {
+    "whereFrom": {
+      "from": "user.id",
+      "to": "community.ownerId",
+      "operator": "eq"
+    }
+  }
+}
+```
+
+**转换为 MySQL SQL**：
+
+```sql
+-- 假设 User 表和 Community 表通过 ownerId 关联
+SELECT
+    c.id,
+    c.name,
+    c.address
+FROM users u
+INNER JOIN communities c ON u.id = c.owner_id
+WHERE u.id = 'user_001';
+```
+
+**响应结果**：
+
+| id | name | address |
+|----|------|---------|
+| comm-001 | 阳光小区 | XX路XX号 |
+| comm-002 | 幸福小区 | YY路YY号 |
+
+---
+
+#### 4.10.3 示例三：跨对象条件查询（多条件过滤）
+
+**场景**：查询状态为"运行中"的设备所在机房的信息
+
+**DSL 请求**：
+```json
+{
+  "version": "1.0",
+  "operation": "MULTI_OBJECT_QUERY",
+  "objects": [
+    {"objectType": "Device", "alias": "device"},
+    {"objectType": "EquipmentRoom", "alias": "room"}
+  ],
+  "conditions": {
+    "children": [
+      {"objectType": "Device", "property": "status", "operator": "EQ", "values": ["running"]}
+    ]
+  },
+  "returns": [
+    {"type": "object", "param": "room", "fields": ["id", "name", "location"]}
+  ],
+  "query": {
+    "whereFrom": {
+      "from": "device.roomId",
+      "to": "room.id",
+      "operator": "eq"
+    }
+  }
+}
+```
+
+**转换为 MySQL SQL**：
+
+```sql
+-- 关联查询设备与机房
+SELECT
+    r.id,
+    r.name,
+    r.location
+FROM devices d
+INNER JOIN equipment_rooms r ON d.room_id = r.id
+WHERE d.status = 'running'
+ORDER BY r.name;
+```
+
+**或使用子查询**：
+
+```sql
+-- 使用子查询方式
+SELECT
+    r.id,
+    r.name,
+    r.location
+FROM equipment_rooms r
+WHERE r.id IN (
+    SELECT d.room_id
+    FROM devices d
+    WHERE d.status = 'running'
+)
+ORDER BY r.name;
+```
+
+**响应结果**：
+
+| id | name | location |
+|----|------|---------|
+| room-001 | 主机房 | A座1楼 |
+| room-002 | 备机房 | B座2楼 |
+
+---
+
+#### 4.10.4 示例四：objects + conditions 组合查询
+
+**场景**：查询指定用户组下的所有设备及其关联的机房
+
+**DSL 请求**：
+```json
+{
+  "version": "1.0",
+  "operation": "MULTI_OBJECT_QUERY",
+  "objects": [
+    {
+      "objectType": "Device",
+      "alias": "d"
+    },
+    {
+      "objectType": "EquipmentRoom",
+      "alias": "r"
+    }
+  ],
+  "conditions": {
+    "relation": "AND",
+    "children": [
+      {"objectType": "Device", "property": "groupId", "operator": "EQ", "values": ["group-001"]}
+    ]
+  },
+  "returns": [
+    {"type": "object", "param": "d", "fields": ["id", "name", "status"]},
+    {"type": "object", "param": "r", "fields": ["name"]}
+  ],
+  "query": {
+    "whereFrom": {
+      "from": "d.roomId",
+      "to": "r.id",
+      "operator": "eq"
+    }
+  }
+}
+```
+
+**转换为 MySQL SQL**：
+
+```sql
+-- 组合 conditions 和 whereFrom 条件
+SELECT
+    d.id,
+    d.name,
+    d.status,
+    r.name AS room_name
+FROM devices d
+INNER JOIN equipment_rooms r ON d.room_id = r.id
+WHERE d.group_id = 'group-001'
+ORDER BY d.name;
+```
+
+**响应结果**：
+
+| id | name | status | room_name |
+|----|------|--------|-----------|
+| device-001 | Web服务器 | running | 主机房 |
+| device-002 | 数据库 | running | 主机房 |
+
+---
+
+#### 4.10.5 SQL 转换规则总结
+
+| OQL 场景 | MySQL 转换方式 |
+|----------|----------------|
+| 同表多对象（UNION） | 使用 `UNION` 或 `UNION ALL` 合并多个对象的查询结果 |
+| 跨对象条件（whereFrom） | 使用 `INNER JOIN` 或 `LEFT JOIN` 关联查询 |
+| 跨对象 + 过滤 | `JOIN` 配合 `WHERE` 条件过滤 |
+| 单对象 conditions 查询 | 直接在 `WHERE` 子句中使用过滤条件 |
+| 多条件组合 | 使用 `AND`/`OR` 构建复杂 WHERE 条件 |
+
+---
+
+## 5. 聚合操作（AGGREGATE）
 
 > **重要说明**：AGGREGATE 操作**仅支持单一对象类型**的聚合查询。`objects` 数组中只能包含一个对象配置，聚合计算的所有字段必须来自同一个对象类型。如需对多个对象类型进行聚合分析，请使用应用层处理或先进行数据预处理。
 
 > **前置说明**：AGGREGATE 操作使用统一顶层结构（详见 [第2章统一顶层结构](#2-统一顶层结构)），聚合计算通过 `returns` 中的 `function` 字段定义。
 
-### 4.1 聚合结构
+### 5.1 聚合结构
 
 > **约束说明**：AGGREGATE 操作仅支持单一对象类型，`objects` 中只能配置一个对象。
 
 `returns` 节点用于定义分组聚合查询，聚合函数通过 `function` 字段指定：
 
-#### 4.1.1 完整结构定义（JSON Schema）
+#### 5.1.1 完整结构定义（JSON Schema）
 
 以下 JSON Schema 定义了 AGGREGATE 操作的有效结构，支持嵌套 `sourceQuery`：
 
@@ -2032,7 +2051,7 @@ LIMIT 50
 }
 ```
 
-#### 4.1.2 关键字说明
+#### 5.1.2 关键字说明
 
 > **嵌套查询说明**：如需使用嵌套查询，请通过顶层 `sourceQuery` 定义，详见 [4.1.10 嵌套查询聚合](#4110-嵌套查询聚合)。原则上 `objects` 与 `sourceQuery` 应二选一；若同层同时出现，则 `sourceQuery` 作为输入数据源，`objects` 仅作为输出对象声明。
 
@@ -2062,7 +2081,7 @@ LIMIT 50
 
 > **通用字段说明**：表中 `objects`、`conditions` 等通用字段的详细定义见 [第2章统一顶层结构](#2-统一顶层结构)。`sourceQuery` 相关字段为 AGGREGATE 操作特有，用于定义嵌套查询。
 
-#### 4.1.3 简单聚合示例
+#### 5.1.3 简单聚合示例
 
 ```json
 {
@@ -2124,7 +2143,7 @@ LIMIT 50
 }
 ```
 
-#### 4.1.4 多字段分组示例
+#### 5.1.4 多字段分组示例
 
 ```json
 {
@@ -2175,7 +2194,7 @@ LIMIT 50
 }
 ```
 
-#### 4.1.5 无分组聚合（全局聚合）
+#### 5.1.5 无分组聚合（全局聚合）
 
 如果 `function: groupBy` 不存在，返回整个数据集的聚合结果：
 
@@ -2244,7 +2263,7 @@ LIMIT 50
 }
 ```
 
-#### 4.1.6 带 conditions 的聚合示例
+#### 5.1.6 带 conditions 的聚合示例
 
 ```json
 {
@@ -2283,7 +2302,7 @@ LIMIT 50
 }
 ```
 
-#### 4.1.7 distinct 去重示例
+#### 5.1.7 distinct 去重示例
 
 ```json
 {
@@ -2323,7 +2342,7 @@ LIMIT 50
 }
 ```
 
-#### 4.1.8 having - 聚合后过滤示例
+#### 5.1.8 having - 聚合后过滤示例
 
 ```json
 {
@@ -2364,7 +2383,7 @@ LIMIT 50
 - `conditions` - 在聚合前过滤源数据
 - `having` - 对聚合结果进行过滤
 
-#### 4.1.9 聚合结果排序示例
+#### 5.1.9 聚合结果排序示例
 
 ```json
 {
@@ -2392,7 +2411,7 @@ LIMIT 50
 }
 ```
 
-#### 4.1.10 嵌套查询聚合
+#### 5.1.10 嵌套查询聚合
 
 AGGREGATE 操作支持通过顶层 `sourceQuery` 定义嵌套查询，使聚合数据源从一个子查询的中间结果集获取。
 
@@ -2658,7 +2677,7 @@ FROM order_sub
 
 ---
 
-### 4.2 聚合函数
+### 5.2 聚合函数
 
 | 函数 | 说明 | 输入类型 | 输出类型 |
 |------|------|----------|----------|
@@ -2672,7 +2691,7 @@ FROM order_sub
 | last | 最后一个 | 任意 | 同输入 |
 | arrayAgg | 聚合为数组 | 任意 | array |
 
-#### 4.2.1 聚合响应结构
+#### 5.2.1 聚合响应结构
 
 聚合操作的响应采用以下结构：
 
@@ -2704,7 +2723,7 @@ FROM order_sub
 | data[].metrics[].value | number | 聚合计算结果值 |
 | data[].group | object | 分组键值对，key 为字段名，value 为该组的分组值 |
 
-#### 4.2.2 完整响应示例
+#### 5.2.2 完整响应示例
 
 **请求**：
 ```json
@@ -2804,7 +2823,7 @@ FROM order_sub
 }
 ```
 
-#### 4.2.3 全局聚合响应（无分组）
+#### 5.2.3 全局聚合响应（无分组）
 
 ```json
 {
@@ -2838,7 +2857,7 @@ FROM order_sub
 }
 ```
 
-#### 4.2.4 带分组的聚合响应
+#### 5.2.4 带分组的聚合响应
 
 ```json
 {
@@ -2886,7 +2905,7 @@ FROM order_sub
 
 ---
 
-### 4.3 聚合示例
+### 5.3 聚合示例
 
 ```json
 {
@@ -2925,7 +2944,7 @@ FROM order_sub
 
 ---
 
-## 5. 创建操作（CREATE）
+## 6. 创建操作（CREATE）
 
 > **前置说明**：CREATE 操作使用统一顶层结构，详见 [第2章统一顶层结构](#2-统一顶层结构)：
 > - `objects` - 对象实例定义（第2.9节）
@@ -2934,7 +2953,7 @@ FROM order_sub
 
 CREATE 操作使用 `mutation` 块定义创建数据，支持单对象创建和批量创建。
 
-### 5.1 操作概述
+### 6.1 操作概述
 
 CREATE 操作用于创建新对象，支持单对象创建和批量创建。
 
@@ -2956,7 +2975,7 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 5.2 完整结构定义（JSON Schema）
+### 6.2 完整结构定义（JSON Schema）
 
 以下 JSON Schema 定义了 CREATE 操作的有效结构：
 
@@ -3015,7 +3034,7 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
 }
 ```
 
-### 5.3 字段说明
+### 6.3 字段说明
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -3031,7 +3050,7 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
 | mutation.batch[].properties | object | 是 | 单个对象的属性 |
 | mutation.options | object | 否 | 创建选项 |
 
-### 5.4 创建选项（options）
+### 6.4 创建选项（options）
 
 | 选项 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
@@ -3042,9 +3061,9 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
 | onDuplicateKey | string | "error" | 主键冲突处理：error / update / ignore |
 | returnCreated | boolean | false | 是否返回创建的对象数据 |
 
-### 5.5 单对象创建
+### 6.5 单对象创建
 
-#### 5.5.1 指定主键创建
+#### 6.5.1 指定主键创建
 
 ```json
 {
@@ -3070,7 +3089,7 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
 }
 ```
 
-#### 5.5.2 复合主键创建
+#### 6.5.2 复合主键创建
 
 ```json
 {
@@ -3096,7 +3115,7 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
 }
 ```
 
-#### 5.5.3 无指定主键创建（自动生成）
+#### 6.5.3 无指定主键创建（自动生成）
 
 ```json
 {
@@ -3119,9 +3138,9 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
 }
 ```
 
-### 5.6 批量创建
+### 6.6 批量创建
 
-#### 5.6.1 批量创建简单主键对象
+#### 6.6.1 批量创建简单主键对象
 
 ```json
 {
@@ -3168,7 +3187,7 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
 }
 ```
 
-#### 5.6.2 批量创建复合主键对象
+#### 6.6.2 批量创建复合主键对象
 
 ```json
 {
@@ -3206,7 +3225,7 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
 }
 ```
 
-### 5.7 批量创建选项示例
+### 6.7 批量创建选项示例
 
 ```json
 {
@@ -3231,9 +3250,9 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
 }
 ```
 
-### 5.8 CREATE 响应格式
+### 6.8 CREATE 响应格式
 
-#### 5.8.1 成功响应
+#### 6.8.1 成功响应
 
 ```json
 {
@@ -3266,7 +3285,7 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
 }
 ```
 
-#### 5.8.2 部分失败响应
+#### 6.8.2 部分失败响应
 
 ```json
 {
@@ -3307,7 +3326,7 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
 }
 ```
 
-#### 5.8.3 主键冲突响应
+#### 6.8.3 主键冲突响应
 
 ```json
 {
@@ -3324,7 +3343,7 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
 }
 ```
 
-### 5.9 字段类型支持（Follow本体模型）
+### 6.9 字段类型支持（Follow本体模型）
 
 | 类型 | 示例值 | 说明 |
 |------|--------|------|
@@ -3337,7 +3356,7 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
 | datetime | "2024-03-01T10:00:00Z" | ISO 8601 日期时间 |
 | null | null | 空值 |
 
-### 5.10 CREATE 操作速查
+### 6.10 CREATE 操作速查
 
 | 场景 | 必填字段 | 可选字段 |
 |------|----------|----------|
@@ -3347,7 +3366,7 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
 
 ---
 
-## 6. 更新操作（UPDATE）
+## 7. 更新操作（UPDATE）
 
 > **前置说明**：UPDATE 操作使用统一顶层结构，详见 [第2章统一顶层结构](#2-统一顶层结构)：
 > - `objects` - 对象实例定义，支持主键或条件定位（第2.9节）
@@ -3357,7 +3376,7 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
 
 UPDATE 操作使用 `mutation` 块定义更新内容，使用 `conditions` 定义批量更新条件。
 
-### 6.1 操作概述
+### 7.1 操作概述
 
 UPDATE 操作用于更新现有对象的属性，支持：
 - 单对象更新（通过 `objects[].by` 指定主键）
@@ -3384,7 +3403,7 @@ UPDATE 操作用于更新现有对象的属性，支持：
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 6.2 完整结构定义（JSON Schema）
+### 7.2 完整结构定义（JSON Schema）
 
 以下 JSON Schema 定义了 UPDATE 操作的有效结构：
 
@@ -3439,7 +3458,7 @@ UPDATE 操作用于更新现有对象的属性，支持：
 }
 ```
 
-### 6.3 字段说明
+### 7.3 字段说明
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -3454,7 +3473,7 @@ UPDATE 操作用于更新现有对象的属性，支持：
 | mutation.arrayOps | object | set/unset/increment/arrayOps 至少一个 | 数组操作 |
 | mutation.options | object | 否 | 更新选项 |
 
-### 6.4 更新选项（options）
+### 7.4 更新选项（options）
 
 | 选项 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
@@ -3464,9 +3483,9 @@ UPDATE 操作用于更新现有对象的属性，支持：
 | returnBeforeState | boolean | false | 是否返回更新前的数据 |
 | validationMode | string | "strict" | strict=严格验证, relaxed=宽松验证 |
 
-### 6.5 单对象更新
+### 7.5 单对象更新
 
-#### 6.5.1 简单主键更新
+#### 7.5.1 简单主键更新
 
 ```json
 {
@@ -3501,7 +3520,7 @@ UPDATE 操作用于更新现有对象的属性，支持：
 | unset | 要移除的字段列表，设为 null 或删除 |
 | increment | 数值字段递增，支持正数（增）或负数（减） |
 
-#### 6.5.2 复合主键更新
+#### 7.5.2 复合主键更新
 
 ```json
 {
@@ -3524,7 +3543,7 @@ UPDATE 操作用于更新现有对象的属性，支持：
 }
 ```
 
-### 6.6 批量条件更新
+### 7.6 批量条件更新
 
 ```json
 {
@@ -3550,7 +3569,7 @@ UPDATE 操作用于更新现有对象的属性，支持：
 }
 ```
 
-### 6.7 表达式更新
+### 7.7 表达式更新
 
 支持使用表达式动态计算字段值：
 
@@ -3592,7 +3611,7 @@ UPDATE 操作用于更新现有对象的属性，支持：
 | $now | 当前时间 | `$now()` |
 | $uuid | 生成 UUID | `$uuid()` |
 
-### 6.8 条件更新（case）
+### 7.8 条件更新（case）
 
 根据条件设置不同的值：
 
@@ -3638,7 +3657,7 @@ UPDATE 操作用于更新现有对象的属性，支持：
 }
 ```
 
-### 6.9 数组更新操作
+### 7.9 数组更新操作
 
 ```json
 {
@@ -3682,7 +3701,7 @@ UPDATE 操作用于更新现有对象的属性，支持：
 | $pullAll | 移除多个 | `$pullAll: ["a", "b"]` |
 | $inc | 递增 | `$inc: 1` |
 
-### 6.10 并发控制
+### 7.10 并发控制
 
 ```json
 {
@@ -3705,9 +3724,9 @@ UPDATE 操作用于更新现有对象的属性，支持：
 }
 ```
 
-### 6.11 UPDATE 响应格式
+### 7.11 UPDATE 响应格式
 
-#### 6.11.1 成功响应
+#### 7.11.1 成功响应
 
 ```json
 {
@@ -3734,7 +3753,7 @@ UPDATE 操作用于更新现有对象的属性，支持：
 }
 ```
 
-#### 6.11.2 批量更新响应
+#### 7.11.2 批量更新响应
 
 ```json
 {
@@ -3755,7 +3774,7 @@ UPDATE 操作用于更新现有对象的属性，支持：
 }
 ```
 
-#### 6.11.3 并发冲突响应
+#### 7.11.3 并发冲突响应
 
 ```json
 {
@@ -3774,7 +3793,7 @@ UPDATE 操作用于更新现有对象的属性，支持：
 }
 ```
 
-#### 6.11.4 对象不存在响应
+#### 7.11.4 对象不存在响应
 
 ```json
 {
@@ -3791,7 +3810,7 @@ UPDATE 操作用于更新现有对象的属性，支持：
 }
 ```
 
-### 6.12 UPDATE 操作速查
+### 7.12 UPDATE 操作速查
 
 | 场景 | 必填字段 | 说明 |
 |------|----------|------|
@@ -3805,14 +3824,14 @@ UPDATE 操作用于更新现有对象的属性，支持：
 
 ---
 
-## 7. 删除操作（DELETE）
+## 8. 删除操作（DELETE）
 
 > **前置说明**：DELETE 操作使用统一顶层结构，详见 [第2章统一顶层结构](#2-统一顶层结构)：
 > - `objects` - 对象实例定义，支持主键或条件定位（第2.9节）
 > - `conditions` - 统一条件表达式，用于批量条件删除（第2.3节）
 > - `mutation` - 变更操作定义（本章节）
 
-### 7.1 操作概述
+### 8.1 操作概述
 
 DELETE 操作用于删除对象，支持：
 - 单对象删除（通过 by 或 byComposite）
@@ -3844,7 +3863,7 @@ DELETE 操作用于删除对象，支持：
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 7.2 完整结构定义（JSON Schema）
+### 8.2 完整结构定义（JSON Schema）
 
 以下 JSON Schema 定义了 DELETE 操作的有效结构：
 
@@ -3904,7 +3923,7 @@ DELETE 操作用于删除对象，支持：
 }
 ```
 
-### 7.3 字段说明
+### 8.3 字段说明
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -3919,7 +3938,7 @@ DELETE 操作用于删除对象，支持：
 | mutation.returnDeleted | boolean | 否 | 是否返回删除的对象数据，默认 false |
 | mutation.limit | integer | 否 | 限制删除数量（防止误删） |
 
-### 7.4 删除选项
+### 8.4 删除选项
 
 | 选项 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
@@ -3930,9 +3949,9 @@ DELETE 操作用于删除对象，支持：
 | returnDeleted | boolean | false | 是否返回删除的对象数据 |
 | limit | integer | null | 限制删除数量（防止误删） |
 
-### 7.5 单对象删除
+### 8.5 单对象删除
 
-#### 7.5.1 简单主键软删除
+#### 8.5.1 简单主键软删除
 
 ```json
 {
@@ -3951,7 +3970,7 @@ DELETE 操作用于删除对象，支持：
 }
 ```
 
-#### 7.5.2 复合主键软删除
+#### 8.5.2 复合主键软删除
 
 ```json
 {
@@ -3969,7 +3988,7 @@ DELETE 操作用于删除对象，支持：
 }
 ```
 
-#### 7.5.3 硬删除
+#### 8.5.3 硬删除
 
 ```json
 {
@@ -3988,7 +4007,7 @@ DELETE 操作用于删除对象，支持：
 }
 ```
 
-### 7.6 批量条件删除
+### 8.6 批量条件删除
 
 ```json
 {
@@ -4012,9 +4031,9 @@ DELETE 操作用于删除对象，支持：
 }
 ```
 
-### 7.7 级联删除
+### 8.7 级联删除
 
-#### 7.7.1 级联删除关联对象
+#### 8.7.1 级联删除关联对象
 
 ```json
 {
@@ -4035,7 +4054,7 @@ DELETE 操作用于删除对象，支持：
 }
 ```
 
-#### 7.7.2 只删除指定关联
+#### 8.7.2 只删除指定关联
 
 ```json
 {
@@ -4056,9 +4075,9 @@ DELETE 操作用于删除对象，支持：
 }
 ```
 
-### 7.8 DELETE 响应格式
+### 8.8 DELETE 响应格式
 
-#### 7.8.1 成功响应
+#### 8.8.1 成功响应
 
 ```json
 {
@@ -4091,7 +4110,7 @@ DELETE 操作用于删除对象，支持：
 }
 ```
 
-#### 7.8.2 级联删除响应
+#### 8.8.2 级联删除响应
 
 ```json
 {
@@ -4122,7 +4141,7 @@ DELETE 操作用于删除对象，支持：
 }
 ```
 
-#### 7.8.3 批量删除响应
+#### 8.8.3 批量删除响应
 
 ```json
 {
@@ -4143,7 +4162,7 @@ DELETE 操作用于删除对象，支持：
 }
 ```
 
-#### 7.8.4 对象不存在响应
+#### 8.8.4 对象不存在响应
 
 ```json
 {
@@ -4160,7 +4179,7 @@ DELETE 操作用于删除对象，支持：
 }
 ```
 
-### 7.9 软删除内部实现
+### 8.9 软删除内部实现
 
 软删除实际上是对对象进行更新操作：
 
@@ -4176,7 +4195,7 @@ DELETE 操作用于删除对象，支持：
 }
 ```
 
-### 7.10 DELETE 操作速查
+### 8.10 DELETE 操作速查
 
 | 场景 | 必填字段 | 可选字段 |
 |------|----------|----------|
@@ -4186,7 +4205,7 @@ DELETE 操作用于删除对象，支持：
 | 级联删除 | objects[] + mutation.cascade | mutation.cascadeLinks, mutation.returnDeleted |
 | 硬删除 | objects[] + mutation.deleteMode: "hard" | mutation.permanent |
 
-### 7.11 最佳实践
+### 8.11 最佳实践
 
 1. **优先使用软删除**：除非有明确需求，否则使用 `deleteMode: "soft"`
 2. **限制批量删除数量**：使用 `limit` 防止误删大量数据
@@ -4195,13 +4214,13 @@ DELETE 操作用于删除对象，支持：
 
 ---
 
-## 8. 插入或更新（UPSERT）
+## 9. 插入或更新（UPSERT）
 
 > **前置说明**：UPSERT 操作使用统一顶层结构，详见 [第2章统一顶层结构](#2-统一顶层结构)：
 > - `objects` - 对象实例定义，支持主键或条件定位（第2.9节）
 > - `mutation` - 变更操作定义（本章节）
 
-### 8.1 操作概述
+### 9.1 操作概述
 
 UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPDATE 的组合。适用于：
 - 数据同步场景（同步数据到本体模型）
@@ -4231,7 +4250,7 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 8.2 完整结构定义（JSON Schema）
+### 9.2 完整结构定义（JSON Schema）
 
 ```json
 {
@@ -4277,7 +4296,7 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 }
 ```
 
-### 8.3 字段说明
+### 9.3 字段说明
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -4291,7 +4310,7 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 | mutation.onUpdate | object | onCreate/onUpdate 至少一个 | 存在时更新的属性 |
 | mutation.options | object | 否 | UPSERT 选项 |
 
-### 8.4 UPSERT 选项（options）
+### 9.4 UPSERT 选项（options）
 
 | 选项 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
@@ -4302,7 +4321,7 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 | returnResult | boolean | true | 是否返回结果详情 |
 | skipValidation | boolean | false | 跳过数据验证 |
 
-### 8.5 合并策略（mergeStrategy）
+### 9.5 合并策略（mergeStrategy）
 
 | 策略 | 说明 | 示例场景 |
 |------|------|----------|
@@ -4311,9 +4330,9 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 | **keepFirst** | 保留原值 | 只创建不覆盖 |
 | **keepLast** | 保留新值 | 以新数据为准 |
 
-### 8.6 单对象 UPSERT
+### 9.6 单对象 UPSERT
 
-#### 8.6.1 按主键 UPSERT
+#### 9.6.1 按主键 UPSERT
 
 ```json
 {
@@ -4343,7 +4362,7 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 }
 ```
 
-#### 8.6.2 复合主键 UPSERT
+#### 9.6.2 复合主键 UPSERT
 
 ```json
 {
@@ -4370,9 +4389,9 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 }
 ```
 
-### 8.7 多字段匹配 UPSERT
+### 9.7 多字段匹配 UPSERT
 
-#### 8.7.1 按多个字段匹配
+#### 9.7.1 按多个字段匹配
 
 ```json
 {
@@ -4406,7 +4425,7 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 }
 ```
 
-#### 8.7.2 部分更新嵌套对象（merge 策略）
+#### 9.7.2 部分更新嵌套对象（merge 策略）
 
 ```json
 {
@@ -4446,7 +4465,7 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 }
 ```
 
-### 8.8 批量 UPSERT
+### 9.8 批量 UPSERT
 
 ```json
 {
@@ -4484,9 +4503,9 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 }
 ```
 
-### 8.9 UPSERT 响应格式
+### 9.9 UPSERT 响应格式
 
-#### 8.9.1 创建新对象响应
+#### 9.9.1 创建新对象响应
 
 ```json
 {
@@ -4510,7 +4529,7 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 }
 ```
 
-#### 8.9.2 更新现有对象响应
+#### 9.9.2 更新现有对象响应
 
 ```json
 {
@@ -4533,7 +4552,7 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 }
 ```
 
-#### 8.9.3 批量 UPSERT 响应
+#### 9.9.3 批量 UPSERT 响应
 
 ```json
 {
@@ -4563,7 +4582,7 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 }
 ```
 
-#### 8.9.4 匹配失败响应
+#### 9.9.4 匹配失败响应
 
 ```json
 {
@@ -4578,7 +4597,7 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 }
 ```
 
-### 8.10 UPSERT 操作速查
+### 9.10 UPSERT 操作速查
 
 | 场景 | 必填字段 | 可选字段 |
 |------|----------|----------|
@@ -4588,7 +4607,7 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 | 批量 UPSERT | target.objectType, mutation.batch[].matchOn, mutation.onCreate/onUpdate | options |
 | 部分更新嵌套 | mutation + mergeStrategy: "merge" | - |
 
-### 8.11 最佳实践
+### 9.11 最佳实践
 
 1. **幂等性保证**：使用相同的 by/matchOn 执行多次，结果一致
 2. **选择合适的匹配方式**：
@@ -4600,7 +4619,7 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 4. **批量操作**：大数据量使用 `continueOnFailure: true` 处理部分失败
 
 
-## 9. 关联对象查询（LINKED_OBJECT_QUERY）
+## 10. 关联对象查询（LINKED_OBJECT_QUERY）
 
 > **前置说明**：LIST_LINKED_OBJECTS / GET_LINKED_OBJECT 操作使用统一顶层结构，详见 [第2章统一顶层结构](#2-统一顶层结构)：
 > - `objects` - 对象实例定义（第2.9节）
@@ -4613,7 +4632,7 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 
 **LINKED 操作使用 `linkQuery` 专用块**，可通过 ASSOCIATION_QUERY 实现，保留此快捷操作以便 API 路由兼容。
 
-### 9.1 Operation 类型
+### 10.1 Operation 类型
 
 OQL 提供了两个专门的关联查询 Operation：
 
@@ -4622,11 +4641,11 @@ OQL 提供了两个专门的关联查询 Operation：
 | **LIST_LINKED_OBJECTS** | 列出关联对象列表 | `POST /objects/list/linked/{objectType}/{by}/{linkType}` |
 | **GET_LINKED_OBJECT** | 获取特定关联对象 | `POST /objects/query/linked/{objectType}/{by}/{linkType}/{linkedObjectType}` |
 
-### 9.2 LIST_LINKED_OBJECTS - 列出关联对象列表（可被 ASSOCIATION_QUERY 替代）
+### 10.2 LIST_LINKED_OBJECTS - 列出关联对象列表（可被 ASSOCIATION_QUERY 替代）
 
 > **说明**：此操作可通过 ASSOCIATION_QUERY 实现。保留此快捷操作以便 API 路由兼容。
 
-#### 9.2.1 基础结构
+#### 10.2.1 基础结构
 
 ```json
 {
@@ -4643,7 +4662,7 @@ OQL 提供了两个专门的关联查询 Operation：
 }
 ```
 
-#### 9.2.2 完整结构
+#### 10.2.2 完整结构
 
 ```json
 {
@@ -4673,7 +4692,7 @@ OQL 提供了两个专门的关联查询 Operation：
 }
 ```
 
-#### 9.2.3 字段定义
+#### 10.2.3 字段定义
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -4684,7 +4703,7 @@ OQL 提供了两个专门的关联查询 Operation：
 | **orders** | array | 否 | 排序定义（详见第2.5节） |
 | **maxResults** | integer | 否 | 最大返回数量，默认 100000，最大 100000 |
 
-#### 9.2.4 filterObjectType - 源对象类型属性过滤
+#### 10.2.4 filterObjectType - 源对象类型属性过滤
 
 在 conditions 中通过 `objectType` 指定源对象类型，使用 `property`、`operator`、`values` 定义过滤条件：
 
@@ -4698,7 +4717,7 @@ OQL 提供了两个专门的关联查询 Operation：
   }
 }
 
-#### 9.2.5 filterLinkType - 关联类型属性过滤
+#### 10.2.5 filterLinkType - 关联类型属性过滤
 
 在 conditions 中通过 `objectType` 指定关联类型名称，`property` 指定关联类型属性（如 structRelType、bizRelType）：
 
@@ -4713,19 +4732,19 @@ OQL 提供了两个专门的关联查询 Operation：
 }
 
 
-#### 9.2.6 完整示例
+#### 10.2.6 完整示例
 
 > **完整示例**见 [9.6.1 查询订单的所有商品项](#961-查询订单的所有商品项)，该节包含请求与响应的完整示例。
 
 ---
 
-### 9.3 GET_LINKED_OBJECT - 获取特定关联对象（可被 ASSOCIATION_QUERY 替代）
+### 10.3 GET_LINKED_OBJECT - 获取特定关联对象（可被 ASSOCIATION_QUERY 替代）
 
 > **说明**：此操作可通过 ASSOCIATION_QUERY 实现。保留此快捷操作以便 API 路由兼容。
 
 **使用场景**：基于 relationships 和 linkedObjectKey 查询与源对象关联的特定目标对象。
 
-#### 9.3.1 基础结构
+#### 10.3.1 基础结构
 
 ```json
 {
@@ -4745,7 +4764,7 @@ OQL 提供了两个专门的关联查询 Operation：
 }
 ```
 
-#### 9.3.2 完整结构
+#### 10.3.2 完整结构
 
 ```json
 {
@@ -4775,7 +4794,7 @@ OQL 提供了两个专门的关联查询 Operation：
 }
 ```
 
-#### 9.3.3 字段定义
+#### 10.3.3 字段定义
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -4785,7 +4804,7 @@ OQL 提供了两个专门的关联查询 Operation：
 | **conditions** | object | 否 | 统一条件表达式（详见第2.3节），可对源对象类型和目标对象类型进行属性过滤 |
 | **returns** | object | 否 | 返回字段投影（详见第2.4节） |
 
-#### 9.3.4 GET_LINKED_OBJECT 完整示例
+#### 10.3.4 GET_LINKED_OBJECT 完整示例
 
 ```json
 {
@@ -4836,7 +4855,7 @@ OQL 提供了两个专门的关联查询 Operation：
 }
 ```
 
-#### 9.3.5 关联不存在响应（404 Not Found）
+#### 10.3.5 关联不存在响应（404 Not Found）
 
 ```json
 {
@@ -4856,7 +4875,7 @@ OQL 提供了两个专门的关联查询 Operation：
 
 ---
 
-### 9.4 反向关联查询
+### 10.4 反向关联查询
 
 部分关联支持反向查询，即从目标对象查询源对象。
 
@@ -4892,7 +4911,7 @@ OQL 提供了两个专门的关联查询 Operation：
 
 ---
 
-### 9.5 关联查询速查
+### 10.5 关联查询速查
 
 | Operation | objects 必填 | 必填字段 | 说明 |
 |-----------|--------------|----------|------|
@@ -4903,9 +4922,9 @@ OQL 提供了两个专门的关联查询 Operation：
 
 ---
 
-### 9.6 关联查询完整示例
+### 10.6 关联查询完整示例
 
-#### 9.6.1 查询订单的所有商品项
+#### 10.6.1 查询订单的所有商品项
 
 ```json
 {
@@ -4935,7 +4954,7 @@ OQL 提供了两个专门的关联查询 Operation：
 }
 ```
 
-#### 9.6.2 查询用户的所有订单
+#### 10.6.2 查询用户的所有订单
 
 ```json
 {
@@ -4965,7 +4984,7 @@ OQL 提供了两个专门的关联查询 Operation：
 }
 ```
 
-#### 9.6.3 获取特定关联对象（带并发控制）
+#### 10.6.3 获取特定关联对象（带并发控制）
 
 ```json
 {
@@ -4991,7 +5010,7 @@ OQL 提供了两个专门的关联查询 Operation：
 }
 ```
 
-#### 9.6.4 反向查询（某商品的所有订单）
+#### 10.6.4 反向查询（某商品的所有订单）
 
 ```json
 {
@@ -5048,7 +5067,7 @@ OQL 提供了两个专门的关联查询 Operation：
 
 ---
 
-## 10. 关联查询（ASSOCIATION_QUERY）
+## 11. 关联查询（ASSOCIATION_QUERY）
 
 > **说明**：OQL v1.8 新增的图关联查询操作，支持复杂图遍历、多跳关系查询。
 
@@ -5060,7 +5079,7 @@ OQL 提供了两个专门的关联查询 Operation：
 > - `orders` - 排序定义（第2.5节）
 > - `associationQuery` - 关联查询专用块（本章节 10.2.3.2）
 
-### 10.1 Operation 类型
+### 11.1 Operation 类型
 
 ASSOCIATION_QUERY 是 OQL v1.8 专门为图关联查询设计的操作类型，支持：
 - **多对象查询**：从多个对象类型出发进行关联查询
@@ -5070,9 +5089,9 @@ ASSOCIATION_QUERY 是 OQL v1.8 专门为图关联查询设计的操作类型，�
 
 ---
 
-### 10.2 详细规范与示例
+### 11.2 详细规范与示例
 
-#### 10.2.1 概述与使用场景
+#### 11.2.1 概述与使用场景
 
 关联查询操作用于**批量多对象 + 多关联关系**的复杂查询场景。当需要给定一组对象（如同一类别的多个设备），查询它们之间的关联关系时，使用 `ASSOCIATION_QUERY` 操作。
 
@@ -5140,7 +5159,7 @@ ASSOCIATION_QUERY 是 OQL v1.8 专门为图关联查询设计的操作类型，�
 | LIST_LINKS            | ❌ 仅单对象  | ✅            | 关联对象              |
 | **ASSOCIATION_QUERY** | ✅ 多对象    | ✅            | 对象+关系完整关联结果 |
 
-#### 10.2.2 Operation 类型
+#### 11.2.2 Operation 类型
 
 OQL 提供了 `ASSOCIATION_QUERY` 操作类型：
 
@@ -5148,7 +5167,7 @@ OQL 提供了 `ASSOCIATION_QUERY` 操作类型：
 | --------------------- | -------------- | --------------------- |
 | **ASSOCIATION_QUERY** | 多对象关联查询 | `POST /objects/query` |
 
-#### 10.2.3 完整结构定义
+#### 11.2.3 完整结构定义
 
 > **使用说明**：本节提供所有 DSL 参数的完整定义汇总。如需了解参数的使用规则、详细约束和示例，请参见后续章节 [10.2.4](#1024-字段详细说明)。
 >
@@ -5436,7 +5455,7 @@ action 定义了查询的执行方式，根据数据源类型有不同的关键�
 }
 ```
 
-#### 10.2.4 字段详细说明
+#### 11.2.4 字段详细说明
 
 > **说明**：图查询仅支持对象间关系（object-to-object），所有关系均为点与点之间的关联。关系类型定义请参见 [10.2.3.4](#10734-关系类型枚举)。
 >
@@ -5529,7 +5548,7 @@ $$.s.id AS s_id, $$.s.name AS s_name
 - [10.2.9](#1029-dsl-与-nebulagraph-ngql-对应关系)：DSL 与 nGQL 对应关系
 - [10.2.10](#10210-错误码说明)：错误码说明
 
-#### 10.2.5 查询场景示例
+#### 11.2.5 查询场景示例
 
 ##### 10.2.5.1 示例一：多设备拓扑关系查询
 
@@ -5855,7 +5874,7 @@ YIELD
 GROUP BY $^.d.id
 ```
 
-#### 10.2.6 响应格式
+#### 11.2.6 响应格式
 
 ##### 10.2.6.1 响应结构规范
 
@@ -6223,7 +6242,7 @@ GROUP BY $^.d.id
 - `properties` 字段包含从 returns 配置中指定的属性值
 - metadata 中汇总了查询统计信息，便于分页和性能监控
 
-#### 10.2.7 GQL 转换规则
+#### 11.2.7 GQL 转换规则
 
 ##### 10.2.7.1 翻译引擎处理流程
 
@@ -6438,7 +6457,7 @@ YIELD
 ```
 
 
-#### 10.2.8 ASSOCIATION_QUERY 完整示例
+#### 11.2.8 ASSOCIATION_QUERY 完整示例
 
 **请求**（多对象类型 + 多关系查询）：
 
@@ -6629,7 +6648,7 @@ YIELD
   installedOn.cardinality AS install_cardinality
 ```
 
-#### 10.2.9 DSL 与 NebulaGraph nGQL 对应关系
+#### 11.2.9 DSL 与 NebulaGraph nGQL 对应关系
 
 本节说明 OQL DSL 参数与 NebulaGraph 原生 nGQL 语句的对应关系，帮助理解 DSL 到 GQL 的转换逻辑。
 
@@ -7043,7 +7062,7 @@ FETCH PROP ON player "player100" YIELD properties(vertex)
 MATCH (v:player) WHERE id(v) == "player100" RETURN v.player
 ```
 
-#### 10.2.10 错误码说明
+#### 11.2.10 错误码说明
 
 ASSOCIATION_QUERY 操作可能返回的错误码：
 
@@ -7057,14 +7076,14 @@ ASSOCIATION_QUERY 操作可能返回的错误码：
 
 ---
 
-## 11. 批量操作（BATCH）
+## 12. 批量操作（BATCH）
 
 > **前置说明**：BATCH 操作使用统一顶层结构，详见 [第2章统一顶层结构](#2-统一顶层结构)：
 > - `objects` - 对象实例定义，用于指定操作的目标对象类型
 > - `mutation` - 变更操作定义（本章节 11.2）
 > - `links` - 关联操作定义（本章节 11.3）
 
-### 11.1 操作概述
+### 12.1 操作概述
 
 BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批量导入（IMPORT）**和**批量导出（EXPORT）**。
 
@@ -7090,7 +7109,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### 11.2 完整结构定义（JSON Schema）
+### 12.2 完整结构定义（JSON Schema）
 
 ```json
 {
@@ -7141,7 +7160,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-### 11.3 字段说明
+### 12.3 字段说明
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|:----:|------|
@@ -7158,9 +7177,9 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 | **mutation.batch[].arrayOps** | object | 否 | 数组操作（push/pull） |
 | **links** | object | 否 | 关联操作定义 |
 
-### 11.4 事务性批量操作
+### 12.4 事务性批量操作
 
-#### 11.4.1 基础结构
+#### 12.4.1 基础结构
 
 ```json
 {
@@ -7199,7 +7218,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-#### 11.4.2 混合操作类型
+#### 12.4.2 混合操作类型
 
 ```json
 {
@@ -7239,7 +7258,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-### 11.5 非事务批量操作
+### 12.5 非事务批量操作
 
 ```json
 {
@@ -7274,9 +7293,9 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-### 11.6 批量对象操作
+### 12.6 批量对象操作
 
-#### 11.6.1 批量创建（BATCH_CREATE）
+#### 12.6.1 批量创建（BATCH_CREATE）
 
 批量创建多个对象，支持不同对象类型：
 
@@ -7324,7 +7343,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-#### 11.6.2 批量更新（BATCH_UPDATE）
+#### 12.6.2 批量更新（BATCH_UPDATE）
 
 批量更新多个对象：
 
@@ -7364,7 +7383,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-#### 11.6.3 批量删除（BATCH_DELETE）
+#### 12.6.3 批量删除（BATCH_DELETE）
 
 批量删除多个对象：
 
@@ -7394,7 +7413,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-#### 11.6.4 条件批量操作
+#### 12.6.4 条件批量操作
 
 根据条件批量操作对象：
 
@@ -7422,9 +7441,9 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-### 11.7 批量关联操作（BATCH_LINKS）
+### 12.7 批量关联操作（BATCH_LINKS）
 
-#### 11.7.1 批量创建关联
+#### 12.7.1 批量创建关联
 
 ```json
 {
@@ -7457,7 +7476,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-#### 11.7.2 批量删除关联
+#### 12.7.2 批量删除关联
 
 ```json
 {
@@ -7483,7 +7502,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-#### 11.7.3 批量更新关联属性
+#### 12.7.3 批量更新关联属性
 
 ```json
 {
@@ -7506,11 +7525,11 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-### 11.8 数据导入（IMPORT）
+### 12.8 数据导入（IMPORT）
 
 数据导入操作用于从外部数据源批量导入对象数据。
 
-#### 11.8.1 完整结构
+#### 12.8.1 完整结构
 
 ```json
 {
@@ -7547,7 +7566,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-#### 11.8.2 字段说明
+#### 12.8.2 字段说明
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|:----:|------|
@@ -7583,7 +7602,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 | join | 合并数组 | `"transform": "join:-"` |
 | lookup | 查找映射 | `"transform": "lookup:statusMap"` |
 
-#### 11.8.3 CSV 导入示例
+#### 12.8.3 CSV 导入示例
 
 ```json
 {
@@ -7614,7 +7633,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-#### 11.8.4 JSON 导入示例
+#### 12.8.4 JSON 导入示例
 
 ```json
 {
@@ -7645,11 +7664,11 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-### 11.9 数据导出（EXPORT）
+### 12.9 数据导出（EXPORT）
 
 数据导出操作用于批量导出对象数据到外部系统。
 
-#### 11.9.1 完整结构
+#### 12.9.1 完整结构
 
 ```json
 {
@@ -7689,7 +7708,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-#### 11.9.2 字段说明
+#### 12.9.2 字段说明
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|:----:|------|
@@ -7711,7 +7730,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 | database | connectionString, table, mode | 数据库连接字符串、目标表名、写入模式 |
 | api | url, method, headers, batchSize | API 地址、请求方法、请求头、批量大小 |
 
-#### 11.9.3 Excel 导出示例
+#### 12.9.3 Excel 导出示例
 
 ```json
 {
@@ -7741,7 +7760,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-#### 11.9.4 JSON 导出示例
+#### 12.9.4 JSON 导出示例
 
 ```json
 {
@@ -7773,7 +7792,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-#### 11.9.5 API 导出示例
+#### 12.9.5 API 导出示例
 
 ```json
 {
@@ -7809,7 +7828,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-### 11.10 批量关联导出
+### 12.10 批量关联导出
 
 支持导出对象之间的关联关系：
 
@@ -7840,9 +7859,9 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-### 11.11 响应格式
+### 12.11 响应格式
 
-#### 11.11.1 批量操作响应
+#### 12.11.1 批量操作响应
 
 ```json
 {
@@ -7875,7 +7894,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-#### 11.11.2 导入响应
+#### 12.11.2 导入响应
 
 ```json
 {
@@ -7895,7 +7914,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-#### 11.11.3 导出响应
+#### 12.11.3 导出响应
 
 ```json
 {
@@ -7912,7 +7931,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-### 11.12 BATCH 操作速查
+### 12.12 BATCH 操作速查
 
 | 场景 | 必填字段 | 可选字段 |
 |------|----------|----------|
@@ -7925,7 +7944,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 | 数据导入 | objects, mutation.import.source, mutation.import.mapping | onConflict, batchSize |
 | 数据导出 | objects, mutation.export.destination | conditions, returns, orders |
 
-### 11.13 最佳实践
+### 12.13 最佳实践
 
 1. **事务控制**：
     - 相关联的操作使用 `transaction: true`
@@ -7949,9 +7968,9 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ---
 
-## 12. 执行选项（options）
+## 13. 执行选项（options）
 
-### 12.1 通用选项
+### 13.1 通用选项
 
 ```json
 {
@@ -7977,7 +7996,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 | returnData | boolean | false | 是否返回数据 |
 | returnBeforeState | boolean | false | 是否返回更新前状态 |
 
-### 12.2 并发控制
+### 13.2 并发控制
 
 ```json
 {
@@ -7999,9 +8018,9 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ---
 
-## 13. 表达式语法
+## 14. 表达式语法
 
-### 13.1 表达式操作符
+### 14.1 表达式操作符
 
 ```json
 {
@@ -8024,7 +8043,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 | 条件 | case | 条件表达式 |
 | 类型 | cast | 类型转换 |
 
-### 13.2 内置函数
+### 14.2 内置函数
 
 | 函数 | 说明 | 示例 |
 |------|------|------|
@@ -8035,9 +8054,9 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ---
 
-## 14. 完整示例
+## 15. 完整示例
 
-### 14.1 订单处理（复杂事务）
+### 15.1 订单处理（复杂事务）
 
 ```json
 {
@@ -8096,7 +8115,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-### 14.2 产品搜索聚合
+### 15.2 产品搜索聚合
 
 ```json
 {
@@ -8135,7 +8154,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-### 14.3 批量导入导出
+### 15.3 批量导入导出
 
 ```json
 {
@@ -8169,7 +8188,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-### 14.4 关联查询示例
+### 15.4 关联查询示例
 
 ```json
 {
@@ -8199,7 +8218,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 }
 ```
 
-### 14.5 聚合统计示例
+### 15.5 聚合统计示例
 
 ```json
 {
@@ -8232,9 +8251,9 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ---
 
-## 15. Operation 类型总览
+## 16. Operation 类型总览
 
-### 15.1 Operation 分类
+### 16.1 Operation 分类
 
 OQL 定义了以下 Operation 类型：
 
@@ -8251,7 +8270,7 @@ OQL 定义了以下 Operation 类型：
 | **批量类** | BATCH | 批量操作 | 组合多个写操作 |
 | | **SUBGRAPH** | **子图操作** | **批量多对象 + 多关联** | **复杂业务场景（见 v1.2 文档）** |
 
-### 15.2 Operation 能力对比
+### 16.2 Operation 能力对比
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -8268,7 +8287,7 @@ OQL 定义了以下 Operation 类型：
 └─────────────────┴───────────────────────────────────────────────────────────┘
 ```
 
-### 15.3 与 Palantir SearchQL 对比
+### 16.3 与 Palantir SearchQL 对比
 
 | 特性 | Palantir SearchQL | OQL v1.8 |
 |------|-------------------|----------|
@@ -8292,9 +8311,9 @@ OQL 定义了以下 Operation 类型：
 
 ---
 
-## 16. DSL 翻译引擎转换示例
+## 17. DSL 翻译引擎转换示例
 
-### 16.1 翻译引擎概述
+### 17.1 翻译引擎概述
 
 DSL 翻译引擎负责将 OQL 转换为目标存储系统的查询语言：
 - **关系型数据库** → 生成标准 SQL（MySQL、Gauss V3、PostgreSQL）
@@ -8329,9 +8348,9 @@ DSL 翻译引擎负责将 OQL 转换为目标存储系统的查询语言：
 - NebulaGraph（GDE版本）- 资源、拓扑、知识
 - Gauss V5（GDE版本）- 向量数据
 
-### 16.2 数据源映射说明
+### 17.2 数据源映射说明
 
-#### 16.2.1 单数据源场景
+#### 17.2.1 单数据源场景
 
 所有属性存储在同一个数据源中：
 
@@ -8347,7 +8366,7 @@ DSL 翻译引擎负责将 OQL 转换为目标存储系统的查询语言：
 }
 ```
 
-#### 16.2.2 多数据源场景
+#### 17.2.2 多数据源场景
 
 同一对象的不同属性映射到不同的物理数据源：
 
@@ -8375,9 +8394,9 @@ DSL 翻译引擎负责将 OQL 转换为目标存储系统的查询语言：
 
 ---
 
-### 16.3 QUERY 操作转换示例
+### 17.3 QUERY 操作转换示例
 
-#### 16.3.1 单数据源 - 简单查询
+#### 17.3.1 单数据源 - 简单查询
 
 **OQL DSL**：
 ```json
@@ -8426,7 +8445,7 @@ LIMIT 0, 20;
 
 ---
 
-#### 16.3.2 单数据源 - 复杂过滤查询
+#### 17.3.2 单数据源 - 复杂过滤查询
 
 **OQL DSL**：
 
@@ -8481,7 +8500,7 @@ LIMIT 0, 50;
 
 ---
 
-#### 16.3.3 多数据源 - 查询示例
+#### 17.3.3 多数据源 - 查询示例
 
 **OQL DSL**：
 ```json
@@ -8557,9 +8576,9 @@ GET /order_addresses/_search
 
 ---
 
-### 16.4 CREATE 操作转换示例
+### 17.4 CREATE 操作转换示例
 
-#### 16.4.1 单数据源 - 创建对象
+#### 17.4.1 单数据源 - 创建对象
 
 **OQL DSL**：
 
@@ -8614,7 +8633,7 @@ VALUES "prod_001":("prod_001", "iPhone 16", 8999, "electronics", "active", now()
 
 ---
 
-#### 16.4.2 多数据源 - 创建对象
+#### 17.4.2 多数据源 - 创建对象
 
 **OQL DSL**：
 ```json
@@ -8666,9 +8685,9 @@ PUT /order_addresses/_doc/ERP-ORD-001
 
 ---
 
-### 16.5 UPDATE 操作转换示例
+### 17.5 UPDATE 操作转换示例
 
-#### 16.5.1 单数据源 - 更新对象
+#### 17.5.1 单数据源 - 更新对象
 
 **OQL DSL**：
 ```json
@@ -8714,7 +8733,7 @@ YIELD Product.id, Product.price, Product.status;
 
 ---
 
-#### 16.5.2 复合主键 - 更新对象
+#### 17.5.2 复合主键 - 更新对象
 
 **OQL DSL**：
 ```json
@@ -8750,7 +8769,7 @@ WHERE source_system = 'ERP'
 
 ---
 
-#### 16.5.3 批量条件更新
+#### 17.5.3 批量条件更新
 
 **OQL DSL**：
 ```json
@@ -8784,9 +8803,9 @@ WHERE status = 'outdated';
 
 ---
 
-### 16.6 DELETE 操作转换示例
+### 17.6 DELETE 操作转换示例
 
-#### 16.6.1 单数据源 - 删除对象
+#### 17.6.1 单数据源 - 删除对象
 
 **OQL DSL**：
 ```json
@@ -8832,7 +8851,7 @@ DELETE VERTEX ON Product "prod_001";
 
 ---
 
-#### 16.6.2 复合主键 - 删除对象
+#### 17.6.2 复合主键 - 删除对象
 
 **OQL DSL**：
 ```json
@@ -8860,7 +8879,7 @@ WHERE source_system = 'ERP'
 
 ---
 
-#### 16.6.3 级联删除
+#### 17.6.3 级联删除
 
 **OQL DSL**：
 ```json
@@ -8895,9 +8914,9 @@ DELETE FROM payments WHERE order_id = 'order_001';
 
 ---
 
-### 16.7 AGGREGATE 操作转换示例
+### 17.7 AGGREGATE 操作转换示例
 
-#### 16.7.1 单数据源 - 分组聚合
+#### 17.7.1 单数据源 - 分组聚合
 
 **OQL DSL**：
 ```json
@@ -8952,7 +8971,7 @@ ORDER BY $-.category;
 
 ---
 
-#### 16.7.2 多数据源 - 全局聚合
+#### 17.7.2 多数据源 - 全局聚合
 
 **OQL DSL**：
 ```json
@@ -8994,9 +9013,9 @@ SELECT SUM(amount) AS totalSales FROM payments;
 
 ---
 
-### 16.8 UPSERT 操作转换示例
+### 17.8 UPSERT 操作转换示例
 
-#### 16.8.1 单数据源 - 插入或更新
+#### 17.8.1 单数据源 - 插入或更新
 
 **OQL DSL**：
 ```json
@@ -9044,9 +9063,9 @@ SET
 
 ---
 
-### 16.9 LIST_LINKED_OBJECTS 操作转换示例
+### 17.9 LIST_LINKED_OBJECTS 操作转换示例
 
-#### 16.9.1 关联对象查询
+#### 17.9.1 关联对象查询
 
 **OQL DSL**：
 ```json
@@ -9094,7 +9113,7 @@ LIMIT 50;
 
 ---
 
-### 16.10 翻译规则速查表
+### 17.10 翻译规则速查表
 
 | OQL 元素 | RDB SQL 映射 | GQL (NebulaGraph) |
 |----------|--------------|-------------------|
@@ -9128,7 +9147,7 @@ LIMIT 50;
 
 ---
 
-### 16.11 多数据源处理策略
+### 17.11 多数据源处理策略
 
 | 场景 | 处理策略 |
 |------|----------|
@@ -9152,7 +9171,7 @@ LIMIT 50;
 
 ---
 
-## 17. 变更日志
+## 18. 变更日志
 
 | 版本 | 日期 | 变更内容 |
 |------|------|----------|
