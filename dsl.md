@@ -105,7 +105,7 @@
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "QUERY | MULTI_OBJECT_QUERY | AGGREGATE | ASSOCIATION_QUERY | LIST_LINKED_OBJECTS | GET_LINKED_OBJECT | CREATE | UPDATE | DELETE | UPSERT | BATCH",
 
   "====== 顶层字段（通用） ======",
@@ -136,11 +136,11 @@
 }
 ```
 
-> **说明**：第1.8.0 版本移除了 `targets` 字段，将多对象查询能力统一到 `objects` 数组中。通过 `objects[].byList` 支持批量主键查询，通过多个对象类型配置支持多对象联合查询。
+> **说明**：第1.0 版本移除了 `targets` 字段，将多对象查询能力统一到 `objects` 数组中。通过 `objects[].byList` 支持批量主键查询，通过多个对象类型配置支持多对象联合查询。
 
-> **兼容性说明（避免歧义）**：历史示例中可能出现 `target` / `objectKey` / `compositeKey` 命名。
+> **兼容性说明（避免歧义）**：历史示例中可能出现 `target` / `by` / `byComposite` 命名。
 > - 规范主写法：`objects[]` + `by` / `byComposite`
-> - 兼容别名：`objectKey` ≈ `by`，`compositeKey` ≈ `byComposite`
+> - 兼容别名：`by` ≈ `by`，`byComposite` ≈ `byComposite`
 > - 新增/改写示例优先使用规范主写法；保留旧写法仅用于说明历史兼容行为
 
 ### 2.2 顶层字段定义（通用）
@@ -370,7 +370,7 @@ conditions 定义统一的条件表达式，使用二叉树结构表示复杂条
 **查询请求**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "QUERY",
   "objects": [
     {
@@ -393,7 +393,7 @@ conditions 定义统一的条件表达式，使用二叉树结构表示复杂条
 **创建请求**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "CREATE",
   "objects": [
     {
@@ -415,7 +415,7 @@ conditions 定义统一的条件表达式，使用二叉树结构表示复杂条
 **更新请求（简单主键）**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "UPDATE",
   "objects": [
     {
@@ -436,7 +436,7 @@ conditions 定义统一的条件表达式，使用二叉树结构表示复杂条
 **更新请求（复合主键）**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "UPDATE",
   "objects": [
     {
@@ -457,7 +457,7 @@ conditions 定义统一的条件表达式，使用二叉树结构表示复杂条
 **删除请求（复合主键）**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "DELETE",
   "objects": [
     {
@@ -686,7 +686,7 @@ conditions 定义统一的条件表达式，使用二叉树结构表示复杂条
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "QUERY",
   "objects": [
     {
@@ -756,7 +756,7 @@ conditions 定义统一的条件表达式，使用二叉树结构表示复杂条
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "QUERY",
   "objects": [
     {
@@ -787,7 +787,7 @@ conditions 定义统一的条件表达式，使用二叉树结构表示复杂条
 **说明**：
 - 默认 `maxResults` 为 100000，最大支持 100000
 - 超出限制的结果将被截断，不会返回
-- OQL v1.8.0 移除了分页语法，统一使用 `maxResults` 限制结果数量
+- OQL v1.0 移除了分页语法，统一使用 `maxResults` 限制结果数量
 
 **响应示例**：
 
@@ -836,7 +836,7 @@ conditions 定义统一的条件表达式，使用二叉树结构表示复杂条
 
 ---
 
-#### 2.12.5 使用属性过滤条件查询（无需指定 objectKey）
+#### 2.12.5 使用属性过滤条件查询（无需指定 by）
 
 QUERY 操作通过顶层的 `conditions` 进行属性过滤查询，无需指定主键。
 
@@ -844,7 +844,7 @@ QUERY 操作通过顶层的 `conditions` 进行属性过滤查询，无需指定
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "QUERY",
   "objects": [
     {
@@ -874,7 +874,7 @@ QUERY 操作通过顶层的 `conditions` 进行属性过滤查询，无需指定
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "QUERY",
   "objects": [
     {
@@ -1041,7 +1041,7 @@ MULTI_OBJECT_QUERY 操作支持通过顶层 `sourceQuery` 定义嵌套查询，�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "MULTI_OBJECT_QUERY",
   "objects": [
     {"objectType": "User", "alias": "u"},
@@ -1079,7 +1079,7 @@ CREATE TABLE tbl_user_cell (
 **DSL 请求**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "MULTI_OBJECT_QUERY",
   "objects": [
     {"objectType": "User", "alias": "user"},
@@ -1171,7 +1171,7 @@ CREATE TABLE tbl_cell (
 **DSL 请求**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "MULTI_OBJECT_QUERY",
   "objects": [
     {"objectType": "User", "alias": "user", "by": {"id": "123"}},
@@ -1243,7 +1243,7 @@ WHERE u.id = '123';
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "MULTI_OBJECT_QUERY",
   "objects": [
     {"objectType": "User", "alias": "user", "by": {"id": "user_001"}},
@@ -1309,7 +1309,7 @@ WHERE u.id = '123';
 **DSL 请求**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "MULTI_OBJECT_QUERY",
   "objects": [
     {"objectType": "User", "alias": "u"},
@@ -1381,7 +1381,7 @@ ORDER BY id;
 **DSL 请求**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "MULTI_OBJECT_QUERY",
   "objects": [
     {"objectType": "User", "alias": "user", "by": {"id": "user_001"}},
@@ -1429,7 +1429,7 @@ WHERE u.id = 'user_001';
 **DSL 请求**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "MULTI_OBJECT_QUERY",
   "objects": [
     {"objectType": "Device", "alias": "device"},
@@ -1500,7 +1500,7 @@ ORDER BY r.name;
 **DSL 请求**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "MULTI_OBJECT_QUERY",
   "objects": [
     {
@@ -1583,7 +1583,7 @@ QUERY 操作使用统一顶层结构，通过 `conditions` 定义过滤条件，
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "QUERY",
   "objects": [
     { "objectType": "Product", "alias": "p", "by": {"id": "prod_001"} }
@@ -1720,7 +1720,7 @@ QUERY 操作使用 `query` 专用块定义查询参数，但实际使用中 quer
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "QUERY",
   "objects": [
     {
@@ -1865,7 +1865,7 @@ QUERY 操作使用 `query` 专用块定义查询参数，但实际使用中 quer
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "QUERY",
   "objects": [
     {
@@ -2949,8 +2949,8 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
 │   └──────────────┘     └──────────────┘     └───────────┘  │
 │                                                             │
 │   主键处理：                                               │
-│   • 指定 objectKey → 使用指定主键                          │
-│   • 指定 compositeKey → 使用复合主键                       │
+│   • 指定 by → 使用指定主键                          │
+│   • 指定 byComposite → 使用复合主键                       │
 │   • 不指定主键 → 系统自动生成主键                          │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
@@ -2976,11 +2976,11 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
         "type": "object",
         "description": "单对象创建数据",
         "properties": {
-          "objectKey": {
+          "by": {
             "type": "object",
             "description": "对象主键（简单主键），若不指定则自动生成"
           },
-          "compositeKey": {
+          "byComposite": {
             "type": "object",
             "description": "复合主键，KV 结构"
           },
@@ -2996,8 +2996,8 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
         "items": {
           "type": "object",
           "properties": {
-            "objectKey": {"type": "object"},
-            "compositeKey": {"type": "object"},
+            "by": {"type": "object"},
+            "byComposite": {"type": "object"},
             "properties": {"type": "object"}
           }
         }
@@ -3135,7 +3135,7 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
   "mutation": {
     "batch": [
       {
-        "objectKey": {"id": "prod_002"},
+        "by": {"id": "prod_002"},
         "properties": {
           "name": "MacBook Pro",
           "price": 19999,
@@ -3143,7 +3143,7 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
         }
       },
       {
-        "objectKey": {"id": "prod_003"},
+        "by": {"id": "prod_003"},
         "properties": {
           "name": "iPad",
           "price": 4999,
@@ -3151,7 +3151,7 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
         }
       },
       {
-        "objectKey": {"id": "prod_004"},
+        "by": {"id": "prod_004"},
         "properties": {
           "name": "Apple Watch",
           "price": 2999,
@@ -3182,7 +3182,7 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
   "mutation": {
     "batch": [
       {
-        "compositeKey": {"sourceSystem": "ERP", "orderId": "ORD-001", "productId": "PROD-001"},
+        "byComposite": {"sourceSystem": "ERP", "orderId": "ORD-001", "productId": "PROD-001"},
         "properties": {
           "sourceSystem": "ERP",
           "orderId": "ORD-001",
@@ -3192,7 +3192,7 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
         }
       },
       {
-        "compositeKey": {"sourceSystem": "ERP", "orderId": "ORD-001", "productId": "PROD-002"},
+        "byComposite": {"sourceSystem": "ERP", "orderId": "ORD-001", "productId": "PROD-002"},
         "properties": {
           "sourceSystem": "ERP",
           "orderId": "ORD-001",
@@ -3241,8 +3241,8 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
   "data": {
     "created": [
       {
-        "objectKey": {"id": "prod_002"},
-        "compositeKey": null,
+        "by": {"id": "prod_002"},
+        "byComposite": null,
         "etag": "\"abc123\"",
         "object": {
           "id": "prod_002",
@@ -3274,14 +3274,14 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
   "data": {
     "created": [
       {
-        "objectKey": {"id": "prod_002"},
+        "by": {"id": "prod_002"},
         "etag": "\"abc123\""
       }
     ],
     "failed": [
       {
         "index": 1,
-        "objectKey": {"id": "prod_003"},
+        "by": {"id": "prod_003"},
         "error": {
           "code": "VALIDATION_ERROR",
           "message": "价格不能为空",
@@ -3290,7 +3290,7 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
       },
       {
         "index": 2,
-        "objectKey": {"id": "prod_004"},
+        "by": {"id": "prod_004"},
         "error": {
           "code": "DUPLICATE_KEY",
           "message": "主键已存在",
@@ -3317,8 +3317,8 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
     "message": "对象主键已存在",
     "details": {
       "objectType": "Product",
-      "objectKey": {"id": "prod_001"},
-      "compositeKey": null
+      "by": {"id": "prod_001"},
+      "byComposite": null
     }
   }
 }
@@ -3341,9 +3341,9 @@ CREATE 操作用于创建新对象，支持单对象创建和批量创建。
 
 | 场景 | 必填字段 | 可选字段 |
 |------|----------|----------|
-| 单对象（简单主键） | target.objectType, mutation.data.properties | mutation.data.objectKey, options |
-| 单对象（复合主键） | target.objectType, mutation.data.properties | mutation.data.compositeKey, options |
-| 批量创建 | target.objectType, mutation.batch[].properties | mutation.batch[].objectKey, options |
+| 单对象（简单主键） | target.objectType, mutation.data.properties | mutation.data.by, options |
+| 单对象（复合主键） | target.objectType, mutation.data.properties | mutation.data.byComposite, options |
+| 批量创建 | target.objectType, mutation.batch[].properties | mutation.batch[].by, options |
 
 ---
 
@@ -3376,7 +3376,7 @@ UPDATE 操作用于更新现有对象的属性，支持：
 │   objects[].by + mutation.set/unset/increment               │
 │                                                             │
 │   复合主键更新：                                            │
-│   objects[].by (compositeKey) + mutation.set                │
+│   objects[].by (byComposite) + mutation.set                │
 │                                                             │
 │   批量条件更新：                                            │
 │   conditions + mutation.set                                 │
@@ -3470,7 +3470,7 @@ UPDATE 操作用于更新现有对象的属性，支持：
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "UPDATE",
   "objects": [
     {
@@ -3505,7 +3505,7 @@ UPDATE 操作用于更新现有对象的属性，支持：
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "UPDATE",
   "objects": [
     {
@@ -3715,8 +3715,8 @@ UPDATE 操作用于更新现有对象的属性，支持：
   "data": {
     "updated": [
       {
-        "objectKey": {"id": "prod_001"},
-        "compositeKey": null,
+        "by": {"id": "prod_001"},
+        "byComposite": null,
         "etag": "\"def456\"",
         "changedFields": ["price", "updatedAt"]
       }
@@ -3741,9 +3741,9 @@ UPDATE 操作用于更新现有对象的属性，支持：
   "success": true,
   "data": {
     "updated": [
-      {"objectKey": "prod_001", "changedFields": ["status"]},
-      {"objectKey": "prod_002", "changedFields": ["status"]},
-      {"objectKey": "prod_003", "changedFields": ["status"]}
+      {"by": "prod_001", "changedFields": ["status"]},
+      {"by": "prod_002", "changedFields": ["status"]},
+      {"by": "prod_003", "changedFields": ["status"]}
     ],
     "summary": {
       "totalMatched": 150,
@@ -3765,7 +3765,7 @@ UPDATE 操作用于更新现有对象的属性，支持：
     "message": "对象已被其他操作修改",
     "details": {
       "objectType": "Product",
-      "objectKey": {"id": "prod_001"},
+      "by": {"id": "prod_001"},
       "expectedEtag": "\"etag-abc123\"",
       "currentEtag": "\"xyz789\"",
       "lastModified": "2024-03-01T12:30:00Z"
@@ -3784,8 +3784,8 @@ UPDATE 操作用于更新现有对象的属性，支持：
     "message": "对象不存在",
     "details": {
       "objectType": "Product",
-      "objectKey": {"id": "prod_999"},
-      "compositeKey": null
+      "by": {"id": "prod_999"},
+      "byComposite": null
     }
   }
 }
@@ -3796,7 +3796,7 @@ UPDATE 操作用于更新现有对象的属性，支持：
 | 场景 | 必填字段 | 说明 |
 |------|----------|------|
 | 单对象（简单主键） | objects[].by, mutation.set | 必须指定主键和更新内容 |
-| 单对象（复合主键） | objects[].by (compositeKey), mutation.set | 复合主键用 KV 结构 |
+| 单对象（复合主键） | objects[].by (byComposite), mutation.set | 复合主键用 KV 结构 |
 | 批量条件更新 | conditions, mutation.set | 根据条件更新多个对象（conditions 详见第2.3节） |
 | 部分更新 | mutation.set | 只更新指定字段 |
 | 全量替换 | mutation.set + options.updateMode: "full" | 替换整个对象 |
@@ -3815,7 +3815,7 @@ UPDATE 操作用于更新现有对象的属性，支持：
 ### 7.1 操作概述
 
 DELETE 操作用于删除对象，支持：
-- 单对象删除（通过 objectKey 或 compositeKey）
+- 单对象删除（通过 by 或 byComposite）
 - 批量条件删除（通过 filter）
 - 软删除（标记删除）
 - 硬删除（物理删除）
@@ -3827,10 +3827,10 @@ DELETE 操作用于删除对象，支持：
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
 │   单对象删除：                                              │
-│   target.objectKey + mutation                               │
+│   target.by + mutation                               │
 │                                                             │
 │   复合主键删除：                                            │
-│   target.compositeKey + mutation                            │
+│   target.byComposite + mutation                            │
 │                                                             │
 │   批量条件删除：                                            │
 │   conditions + mutation                                     │
@@ -4066,8 +4066,8 @@ DELETE 操作用于删除对象，支持：
   "data": {
     "deleted": [
       {
-        "objectKey": {"id": "prod_001"},
-        "compositeKey": null,
+        "by": {"id": "prod_001"},
+        "byComposite": null,
         "object": {
           "id": "prod_001",
           "name": "iPhone 16",
@@ -4099,7 +4099,7 @@ DELETE 操作用于删除对象，支持：
   "data": {
     "deleted": [
       {
-        "objectKey": {"id": "order_001"},
+        "by": {"id": "order_001"},
         "object": {
           "id": "order_001",
           "orderNo": "ORD-20240301-001",
@@ -4129,9 +4129,9 @@ DELETE 操作用于删除对象，支持：
   "success": true,
   "data": {
     "deleted": [
-      {"objectKey": "prod_001"},
-      {"objectKey": "prod_002"},
-      {"objectKey": "prod_003"}
+      {"by": "prod_001"},
+      {"by": "prod_002"},
+      {"by": "prod_003"}
     ],
     "summary": {
       "totalMatched": 150,
@@ -4153,8 +4153,8 @@ DELETE 操作用于删除对象，支持：
     "message": "对象不存在",
     "details": {
       "objectType": "Product",
-      "objectKey": {"id": "prod_999"},
-      "compositeKey": null
+      "by": {"id": "prod_999"},
+      "byComposite": null
     }
   }
 }
@@ -4181,7 +4181,7 @@ DELETE 操作用于删除对象，支持：
 | 场景 | 必填字段 | 可选字段 |
 |------|----------|----------|
 | 单对象（简单主键） | objects[].by | mutation.deleteMode, mutation.returnDeleted |
-| 单对象（复合主键） | objects[].by (compositeKey) | mutation.deleteMode, mutation.returnDeleted |
+| 单对象（复合主键） | objects[].by (byComposite) | mutation.deleteMode, mutation.returnDeleted |
 | 批量条件删除 | conditions | mutation.deleteMode, mutation.limit, mutation.returnDeleted（conditions 详见第2.3节） |
 | 级联删除 | objects[] + mutation.cascade | mutation.cascadeLinks, mutation.returnDeleted |
 | 硬删除 | objects[] + mutation.deleteMode: "hard" | mutation.permanent |
@@ -4235,7 +4235,7 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "UPSERT",
   "objects": [
     {
@@ -4317,7 +4317,7 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "UPSERT",
   "objects": [
     {
@@ -4347,7 +4347,7 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "UPSERT",
   "objects": [
     {
@@ -4376,7 +4376,7 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "UPSERT",
   "objects": [
     {
@@ -4410,7 +4410,7 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "UPSERT",
   "objects": [
     {
@@ -4450,7 +4450,7 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "UPSERT",
   "objects": [
     {
@@ -4493,8 +4493,8 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
   "success": true,
   "data": {
     "action": "created",
-    "objectKey": "prod_001",
-    "compositeKey": null,
+    "by": "prod_001",
+    "byComposite": null,
     "etag": "\"abc123\"",
     "object": {
       "id": "prod_001",
@@ -4517,8 +4517,8 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
   "success": true,
   "data": {
     "action": "updated",
-    "objectKey": "prod_001",
-    "compositeKey": null,
+    "by": "prod_001",
+    "byComposite": null,
     "etag": "\"def456\"",
     "before": {
       "name": "iPhone 16",
@@ -4543,13 +4543,13 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
       {
         "matchOn": ["configKey", "environment"],
         "action": "created",
-        "objectKey": null,
+        "by": null,
         "etag": "\"etag_001\""
       },
       {
         "matchOn": ["configKey", "environment"],
         "action": "updated",
-        "objectKey": null,
+        "by": null,
         "changedFields": ["value", "updatedAt"]
       }
     ],
@@ -4582,17 +4582,17 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 
 | 场景 | 必填字段 | 可选字段 |
 |------|----------|----------|
-| 按主键 UPSERT | target.objectType, mutation.objectKey, mutation.onCreate/onUpdate | options |
-| 复合主键 UPSERT | target.objectType, mutation.compositeKey, mutation.onCreate/onUpdate | options |
+| 按主键 UPSERT | target.objectType, mutation.by, mutation.onCreate/onUpdate | options |
+| 复合主键 UPSERT | target.objectType, mutation.byComposite, mutation.onCreate/onUpdate | options |
 | 多字段匹配 UPSERT | target.objectType, mutation.matchOn, mutation.onCreate/onUpdate | options |
 | 批量 UPSERT | target.objectType, mutation.batch[].matchOn, mutation.onCreate/onUpdate | options |
 | 部分更新嵌套 | mutation + mergeStrategy: "merge" | - |
 
 ### 8.11 最佳实践
 
-1. **幂等性保证**：使用相同的 objectKey/matchOn 执行多次，结果一致
+1. **幂等性保证**：使用相同的 by/matchOn 执行多次，结果一致
 2. **选择合适的匹配方式**：
-    - 简单主键使用 `objectKey`
+    - 简单主键使用 `by`
     - 联合唯一键使用 `matchOn`
 3. **更新策略选择**：
     - 完全替换用 `overwrite`
@@ -4619,8 +4619,8 @@ OQL 提供了两个专门的关联查询 Operation：
 
 | Operation | 说明 | API 对应 |
 |----------|------|----------|
-| **LIST_LINKED_OBJECTS** | 列出关联对象列表 | `POST /objects/list/linked/{objectType}/{objectKey}/{linkType}` |
-| **GET_LINKED_OBJECT** | 获取特定关联对象 | `POST /objects/query/linked/{objectType}/{objectKey}/{linkType}/{linkedObjectType}` |
+| **LIST_LINKED_OBJECTS** | 列出关联对象列表 | `POST /objects/list/linked/{objectType}/{by}/{linkType}` |
+| **GET_LINKED_OBJECT** | 获取特定关联对象 | `POST /objects/query/linked/{objectType}/{by}/{linkType}/{linkedObjectType}` |
 
 ### 9.2 LIST_LINKED_OBJECTS - 列出关联对象列表（可被 ASSOCIATION_QUERY 替代）
 
@@ -4630,7 +4630,7 @@ OQL 提供了两个专门的关联查询 Operation：
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "LIST_LINKED_OBJECTS",
   "objects": [
     {
@@ -4647,7 +4647,7 @@ OQL 提供了两个专门的关联查询 Operation：
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "LIST_LINKED_OBJECTS",
   "objects": [
     {
@@ -4729,7 +4729,7 @@ OQL 提供了两个专门的关联查询 Operation：
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "GET_LINKED_OBJECT",
   "objects": [
     {
@@ -4749,7 +4749,7 @@ OQL 提供了两个专门的关联查询 Operation：
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "GET_LINKED_OBJECT",
   "objects": [
     {
@@ -4789,7 +4789,7 @@ OQL 提供了两个专门的关联查询 Operation：
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "GET_LINKED_OBJECT",
   "objects": [
     {
@@ -4846,7 +4846,7 @@ OQL 提供了两个专门的关联查询 Operation：
     "message": "关联对象不存在",
     "details": {
       "objectType": "Order",
-      "objectKey": {"id": "order_001"},
+      "by": {"id": "order_001"},
       "relationships": "items",
       "linkedObjectKey": "prod_999"
     }
@@ -4862,7 +4862,7 @@ OQL 提供了两个专门的关联查询 Operation：
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "LIST_LINKED_OBJECTS",
   "objects": [
     {
@@ -4909,7 +4909,7 @@ OQL 提供了两个专门的关联查询 Operation：
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "LIST_LINKED_OBJECTS",
   "objects": [
     {
@@ -4939,7 +4939,7 @@ OQL 提供了两个专门的关联查询 Operation：
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "LIST_LINKED_OBJECTS",
   "objects": [
     {
@@ -4969,7 +4969,7 @@ OQL 提供了两个专门的关联查询 Operation：
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "GET_LINKED_OBJECT",
   "objects": [
     {
@@ -4995,7 +4995,7 @@ OQL 提供了两个专门的关联查询 Operation：
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "LIST_LINKED_OBJECTS",
   "objects": [
     {
@@ -5158,13 +5158,13 @@ OQL 提供了 `ASSOCIATION_QUERY` 操作类型：
 
 | 字段                               | 类型   | 必填 | 说明                                                         |
 | ---------------------------------- | ------ | :--: | ------------------------------------------------------------ |
-| `version`                          | string |  是  | DSL 版本号，固定为 "1.8.0"                                   |
+| `version`                          | string |  是  | DSL 版本号，固定为 "1.0"                                   |
 | `operation`                        | string |  是  | 操作类型，固定为 "ASSOCIATION_QUERY"                         |
 | `objects`                          | array  |  是  | 对象实例数组，包含起始对象定义                               |
 | `objects[].objectType`             | string |  是  | 对象类型标识符                                               |
 | `objects[].alias`                  | string |  否  | 对象别名，用于后续引用                                       |
-| `objects[].by`                     | object |  否  | 单主键（KV 结构），如 `{"id": "prod_001"}`，图数据库场景对应 VID（兼容旧字段 `objectKey`） |
-| `objects[].byComposite`            | object |  否  | 复合主键（KV 结构），如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}`（兼容旧字段 `compositeKey`） |
+| `objects[].by`                     | object |  否  | 单主键（KV 结构），如 `{"id": "prod_001"}`，图数据库场景对应 VID（兼容旧字段 `by`） |
+| `objects[].byComposite`            | object |  否  | 复合主键（KV 结构），如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}`（兼容旧字段 `byComposite`） |
 | `relationships`                    | array  |  是  | 关系类型数组，指定查询的关系类型                             |
 | `relationships[].name`             | string |  是  | 关系类型名称（驼峰命名）                                     |
 | `relationships[].alias`            | string |  否  | 关系别名，用于 returns 引用                                  |
@@ -5177,8 +5177,8 @@ OQL 提供了 `ASSOCIATION_QUERY` 操作类型：
 **使用规则**：
 
 - `objects` 必填，用于定义查询的起始对象
-- `objects[].by` 单主键，如 `{"id": "prod_001"}`（兼容旧字段 `objectKey`）
-- `objects[].byComposite` 复合主键，如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}`（兼容旧字段 `compositeKey`）
+- `objects[].by` 单主键，如 `{"id": "prod_001"}`（兼容旧字段 `by`）
+- `objects[].byComposite` 复合主键，如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}`（兼容旧字段 `byComposite`）
 - `by` 与 `byComposite` 二选一，不可同时使用
 - `relationships` 必填，指定要查询的关系类型
 - 遍历方向由 `relationships[].sourceObjectType` 和 `relationships[].targetObjectType` 决定，无需额外指定 direction
@@ -5305,7 +5305,7 @@ action 定义了查询的执行方式，根据数据源类型有不同的关键�
 
 ```
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "ASSOCIATION_QUERY",
   "objects": [
     {
@@ -5342,7 +5342,7 @@ action 定义了查询的执行方式，根据数据源类型有不同的关键�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "ASSOCIATION_QUERY",
   "objects": [
     {
@@ -5401,7 +5401,7 @@ action 定义了查询的执行方式，根据数据源类型有不同的关键�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "ASSOCIATION_QUERY",
   "objects": [
     {
@@ -5537,7 +5537,7 @@ $$.s.id AS s_id, $$.s.name AS s_name
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "ASSOCIATION_QUERY",
   "objects": [
     {
@@ -5599,7 +5599,7 @@ YIELD
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "ASSOCIATION_QUERY",
   "objects": [
     {
@@ -5665,7 +5665,7 @@ YIELD
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "ASSOCIATION_QUERY",
   "objects": [
     {
@@ -5735,7 +5735,7 @@ YIELD
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "ASSOCIATION_QUERY",
   "objects": [
     {
@@ -5807,7 +5807,7 @@ ORDER BY d_name ASC
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "ASSOCIATION_QUERY",
   "objects": [
     {
@@ -5957,7 +5957,7 @@ GROUP BY $^.d.id
 **请求**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "ASSOCIATION_QUERY",
   "objects": [
     {
@@ -6325,7 +6325,7 @@ YIELD $-.src, $-.dst, collect($-.bizRelType) AS bizRelTypes
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "ASSOCIATION_QUERY",
   "objects": [
     {
@@ -6444,7 +6444,7 @@ YIELD
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "ASSOCIATION_QUERY",
   "objects": [
     {
@@ -6638,7 +6638,7 @@ YIELD
 | OQL DSL 参数 | nGQL 语句 | 说明 |
 |-------------|-----------|------|
 | `objects[].by` | `FROM $ids` | 单主键或多主键列表 |
-| `objects[].compositeKey` | `FROM $ids` | 复合主键 |
+| `objects[].byComposite` | `FROM $ids` | 复合主键 |
 | `objects[].conditions` | `WHERE ...` | 起始点过滤条件 |
 | `relationships[].sourceObjectType` / `targetObjectType` | 遍历方向由 source/target 决定 | 源对象为起点，目标对象为终点 |
 | `relationships[].name` | `OVER $relName` | 关系类型 |
@@ -6662,7 +6662,7 @@ ASSOCIATION_QUERY 支持四种查询模式，与 nGQL 的对应关系如下：
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "ASSOCIATION_QUERY",
   "objects": [
     {
@@ -6703,7 +6703,7 @@ YIELD
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "ASSOCIATION_QUERY",
   "objects": [
     {
@@ -6739,7 +6739,7 @@ YIELD
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "ASSOCIATION_QUERY",
   "objects": [
     {
@@ -6773,7 +6773,7 @@ YIELD id(vertex) AS id, Device.name AS name, Device.status AS status
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "ASSOCIATION_QUERY",
   "objects": [
     {
@@ -6918,7 +6918,7 @@ WHERE d.status == "running" AND (d.type == "server" OR d.type == "router")
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "ASSOCIATION_QUERY",
   "objects": [
     {
@@ -6977,7 +6977,7 @@ ORDER BY d_name ASC
 │                        DSL → GQL 转换流程                                │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│  1. objects[].by / compositeKey → FROM $ids                             │
+│  1. objects[].by / byComposite → FROM $ids                             │
 │     - 单主键: {"id": "device_001"} → FROM "device_001"                   │
 │     - 多主键: [{"id": "d1"}, {"id": "d2"}] → FROM ["d1", "d2"]          │
 │     - 复合主键: {"sourceSystem": "ERP", "orderNo": "ORD-001"}            │
@@ -7094,7 +7094,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "string"}
@@ -7164,7 +7164,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "Order"},
@@ -7203,7 +7203,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "Order"},
@@ -7243,7 +7243,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "SystemConfig"}
@@ -7282,7 +7282,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "Product"},
@@ -7330,7 +7330,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "Product"}
@@ -7370,7 +7370,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "Order"}
@@ -7400,7 +7400,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "Product"}
@@ -7428,7 +7428,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "Order"},
@@ -7461,7 +7461,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "Order"},
@@ -7487,7 +7487,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "Order"},
@@ -7514,7 +7514,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "Product"}
@@ -7587,7 +7587,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "Customer"}
@@ -7618,7 +7618,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "Order"}
@@ -7653,7 +7653,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "Order"}
@@ -7715,7 +7715,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "Product"}
@@ -7745,7 +7745,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "Customer"}
@@ -7777,7 +7777,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "Order"}
@@ -7815,7 +7815,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "Order"},
@@ -8041,7 +8041,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "Order"},
@@ -8100,7 +8100,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "QUERY",
   "objects": [
     {"objectType": "Product"}
@@ -8139,7 +8139,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "BATCH",
   "objects": [
     {"objectType": "Product"}
@@ -8173,7 +8173,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "LIST_LINKED_OBJECTS",
   "objects": [
     {
@@ -8203,7 +8203,7 @@ BATCH 操作支持**事务性批量操作**、**非事务批量操作**、**批�
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "AGGREGATE",
   "objects": [
     {"objectType": "Order"}
@@ -8382,7 +8382,7 @@ DSL 翻译引擎负责将 OQL 转换为目标存储系统的查询语言：
 **OQL DSL**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "QUERY",
   "objects": [
     {"objectType": "Product"}
@@ -8432,7 +8432,7 @@ LIMIT 0, 20;
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "QUERY",
   "objects": [
     {"objectType": "Order"}
@@ -8486,7 +8486,7 @@ LIMIT 0, 50;
 **OQL DSL**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "QUERY",
   "objects": [
     {"objectType": "Order"}
@@ -8565,7 +8565,7 @@ GET /order_addresses/_search
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "CREATE",
   "objects": [
     {
@@ -8619,7 +8619,7 @@ VALUES "prod_001":("prod_001", "iPhone 16", 8999, "electronics", "active", now()
 **OQL DSL**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "CREATE",
   "objects": [
     {
@@ -8673,7 +8673,7 @@ PUT /order_addresses/_doc/ERP-ORD-001
 **OQL DSL**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "UPDATE",
   "objects": [
     {
@@ -8719,7 +8719,7 @@ YIELD Product.id, Product.price, Product.status;
 **OQL DSL**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "UPDATE",
   "objects": [
     {
@@ -8755,7 +8755,7 @@ WHERE source_system = 'ERP'
 **OQL DSL**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "UPDATE",
   "objects": [
     {"objectType": "Product"}
@@ -8791,7 +8791,7 @@ WHERE status = 'outdated';
 **OQL DSL**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "DELETE",
   "objects": [
     {
@@ -8837,7 +8837,7 @@ DELETE VERTEX ON Product "prod_001";
 **OQL DSL**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "DELETE",
   "objects": [
     {
@@ -8865,7 +8865,7 @@ WHERE source_system = 'ERP'
 **OQL DSL**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "DELETE",
   "objects": [
     {
@@ -8902,7 +8902,7 @@ DELETE FROM payments WHERE order_id = 'order_001';
 **OQL DSL**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "AGGREGATE",
   "objects": [
     {"objectType": "Order"}
@@ -8957,7 +8957,7 @@ ORDER BY $-.category;
 **OQL DSL**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "AGGREGATE",
   "objects": [
     {"objectType": "Order"}
@@ -9001,7 +9001,7 @@ SELECT SUM(amount) AS totalSales FROM payments;
 **OQL DSL**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "UPSERT",
   "objects": [
     {
@@ -9051,7 +9051,7 @@ SET
 **OQL DSL**：
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.0",
   "operation": "LIST_LINKED_OBJECTS",
   "objects": [
     {
@@ -9165,8 +9165,8 @@ LIMIT 50;
 | 1.4.0 | 2026-03-01 | 支持数据库列表：Nebula(GDE)、Gauss V3(GDE)、MySQL 5.7/8.X(华为云)、ClickHouse(GDE)、ElasticSearch(GDE/华为云)、Carbon(GDE)、PostgreSQL 15.X、Gauss V5(GDE) |
 | 1.5.0 | 2026-03-01 | 增加 2.5 节：无过滤条件查询说明（可查询对象类型所有对象），补充 nextPageToken 和 data 数组响应格式 |
 | 1.6.0 | 2026-03-03 | 增加 10.7 节：关联查询（ASSOCIATION_QUERY）——批量多对象 + 多关联关系的查询能力，补充 maxResults 参数说明，增加 3.6 节：时序属性查询（TIMESERIES_QUERY） |
-| 1.7.0 | 2026-03-03 | target 新增 version 字段标识对象模型版本；objectKey 和 compositeKey 改为 KV 形式；更新复合主键说明（1.4 节）；更新所有示例中的主键格式 |
-| 1.8.0 | 2026-03-07 | target 支持多对象数组（targets）；新增跨对象条件查询（whereFrom）；支持同表多对象属性查询；新增 MULTI_OBJECT_QUERY 操作类型；移除分页语法，改为 max 100k 限制；ASSOCIATION_QUERY 增加 conditions/returns/orders/outputs 等 DSL 参数定义；新增 10.2.9 节：DSL 与 NebulaGraph nGQL 对应关系说明；新增 10.2.10 节：错误码说明 |
+| 1.7.0 | 2026-03-03 | target 新增 version 字段标识对象模型版本；by 和 byComposite 改为 KV 形式；更新复合主键说明（1.4 节）；更新所有示例中的主键格式 |
+| 1.0 | 2026-03-07 | target 支持多对象数组（targets）；新增跨对象条件查询（whereFrom）；支持同表多对象属性查询；新增 MULTI_OBJECT_QUERY 操作类型；移除分页语法，改为 max 100k 限制；ASSOCIATION_QUERY 增加 conditions/returns/orders/outputs 等 DSL 参数定义；新增 10.2.9 节：DSL 与 NebulaGraph nGQL 对应关系说明；新增 10.2.10 节：错误码说明 |
 
 ---
 
@@ -9174,7 +9174,7 @@ LIMIT 50;
 
 | 文件 | 版本 | 说明 |
 |------|------|------|
-| 本体对象操作语言(OQL)-DSL规范v1.1.md | 1.8.0 | 统一 DSL 规范（查询/增删改/关联操作） |
+| 本体对象操作语言(OQL)-DSL规范v1.1.md | 1.0 | 统一 DSL 规范（查询/增删改/关联操作） |
 | **本体对象操作语言(OQL)-子图DSL规范v1.2.md** | **1.2.0** | **子图操作（SUBGRAPH）—— 批量多对象 + 多关联** |
 | 本体对象操作服务-接口规范.md | 1.0.0 | REST API 接口说明 |
 | 本体对象操作接口规范.json | 1.0.0 | OpenAPI 3.0 规范 |
@@ -9183,7 +9183,7 @@ LIMIT 50;
 > **说明**：
 > - v1.2.0 将 SUBGRAPH 子图操作独立到单独文档，以保持主 DSL 规范的简洁性
 > - v1.6.0 新增 ASSOCIATION_QUERY 关联查询操作，用于批量多对象及其关联关系的查询场景
-> - v1.8.0 新增 MULTI_OBJECT_QUERY 多对象联合查询操作，支持同表多对象查询和跨对象条件查询（whereFrom）
+> - v1.0 新增 MULTI_OBJECT_QUERY 多对象联合查询操作，支持同表多对象查询和跨对象条件查询（whereFrom）
 
 ## 附录 B：快速参考
 
@@ -9194,8 +9194,8 @@ LIMIT 50;
 | QUERY | objectType | 是 | 否 | 否 | 否 | 对象查询 |
 | **MULTI_OBJECT_QUERY** | **是（多 objectType）** | 是 | 否 | 否 | 否 | **多对象联合查询** |
 | AGGREGATE | objectType | 是（filter） | 否 | 否 | 否 | 聚合计算 |
-| LIST_LINKS | objectType, objectKey | 否 | relationships | 否 | 否 | 关联列表查询 |
-| GET_LINKED_OBJECT | objectType, objectKey | 否 | relationships, linkedObjectKey | 否 | 否 | 关联对象查询 |
+| LIST_LINKS | objectType, by | 否 | relationships | 否 | 否 | 关联列表查询 |
+| GET_LINKED_OBJECT | objectType, by | 否 | relationships, linkedObjectKey | 否 | 否 | 关联对象查询 |
 | **ASSOCIATION_QUERY** | objectType | 否 | 否 | **是** | 否 | **多对象关联查询** |
 | CREATE | objectType | 否 | 否 | 否 | 是（data/batch） | 创建对象 |
 | UPDATE | objectType | 否 | 否 | 否 | 是 | 更新对象 |
@@ -9204,7 +9204,7 @@ LIMIT 50;
 | BATCH | 否 | 否 | 否 | 否 | 否（用 mutations） | 批量操作 |
 | **SUBGRAPH** | 否 | 否 | 否 | 否 | 否（用 subgraph） | **子图操作（见 v1.2 文档）** |
 
-> **ASSOCIATION_QUERY 操作说明**：v1.6.0 新增，v1.8.0 增强，支持多 objectTypes + 多 relationships 查询，支持 bizRelType/structRelType 等本体模型字段，支持 select 配置指定对象/关系字段名称用于 GQL 拼装，详见第 10.7 节。
+> **ASSOCIATION_QUERY 操作说明**：v1.6.0 新增，v1.0 增强，支持多 objectTypes + 多 relationships 查询，支持 bizRelType/structRelType 等本体模型字段，支持 select 配置指定对象/关系字段名称用于 GQL 拼装，详见第 10.7 节。
 > **SUBGRAPH 操作详情**：请参阅《本体对象操作语言(OQL)-子图DSL规范v1.2.md》，包含 objects、links、deletes 的批量操作设计。
 
 ### B.2 Filter 操作符速查
@@ -9226,20 +9226,20 @@ LIMIT 50;
 
 | Operation | 关键字段 |
 |-----------|----------|
-| CREATE | data.objectKey, data.properties, batch[] |
-| UPDATE | objectKey, filter, set, unset, increment, arrayOps |
-| DELETE | objectKey, filter, deleteMode, cascade |
-| UPSERT | objectKey, matchOn, onCreate, onUpdate |
+| CREATE | data.by, data.properties, batch[] |
+| UPDATE | by, filter, set, unset, increment, arrayOps |
+| DELETE | by, filter, deleteMode, cascade |
+| UPSERT | by, matchOn, onCreate, onUpdate |
 
 ### B.5 API 对应关系
 
 | Operation | DSL | REST API |
 |-----------|-----|----------|
 | QUERY | QUERY | POST /objects/list/{objectType} |
-| QUERY | QUERY | POST /objects/query/{objectType}/{objectKey} |
+| QUERY | QUERY | POST /objects/query/{objectType}/{by} |
 | AGGREGATE | AGGREGATE | POST /objects/aggregate/{objectType} |
-| LIST_LINKS | LIST_LINKS | POST /objects/list/links/{objectType}/{objectKey}/{linkType} |
-| GET_LINKED_OBJECT | GET_LINKED_OBJECT | POST /objects/query/links/{objectType}/{objectKey}/{linkType}/{linkedObjectKey} |
+| LIST_LINKS | LIST_LINKS | POST /objects/list/links/{objectType}/{by}/{linkType} |
+| GET_LINKED_OBJECT | GET_LINKED_OBJECT | POST /objects/query/links/{objectType}/{by}/{linkType}/{linkedObjectKey} |
 | **ASSOCIATION_QUERY** | **ASSOCIATION_QUERY** | **POST /objects/association/query** |
 | CREATE | CREATE | POST /objects/create/{objectType} |
 | UPDATE | UPDATE | POST /objects/update/{objectType} |
@@ -9263,7 +9263,7 @@ LIMIT 50;
 
 | 关键字 | 类型 | 必填 | 说明 |
 |--------|------|:----:|------|
-| **version** | string | 是 | DSL 版本号，当前为 `1.8.0` |
+| **version** | string | 是 | DSL 版本号，当前为 `1.0` |
 | **operation** | string | 是 | 操作类型（QUERY / MULTI_OBJECT_QUERY / AGGREGATE / ASSOCIATION_QUERY / LIST_LINKED_OBJECTS / GET_LINKED_OBJECT / CREATE / UPDATE / DELETE / UPSERT / BATCH） |
 
 #### C.1.2 统一对象定位（objects）
@@ -9411,10 +9411,10 @@ LIMIT 50;
 | 关键字 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
 | **data** | object | CREATE 必填 | 单对象创建数据 |
-| **data.objectKey** | string | 否 | 对象主键，若不指定则自动生成 |
+| **data.by** | string | 否 | 对象主键，若不指定则自动生成 |
 | **data.properties** | object | 是 | 对象属性键值对 |
 | **batch** | array | 否 | 批量操作数据数组 |
-| **objectKey** | string | UPDATE/DELETE/UPSERT 条件必填 | 指定操作的对象主键 |
+| **by** | string | UPDATE/DELETE/UPSERT 条件必填 | 指定操作的对象主键 |
 | **filter** | object | UPDATE/DELETE 条件可选 | 过滤条件 |
 | **set** | object | UPDATE 必填 | 要设置的属性 |
 | **unset** | array | 否 | 要移除的字段列表 |
@@ -9591,7 +9591,7 @@ LIMIT 50;
 |------|--------|
 | **版本控制** | version |
 | **操作定义** | operation |
-| **目标对象** | target, objectType, objectKey |
+| **目标对象** | target, objectType, by |
 | **查询条件** | query, select, filter, orderBy, pagination |
 | **关联查询** | linkQuery, relationships, linkedObjectKey, direction |
 | **数据变更** | mutation, data, properties, batch, set, unset, increment |
@@ -9622,7 +9622,7 @@ LIMIT 50;
 
 1. **保留关键字**：以下关键字为 DSL 保留，业务属性应避免使用：
     - `version`, `operation`, `target`, `query`, `linkQuery`, `mutation`, `links`, `options`, `extensions`, `mutations`
-    - `objectType`, `objectKey`, `properties`, `filter`, `select`, `orderBy`, `pagination`
+    - `objectType`, `by`, `properties`, `filter`, `select`, `orderBy`, `pagination`
     - 所有 Filter 操作符（eq, neq, gt 等）
     - 所有表达式操作符（add, sub, multiply 等）
     - 注意：`requestId` 由引擎自动生成，不属于用户可用的关键字
