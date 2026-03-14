@@ -2,6 +2,19 @@
 
 ---
 
+## 阅读导航
+
+- 第 1 章：设计原则与多数据源映射
+- 第 2 章：统一顶层结构与通用字段（`objects` / `conditions` / `returns` / `orders`）
+- 第 3-11 章：各操作类型（查询、聚合、写入、关联、批量）
+- 第 12-13 章：执行选项与表达式
+- 第 14-16 章：完整示例与 DSL→物理查询转换
+- 附录：关键字速查与字段参考
+
+> 建议阅读顺序：先读第 2 章统一结构，再按操作类型阅读对应章节。
+
+---
+
 ## 1. 设计原则与架构
 
 ### 1.1 设计目标
@@ -73,7 +86,11 @@
 
     - 翻译引擎负责处理跨数据源 JOIN（如有必要）
 
-      **补充哪些支持，哪些不支持？**
+
+**跨数据源查询支持边界（建议）**：
+- 支持：单对象跨源属性拼装、过滤下推、聚合下推、有限字段级 JOIN。
+- 限制：超大结果集跨源全量 JOIN、跨源分布式事务强一致写入、不同源时区/精度不兼容字段直接比较。
+- 建议：优先单源下推，跨源只做必要字段合并；对不可下推场景在响应 metadata 标注 degraded=true。
 
 
 ---
@@ -120,6 +137,11 @@
 ```
 
 > **说明**：第1.8.0 版本移除了 `targets` 字段，将多对象查询能力统一到 `objects` 数组中。通过 `objects[].byList` 支持批量主键查询，通过多个对象类型配置支持多对象联合查询。
+
+> **兼容性说明（避免歧义）**：历史示例中可能出现 `target` / `objectKey` / `compositeKey` 命名。
+> - 规范主写法：`objects[]` + `by` / `byComposite`
+> - 兼容别名：`objectKey` ≈ `by`，`compositeKey` ≈ `byComposite`
+> - 新增/改写示例优先使用规范主写法；保留旧写法仅用于说明历史兼容行为
 
 ### 2.2 顶层字段定义（通用）
 
@@ -185,7 +207,7 @@ conditions 定义统一的条件表达式，使用二叉树结构表示复杂条
 - **灵活组合**：每个嵌套层级可以使用不同的 `operation` 类型（QUERY / MULTI_OBJECT_QUERY / AGGREGATE）
 
 **使用约束**：
-- `objects` 和 `sourceQuery` **互斥**，只能使用其一
+- 原则上 `objects` 与 `sourceQuery` 应二选一；若同层同时出现，则 `sourceQuery` 作为输入数据源，`objects` 仅作为输出对象声明
 - 使用 `sourceQuery` 时，`objects` 仅用于定义输出结果的对象类型和别名
 - `sourceQuery[].outputAs` 为必填，用于在外层查询中引用子查询结果
 - 子查询可以再包含 `sourceQuery`，实现多层嵌套
@@ -682,7 +704,7 @@ conditions 定义统一的条件表达式，使用二叉树结构表示复杂条
 > - 无 conditions 时表示不限制查询条件，返回对象类型的全部数据
 > - 单次查询最大返回 10 万条记录，可通过 `maxResults` 控制
 
-#### 2.5.2 响应格式
+#### 2.12.2 响应格式
 
 查询操作的响应采用以下结构：
 
@@ -716,7 +738,7 @@ conditions 定义统一的条件表达式，使用二叉树结构表示复杂条
 }
 ```
 
-#### 2.5.3 响应字段说明
+#### 2.12.3 响应字段说明
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -728,7 +750,7 @@ conditions 定义统一的条件表达式，使用二叉树结构表示复杂条
 | metadata.totalCount | integer | 符合条件对象的总数量（可选） |
 | metadata.executionTime | integer | 执行时间（毫秒） |
 
-#### 2.5.4 结果数量限制
+#### 2.12.4 结果数量限制
 
 单次查询通过 `maxResults` 控制最大返回数量限制：
 
@@ -814,7 +836,7 @@ conditions 定义统一的条件表达式，使用二叉树结构表示复杂条
 
 ---
 
-#### 2.5.5 使用属性过滤条件查询（无需指定 objectKey）
+#### 2.12.5 使用属性过滤条件查询（无需指定 objectKey）
 
 QUERY 操作通过顶层的 `conditions` 进行属性过滤查询，无需指定主键。
 
@@ -925,17 +947,17 @@ QUERY 操作通过顶层的 `conditions` 进行属性过滤查询，无需指定
 
 ---
 
-### 2.14 多对象查询（MULTI_OBJECT_QUERY）
+### 2.13 多对象查询（MULTI_OBJECT_QUERY）
 
 当需要在一个查询请求中查询多个对象的属性时，使用 `MULTI_OBJECT_QUERY` 操作类型。
 
-### 2.14.1 使用场景
+### 2.13.1 使用场景
 
 1. **同表多对象查询**：多个对象类型对应同一个数据库表，合并查询返回
 2. **跨对象条件查询**：对象A的属性作为对象B的过滤条件（如用户→小区）
 3. **关联属性聚合**：从不同对象类型聚合数据进行联合分析
 
-### 2.14.2 objects 字段定义（多对象定位）
+### 2.13.2 objects 字段定义（多对象定位）
 
 > **说明**：`objects` 字段定义详见 [第2.2节顶层字段定义](#22-顶层字段定义通用)。
 
@@ -956,7 +978,7 @@ QUERY 操作通过顶层的 `conditions` 进行属性过滤查询，无需指定
 }
 ```
 
-### 2.14.3 query 块结构（whereFrom 跨对象条件查询）
+### 2.13.3 query 块结构（whereFrom 跨对象条件查询）
 
 `query` 块用于定义多对象查询的条件，`whereFrom` 用于跨对象条件查询：
 
@@ -994,36 +1016,26 @@ QUERY 操作通过顶层的 `conditions` 进行属性过滤查询，无需指定
 | query.whereFrom.to | string | 是 | 目标对象过滤字段 |
 | query.whereFrom.operator | string | 否 | 比较操作符，默认 eq |
 
-### 2.14.4 conditions 统一条件表达式
+### 2.13.4 conditions 统一条件表达式
 
 > **说明**：`conditions` 字段定义详见 [第2.3节](#23-conditions---统一条件表达式)。
 
-### 2.14.5 returns 返回字段投影
+### 2.13.5 returns 返回字段投影
 
 > **说明**：`returns` 字段定义详见 [第2.4节](#24-returns---返回字段投影)。
 
-### 2.14.6 sourceQuery 嵌套查询
+### 2.13.6 sourceQuery 嵌套查询
 
 > **说明**：`sourceQuery` 字段定义详见 [第2.5.1节](#251-sourcequery---嵌套查询)，包含完整的字段定义、多层嵌套说明和使用示例。
 
 MULTI_OBJECT_QUERY 操作支持通过顶层 `sourceQuery` 定义嵌套查询，使查询数据源从一个子查询的中间结果集获取。
 
 **使用约束**：
-- `objects` 和 `sourceQuery` **互斥**，只能使用其一
+- 原则上 `objects` 与 `sourceQuery` 应二选一；若同层同时出现，则 `sourceQuery` 作为输入数据源，`objects` 仅作为输出对象声明
 - 使用 `sourceQuery` 时，`objects` 可以为空，也可以为其他对象类型，用于满足多对象类型查询的诉求
 - 子查询结构与顶层结构一致，支持多层嵌套
 
 ### 2.13.7 同表多对象查询示例
-      {"type": "object", "param": "o", "fields": ["id", "amount", "orderDate"]}
-    ]
-},
-"returns": [
-{"type": "object", "param": "a", "fields": ["id", "name", "region", "amount", "orderDate"]}
-]
-}
-```
-
-### 2.14.7 同表多对象查询示例
 
 **场景**：User 和 Customer 两个对象类型对应同一张表 person
 
@@ -1049,7 +1061,7 @@ MULTI_OBJECT_QUERY 操作支持通过顶层 `sourceQuery` 定义嵌套查询，�
 }
 ```
 
-#### 2.14.7.1 同表多对象联合查询（User + Cell 关联表场景）
+#### 2.13.7.1 同表多对象联合查询（User + Cell 关联表场景）
 
 **场景**：User 和 Cell 两个对象类型对应同一张物理表 `tbl_user_cell`，通过该表的 `user_id` 和 `cell_id` 字段建立关联。查询条件为 `user = '123' AND cell = '456'`，返回 `cell.volume`。
 
@@ -1133,7 +1145,7 @@ WHERE t.user_id = '123'
 > - `conditions` 中需要同时指定 User 的 `user_id` 和 Cell 的 `cell_id` 条件
 > - `returns` 中 `param: "cell"` 表示返回 Cell 对象的属性
 
-#### 2.14.7.2 跨表外键关联查询（User + Cell 外键关联场景）
+#### 2.13.7.2 跨表外键关联查询（User + Cell 外键关联场景）
 
 **场景**：User 和 Cell 是两张独立的表，通过外键关联。User 表通过 `cell_id` 外键指向 Cell 表。查询条件为 `user.id = '123'`，返回关联的 `cell.volume`。
 
@@ -1225,7 +1237,7 @@ WHERE u.id = '123';
 
 ---
 
-### 2.14.8 跨对象条件查询示例（用户→小区）
+### 2.13.8 跨对象条件查询示例（用户→小区）
 
 **场景**：通过用户 id 查询该用户关联的小区
 
@@ -1250,7 +1262,7 @@ WHERE u.id = '123';
 }
 ```
 
-### 2.14.9 多对象查询响应格式
+### 2.13.9 多对象查询响应格式
 
 ```json
 {
@@ -1286,11 +1298,11 @@ WHERE u.id = '123';
 
 ---
 
-### 2.14.10 MySQL SQL 转换示例
+### 2.13.10 MySQL SQL 转换示例
 
 以下展示 MULTI_OBJECT_QUERY 如何转换为 MySQL SQL 查询语句。
 
-#### 2.6.9.1 示例一：同表多对象查询
+#### 2.13.10.1 示例一：同表多对象查询
 
 **场景**：User 和 Customer 两个对象类型对应同一个数据库表 `persons`
 
@@ -1362,7 +1374,7 @@ ORDER BY id;
 
 ---
 
-#### 2.6.9.2 示例二：跨对象条件查询（whereFrom）
+#### 2.13.10.2 示例二：跨对象条件查询（whereFrom）
 
 **场景**：通过用户 id 查询该用户关联的小区（User.id = Community.ownerId）
 
@@ -1410,7 +1422,7 @@ WHERE u.id = 'user_001';
 
 ---
 
-#### 2.6.9.3 示例三：跨对象条件查询（多条件过滤）
+#### 2.13.10.3 示例三：跨对象条件查询（多条件过滤）
 
 **场景**：查询状态为"运行中"的设备所在机房的信息
 
@@ -1481,7 +1493,7 @@ ORDER BY r.name;
 
 ---
 
-#### 2.6.9.4 示例四：objects + conditions 组合查询
+#### 2.13.10.4 示例四：objects + conditions 组合查询
 
 **场景**：查询指定用户组下的所有设备及其关联的机房
 
@@ -1544,7 +1556,7 @@ ORDER BY d.name;
 
 ---
 
-#### 2.6.9.5 SQL 转换规则总结
+#### 2.13.10.5 SQL 转换规则总结
 
 | OQL 场景 | MySQL 转换方式 |
 |----------|----------------|
@@ -1599,7 +1611,7 @@ QUERY 操作使用统一顶层结构，通过 `conditions` 定义过滤条件，
 QUERY 操作支持通过顶层 `sourceQuery` 定义嵌套查询，使查询数据源从一个子查询的中间结果集获取。
 
 **使用约束**：
-- `objects` 和 `sourceQuery` **互斥**，只能使用其一
+- 原则上 `objects` 与 `sourceQuery` 应二选一；若同层同时出现，则 `sourceQuery` 作为输入数据源，`objects` 仅作为输出对象声明
 - 使用 `sourceQuery` 时，`objects` 仅用于定义输出结果的对象类型和别名
 - `sourceQuery[].outputAs` 为必填，用于在外层查询中引用子查询结果
 
@@ -1739,7 +1751,7 @@ QUERY 操作使用 `query` 专用块定义查询参数，但实际使用中 quer
 
 ### 3.3 时序属性查询（TIMESERIES_QUERY）
 
-#### 3.4.1 时序属性概述
+#### 3.3.1 时序属性概述
 
 时序属性具有以下特征：
 - **时间戳（Timestamp）**：表示该值发生的具体时间
@@ -1759,7 +1771,7 @@ QUERY 操作使用 `query` 专用块定义查询参数，但实际使用中 quer
 }
 ```
 
-#### 3.4.2 时序查询结构
+#### 3.3.2 时序查询结构
 
 ```json
 {
@@ -1795,7 +1807,7 @@ QUERY 操作使用 `query` 专用块定义查询参数，但实际使用中 quer
 
 > **说明**：时间格式统一使用 ISO 8601，翻译引擎根据本体模型配置自动转换为对应数据源的格式。
 
-#### 3.4.3 timeseries 配置字段
+#### 3.3.3 timeseries 配置字段
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|:----:|:----:|------|
@@ -1806,7 +1818,7 @@ QUERY 操作使用 `query` 专用块定义查询参数，但实际使用中 quer
 | limit | integer | 否 | 最大返回点数，默认 100 |
 | interpolation | string | 否 | 插值方法：LINEAR / NEAREST / PREVIOUS / NEXT / NONE |
 
-#### 3.4.4 时序数据返回格式
+#### 3.3.4 时序数据返回格式
 
 **响应结构**：
 
@@ -1847,7 +1859,7 @@ QUERY 操作使用 `query` 专用块定义查询参数，但实际使用中 quer
 | ASC 升序 | `{"2026-02-07T17:53:00Z": 1000, "2026-02-07T17:54:00Z": 1005}` |
 | DESC 降序 | `{"2026-02-07T17:55:00Z": 1020, "2026-02-07T17:54:00Z": 1005}` |
 
-#### 3.7.5 完整时序查询示例
+#### 3.3.5 完整时序查询示例
 
 **请求**：
 
@@ -1919,14 +1931,14 @@ QUERY 操作使用 `query` 专用块定义查询参数，但实际使用中 quer
   "metadata": {
     "queryTimeRange": {
       "from": "2026-02-07T00:00:00Z",
-      "to": "2026-02-07T23:59:59ZZ"
+      "to": "2026-02-07T23:59:59Z"
     },
     "dataPointCount": 7
   }
 }
 ```
 
-#### 3.6.6 时序查询转换为 GQL
+#### 3.3.6 时序查询转换为 GQL
 
 **NebulaGraph 时序查询**：
 
@@ -2022,7 +2034,7 @@ LIMIT 50
 
 #### 4.1.2 关键字说明
 
-> **嵌套查询说明**：如需使用嵌套查询，请通过顶层 `sourceQuery` 定义，详见 [4.1.10 嵌套查询聚合](#4110-嵌套查询聚合)。`objects` 和 `sourceQuery` **互斥**，只能使用其一。
+> **嵌套查询说明**：如需使用嵌套查询，请通过顶层 `sourceQuery` 定义，详见 [4.1.10 嵌套查询聚合](#4110-嵌套查询聚合)。原则上 `objects` 与 `sourceQuery` 应二选一；若同层同时出现，则 `sourceQuery` 作为输入数据源，`objects` 仅作为输出对象声明。
 
 | 关键字 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
@@ -2385,7 +2397,7 @@ LIMIT 50
 AGGREGATE 操作支持通过顶层 `sourceQuery` 定义嵌套查询，使聚合数据源从一个子查询的中间结果集获取。
 
 **使用约束**：
-- `objects` 和 `sourceQuery` **互斥**，只能使用其一
+- 原则上 `objects` 与 `sourceQuery` 应二选一；若同层同时出现，则 `sourceQuery` 作为输入数据源，`objects` 仅作为输出对象声明
 - 使用 `sourceQuery` 时，`objects` 仅用于定义输出结果的对象类型和别名
 - 聚合字段 (`field`) 引用 `sourceQuery.returns` 中定义的返回字段名称
 
@@ -2440,7 +2452,7 @@ AGGREGATE 操作支持通过顶层 `sourceQuery` 定义嵌套查询，使聚合�
 | **sourceQuery[].maxResults** | integer | 否 | 子查询返回的最大记录数，默认 100000 |
 
 **使用约束**：
-- `objects` 和 `sourceQuery` **互斥**，只能使用其一
+- 原则上 `objects` 与 `sourceQuery` 应二选一；若同层同时出现，则 `sourceQuery` 作为输入数据源，`objects` 仅作为输出对象声明
 - 使用 `sourceQuery` 时，`objects` 仅用于定义输出结果的对象类型和别名
 - `sourceQuery.outputAs` 为必填，用于在外层查询中引用子查询结果
 - 聚合字段 (`field`) 引用 `sourceQuery.returns` 中定义的返回字段名称
@@ -4398,13 +4410,16 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 
 ```json
 {
-  "version": "1.2.0",
+  "version": "1.8.0",
   "operation": "UPSERT",
-  "target": {
-    "objectType": "User"
-  },
+  "objects": [
+    {
+      "objectType": "User",
+      "alias": "u",
+      "by": {"id": "user_001"}
+    }
+  ],
   "mutation": {
-    "objectKey": {"id": "user_001"},
     "onCreate": {
       "name": "张三",
       "profile": {
@@ -5055,6 +5070,8 @@ ASSOCIATION_QUERY 是 OQL v1.8 专门为图关联查询设计的操作类型，�
 
 ---
 
+### 10.2 详细规范与示例
+
 #### 10.2.1 概述与使用场景
 
 关联查询操作用于**批量多对象 + 多关联关系**的复杂查询场景。当需要给定一组对象（如同一类别的多个设备），查询它们之间的关联关系时，使用 `ASSOCIATION_QUERY` 操作。
@@ -5146,8 +5163,8 @@ OQL 提供了 `ASSOCIATION_QUERY` 操作类型：
 | `objects`                          | array  |  是  | 对象实例数组，包含起始对象定义                               |
 | `objects[].objectType`             | string |  是  | 对象类型标识符                                               |
 | `objects[].alias`                  | string |  否  | 对象别名，用于后续引用                                       |
-| `objects[].objectKey`              | object |  否  | 单主键（KV 结构），如 `{"id": "prod_001"}`，图数据库场景对应 VID |
-| `objects[].compositeKey`           | object |  否  | 复合主键（KV 结构），如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}` |
+| `objects[].by`                     | object |  否  | 单主键（KV 结构），如 `{"id": "prod_001"}`，图数据库场景对应 VID（兼容旧字段 `objectKey`） |
+| `objects[].byComposite`            | object |  否  | 复合主键（KV 结构），如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}`（兼容旧字段 `compositeKey`） |
 | `relationships`                    | array  |  是  | 关系类型数组，指定查询的关系类型                             |
 | `relationships[].name`             | string |  是  | 关系类型名称（驼峰命名）                                     |
 | `relationships[].alias`            | string |  否  | 关系别名，用于 returns 引用                                  |
@@ -5160,15 +5177,9 @@ OQL 提供了 `ASSOCIATION_QUERY` 操作类型：
 **使用规则**：
 
 - `objects` 必填，用于定义查询的起始对象
-- `objects[].objectKey` 单主键，如 `{"id": "prod_001"}`
-- `objects[].compositeKey` 复合主键，如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}`
-- `objectKey` 与 `compositeKey` 二选一，不可同时使用
-- `relationships` 必填，指定要查询的关系类型
-
-- `objects` 必填，用于定义查询的起始对象
-- `objects[].objectKey` 单主键，如 `{"id": "prod_001"}`
-- `objects[].compositeKey` 复合主键，如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}`
-- `objectKey` 与 `compositeKey` 二选一，不可同时使用
+- `objects[].by` 单主键，如 `{"id": "prod_001"}`（兼容旧字段 `objectKey`）
+- `objects[].byComposite` 复合主键，如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}`（兼容旧字段 `compositeKey`）
+- `by` 与 `byComposite` 二选一，不可同时使用
 - `relationships` 必填，指定要查询的关系类型
 - 遍历方向由 `relationships[].sourceObjectType` 和 `relationships[].targetObjectType` 决定，无需额外指定 direction
 
@@ -9255,7 +9266,7 @@ LIMIT 50;
 | **version** | string | 是 | DSL 版本号，当前为 `1.8.0` |
 | **operation** | string | 是 | 操作类型（QUERY / MULTI_OBJECT_QUERY / AGGREGATE / ASSOCIATION_QUERY / LIST_LINKED_OBJECTS / GET_LINKED_OBJECT / CREATE / UPDATE / DELETE / UPSERT / BATCH） |
 
-#### C.1.2 统一对象定位（objectTypes）
+#### C.1.2 统一对象定位（objects）
 
 | 关键字 | 类型 | 必填 | 说明 |
 |--------|------|:----:|------|
