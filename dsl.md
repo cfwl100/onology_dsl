@@ -5163,8 +5163,8 @@ OQL 提供了 `ASSOCIATION_QUERY` 操作类型：
 | `objects`                          | array  |  是  | 对象实例数组，包含起始对象定义                               |
 | `objects[].objectType`             | string |  是  | 对象类型标识符                                               |
 | `objects[].alias`                  | string |  否  | 对象别名，用于后续引用                                       |
-| `objects[].by`                     | object |  否  | 单主键（KV 结构），如 `{"id": "prod_001"}`，图数据库场景对应 VID（兼容旧字段 `by`） |
-| `objects[].byComposite`            | object |  否  | 复合主键（KV 结构），如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}`（兼容旧字段 `byComposite`） |
+| `objects[].by`                     | object |  否  | 单主键（KV 结构），如 `{"id": "prod_001"}`，图数据库场景对应 VID |
+| `objects[].byComposite`            | object |  否  | 复合主键（KV 结构），如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}` |
 | `relationships`                    | array  |  是  | 关系类型数组，指定查询的关系类型                             |
 | `relationships[].name`             | string |  是  | 关系类型名称（驼峰命名）                                     |
 | `relationships[].alias`            | string |  否  | 关系别名，用于 returns 引用                                  |
@@ -5177,8 +5177,8 @@ OQL 提供了 `ASSOCIATION_QUERY` 操作类型：
 **使用规则**：
 
 - `objects` 必填，用于定义查询的起始对象
-- `objects[].by` 单主键，如 `{"id": "prod_001"}`（兼容旧字段 `by`）
-- `objects[].byComposite` 复合主键，如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}`（兼容旧字段 `byComposite`）
+- `objects[].by` 单主键，如 `{"id": "prod_001"}`
+- `objects[].byComposite` 复合主键，如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}`
 - `by` 与 `byComposite` 二选一，不可同时使用
 - `relationships` 必填，指定要查询的关系类型
 - 遍历方向由 `relationships[].sourceObjectType` 和 `relationships[].targetObjectType` 决定，无需额外指定 direction
@@ -8249,7 +8249,7 @@ OQL 定义了以下 Operation 类型：
 | | DELETE | 删除对象 | 删除对象（软/硬删除） |
 | | UPSERT | 插入或更新 | 存在更新/不存在创建 |
 | **批量类** | BATCH | 批量操作 | 组合多个写操作 |
-|  | **SUBGRAPH** | **子图操作** | **批量多对象 + 多关联** | **复杂业务场景（见 v1.0 文档）** |
+|  | **SUBGRAPH** | **子图操作** | **批量多对象 + 多关联** | **复杂业务场景（见 v1.2 文档）** |
 
 ### 15.2 Operation 能力对比
 
@@ -9165,7 +9165,7 @@ LIMIT 50;
 | 1.0 | 2026-03-01 | 支持数据库列表：Nebula(GDE)、Gauss V3(GDE)、MySQL 5.7/8.X(华为云)、ClickHouse(GDE)、ElasticSearch(GDE/华为云)、Carbon(GDE)、PostgreSQL 15.X、Gauss V5(GDE) |
 | 1.0 | 2026-03-01 | 增加 2.5 节：无过滤条件查询说明（可查询对象类型所有对象），补充 nextPageToken 和 data 数组响应格式 |
 | 1.0 | 2026-03-03 | 增加关联查询（ASSOCIATION_QUERY）能力：批量多对象 + 多关联关系查询，补充 maxResults 参数说明，并增加时序属性查询（TIMESERIES_QUERY）说明 |
-| 1.0 | 2026-03-03 | target 新增 version 字段标识对象模型版本；by 和 byComposite 改为 KV 形式；更新复合主键说明（1.4 节）；更新所有示例中的主键格式 |
+| 1.0 | 2026-03-03 | objects 增加 version 字段标识对象模型版本；`by` 和 `byComposite` 采用 KV 形式；更新复合主键说明并同步示例主键格式 |
 | 1.0 | 2026-03-07 | 统一顶层为 `objects`（移除 `targets`）；新增跨对象条件查询（whereFrom）；支持同表多对象属性查询；新增 MULTI_OBJECT_QUERY 操作类型；移除分页语法，改为 `maxResults` 上限 100k；ASSOCIATION_QUERY 增强 conditions/returns/orders 等 DSL 参数定义，并新增 nGQL 对应关系与错误码说明 |
 
 ---
@@ -9202,7 +9202,7 @@ LIMIT 50;
 | DELETE | objectType | 否 |否 | 否 | 是 | 删除对象 |
 | UPSERT | objectType | 否 | 否 | 否 | 是 | 插入或更新 |
 | BATCH | 否 | 否 | 否 | 否 | 否（用 mutations） | 批量操作 |
-| **SUBGRAPH** | 否 | 否 | 否 | 否 | 否（用 subgraph） | **子图操作（见 v1.0 文档）** |
+| **SUBGRAPH** | 否 | 否 | 否 | 否 | 否（用 subgraph） | **子图操作（见 v1.2 文档）** |
 
 > **ASSOCIATION_QUERY 操作说明**：v1.0 新增，v1.0 增强，支持多 `objects` + 多 `relationships` 查询，支持 bizRelType/structRelType 等本体模型字段，支持 returns 配置指定对象/关系字段用于 GQL 拼装，详见第 10 章。
 > **SUBGRAPH 操作详情**：请参阅《本体对象操作语言(OQL)-子图DSL规范v1.2.md》，包含 objects、links、deletes 的批量操作设计。
@@ -9391,7 +9391,7 @@ LIMIT 50;
 | 关键字 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
 | **relationships** | string | 是 | 关联类型标识符，如 `items`、`orders`、`owned` 等 |
-| **linkedObjectKey** | string | GET_LINKED_OBJECT 必填 | 关联对象主键 |
+| **linkedObjectKey** | object | GET_LINKED_OBJECT 必填 | 关联对象主键（KV 结构） |
 | **select** | object | 否 | 字段投影配置 |
 | **select.fields** | array | 否 | 要返回的关联对象字段 |
 | **select.includeLinkProperties** | boolean | 否 | 是否包含关联属性，默认 false |
