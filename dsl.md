@@ -2,6 +2,19 @@
 
 ---
 
+## 阅读导航
+
+- 第 1 章：设计原则与多数据源映射
+- 第 2 章：统一顶层结构与通用字段（`objects` / `conditions` / `returns` / `orders`）
+- 第 3-11 章：各操作类型（查询、聚合、写入、关联、批量）
+- 第 12-13 章：执行选项与表达式
+- 第 14-16 章：完整示例与 DSL→物理查询转换
+- 附录：关键字速查与字段参考
+
+> 建议阅读顺序：先读第 2 章统一结构，再按操作类型阅读对应章节。
+
+---
+
 ## 1. 设计原则与架构
 
 ### 1.1 设计目标
@@ -125,6 +138,11 @@
 
 > **说明**：第1.8.0 版本移除了 `targets` 字段，将多对象查询能力统一到 `objects` 数组中。通过 `objects[].byList` 支持批量主键查询，通过多个对象类型配置支持多对象联合查询。
 
+> **兼容性说明（避免歧义）**：历史示例中可能出现 `target` / `objectKey` / `compositeKey` 命名。
+> - 规范主写法：`objects[]` + `by` / `byComposite`
+> - 兼容别名：`objectKey` ≈ `by`，`compositeKey` ≈ `byComposite`
+> - 新增/改写示例优先使用规范主写法；保留旧写法仅用于说明历史兼容行为
+
 ### 2.2 顶层字段定义（通用）
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -189,7 +207,7 @@ conditions 定义统一的条件表达式，使用二叉树结构表示复杂条
 - **灵活组合**：每个嵌套层级可以使用不同的 `operation` 类型（QUERY / MULTI_OBJECT_QUERY / AGGREGATE）
 
 **使用约束**：
-- `objects` 和 `sourceQuery` **互斥**，只能使用其一
+- 原则上 `objects` 与 `sourceQuery` 应二选一；若同层同时出现，则 `sourceQuery` 作为输入数据源，`objects` 仅作为输出对象声明
 - 使用 `sourceQuery` 时，`objects` 仅用于定义输出结果的对象类型和别名
 - `sourceQuery[].outputAs` 为必填，用于在外层查询中引用子查询结果
 - 子查询可以再包含 `sourceQuery`，实现多层嵌套
@@ -1013,7 +1031,7 @@ QUERY 操作通过顶层的 `conditions` 进行属性过滤查询，无需指定
 MULTI_OBJECT_QUERY 操作支持通过顶层 `sourceQuery` 定义嵌套查询，使查询数据源从一个子查询的中间结果集获取。
 
 **使用约束**：
-- `objects` 和 `sourceQuery` **互斥**，只能使用其一
+- 原则上 `objects` 与 `sourceQuery` 应二选一；若同层同时出现，则 `sourceQuery` 作为输入数据源，`objects` 仅作为输出对象声明
 - 使用 `sourceQuery` 时，`objects` 可以为空，也可以为其他对象类型，用于满足多对象类型查询的诉求
 - 子查询结构与顶层结构一致，支持多层嵌套
 
@@ -1593,7 +1611,7 @@ QUERY 操作使用统一顶层结构，通过 `conditions` 定义过滤条件，
 QUERY 操作支持通过顶层 `sourceQuery` 定义嵌套查询，使查询数据源从一个子查询的中间结果集获取。
 
 **使用约束**：
-- `objects` 和 `sourceQuery` **互斥**，只能使用其一
+- 原则上 `objects` 与 `sourceQuery` 应二选一；若同层同时出现，则 `sourceQuery` 作为输入数据源，`objects` 仅作为输出对象声明
 - 使用 `sourceQuery` 时，`objects` 仅用于定义输出结果的对象类型和别名
 - `sourceQuery[].outputAs` 为必填，用于在外层查询中引用子查询结果
 
@@ -1913,7 +1931,7 @@ QUERY 操作使用 `query` 专用块定义查询参数，但实际使用中 quer
   "metadata": {
     "queryTimeRange": {
       "from": "2026-02-07T00:00:00Z",
-      "to": "2026-02-07T23:59:59ZZ"
+      "to": "2026-02-07T23:59:59Z"
     },
     "dataPointCount": 7
   }
@@ -2016,7 +2034,7 @@ LIMIT 50
 
 #### 4.1.2 关键字说明
 
-> **嵌套查询说明**：如需使用嵌套查询，请通过顶层 `sourceQuery` 定义，详见 [4.1.10 嵌套查询聚合](#4110-嵌套查询聚合)。`objects` 和 `sourceQuery` **互斥**，只能使用其一。
+> **嵌套查询说明**：如需使用嵌套查询，请通过顶层 `sourceQuery` 定义，详见 [4.1.10 嵌套查询聚合](#4110-嵌套查询聚合)。原则上 `objects` 与 `sourceQuery` 应二选一；若同层同时出现，则 `sourceQuery` 作为输入数据源，`objects` 仅作为输出对象声明。
 
 | 关键字 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
@@ -2379,7 +2397,7 @@ LIMIT 50
 AGGREGATE 操作支持通过顶层 `sourceQuery` 定义嵌套查询，使聚合数据源从一个子查询的中间结果集获取。
 
 **使用约束**：
-- `objects` 和 `sourceQuery` **互斥**，只能使用其一
+- 原则上 `objects` 与 `sourceQuery` 应二选一；若同层同时出现，则 `sourceQuery` 作为输入数据源，`objects` 仅作为输出对象声明
 - 使用 `sourceQuery` 时，`objects` 仅用于定义输出结果的对象类型和别名
 - 聚合字段 (`field`) 引用 `sourceQuery.returns` 中定义的返回字段名称
 
@@ -2434,7 +2452,7 @@ AGGREGATE 操作支持通过顶层 `sourceQuery` 定义嵌套查询，使聚合�
 | **sourceQuery[].maxResults** | integer | 否 | 子查询返回的最大记录数，默认 100000 |
 
 **使用约束**：
-- `objects` 和 `sourceQuery` **互斥**，只能使用其一
+- 原则上 `objects` 与 `sourceQuery` 应二选一；若同层同时出现，则 `sourceQuery` 作为输入数据源，`objects` 仅作为输出对象声明
 - 使用 `sourceQuery` 时，`objects` 仅用于定义输出结果的对象类型和别名
 - `sourceQuery.outputAs` 为必填，用于在外层查询中引用子查询结果
 - 聚合字段 (`field`) 引用 `sourceQuery.returns` 中定义的返回字段名称
@@ -4392,13 +4410,16 @@ UPSERT 操作用于**存在时更新、不存在时创建**，是 CREATE 和 UPD
 
 ```json
 {
-  "version": "1.2.0",
+  "version": "1.8.0",
   "operation": "UPSERT",
-  "target": {
-    "objectType": "User"
-  },
+  "objects": [
+    {
+      "objectType": "User",
+      "alias": "u",
+      "by": {"id": "user_001"}
+    }
+  ],
   "mutation": {
-    "objectKey": {"id": "user_001"},
     "onCreate": {
       "name": "张三",
       "profile": {
@@ -5049,6 +5070,8 @@ ASSOCIATION_QUERY 是 OQL v1.8 专门为图关联查询设计的操作类型，�
 
 ---
 
+### 10.2 详细规范与示例
+
 #### 10.2.1 概述与使用场景
 
 关联查询操作用于**批量多对象 + 多关联关系**的复杂查询场景。当需要给定一组对象（如同一类别的多个设备），查询它们之间的关联关系时，使用 `ASSOCIATION_QUERY` 操作。
@@ -5140,8 +5163,8 @@ OQL 提供了 `ASSOCIATION_QUERY` 操作类型：
 | `objects`                          | array  |  是  | 对象实例数组，包含起始对象定义                               |
 | `objects[].objectType`             | string |  是  | 对象类型标识符                                               |
 | `objects[].alias`                  | string |  否  | 对象别名，用于后续引用                                       |
-| `objects[].objectKey`              | object |  否  | 单主键（KV 结构），如 `{"id": "prod_001"}`，图数据库场景对应 VID |
-| `objects[].compositeKey`           | object |  否  | 复合主键（KV 结构），如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}` |
+| `objects[].by`                     | object |  否  | 单主键（KV 结构），如 `{"id": "prod_001"}`，图数据库场景对应 VID（兼容旧字段 `objectKey`） |
+| `objects[].byComposite`            | object |  否  | 复合主键（KV 结构），如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}`（兼容旧字段 `compositeKey`） |
 | `relationships`                    | array  |  是  | 关系类型数组，指定查询的关系类型                             |
 | `relationships[].name`             | string |  是  | 关系类型名称（驼峰命名）                                     |
 | `relationships[].alias`            | string |  否  | 关系别名，用于 returns 引用                                  |
@@ -5154,15 +5177,9 @@ OQL 提供了 `ASSOCIATION_QUERY` 操作类型：
 **使用规则**：
 
 - `objects` 必填，用于定义查询的起始对象
-- `objects[].objectKey` 单主键，如 `{"id": "prod_001"}`
-- `objects[].compositeKey` 复合主键，如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}`
-- `objectKey` 与 `compositeKey` 二选一，不可同时使用
-- `relationships` 必填，指定要查询的关系类型
-
-- `objects` 必填，用于定义查询的起始对象
-- `objects[].objectKey` 单主键，如 `{"id": "prod_001"}`
-- `objects[].compositeKey` 复合主键，如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}`
-- `objectKey` 与 `compositeKey` 二选一，不可同时使用
+- `objects[].by` 单主键，如 `{"id": "prod_001"}`（兼容旧字段 `objectKey`）
+- `objects[].byComposite` 复合主键，如 `{"sourceSystem": "ERP", "orderNo": "ORD-001"}`（兼容旧字段 `compositeKey`）
+- `by` 与 `byComposite` 二选一，不可同时使用
 - `relationships` 必填，指定要查询的关系类型
 - 遍历方向由 `relationships[].sourceObjectType` 和 `relationships[].targetObjectType` 决定，无需额外指定 direction
 
@@ -9249,7 +9266,7 @@ LIMIT 50;
 | **version** | string | 是 | DSL 版本号，当前为 `1.8.0` |
 | **operation** | string | 是 | 操作类型（QUERY / MULTI_OBJECT_QUERY / AGGREGATE / ASSOCIATION_QUERY / LIST_LINKED_OBJECTS / GET_LINKED_OBJECT / CREATE / UPDATE / DELETE / UPSERT / BATCH） |
 
-#### C.1.2 统一对象定位（objectTypes）
+#### C.1.2 统一对象定位（objects）
 
 | 关键字 | 类型 | 必填 | 说明 |
 |--------|------|:----:|------|
