@@ -9,6 +9,11 @@ import com.onology.oac.model.OqlRequest;
 import com.onology.oac.result.ResultAssembler;
 import org.springframework.stereotype.Component;
 
+/**
+ * OAC 主流水线：validate -> bind -> translate。
+ *
+ * <p>执行阶段由 handler 在 compile 后调用 orchestrator/assembler 完成。
+ */
 @Component
 public class OacPipeline {
     private final OntologyBinder binder;
@@ -24,6 +29,7 @@ public class OacPipeline {
     }
 
     public CompiledPlan compile(OqlRequest request) {
+        // 先执行 OQL 语义校验，再进入编译阶段。
         request.validate();
         LogicalPlan logical = binder.bind(request);
         PhysicalPlan physical = translator.toPhysical(logical);

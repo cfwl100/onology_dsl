@@ -6,6 +6,9 @@ import org.springframework.stereotype.Service;
 
 import java.util.Map;
 
+/**
+ * OAC 统一服务分发器：按 mode 路由到对应处理策略。
+ */
 @Service
 public class OacService {
     private final Map<String, OacModeHandler> handlers;

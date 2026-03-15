@@ -14,6 +14,11 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
 
+/**
+ * OAC 统一接入层。
+ *
+ * <p>通过 mode 区分 validate/explain/execute，保持统一入口风格。
+ */
 @RestController
 @RequestMapping("/oac")
 public class OacController {

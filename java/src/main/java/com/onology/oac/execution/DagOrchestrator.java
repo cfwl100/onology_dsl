@@ -9,6 +9,11 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
+/**
+ * 物理执行 DAG 调度器。
+ *
+ * <p>按照节点依赖做拓扑式执行，当前为串行模拟执行，便于后续扩展并行调度。
+ */
 @Component
 public class DagOrchestrator {
     private final AdapterFactory adapterFactory;

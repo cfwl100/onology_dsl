@@ -4,6 +4,11 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 
 import java.util.List;
 
+/**
+ * OQL canonical 请求模型（Spring MVC 反序列化用）。
+ *
+ * <p>该模型在 pipeline compile 前执行语义校验，确保操作类型与请求结构匹配。
+ */
 public class OqlRequest {
     private String version = "1.0";
     private String schemaRef;
@@ -104,12 +109,15 @@ public class OqlRequest {
         if (schemaRef == null || schemaRef.isBlank()) {
             throw new IllegalArgumentException("schemaRef is required");
         }
+        // 写操作必须带 mutation。
         if ((operation == OperationType.UPDATE || operation == OperationType.DELETE) && mutation == null) {
             throw new IllegalArgumentException("UPDATE/DELETE requires mutation block");
         }
+        // UPSERT 必须指定 matchBy。
         if (operation == OperationType.UPSERT && (mutation == null || mutation.matchBy() == null || mutation.matchBy().isEmpty())) {
             throw new IllegalArgumentException("UPSERT requires mutation.matchBy");
         }
+        // BATCH 之外必须声明目标对象。
         if (operation != OperationType.BATCH && (objects == null || objects.isEmpty())) {
             throw new IllegalArgumentException("non-BATCH request must declare objects");
         }
@@ -123,6 +131,17 @@ public class OqlRequest {
         req.setConditions(List.of(new Condition("id", "eq", "U1001")));
         req.setReturns(List.of(new ReturnField("id", null), new ReturnField("firstName", null), new ReturnField("email", null)));
         req.setMaxResults(10);
+        return req;
+    }
+
+    public static OqlRequest sampleGraphQuery() {
+        OqlRequest req = new OqlRequest();
+        req.setSchemaRef("demo.sales.v1");
+        req.setOperation(OperationType.QUERY);
+        req.setObjects(List.of(new ObjectRef("Employee", "e")));
+        req.setConditions(List.of(new Condition("id", "eq", "E1001")));
+        req.setReturns(List.of(new ReturnField("id", null), new ReturnField("name", null)));
+        req.setMaxResults(5);
         return req;
     }
 }

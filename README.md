@@ -18,6 +18,7 @@
   - `operation`：validate/explain/execute 策略处理器
 - `java/src/test/java/com/onology/oac`
   - `OacControllerTest`：Spring Boot API 测试
+  - `OqlDialectTranslationTest`：基于元数据 source 的 SQL/nGQL 翻译测试
   - `OacServiceTestMain`：无 Web 容器模式的服务自检
 - `sdk/python/oac_osdk`
   - `OacClient`：Python OSDK 客户端

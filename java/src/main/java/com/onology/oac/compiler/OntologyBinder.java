@@ -11,6 +11,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * OntologyBinder 负责把 OQL 中的对象/字段绑定到本体映射元数据。
+ *
+ * <p>输出 LogicalPlan（逻辑计划）供后续 translator 按 source 切分。
+ */
 @Component
 public class OntologyBinder {
     private final SchemaRegistry registry;
@@ -20,6 +25,7 @@ public class OntologyBinder {
     }
 
     public LogicalPlan bind(OqlRequest request) {
+        // 当前示例以首对象为主查询对象，后续可扩展为多对象 JOIN/关联路径。
         var target = request.getObjects().get(0);
         Map<String, ObjectSchema> snapshot = registry.getSnapshot(request.getSchemaRef());
         ObjectSchema schema = snapshot.get(target.objectType());
@@ -27,6 +33,7 @@ public class OntologyBinder {
             throw new IllegalArgumentException("objectType not found: " + target.objectType());
         }
 
+        // returns 为空时，按 identityField 最小投影。
         List<String> requested = request.getReturns().isEmpty()
                 ? List.of(schema.identityField())
                 : request.getReturns().stream().map(ReturnField::field).toList();
