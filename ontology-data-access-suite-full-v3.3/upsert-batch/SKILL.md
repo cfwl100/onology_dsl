@@ -47,3 +47,16 @@ description: 处理存在则更新否则创建，或多个写操作需要作为�
 - 不输出 Markdown、解释、注释或散文。
 - 不输出 `null`、空对象或空数组。
 - 不要为了凑齐 JSON 而猜测 schema 中不存在的对象、关系或字段。
+
+## 输出前必须逐项检查（Checklist）
+
+在给出最终输出前，必须逐项自检，全部满足后才可输出：
+
+1. **operation 边界**：仅允许 `UPSERT` 或 `BATCH`。
+2. **UPSERT 约束**：`objects` 必须 1 个，且 `mutation.matchBy`、`mutation.data.properties` 必填。
+3. **matchBy 闭包**：`matchBy` 中每个字段都必须出现在 `data.properties` 中。
+4. **UPSERT 禁止字段**：`UPSERT` 场景不得出现 `conditions`。
+5. **BATCH 约束**：`mutation.atomic` 与非空 `mutation.items` 必填，子项不得再是 `BATCH`。
+6. **子项结构**：每个 item 必须是合法单操作结构，且继承顶层上下文。
+7. **alias 与引用**：各子项内引用独立闭包，不跨 item 悬空引用。
+8. **缺失信息处理**：缺匹配键或批次子项不完整时返回结构化错误。

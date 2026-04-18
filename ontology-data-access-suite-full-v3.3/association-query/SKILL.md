@@ -59,3 +59,16 @@ description: 处理需要显式关系路径或多跳遍历的对象关联读取�
 - 不输出 `null`、空对象或空数组。
 - 不要为了凑齐 JSON 而猜测 schema 中不存在的对象、关系或字段。
 - 如果调用方提供的 profile 约束与通用规范冲突，应优先遵守已激活的 profile 约束，并在结构化计划中显式记录该约束来源。
+
+## 输出前必须逐项检查（Checklist）
+
+在给出最终输出前，必须逐项自检，全部满足后才可输出：
+
+1. **operation 边界**：必须是 `ASSOCIATION_QUERY`。
+2. **必填块**：`objects`、`relationships`、`returns` 必须存在。
+3. **路径合法性**：`relationships` 必须按路径顺序，`from/to` 都引用对象 alias。
+4. **禁止字段**：不得出现 `linkQuery`、`mutation`。
+5. **alias 闭包**：关系 alias 与对象 alias 的引用必须闭合且无悬空。
+6. **returns 归属**：默认返回对象字段，仅在明确需要时返回关系字段。
+7. **sourceQuery 深度**：若使用 `sourceQuery`，路径与层级需可解释且受控。
+8. **缺失信息处理**：路径起终点或关系类型不明确时返回结构化错误。

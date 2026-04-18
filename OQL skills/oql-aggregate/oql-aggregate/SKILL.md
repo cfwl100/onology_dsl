@@ -75,3 +75,16 @@ If the request lacks enough information to generate safe OQL, output this shape:
   "maxResults": 100
 }
 ```
+
+## 输出前必须逐项检查（Checklist）
+
+在给出最终输出前，必须逐项自检，全部满足后才可输出：
+
+1. **operation 边界**：必须是 `AGGREGATE`。
+2. **objects/returns 必填**：`objects` 与 `returns` 必须存在。
+3. **returns kind 约束**：仅允许 `GROUP_BY` 与 `METRIC`，且至少一个 `METRIC`。
+4. **禁止字段**：不得出现 `relationships`、`linkQuery`、`mutation`。
+5. **alias 闭包**：聚合/分组 alias 必须可被 `orders` 正确引用。
+6. **排序规则**：聚合结果排序优先使用 `returns[].alias`。
+7. **sourceQuery 深度**：若使用 `sourceQuery`，必须符合读操作深度限制。
+8. **缺失信息处理**：缺聚合指标或分组语义不清时返回结构化错误。

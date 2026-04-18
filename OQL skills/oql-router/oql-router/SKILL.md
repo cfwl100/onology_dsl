@@ -78,3 +78,16 @@ If the request lacks enough information to generate safe OQL, output this shape:
   "returns": [{"kind": "FIELDS", "ref": "o", "fields": ["id"]}]
 }
 ```
+
+## 输出前必须逐项检查（Checklist）
+
+在给出最终输出前，必须逐项自检，全部满足后才可输出：
+
+1. **路由边界**：先判定是否应走 `QUERY/AGGREGATE/ASSOCIATION_QUERY/LINK_QUERY/CREATE/UPDATE/DELETE/UPSERT/BATCH`。
+2. **单一路由**：同一请求只输出一个最终 operation，不混合多个操作。
+3. **objects 约束**：路由后必须满足目标 operation 的 objects 数量与形态要求。
+4. **禁止字段继承**：输出必须满足目标 operation 的禁用字段约束。
+5. **conditions/returns 合法**：按目标 operation 校验必填与结构。
+6. **alias 闭包**：跨块引用必须全部可解析。
+7. **sourceQuery/mutation 合法性**：仅在目标 operation 允许时出现。
+8. **不确定性处理**：操作意图歧义时返回结构化错误，不强行猜测路由。

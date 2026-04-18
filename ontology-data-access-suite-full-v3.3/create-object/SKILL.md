@@ -48,3 +48,16 @@ description: 处理创建单个对象的写入请求。用于新增、创建、�
 - 不输出 Markdown、解释、注释或散文。
 - 不输出 `null`、空对象或空数组。
 - 不要为了凑齐 JSON 而猜测 schema 中不存在的对象、关系或字段。
+
+## 输出前必须逐项检查（Checklist）
+
+在给出最终输出前，必须逐项自检，全部满足后才可输出：
+
+1. **operation 边界**：必须是 `CREATE`，不得路由到 `UPDATE/UPSERT/BATCH`。
+2. **objects 数量**：`objects` 必须且仅有 1 个目标对象。
+3. **禁止字段**：不得出现 `conditions`、`returns`、`orders`、`relationships`、`linkQuery`、`sourceQuery`。
+4. **mutation.data 完整性**：`mutation.data.properties` 必须存在且非空。
+5. **alias 闭包**：仅允许引用已声明对象 alias，不得出现悬空 ref。
+6. **函数值规范**：如有函数值，使用对象形式（如 `{"$fn": "now"}`）。
+7. **空值约束**：不得输出 `null`、空对象、空数组。
+8. **缺失信息处理**：缺关键字段时返回结构化错误，禁止猜测补值。

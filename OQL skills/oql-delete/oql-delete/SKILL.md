@@ -68,3 +68,16 @@ If the request lacks enough information to generate safe OQL, output this shape:
   "mutation": {"scope": "ONE"}
 }
 ```
+
+## 输出前必须逐项检查（Checklist）
+
+在给出最终输出前，必须逐项自检，全部满足后才可输出：
+
+1. **operation 边界**：必须是 `DELETE`。
+2. **objects 数量**：`objects` 必须且仅有 1 个。
+3. **必填块**：`conditions` 与 `mutation.scope` 必须存在。
+4. **scope 合法性**：`mutation.scope` 仅允许 `ONE` 或 `MANY`。
+5. **禁止字段**：不得出现 `mutation.set`、`mutation.data`、`returns`、`orders`、`sourceQuery`、`relationships`、`linkQuery`。
+6. **alias 闭包**：`conditions` 引用的 ref 必须为已声明对象 alias。
+7. **空删防护**：条件语义不清或过宽时不得冒险删除。
+8. **缺失信息处理**：无法确定删除范围时返回结构化错误。
