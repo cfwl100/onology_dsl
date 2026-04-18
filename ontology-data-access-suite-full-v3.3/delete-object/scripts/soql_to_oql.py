@@ -1,11 +1,5 @@
-import base64
-import runpy
-import tempfile
-import zlib
+#!/usr/bin/env python3
 from pathlib import Path
+import runpy
 
-payload = (Path(__file__).resolve().parents[2] / "shared" / "soql_to_oql_payload.b85").read_text(encoding="utf-8")
-code = zlib.decompress(base64.b85decode(payload)).decode()
-path = Path(tempfile.gettempdir()) / "soql_to_oql_impl.py"
-path.write_text(code, encoding="utf-8")
-runpy.run_path(str(path), run_name="__main__")
+runpy.run_path(str(Path(__file__).resolve().parents[2] / "shared" / "soql_to_oql.py"), run_name="__main__")

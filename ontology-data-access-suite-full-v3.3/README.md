@@ -5,6 +5,8 @@
 - Skill 文本层只描述第 9 章的 **S-OQL** 语法与操作边界
 - `conditions`、`returns`、`mutation` 使用 S-OQL 简化语法
 - `scripts/soql_to_oql.py` 负责把 S-OQL 恢复为 canonical OQL
+- 主转换实现位于 `shared/soql_to_oql.py`（可读 Python 源码，主路径仅依赖此文件）
+- `shared/soql_to_oql_payload.b85` 仅保留为空占位文件，已弃用
 - `scripts/oql_validator.py` 负责对转换后的 canonical OQL 做校验
 
 ## 目录说明
