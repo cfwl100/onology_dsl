@@ -38,7 +38,8 @@ description: 处理按条件删除既有对象的写入请求。仅在需要删�
 - `schemaRef`
 - `operation`
 - `objects`
-- 视操作需要补充 `relationships` / `conditions` / `returns` / `orders` / `sourceQuery` / `linkQuery` / `mutation`
+- `conditions`
+- `mutation`
 
 默认值可以省略并交给脚本补齐，例如：
 
@@ -63,5 +64,6 @@ description: 处理按条件删除既有对象的写入请求。仅在需要删�
 4. **scope 合法性**：`mutation.scope` 仅允许 `ONE` 或 `MANY`。
 5. **禁止字段**：不得出现 `mutation.set`、`mutation.data`、`returns`、`orders`、`sourceQuery`、`relationships`、`linkQuery`。
 6. **alias 闭包**：`conditions` 引用的 ref 必须为已声明对象 alias。
-7. **空删防护**：条件语义不清或过宽时不得冒险删除。
-8. **缺失信息处理**：无法确定删除范围时返回结构化错误。
+7. **S-OQL 转 canonical**：若输入使用了条件三元组或 `all|any|not` 逻辑组，必须先调用转换脚本。
+8. **空删防护**：条件语义不清或过宽时不得冒险删除。
+9. **缺失信息处理**：无法确定删除范围时返回结构化错误。

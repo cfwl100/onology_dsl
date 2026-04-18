@@ -62,6 +62,7 @@ description: 处理不涉及聚合、不涉及显式关系路径、也不属于�
 3. **returns 约束**：`returns` 只能使用 `FIELDS` 元组。
 4. **禁止字段**：不得出现 `relationships`、`linkQuery`、`mutation`。
 5. **conditions 合法性**：过滤条件仅引用已声明对象 alias。
-6. **sourceQuery 约束**：仅在规范允许时使用，且嵌套深度受控。
-7. **排序与引用**：`orders` 的 `ref/field` 必须可解析到查询结果。
-8. **缺失信息处理**：对象范围或返回字段缺失时返回结构化错误。
+6. **S-OQL 转 canonical**：若输入使用了三元组 / `all|any|not` / `FIELDS` 元组，必须先调用转换脚本。
+7. **sourceQuery 约束**：仅在规范允许时使用，且嵌套深度受控。
+8. **排序与引用**：`orders` 的 `ref/field` 必须可解析到查询结果。
+9. **缺失信息处理**：对象范围或返回字段缺失时返回结构化错误。

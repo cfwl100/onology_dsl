@@ -38,7 +38,7 @@ description: 处理通过单一关系类型获取关联对象的一跳读取请�
 - `schemaRef`
 - `operation`
 - `objects`
-- 视操作需要补充 `relationships` / `conditions` / `returns` / `orders` / `sourceQuery` / `linkQuery` / `mutation`
+- 视操作需要补充 `conditions` / `returns` / `orders` / `linkQuery`
 
 默认值可以省略并交给脚本补齐，例如：
 
@@ -64,5 +64,6 @@ description: 处理通过单一关系类型获取关联对象的一跳读取请�
 4. **linkQuery 合法性**：`mode` 仅 `LIST/ONE`，`sourceRef/targetRef` 必须引用对象 alias。
 5. **禁止字段**：不得出现 `relationships`、`mutation`。
 6. **alias 闭包**：`conditions`、`returns`、`linkQuery` 的引用必须闭合。
-7. **ONE/LIST 判定**：只有在唯一性明确时才使用 `ONE`。
-8. **缺失信息处理**：关系类型或源筛选条件不明确时返回结构化错误。
+7. **S-OQL 转 canonical**：若输入使用了条件三元组或 `FIELDS` 元组，必须先调用转换脚本。
+8. **ONE/LIST 判定**：只有在唯一性明确时才使用 `ONE`。
+9. **缺失信息处理**：关系类型或源筛选条件不明确时返回结构化错误。

@@ -38,7 +38,8 @@ description: 处理按条件修改既有对象的写入请求。用于更新、�
 - `schemaRef`
 - `operation`
 - `objects`
-- 视操作需要补充 `relationships` / `conditions` / `returns` / `orders` / `sourceQuery` / `linkQuery` / `mutation`
+- `conditions`
+- `mutation`
 
 默认值可以省略并交给脚本补齐，例如：
 
@@ -63,5 +64,6 @@ description: 处理按条件修改既有对象的写入请求。用于更新、�
 4. **scope 合法性**：`mutation.scope` 仅允许 `ONE` 或 `MANY`。
 5. **禁止字段**：不得出现 `returns`、`orders`、`sourceQuery`、`relationships`、`linkQuery`。
 6. **alias 闭包**：`conditions`/`mutation` 中引用都必须落在已声明 alias 上。
-7. **mutation.set 约束**：更新字段不可为空，且字段名应来自目标对象逻辑字段。
-8. **缺失信息处理**：无法确定筛选条件或更新内容时返回结构化错误。
+7. **S-OQL 转 canonical**：若输入使用了条件三元组或 `all|any|not` 逻辑组，必须先调用转换脚本。
+8. **mutation.set 约束**：更新字段不可为空，且字段名应来自目标对象逻辑字段。
+9. **缺失信息处理**：无法确定筛选条件或更新内容时返回结构化错误。

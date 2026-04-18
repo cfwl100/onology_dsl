@@ -31,7 +31,7 @@ description: 处理创建单个对象的写入请求。用于新增、创建、�
 - `schemaRef`
 - `operation`
 - `objects`
-- 视操作需要补充 `relationships` / `conditions` / `returns` / `orders` / `sourceQuery` / `linkQuery` / `mutation`
+- `mutation`
 
 默认值可以省略并交给脚本补齐，例如：
 
