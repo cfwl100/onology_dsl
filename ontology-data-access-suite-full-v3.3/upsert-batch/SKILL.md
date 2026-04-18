@@ -1,10 +1,10 @@
 ---
 name: upsert-batch
-description: 处理存在则更新否则创建，或多个写操作需要作为一个批次执行的请求。用于显式 upsert 语义或需要原子批处理的场景，并生成符合第 9 章的 `UPSERT` / `BATCH` S-OQL。
+description: 处理存在则更新否则创建，或多个写操作需要作为一个批次执行的请求。用于显式 upsert 语义或需要原子批处理的场景，并生成符合 S-OQL 生成层语法规范的 `UPSERT` / `BATCH` S-OQL。
 ---
 # S-OQL 插入或批处理生成插件
 
-仅在本插件负责的操作边界内工作。先生成符合第 9 章的 **S-OQL**，再通过 `scripts/soql_to_oql.py` 做确定性转换，并使用 `scripts/oql_validator.py` 校验转换结果。
+仅在本插件负责的操作边界内工作。先生成符合 S-OQL 生成层语法规范的 **S-OQL**，再通过 `scripts/soql_to_oql.py` 做确定性转换，并使用 `scripts/oql_validator.py` 校验转换结果。
 
 ## 工作方式
 
@@ -24,6 +24,22 @@ description: 处理存在则更新否则创建，或多个写操作需要作为�
 - `BATCH` 中 `mutation.atomic` 与非空 `mutation.items` 必须存在，且子项不得再使用 `BATCH`。
 - `BATCH.items` 子项也必须先按 S-OQL 生成，再递归交给脚本转换。
 - `UPSERT` 场景不得出现 `conditions`。
+
+## 固定语法约束（S-OQL 生成层语法规范）
+
+> 具体语法细节统一放在 `references/soql-diff-notes.md`，本节仅保留稳定边界与入口约束。
+
+### 1) `conditions` 五类约束
+
+仅允许五类：比较三元组、空值判断、非空判断、逻辑组（`all/any`）、逻辑取反（`not`）。具体的 `alias.field`、操作符和值类型约束详见 references。
+
+### 2) `returns` 定长元组规则
+
+`UPSERT/BATCH` 顶层禁止 `returns`。 具体元组形态与字段位置约束详见 references。
+
+### 3) `mutation` 简化规则
+
+`UPSERT` 仅允许 `matchBy + data`；`BATCH` 仅允许 `atomic + items`。 具体允许/禁止字段清单详见 references。
 
 ## S-OQL 结构化计划要求
 
