@@ -1,10 +1,10 @@
 ---
 name: create-object
-description: 处理创建单个对象的写入请求。用于新增、创建、插入或登记一个对象实例，不用于更新、删除或批处理；生成符合第 9 章的 `CREATE` S-OQL。
+description: 处理创建单个对象的写入请求。用于新增、创建、插入或登记一个对象实例，不用于更新、删除或批处理；生成符合 S-OQL 生成层语法规范的 `CREATE` S-OQL。
 ---
 # S-OQL 创建生成插件
 
-仅在本插件负责的操作边界内工作。先生成符合第 9 章的 **S-OQL**，再通过 `scripts/soql_to_oql.py` 做确定性转换，并使用 `scripts/oql_validator.py` 校验转换结果。
+仅在本插件负责的操作边界内工作。先生成符合 S-OQL 生成层语法规范的 **S-OQL**，再通过 `scripts/soql_to_oql.py` 做确定性转换，并使用 `scripts/oql_validator.py` 校验转换结果。
 
 ## 工作方式
 
@@ -23,6 +23,22 @@ description: 处理创建单个对象的写入请求。用于新增、创建、�
 - `mutation.data` 必须是直接属性对象，由脚本恢复为标准写入结构。
 - `objects` 长度必须为 1。
 - 不得出现 `conditions`、`returns`、`orders`、`relationships`、`linkQuery`、`sourceQuery`。
+
+## 固定语法约束（S-OQL 生成层语法规范）
+
+> 具体语法细节统一放在 `references/soql-diff-notes.md`，本节仅保留稳定边界与入口约束。
+
+### 1) `conditions` 五类约束
+
+仅允许五类：比较三元组、空值判断、非空判断、逻辑组（`all/any`）、逻辑取反（`not`）。具体的 `alias.field`、操作符和值类型约束详见 references。
+
+### 2) `returns` 定长元组规则
+
+`CREATE` 禁止 `returns`。 具体元组形态与字段位置约束详见 references。
+
+### 3) `mutation` 简化规则
+
+`CREATE` 仅允许 `mutation.data` 简化写法。 具体允许/禁止字段清单详见 references。
 
 ## S-OQL 结构化计划要求
 
