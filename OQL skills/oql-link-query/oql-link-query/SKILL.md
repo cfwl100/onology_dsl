@@ -79,3 +79,16 @@ If the request lacks enough information to generate safe OQL, output this shape:
   "maxResults": 1
 }
 ```
+
+## 输出前必须逐项检查（Checklist）
+
+在给出最终输出前，必须逐项自检，全部满足后才可输出：
+
+1. **operation 边界**：必须是 `LINK_QUERY`，且语义为单跳关联。
+2. **objects 数量**：`objects` 必须恰好 2 个（源对象/目标对象）。
+3. **必填块**：`conditions`（源侧）与 `linkQuery` 必须存在。
+4. **linkQuery 合法性**：`mode` 仅 `LIST/ONE`，`sourceRef/targetRef` 必须引用对象 alias。
+5. **禁止字段**：不得出现 `relationships`、`mutation`。
+6. **alias 闭包**：`conditions`、`returns`、`linkQuery` 的引用必须闭合。
+7. **ONE/LIST 判定**：只有在唯一性明确时才使用 `ONE`。
+8. **缺失信息处理**：关系类型或源筛选条件不明确时返回结构化错误。

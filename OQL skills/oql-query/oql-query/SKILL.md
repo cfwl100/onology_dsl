@@ -81,3 +81,16 @@ If the request lacks enough information to generate safe OQL, output this shape:
   "maxResults": 1000
 }
 ```
+
+## 输出前必须逐项检查（Checklist）
+
+在给出最终输出前，必须逐项自检，全部满足后才可输出：
+
+1. **operation 边界**：必须是 `QUERY`。
+2. **objects/returns 必填**：`objects` 与 `returns` 必须存在。
+3. **returns 约束**：`returns.kind` 只能是 `FIELDS`。
+4. **禁止字段**：不得出现 `relationships`、`linkQuery`、`mutation`。
+5. **conditions 合法性**：过滤条件仅引用已声明对象 alias。
+6. **sourceQuery 约束**：仅在规范允许时使用，且嵌套深度受控。
+7. **排序与引用**：`orders` 的 `ref/field` 必须可解析到查询结果。
+8. **缺失信息处理**：对象范围或返回字段缺失时返回结构化错误。

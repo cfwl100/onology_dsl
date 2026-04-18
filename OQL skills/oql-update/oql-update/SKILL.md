@@ -73,3 +73,16 @@ If the request lacks enough information to generate safe OQL, output this shape:
   "mutation": {"scope": "ONE", "set": {"price": 7999, "updatedAt": {"$fn": "now"}}}
 }
 ```
+
+## 输出前必须逐项检查（Checklist）
+
+在给出最终输出前，必须逐项自检，全部满足后才可输出：
+
+1. **operation 边界**：必须是 `UPDATE`。
+2. **objects 数量**：`objects` 必须且仅有 1 个。
+3. **必填块**：`conditions`、`mutation.scope`、`mutation.set` 必须存在。
+4. **scope 合法性**：`mutation.scope` 仅允许 `ONE` 或 `MANY`。
+5. **禁止字段**：不得出现 `returns`、`orders`、`sourceQuery`、`relationships`、`linkQuery`。
+6. **alias 闭包**：`conditions`/`mutation` 中引用都必须落在已声明 alias 上。
+7. **mutation.set 约束**：更新字段不可为空，且字段名应来自目标对象逻辑字段。
+8. **缺失信息处理**：无法确定筛选条件或更新内容时返回结构化错误。
