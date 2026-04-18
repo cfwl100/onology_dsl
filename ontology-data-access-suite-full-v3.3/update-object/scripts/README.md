@@ -1,13 +1,18 @@
 # 确定性脚本说明
 
-本目录包含两类脚本：
+## 统一主流程（三步）
 
-- `oql_builder.py`：将已归一化的结构化输入组装为稳定顺序、带默认值的 canonical OQL JSON。
-- `oql_validator.py`：对 OQL JSON 做结构校验，检查对象数、关系块、条件树、返回投影、写操作块、`sourceQuery` 深度等关键约束。
+1. 先生成 S-OQL。
+2. 调用 `soql_to_oql.py` 将 S-OQL 转为 canonical OQL。
+3. 调用 `oql_validator.py` 校验 canonical OQL。
 
-## 推荐使用顺序
+## 脚本定位
 
-1. 先由模型把自然语言意图整理为结构化计划。
-2. 调用 `oql_builder.py` 产出 canonical OQL。
-3. 调用 `oql_validator.py` 校验。
-4. 仅在校验通过后输出结果，或交给下游执行插件。
+- `soql_to_oql.py`：主转换脚本，负责从 S-OQL 到 canonical OQL 的标准转换。
+- `oql_validator.py`：结构与约束校验脚本，用于最终校验。
+- `oql_builder.py`：仅用于 canonical 输入整理/兼容，不是主转换链路。
+
+## 使用建议
+
+- 以三步主流程为默认调用顺序。
+- 仅在需要处理兼容输入或做额外整理时，按需使用 `oql_builder.py`。
