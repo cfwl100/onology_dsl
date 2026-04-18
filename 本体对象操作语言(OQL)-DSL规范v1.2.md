@@ -4803,3 +4803,245 @@ Array = JSON array ;
 6. 结合第 8 章错误码，让模型在修正失败请求时只改动相关路径字段，而不是重写整份 DSL
 
 ---
+
+## A.6 最小合法 JSON 骨架（按 operation）
+
+> 说明：
+> - 以下骨架以“**可通过结构校验的最小合法请求**”为目标，字段值使用占位符。
+> - 公共顶层字段默认遵循：`strict` 缺省为 `true`；`version` 固定为 `"1.0"`；`schemaRef` 必须由调用方显式提供。
+> - `BATCH.items[]` 子项继承外层 `version` / `schemaRef` / `strict`，因此子项骨架中不再出现这些字段。
+
+### A.6.1 QUERY
+
+```json
+{
+  "version": "1.0",
+  "schemaRef": "<SCHEMA_REF>",
+  "operation": "QUERY",
+  "objects": [
+    { "alias": "obj", "type": "<OBJECT_TYPE>" }
+  ],
+  "returns": [
+    { "kind": "FIELDS", "ref": "obj", "fields": ["id"] }
+  ]
+}
+```
+
+- 必填字段：`version`、`schemaRef`、`operation`、`objects`、`returns`
+- 禁止字段：`relationships`、`linkQuery`、`mutation`
+- 默认字段来源：`strict` 默认 `true`（规范默认值）；`maxResults` 缺省默认 `1000`（执行器默认）
+
+### A.6.2 AGGREGATE
+
+```json
+{
+  "version": "1.0",
+  "schemaRef": "<SCHEMA_REF>",
+  "operation": "AGGREGATE",
+  "objects": [
+    { "alias": "obj", "type": "<OBJECT_TYPE>" }
+  ],
+  "returns": [
+    { "kind": "METRIC", "function": "COUNT", "field": "*", "as": "cnt" }
+  ]
+}
+```
+
+- 必填字段：`version`、`schemaRef`、`operation`、`objects`、`returns`（且至少一个 `METRIC`）
+- 禁止字段：`relationships`、`linkQuery`、`mutation`
+- 默认字段来源：`strict` 默认 `true`；`maxResults` 缺省默认 `1000`
+
+### A.6.3 ASSOCIATION_QUERY
+
+```json
+{
+  "version": "1.0",
+  "schemaRef": "<SCHEMA_REF>",
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    { "alias": "src", "type": "<SOURCE_OBJECT_TYPE>" },
+    { "alias": "dst", "type": "<TARGET_OBJECT_TYPE>" }
+  ],
+  "relationships": [
+    {
+      "alias": "r1",
+      "type": "<REL_TYPE>",
+      "from": "src",
+      "to": "dst"
+    }
+  ],
+  "returns": [
+    { "kind": "FIELDS", "ref": "dst", "fields": ["id"] }
+  ]
+}
+```
+
+- 必填字段：`version`、`schemaRef`、`operation`、`objects`、`relationships`、`returns`
+- 禁止字段：`linkQuery`、`mutation`
+- 默认字段来源：`strict` 默认 `true`；`maxResults` 缺省默认 `1000`
+
+### A.6.4 LINK_QUERY
+
+```json
+{
+  "version": "1.0",
+  "schemaRef": "<SCHEMA_REF>",
+  "operation": "LINK_QUERY",
+  "objects": [
+    { "alias": "src", "type": "<SOURCE_OBJECT_TYPE>" },
+    { "alias": "dst", "type": "<TARGET_OBJECT_TYPE>" }
+  ],
+  "linkQuery": {
+    "sourceRef": "src",
+    "targetRef": "dst",
+    "linkType": "<LINK_TYPE>"
+  },
+  "returns": [
+    { "kind": "FIELDS", "ref": "dst", "fields": ["id"] }
+  ]
+}
+```
+
+- 必填字段：`version`、`schemaRef`、`operation`、`objects`（长度必须为 2）、`linkQuery`、`returns`
+- 禁止字段：`relationships`、`mutation`
+- 默认字段来源：`strict` 默认 `true`；`maxResults` 缺省默认 `1000`；`linkQuery.direction` 缺省默认 `OUTBOUND`
+
+### A.6.5 CREATE
+
+```json
+{
+  "version": "1.0",
+  "schemaRef": "<SCHEMA_REF>",
+  "operation": "CREATE",
+  "objects": [
+    { "alias": "obj", "type": "<OBJECT_TYPE>" }
+  ],
+  "mutation": {
+    "data": {
+      "properties": {
+        "name": "<VALUE>"
+      }
+    }
+  }
+}
+```
+
+- 必填字段：`version`、`schemaRef`、`operation`、`objects`（长度必须为 1）、`mutation.data.properties`
+- 禁止字段：`conditions`、`returns`、`orders`、`maxResults`、`sourceQuery`、`relationships`、`linkQuery`
+- 默认字段来源：`strict` 默认 `true`
+
+### A.6.6 UPDATE
+
+```json
+{
+  "version": "1.0",
+  "schemaRef": "<SCHEMA_REF>",
+  "operation": "UPDATE",
+  "objects": [
+    { "alias": "obj", "type": "<OBJECT_TYPE>" }
+  ],
+  "conditions": {
+    "kind": "ATOM",
+    "ref": "obj",
+    "field": "id",
+    "op": "EQ",
+    "value": "<ID>"
+  },
+  "mutation": {
+    "scope": "ONE",
+    "set": {
+      "name": "<VALUE>"
+    }
+  }
+}
+```
+
+- 必填字段：`version`、`schemaRef`、`operation`、`objects`（长度必须为 1）、`conditions`、`mutation.scope`、`mutation.set`
+- 禁止字段：`returns`、`orders`、`maxResults`、`sourceQuery`、`relationships`、`linkQuery`
+- 默认字段来源：`strict` 默认 `true`
+
+### A.6.7 DELETE
+
+```json
+{
+  "version": "1.0",
+  "schemaRef": "<SCHEMA_REF>",
+  "operation": "DELETE",
+  "objects": [
+    { "alias": "obj", "type": "<OBJECT_TYPE>" }
+  ],
+  "conditions": {
+    "kind": "ATOM",
+    "ref": "obj",
+    "field": "id",
+    "op": "EQ",
+    "value": "<ID>"
+  },
+  "mutation": {
+    "scope": "ONE"
+  }
+}
+```
+
+- 必填字段：`version`、`schemaRef`、`operation`、`objects`（长度必须为 1）、`conditions`、`mutation.scope`
+- 禁止字段：`mutation.set`、`mutation.data`、`returns`、`orders`、`maxResults`、`sourceQuery`、`relationships`、`linkQuery`
+- 默认字段来源：`strict` 默认 `true`
+
+### A.6.8 UPSERT
+
+```json
+{
+  "version": "1.0",
+  "schemaRef": "<SCHEMA_REF>",
+  "operation": "UPSERT",
+  "objects": [
+    { "alias": "obj", "type": "<OBJECT_TYPE>" }
+  ],
+  "mutation": {
+    "matchBy": ["id"],
+    "data": {
+      "properties": {
+        "id": "<ID>"
+      }
+    }
+  }
+}
+```
+
+- 必填字段：`version`、`schemaRef`、`operation`、`objects`（长度必须为 1）、`mutation.matchBy`、`mutation.data.properties`
+- 禁止字段：`conditions`、`returns`、`orders`、`maxResults`、`sourceQuery`、`relationships`、`linkQuery`
+- 默认字段来源：`strict` 默认 `true`
+
+### A.6.9 BATCH
+
+```json
+{
+  "version": "1.0",
+  "schemaRef": "<SCHEMA_REF>",
+  "operation": "BATCH",
+  "mutation": {
+    "atomic": true,
+    "items": [
+      {
+        "operation": "CREATE",
+        "objects": [
+          { "alias": "obj", "type": "<OBJECT_TYPE>" }
+        ],
+        "mutation": {
+          "data": {
+            "properties": {
+              "name": "<VALUE>"
+            }
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+- 必填字段：`version`、`schemaRef`、`operation`、`mutation.atomic`、`mutation.items`（非空）
+- 禁止字段（顶层）：`objects`、`conditions`、`returns`、`orders`、`maxResults`、`relationships`、`linkQuery`、`sourceQuery`
+- 默认字段来源：`strict` 默认 `true`；`items[]` 的 `version` / `schemaRef` / `strict` 继承外层
+
+---
