@@ -12,6 +12,7 @@
 - **第 6 章：一跳关联查询（LINK_QUERY）**
 - **第 7 章：写操作**（`CREATE` / `UPDATE` / `DELETE` / `UPSERT` / `BATCH`）
 - **第 8 章：错误码与校验规则**
+- **第 9 章：生成层语法（S-OQL）**
 - **附录 A：JSON Schema / EBNF 形式化定义**
 - **附录 B：完整样例、物理查询转换示例与字段速查**
 
@@ -3793,6 +3794,83 @@ OQL 请求的校验分为四个阶段：
   ]
 }
 ```
+
+
+---
+
+# 9. 生成层语法（S-OQL）
+
+本章定义面向生成端（如大模型、NL2DSL 转换器、SDK Builder）的 **S-OQL（Syntax OQL）**。
+S-OQL 是一种“生成中间语法”，用于承接不完整输入并归一化为 canonical OQL；它不是执行入口。
+
+## 9.1 定位与边界
+
+1. S-OQL 仅用于“生成与映射阶段”，不用于 OAC 的 `execute` 阶段。
+2. S-OQL 允许槽位（slot）暂缺，但在映射为 canonical OQL 前必须补齐必需槽位。
+3. OAC 对外执行接口仍仅接受 canonical OQL；若收到 S-OQL，必须返回校验错误。
+
+> **强约束**：S-OQL 不可直接执行。
+
+## 9.2 每个 operation 的最小槽位
+
+以下“最小槽位”用于描述 S-OQL 在进入 canonical 映射前必须具备的信息集合。
+
+| operation | 最小槽位（S-OQL） | 说明 |
+| --- | --- | --- |
+| `QUERY` | `operation`、`objectType`、`returns` | `returns` 可为字段列表或 `ALL` 占位，映射时展开为 canonical `returns[]` |
+| `AGGREGATE` | `operation`、`objectType`、`metrics` | `metrics` 至少 1 项，映射到 canonical `returns.kind=METRIC` |
+| `ASSOCIATION_QUERY` | `operation`、`fromObjectType`、`toObjectType`、`path`、`returns` | `path` 映射到 canonical `relationships[]` |
+| `LINK_QUERY` | `operation`、`leftObjectType`、`rightObjectType`、`linkType`、`returns` | `left/right` 分别映射到 canonical `objects[0/1]` |
+| `CREATE` | `operation`、`objectType`、`data` | `data` 映射到 `mutation.data.properties` |
+| `UPDATE` | `operation`、`objectType`、`conditions`、`set` | `set` 映射到 `mutation.set` |
+| `DELETE` | `operation`、`objectType`、`conditions` | 映射到 canonical `objects + conditions + mutation.scope` |
+| `UPSERT` | `operation`、`objectType`、`matchBy`、`data` | 映射到 `mutation.matchBy + mutation.data.properties` |
+| `BATCH` | `operation`、`atomic`、`items` | `items` 非空，且每个子项需满足对应 operation 最小槽位 |
+
+## 9.3 映射到 canonical 的规则与冲突优先级
+
+### 9.3.1 基本映射规则
+
+1. **操作优先映射**：先依据 `operation` 选择 canonical 模板，再填充槽位。
+2. **对象归一化**：`objectType` / `fromObjectType` / `leftObjectType` 等统一归一到 `objects[]`。
+3. **写块归一化**：`data`、`set`、`matchBy` 分别归一到 `mutation` 对应子字段。
+4. **路径归一化**：`path`、`linkType` 等关系槽位归一到 `relationships` 或 `linkQuery`。
+5. **默认值补齐**：仅允许补齐规范定义的默认字段（如 `strict`、`mutation.scope` 等），不得引入私有字段。
+
+### 9.3.2 冲突优先级（高 → 低）
+
+1. **显式 operation 约束**（最高）
+2. **显式 schema 元数据约束**（对象类型、关系类型、字段合法性）
+3. **用户显式槽位值**（例如明确给出的 `conditions`、`scope`）
+4. **系统推断值**（从自然语言或上下文补全）
+5. **规范默认值**（最低）
+
+当高优先级与低优先级冲突时，必须以高优先级覆盖低优先级，并在 `details` 中给出冲突路径与覆盖来源。
+
+## 9.4 缺失槽位标准错误码
+
+当 S-OQL 无法满足最小槽位时，应在“生成/映射阶段”直接失败，不进入执行阶段。
+
+| 错误码 | 含义 |
+| --- | --- |
+| `SLOT_MISSING_OPERATION` | 缺少 `operation` 槽位 |
+| `SLOT_MISSING_OBJECT` | 缺少对象槽位（如 `objectType` / `fromObjectType`） |
+| `SLOT_MISSING_RETURNS` | 读操作缺少 `returns` |
+| `SLOT_MISSING_CONDITIONS` | `UPDATE` / `DELETE` 缺少 `conditions` |
+| `SLOT_MISSING_MUTATION_DATA` | `CREATE` / `UPSERT` 缺少 `data` |
+| `SLOT_MISSING_MATCHBY` | `UPSERT` 缺少 `matchBy` |
+| `SLOT_MISSING_BATCH_ITEMS` | `BATCH` 缺少 `items` 或为空 |
+| `SLOT_CONFLICT` | 槽位冲突且无法按优先级自动消解 |
+| `SLOT_EXECUTION_FORBIDDEN` | 试图将 S-OQL 直接提交到执行入口 |
+
+> 与第 8 章关系：S-OQL 错误码用于“生成层”；映射完成后进入 canonical 校验时，继续使用第 8 章标准错误码。
+
+## 9.5 执行约束（必须遵守）
+
+1. `validate` 可接收 S-OQL 并返回槽位诊断，但必须标识 `stage = generation`。
+2. `explain` 仅可作用于 canonical OQL；若输入 S-OQL，先映射再解释。
+3. `execute` 禁止接收 S-OQL；收到后返回 `SLOT_EXECUTION_FORBIDDEN`。
+4. 任意网关、SDK、Agent 插件不得绕过该约束直接执行 S-OQL。
 
 ---
 
