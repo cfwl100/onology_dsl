@@ -1,64 +1,58 @@
 ---
 name: association-query
-description: 处理需要显式关系路径或多跳遍历的对象关联读取请求。用于链式关系导航、图式对象访问、路径起点终点或中间节点联合筛选；当当前 schema 或调用约束要求单跳关系也走关联查询时同样使用。
+description: 处理需要显式关系路径或多跳遍历的对象关联读取请求。用于链式关系导航、图式对象访问、路径起点终点或中间节点联合筛选，并生成符合第 9 章的 `ASSOCIATION_QUERY` S-OQL。
 ---
-# OQL 显式关系路径编译插件
+# S-OQL 显式关系路径生成插件
 
-仅生成 `ASSOCIATION_QUERY` 的规范结果，并且优先使用本插件内的确定性脚本完成组装与校验。
+仅在本插件负责的操作边界内工作。先生成符合第 9 章的 **S-OQL**，再通过 `scripts/soql_to_oql.py` 做确定性转换，并使用 `scripts/oql_validator.py` 校验转换结果。
 
 ## 工作方式
 
 1. 先确认当前请求是否属于本插件负责的操作边界。
-2. 再按需读取：
-   - [OQL 规范关键描述](references/oql-spec-essentials.md)
-   - [OQL 模板与样例](references/oql-examples.md)
-   - [关联查询模式](references/association-patterns.md)
-   - [条件树指导](references/conditions-guidance.md)
-   - [样例对齐补充规则](references/example-alignment.md)
-3. 先把自然语言请求整理为结构化计划，不要直接跳到最终 JSON。
-4. 使用 `scripts/oql_builder.py` 将结构化计划组装成 canonical OQL。
-5. 使用 `scripts/oql_validator.py` 验证结构是否满足本操作及通用 OQL 约束。
-6. 仅在校验通过后输出最终 JSON；若缺信息或校验失败，则输出结构化错误 JSON。
+2. 先把自然语言请求整理为最小必要的结构化计划，不要直接跳到最终 JSON。
+3. 顶层字段继续使用统一字段集：`version`、`schemaRef`、`strict`、`operation`、`objects`、`relationships`、`conditions`、`returns`、`orders`、`maxResults`、`sourceQuery`、`linkQuery`、`mutation`、`options`、`extensions`。
+4. 仅允许对 `conditions`、`returns`、`mutation` 使用 S-OQL 简化语法；其余字段继续保持标准顶层结构。
+5. `conditions` 只允许以下六种形态：
+   - `["alias.field", "OP", value]`
+   - `["alias.field", "IS_NULL"]`
+   - `["alias.field", "IS_NOT_NULL"]`
+   - `{"all": [...]}`
+   - `{"any": [...]}`
+   - `{"not": ...}`
+6. 先完成 S-OQL，再调用 `scripts/soql_to_oql.py` 转成可执行结果；不要在文本层手工展开 canonical 结构。
+7. 用 `scripts/oql_validator.py` 校验转换结果。
+8. 仅在校验通过后输出最终 JSON；若缺信息或校验失败，则输出结构化错误 JSON。
 
 ## 本插件关键规则
 
 - 只负责 `ASSOCIATION_QUERY`。
 - `relationships` 必须存在，且按路径顺序声明。
-- `relationships` 仅用于 `ASSOCIATION_QUERY`。
-- 默认情况下，单跳直接关系更适合 `LINK_QUERY`；但如果当前 schema/profile/调用方约束要求“单跳也走 `ASSOCIATION_QUERY`”，则必须服从该约束。
-- 可在 `returns` 中返回对象字段；仅当用户明确需要关系字段时，才返回关系 alias 的字段。
-- 如调用方已经明确给出当前步骤目标、主路径、补充路径、条件归属，应优先使用这些信息，而不是重新猜测路径。
+- 默认返回对象字段；仅在用户明确需要时返回关系 alias 的字段。
+- 不得出现 `linkQuery`、`mutation`。
+- 如存在 profile 级调用约束，应先在 S-OQL 结构化计划中记录该约束，再进入脚本转换。
 
-## 当前步骤查询结构
+## S-OQL 结构化计划要求
 
-在调用组装脚本前，先整理出最小必要结构：
+在进入转换脚本前，先整理出最小必要结构：
 
 - `schemaRef`
 - `operation`
 - `objects`
-- 视操作需要补充 `relationships` / `conditions` / `returns` / `orders` / `sourceQuery`
-- 如存在 profile 级约束，补充 `profile` 或等效上下文开关
+- 视操作需要补充 `relationships` / `conditions` / `returns` / `orders` / `sourceQuery` / `linkQuery` / `mutation`
 
-建议优先级：
+默认值可以省略并交给脚本补齐，例如：
 
-1. 当前步骤已经明确的目标、主路径、补充路径、条件归属
-2. 前序步骤返回的真实结果
-3. 当前激活的 schema 与子图线索
-4. 用户原始问题中的约束
-
-## 确定性脚本
-
-- [脚本说明](scripts/README.md)
-- `scripts/oql_builder.py`：补齐默认值、固定键顺序、清理空字段、递归处理 `sourceQuery` 与 `BATCH.items`，并支持可选 profile 覆盖
-- `scripts/oql_validator.py`：检查字段合法性、数量约束、条件树、返回投影、嵌套限制与 profile 覆盖
+- `version = "1.0"`
+- `strict = true`
+- 查询类 `maxResults = 1000`
 
 ## 输出约定
 
-- 只输出严格规范的 OQL JSON，或结构化错误 JSON。
+- 最终只输出脚本转换后的 JSON，或结构化错误 JSON。
 - 不输出 Markdown、解释、注释或散文。
 - 不输出 `null`、空对象或空数组。
 - 不要为了凑齐 JSON 而猜测 schema 中不存在的对象、关系或字段。
-- 如果调用方提供的 profile 约束与通用规范冲突，应优先遵守已激活的 profile 约束，并在结构化计划中显式记录该约束来源。
+- 不要在文本层描述 canonical OQL 展开细节；所有展开逻辑都交给脚本。
 
 ## 输出前必须逐项检查（Checklist）
 
