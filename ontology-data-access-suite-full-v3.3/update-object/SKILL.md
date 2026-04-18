@@ -1,84 +1,43 @@
 ---
 name: update-object
-description: 处理按条件修改既有对象的写入请求。用于更新、修改、设置、修补一个或一批对象的字段值，不用于创建、删除或存在则更新；生成符合 S-OQL 生成层语法规范的 `UPDATE` S-OQL。
+description: 处理按条件修改既有对象的写入请求。用于更新、修改、设置、修补一个或一批对象的字段值，不用于创建、删除或存在则更新。
 ---
-# S-OQL 更新生成插件
+# 更新对象生成规则
 
-仅在本插件负责的操作边界内工作。先生成符合 S-OQL 生成层语法规范的 **S-OQL**，再通过 `scripts/soql_to_oql.py` 做确定性转换，并使用 `scripts/oql_validator.py` 校验转换结果。
+仅在本插件负责的操作边界内工作。
 
-## 工作方式
+## 规范来源（必须完整遵循）
+- 必须完整遵循 `/workspace/onology_dsl/本体对象操作语言(OQL)-DSL规范v1.2.md` 的全部语法与校验规则，不得删减、改写或自定义平行语法。
+- 具体语法细节、差异说明与示例统一下沉到 `references/` 与 `scripts/`，本文件仅保留边界、生成流程和检查清单。
+- 具体语法细节优先参考 `references/syntax-details.md`，并结合同目录其余 references 与 scripts 执行。
 
-1. 先确认当前请求是否属于本插件负责的操作边界。
-2. 先把自然语言请求整理为最小必要的结构化计划，不要直接跳到最终 JSON。
-3. 顶层字段继续使用统一字段集：`version`、`schemaRef`、`strict`、`operation`、`objects`、`relationships`、`conditions`、`returns`、`orders`、`maxResults`、`sourceQuery`、`linkQuery`、`mutation`、`options`、`extensions`。
-4. 仅允许对 `conditions`、`returns`、`mutation` 使用 S-OQL 简化语法；其余字段继续保持标准顶层结构。
-5. `conditions` 只允许五类结构：
-   - 比较三元组：`["alias.field", "OP", value]`
-   - 空值判断：`["alias.field", "IS_NULL"]`
-   - 非空判断：`["alias.field", "IS_NOT_NULL"]`
-   - 逻辑组：`{"all": [...]}` 或 `{"any": [...]}`
-   - 逻辑取反：`{"not": ...}`
-6. 先完成 S-OQL，再调用 `scripts/soql_to_oql.py` 转成可执行结果；不要在文本层手工展开 canonical 结构。
-7. 用 `scripts/oql_validator.py` 校验转换结果。
-8. 仅在校验通过后输出最终 JSON；若缺信息或校验失败，则输出结构化错误 JSON。
-
-## 本插件关键规则
-
-- 只负责 `UPDATE`。
-- `objects` 长度必须为 1。
-- `conditions` 使用 S-OQL 简化语法。
-- `mutation.scope` 只能是 `ONE` 或 `MANY`，`mutation.set` 必须存在且非空。
-- 不得出现 `returns`、`orders`、`sourceQuery`、`relationships`、`linkQuery`。
-
-## 固定语法约束（S-OQL 生成层语法规范）
-
-> 具体语法细节统一放在 `references/soql-diff-notes.md`，本节仅保留稳定边界与入口约束。
-
-### 1) `conditions` 五类约束
-
-仅允许五类：比较三元组、空值判断、非空判断、逻辑组（`all/any`）、逻辑取反（`not`）。具体的 `alias.field`、操作符和值类型约束详见 references。
-
-### 2) `returns` 定长元组规则
-
-`UPDATE` 禁止 `returns`。 具体元组形态与字段位置约束详见 references。
-
-### 3) `mutation` 简化规则
-
-`UPDATE` 仅允许 `mutation.scope + mutation.set` 简化写法。 具体允许/禁止字段清单详见 references。
-
-## S-OQL 结构化计划要求
-
-在进入转换脚本前，先整理出最小必要结构：
-
-- `schemaRef`
-- `operation`
-- `objects`
-- `conditions`
-- `mutation`
-
-默认值可以省略并交给脚本补齐，例如：
-
-- `version = "1.0"`
-- `strict = true`
+## 生成流程
+1. 先确认请求是否属于本插件职责边界。
+2. 将自然语言整理为最小必要结构化计划，再生成最终 JSON。
+3. 使用统一顶层字段：`version`、`schemaRef`、`strict`、`operation`、`objects`、`relationships`、`conditions`、`returns`、`orders`、`maxResults`、`sourceQuery`、`linkQuery`、`mutation`、`options`、`extensions`。
+4. 通过 `scripts/oql_builder.py` 组装请求，必要时调用 `scripts/soql_to_oql.py` 做结构归一化。
+5. 使用 `scripts/oql_validator.py` 校验。
+6. 仅在校验通过后输出最终 JSON；若缺信息或校验失败，输出结构化错误 JSON。
 
 ## 输出约定
-
-- 最终只输出脚本转换后的 JSON，或结构化错误 JSON。
+- 只输出最终 JSON 或结构化错误 JSON。
 - 不输出 Markdown、解释、注释或散文。
 - 不输出 `null`、空对象或空数组。
-- 不要为了凑齐 JSON 而猜测 schema 中不存在的对象、关系或字段。
-- 不要在文本层描述 canonical OQL 展开细节；所有展开逻辑都交给脚本。
+- 不猜测 schema 中不存在的对象、关系或字段。
 
-## 输出前必须逐项检查（Checklist）
 
-在给出最终输出前，必须逐项自检，全部满足后才可输出：
+## 本插件关键规则
+- 仅负责 `UPDATE`。
+- `objects` 长度必须为 1。
+- `conditions`、`mutation.scope`、`mutation.set` 必须存在。
+- `mutation.scope` 仅允许 `ONE` 或 `MANY`。
+- 不得出现 `returns`、`orders`、`sourceQuery`、`relationships`、`linkQuery`。
 
-1. **operation 边界**：必须是 `UPDATE`。
-2. **objects 数量**：`objects` 必须且仅有 1 个。
-3. **必填块**：`conditions`、`mutation.scope`、`mutation.set` 必须存在。
-4. **scope 合法性**：`mutation.scope` 仅允许 `ONE` 或 `MANY`。
-5. **禁止字段**：不得出现 `returns`、`orders`、`sourceQuery`、`relationships`、`linkQuery`。
-6. **alias 闭包**：`conditions`/`mutation` 中引用都必须落在已声明 alias 上。
-7. **S-OQL 转 canonical**：若输入使用了条件三元组或 `all|any|not` 逻辑组，必须先调用转换脚本。
-8. **mutation.set 约束**：更新字段不可为空，且字段名应来自目标对象逻辑字段。
-9. **缺失信息处理**：无法确定筛选条件或更新内容时返回结构化错误。
+## 输出前检查（Checklist）
+1. `operation` 必须是 `UPDATE`。
+2. `objects` 必须且仅有 1 个。
+3. `conditions`、`mutation.scope`、`mutation.set` 必填。
+4. `mutation.scope` 仅允许 `ONE/MANY`。
+5. 禁止字段：`returns`、`orders`、`sourceQuery`、`relationships`、`linkQuery`。
+6. `mutation.set` 不可为空且字段来自目标对象逻辑字段。
+7. 缺筛选条件或更新内容时返回结构化错误。
