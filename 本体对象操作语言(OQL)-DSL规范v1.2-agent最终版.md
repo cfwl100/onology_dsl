@@ -1,73 +1,73 @@
 # 本体对象操作语言（OQL）DSL 规范 v1.2 - Agent 最终版
 
+> 本文档定义面向 Agent / 大模型直接生成的 canonical OQL 规范。Agent 不再先生成中间简化语法，也不再依赖二次转换层；应直接输出可校验、可解释、可执行的 OQL JSON。
+
+---
+
 ## 1. 定位与设计原则
 
 ### 1.1 定位
 
-OQL 是面向本体对象模型的声明式逻辑查询与操作语言，用于表达：
+OQL（Ontology Query Language）是面向本体对象模型的声明式逻辑查询与操作语言，用于表达：
 
-- 查询或操作哪些对象
-- 对象之间有哪些逻辑关系
-- 需要满足哪些条件
-- 需要返回哪些字段
-- 需要执行哪些写入动作
+- 查询或操作哪些本体对象；
+- 对象之间有哪些逻辑关系；
+- 需要满足哪些筛选条件；
+- 需要返回哪些字段、表达式或聚合指标；
+- 需要执行哪些创建、更新、删除或批处理动作。
 
-OQL 不直接面向物理表、物理列和具体数据库方言。执行时由 OAC（Ontology Access）完成从逻辑结构到物理查询或写入语句的绑定、翻译与编排。
+OQL 不直接面向物理表、物理列或数据库方言。执行时由 OAC（Ontology Access）负责根据本体模型、映射信息和数据源能力，完成绑定、校验、翻译、执行和结果装配。
 
-### 1.2 设计目标
+### 1.2 面向 Agent 的核心原则
 
-1. 统一：不同操作共享统一顶层结构。
-2. 对象中心：围绕对象、属性、关系表达，而不是围绕表与 Join 表达。
-3. 面向 Agent：采用固定槽位、固定元组、最少层级，降低生成歧义。
-4. 可校验：支持结构校验、引用校验、语义校验和执行期校验。
-5. 可编排：支持 `sourceQuery` 作为中间结果集。
-6. 可扩展：通过 schema 扩展对象类型、关系类型、属性与映射。
-7. 多数据源透明：对象属性的物理来源对调用方透明，由 OAC 负责映射与装配。
+1. **直接生成 canonical OQL**：Agent 输出的 JSON 即为标准 OQL，不使用中间简化层。
+2. **命名字段优先**：所有关键语义通过字段名表达，避免依赖数组槽位位置。
+3. **对象中心**：围绕 `objects`、`relationships`、`conditions`、`returns`、`mutation` 表达逻辑意图。
+4. **引用闭包**：所有 `ref`、`sourceRef`、`targetRef`、`from`、`to` 必须引用当前层已声明 alias。
+5. **结构可校验**：生成后必须能通过结构校验、引用校验、操作约束校验和执行期语义校验。
+6. **字段显式**：返回字段、排序字段、更新字段必须显式列出，不使用隐式 `*`，除 `COUNT` 指标允许 `field = "*"`。
+7. **省略未使用字段**：不得输出 `null`、空对象或空数组占位。
+8. **查询与写入分离**：查询类操作不得出现 `mutation`；写入类操作不得混入返回、排序或关系路径字段，除非本规范明确允许。
 
-### 1.3 规范原则
+### 1.3 不再使用中间转换层的原因
 
-1. 同一语义只保留一种面向 Agent 的主写法，不定义并行等价写法。
-2. `objects` 只声明对象，不承担实例定位职责。
-3. `relationships` 只声明路径关系，不承担过滤职责。
-4. 筛选、更新目标、删除目标统一通过 `conditions` 表达；`UPSERT` 的存在性判断通过 `matchBy` 表达。
-5. 所有跨模块引用统一使用 alias。
-6. 未使用字段必须省略，不允许输出 `null`、空对象或空数组占位。
-7. 面向 Agent 的输入统一采用最终 S-OQL；执行前必须转换为 canonical OQL。
-8. 顶层字段名保持稳定，不引入并行顶层语法。
+面向 Agent 时，OQL 比压缩式中间语法更稳定，原因是：
+
+1. OQL 使用命名字段表达语义，减少位置错位。
+2. OQL 能直接暴露 `kind`、`ref`、`field`、`operator`、`relation` 等结构信息，便于模型自检。
+3. 嵌套查询、批处理、表达式和关联路径在 OQL 中更容易保持引用闭包。
+4. 校验错误可以定位到具体字段路径，便于 Agent 修复。
+5. 取消“先生成中间语法再转换”的链路后，减少语义损耗和转换误差。
 
 ---
 
-## 2. 顶层结构与通用约束
+## 2. 顶层结构
 
-### 2.1 顶层结构
+### 2.1 标准结构
 
 ```json
 {
   "version": "1.0",
   "schemaRef": "<SCHEMA_REF>",
   "strict": true,
-  "operation": "<OPERATION>",
-
-  "objects": [...],
-  "relationships": [...],
-  "conditions": ...,
-  "returns": [...],
-  "orders": [...],
+  "operation": "QUERY",
+  "objects": [],
+  "relationships": [],
+  "conditions": {},
+  "returns": [],
+  "orders": [],
   "maxResults": 1000,
-
-  "sourceQuery": [...],
-
-  "linkQuery": {...},
-  "mutation": {...},
-
-  "options": {...},
-  "extensions": {...}
+  "sourceQuery": [],
+  "linkQuery": {},
+  "mutation": {},
+  "options": {},
+  "extensions": {}
 }
 ```
 
-### 2.2 顶层字段顺序
+上面仅展示全部可能字段。实际生成时必须省略未使用字段。
 
-推荐固定如下顺序：
+### 2.2 推荐字段顺序
 
 ```text
 version
@@ -92,747 +92,184 @@ extensions
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | :--: | --- |
 | `version` | string | 是 | 固定为 `1.0` |
-| `schemaRef` | string | 是 | 本次请求绑定的 schema 标识 |
+| `schemaRef` | string | 是 | 本次请求绑定的本体 schema 标识 |
 | `strict` | boolean | 否 | 是否启用严格校验，默认 `true` |
 | `operation` | enum | 是 | `QUERY` / `AGGREGATE` / `ASSOCIATION_QUERY` / `LINK_QUERY` / `CREATE` / `UPDATE` / `DELETE` / `UPSERT` / `BATCH` |
 | `objects` | array | 条件必填 | 对象声明 |
 | `relationships` | array | 条件必填 | 关系路径声明，仅 `ASSOCIATION_QUERY` 使用 |
-| `conditions` | array\|object | 条件必填 | 条件表达式；`UPDATE` / `DELETE` 必填 |
+| `conditions` | object | 条件必填 | 条件树；`UPDATE` / `DELETE` 必填 |
 | `returns` | array | 条件必填 | 返回定义；查询类操作必填 |
 | `orders` | array | 否 | 排序定义 |
 | `maxResults` | integer | 否 | 最大返回数量，默认 `1000`，最大 `100000` |
-| `sourceQuery` | array | 否 | 子查询定义 |
-| `linkQuery` | object | 条件必填 | `LINK_QUERY` 专用块 |
-| `mutation` | object | 条件必填 | 写操作专用块 |
+| `sourceQuery` | array | 否 | 中间结果查询，仅查询类操作使用 |
+| `linkQuery` | object | 条件必填 | `LINK_QUERY` 专用参数块 |
+| `mutation` | object | 条件必填 | 写操作专用参数块 |
 | `options` | object | 否 | 执行选项 |
-| `extensions` | object | 否 | 扩展字段；无明确约定时应省略 |
-
-### 2.4 通用约束
-
-1. 顶层必须包含 `version`、`schemaRef`、`operation`。
-2. `strict` 缺省时按 `true` 处理。
-3. 未使用字段必须省略。
-4. 所有 alias 必须显式声明。
-5. 所有对象类型、关系类型、字段名都必须与 `schemaRef` 对应的 schema 定义一致。
-6. `sourceQuery` 内部若出现 `conditions`、`returns`、`orders`、`mutation`，也必须继续使用本规范的最终写法。
-7. `BATCH.items[]` 中的子请求若出现 `conditions`、`returns`、`orders`、`mutation`，也必须继续使用本规范的最终写法。
+| `extensions` | object | 否 | 扩展字段，无明确约定时省略 |
 
 ---
 
-## 3. 通用模块语法
+## 3. 通用模块
 
 ### 3.1 `objects`：对象声明
 
-`objects` 只负责声明参与本次操作的对象类型与别名，不负责实例定位。
-
-#### 3.1.1 最终写法
+`objects` 只声明参与请求的对象类型和别名，不承担实例定位职责。
 
 ```json
 "objects": [
-  ["Order", "o"]
+  {
+    "objectType": "Order",
+    "alias": "o"
+  }
 ]
 ```
 
-带 `fromSource`：
+使用中间结果作为对象来源：
 
 ```json
 "objects": [
-  ["CompletedOrder", "co", "completed_orders"]
+  {
+    "objectType": "CompletedOrder",
+    "alias": "co",
+    "fromSource": "completed_orders"
+  }
 ]
 ```
 
-#### 3.1.2 槽位定义
+字段说明：
 
-| 位置 | 含义 | 必填 |
-| --- | --- | :--: |
-| 第 1 槽 | `objectType` | 是 |
-| 第 2 槽 | `alias` | 是 |
-| 第 3 槽 | `fromSource` | 否 |
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | :--: | --- |
+| `objectType` | string | 是 | 本体对象类型 |
+| `alias` | string | 是 | 当前请求层内唯一别名 |
+| `fromSource` | string | 否 | 引用同层 `sourceQuery[].outputAs` |
 
-#### 3.1.3 使用约束
+约束：
 
-1. 每个对象元组长度只能为 2 或 3。
-2. `alias` 必须在当前层唯一。
-3. `fromSource` 仅可引用同层 `sourceQuery[].outputAs`。
-4. `CREATE` / `UPDATE` / `DELETE` / `UPSERT` 中，`objects` 长度必须为 1。
-5. `LINK_QUERY` 中，`objects` 长度必须为 2。
-6. `BATCH` 顶层不得出现 `objects`。
-
----
+1. `alias` 在当前层必须唯一。
+2. `fromSource` 只能引用同层 `sourceQuery[].outputAs`。
+3. `CREATE` / `UPDATE` / `DELETE` / `UPSERT` 中 `objects` 必须且仅有一个对象。
+4. `LINK_QUERY` 中 `objects` 必须且仅有两个对象。
+5. `BATCH` 顶层不得出现 `objects`。
 
 ### 3.2 `relationships`：关系路径声明
 
-`relationships` 用于 `ASSOCIATION_QUERY` 中显式声明关系路径。数组顺序即路径顺序。
-
-#### 3.2.1 最终写法
+`relationships` 仅用于 `ASSOCIATION_QUERY`，用于显式声明路径关系。数组顺序即路径顺序。
 
 ```json
 "relationships": [
-  ["installed_on", "r1", "d", "s"],
-  ["deployed_in", "r2", "s", "dc"]
+  {
+    "relationshipType": "installed_on",
+    "alias": "r1",
+    "from": "d",
+    "to": "s"
+  },
+  {
+    "relationshipType": "deployed_in",
+    "alias": "r2",
+    "from": "s",
+    "to": "dc"
+  }
 ]
 ```
 
-#### 3.2.2 槽位定义
-
-| 位置 | 含义 | 必填 |
-| --- | --- | :--: |
-| 第 1 槽 | `relationshipType` | 是 |
-| 第 2 槽 | `alias` | 是 |
-| 第 3 槽 | `from` | 是 |
-| 第 4 槽 | `to` | 是 |
-
-#### 3.2.3 使用约束
-
-1. 每个关系元组长度必须为 4。
-2. `from` / `to` 必须引用当前层 `objects[].alias`。
-3. 关系 alias 不得与对象 alias 冲突。
-4. `relationships` 仅允许出现在 `ASSOCIATION_QUERY` 中。
-
----
-
-### 3.3 `conditions`：条件表达式
-
-`conditions` 统一表达查询筛选、更新目标与删除目标。最终写法使用固定元组与逻辑组。
-
-#### 3.3.1 允许形态
-
-1. 三元组字段条件：`["<alias>.<field>", "<operator>", <value>]`
-2. 三元组表达式条件：`[<Expr>, "<operator>", <value-or-expr>]`
-3. 二元空值条件：`["<alias>.<field>", "IS_NULL"]` / `["<alias>.<field>", "IS_NOT_NULL"]`
-4. 二元表达式空值条件：`[<Expr>, "IS_NULL"]` / `[<Expr>, "IS_NOT_NULL"]`
-5. AND 逻辑组：`{ "all": [<ConditionNode>, ...] }`
-6. OR 逻辑组：`{ "any": [<ConditionNode>, ...] }`
-7. NOT 逻辑组：`{ "not": <ConditionNode> }`
-
-#### 3.3.2 操作符
-
-- `EQ` / `NE`
-- `GT` / `GTE` / `LT` / `LTE`
-- `IN` / `NOT_IN`
-- `BETWEEN`
-- `LIKE` / `CONTAINS` / `STARTS_WITH` / `ENDS_WITH`
-- `IS_NULL` / `IS_NOT_NULL`
-
-#### 3.3.3 示例
-
-```json
-"conditions": {
-  "all": [
-    ["o.status", "EQ", "completed"],
-    ["o.amount", "GTE", 1000]
-  ]
-}
-```
-
-```json
-"conditions": {
-  "any": [
-    ["d.status", "EQ", "running"],
-    {
-      "all": [
-        [
-          { "$fn": "LENGTH", "args": ["d.message"] },
-          "GT",
-          100
-        ],
-        ["d.alertLevel", "LTE", 2]
-      ]
-    }
-  ]
-}
-```
-
-#### 3.3.4 使用约束
-
-1. `<alias>.<field>` 中的 alias 必须引用当前层对象 alias 或关系 alias。
-2. `IN` / `NOT_IN` 的第 3 槽必须为数组。
-3. `BETWEEN` 的第 3 槽必须为长度 2 的数组。
-4. `IS_NULL` / `IS_NOT_NULL` 不得出现第 3 槽。
-5. `all` / `any` 的值必须为非空数组。
-6. `not` 的值必须是单个合法条件节点。
-
----
-
-### 3.4 `returns`：返回定义
-
-`returns` 统一采用固定元组数组写法。
-
-#### 3.4.1 元组类型
-
-| 类型 | 结构 | 说明 |
-| --- | --- | --- |
-| `FIELDS` | `["FIELDS", "<ref>", ["field1", "field2", "..."]]` | 返回字段列表 |
-| `EXPR` | `["EXPR", <Expr>, "<alias>"]` | 返回派生表达式列 |
-| `GROUP_BY` | `["GROUP_BY", "<ref>.<field>" \| <Expr>, "<alias>"]` | 定义分组键 |
-| `METRIC` | `["METRIC", "<function>", "<ref>.<field|*>", "<alias>"]` | 定义聚合指标 |
-
-#### 3.4.2 示例
-
-普通查询：
-
-```json
-"returns": [
-  ["FIELDS", "o", ["id", "orderNo", "amount", "status"]]
-]
-```
-
-带派生列：
-
-```json
-"returns": [
-  ["FIELDS", "o", ["id", "orderNo", "amount"]],
-  ["EXPR", { "$fn": "ABS", "args": ["o.deltaAmount"] }, "absDeltaAmount"]
-]
-```
-
-聚合查询：
-
-```json
-"returns": [
-  ["GROUP_BY", "o.region", "region"],
-  ["METRIC", "SUM", "o.amount", "totalAmount"],
-  ["METRIC", "COUNT", "o.*", "orderCount"]
-]
-```
-
-#### 3.4.3 使用约束
-
-1. `FIELDS` 只能用于 `QUERY`、`ASSOCIATION_QUERY`、`LINK_QUERY`。
-2. `FIELDS` 的字段必须显式列出，且不允许 `*`。
-3. `EXPR` 必须显式声明结果别名。
-4. `GROUP_BY` 与 `METRIC` 必须显式声明结果别名。
-5. `COUNT` 允许 `<ref>.*`；其他聚合函数不允许 `*`。
-6. `EXPR` 中不得直接使用聚合函数；聚合函数必须通过 `METRIC` 表达。
-7. `AGGREGATE` 中只允许 `GROUP_BY` 与 `METRIC`。
-
----
-
-### 3.5 `orders`：排序定义
-
-`orders` 统一采用固定元组数组写法。
-
-#### 3.5.1 最终写法
-
-```json
-"orders": [
-  ["ORDER_BY", "o", "createdAt", "DESC"],
-  ["ORDER_BY", "o", "orderNo", "ASC"]
-]
-```
-
-#### 3.5.2 槽位定义
-
-| 位置 | 含义 | 必填 |
-| --- | --- | :--: |
-| 第 1 槽 | 固定为 `ORDER_BY` | 是 |
-| 第 2 槽 | `ref` | 是 |
-| 第 3 槽 | `field` | 是 |
-| 第 4 槽 | `direction` | 是 |
-
-#### 3.5.3 使用约束
-
-1. `ref` 必须引用当前层对象 alias。
-2. `field` 可为对象逻辑字段名，也可为 `returns` 中已定义的结果别名。
-3. `direction` 仅允许 `ASC` / `DESC`。
-4. 多个排序条件按数组顺序生效。
-
----
-
-### 3.6 `sourceQuery`：子查询
-
-`sourceQuery` 表示当前层依赖的中间结果集，而不仅是语法级子查询。
-
-#### 3.6.1 字段
+字段说明：
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | :--: | --- |
-| `outputAs` | string | 是 | 子查询输出别名 |
-| `operation` | enum | 是 | `QUERY` / `AGGREGATE` / `ASSOCIATION_QUERY` |
-| `objects` | array | 是 | 子查询对象声明 |
-| `relationships` | array | 条件必填 | 子查询为 `ASSOCIATION_QUERY` 时必填 |
-| `conditions` | array\|object | 否 | 子查询条件 |
-| `returns` | array | 是 | 子查询返回定义 |
-| `orders` | array | 否 | 子查询排序 |
-| `maxResults` | integer | 否 | 子查询最大返回数 |
-| `sourceQuery` | array | 否 | 嵌套子查询 |
+| `relationshipType` | string | 是 | 本体关系类型 |
+| `alias` | string | 是 | 关系别名 |
+| `from` | string | 是 | 起点对象 alias |
+| `to` | string | 是 | 终点对象 alias |
 
-#### 3.6.2 使用约束
+约束：
 
-1. `outputAs` 在同层必须唯一。
-2. `sourceQuery` 不允许引用外层 alias。
-3. 在 `strict=true` 时，最大嵌套深度为 2。
-4. `sourceQuery` 只允许出现在查询类操作中。
-5. 其内部若出现 `conditions`、`returns`、`orders`、`mutation`，必须继续使用本规范最终写法。
+1. `from` / `to` 必须引用当前层 `objects[].alias`。
+2. 关系 alias 不得与对象 alias 冲突。
+3. `relationships` 仅允许出现在 `ASSOCIATION_QUERY` 中。
 
----
+### 3.3 表达式 `Expr`
 
-### 3.7 `linkQuery`：一跳关联参数
+表达式用于条件、返回派生列、函数型分组、写入值等位置。
 
-`linkQuery` 仅用于 `LINK_QUERY`。
-
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | :--: | --- |
-| `mode` | enum | 是 | `LIST` / `ONE` |
-| `relationshipType` | string | 是 | 关系类型 |
-| `sourceRef` | string | 是 | 源对象 alias |
-| `targetRef` | string | 是 | 目标对象 alias |
-| `direction` | enum | 否 | `OUTBOUND` / `INBOUND` / `BIDIRECTIONAL`，默认 `OUTBOUND` |
-
-#### 使用约束
-
-1. `LINK_QUERY` 顶层 `objects` 必须恰好声明 2 个对象。
-2. `sourceRef` / `targetRef` 必须引用当前层对象 alias。
-3. `mode = ONE` 时，结果必须恰好 1 条，否则返回错误。
-4. `LINK_QUERY` 不使用 `relationships`。
-
----
-
-### 3.8 `mutation`：写操作块
-
-#### 3.8.1 结构
-
-`CREATE` / `UPSERT`：
-
-```json
-"mutation": {
-  "data": {
-    "name": "value",
-    "createdAt": { "$fn": "NOW" }
-  }
-}
-```
-
-`UPDATE`：
-
-```json
-"mutation": {
-  "scope": "ONE",
-  "set": {
-    "status": "paid"
-  }
-}
-```
-
-`DELETE`：
-
-```json
-"mutation": {
-  "scope": "ONE"
-}
-```
-
-`UPSERT`：
-
-```json
-"mutation": {
-  "matchBy": ["sourceSystem", "orderNo"],
-  "data": {
-    "sourceSystem": "ERP",
-    "orderNo": "ORD-001",
-    "status": "paid"
-  }
-}
-```
-
-`BATCH`：
-
-```json
-"mutation": {
-  "atomic": true,
-  "items": [...]
-}
-```
-
-#### 3.8.2 使用约束
-
-1. `CREATE` 与 `UPSERT` 中，`mutation.data` 必须非空。
-2. `UPDATE` 中，`mutation.scope` 与 `mutation.set` 必须同时出现。
-3. `DELETE` 中，只允许出现 `mutation.scope`。
-4. `UPSERT` 中，`mutation.matchBy` 必须非空，且列出的字段必须全部出现在 `mutation.data` 中。
-5. `BATCH.items[]` 子项继续复用本规范中的最终写法。
-6. `BATCH.items[]` 不允许 `BATCH`。
-
----
-
-### 3.9 值表达式与内置函数
-
-值表达式统一允许三类形态：
-
-1. 字面量值
-2. 字段引用：`"<ref>.<field>"`
-3. 函数表达式：`{ "$fn": "<name>", "args": [...] }`
-
-#### 示例
-
-字段引用：
-
-```json
-"o.amount"
-```
-
-无参函数：
-
-```json
-{ "$fn": "NOW" }
-```
-
-带参数函数：
-
-```json
-{ "$fn": "ABS", "args": ["o.deltaAmount"] }
-```
-
-嵌套函数：
+#### 3.3.1 字段表达式
 
 ```json
 {
-  "$fn": "COALESCE",
+  "kind": "FIELD",
+  "ref": "o",
+  "field": "amount"
+}
+```
+
+#### 3.3.2 字面量表达式
+
+```json
+{
+  "kind": "VALUE",
+  "value": 100
+}
+```
+
+#### 3.3.3 函数表达式
+
+```json
+{
+  "kind": "FUNCTION",
+  "name": "ABS",
   "args": [
-    { "$fn": "TRIM", "args": ["o.customerName"] },
-    "unknown"
+    {
+      "kind": "FIELD",
+      "ref": "o",
+      "field": "deltaAmount"
+    }
   ]
 }
 ```
 
-#### 使用约束
-
-1. `conditions` 的左值与右值都允许使用函数表达式。
-2. `returns` 中 `EXPR` 与函数型 `GROUP_BY` 允许使用函数表达式。
-3. `mutation.data` 与 `mutation.set` 允许使用函数表达式。
-4. 聚合函数不通过 `"$fn"` 表达，仍通过 `METRIC` 表达。
-
----
-
-## 4. 各 operation 规范
-
-### 4.1 `QUERY`
-
-#### 最小结构
+#### 3.3.4 嵌套函数表达式
 
 ```json
 {
-  "version": "1.0",
-  "schemaRef": "<SCHEMA_REF>",
-  "strict": true,
-  "operation": "QUERY",
-  "objects": [["Order", "o"]],
-  "returns": [["FIELDS", "o", ["id", "orderNo"]]]
-}
-```
-
-#### 约束
-
-1. `objects` 必须非空。
-2. `returns` 必须非空，且至少包含一个 `FIELDS`。
-3. 不得出现 `relationships`、`linkQuery`、`mutation`。
-4. 多对象联合查询时，联合语义必须通过 `conditions` 显式表达。
-
----
-
-### 4.2 `AGGREGATE`
-
-#### 最小结构
-
-```json
-{
-  "version": "1.0",
-  "schemaRef": "<SCHEMA_REF>",
-  "strict": true,
-  "operation": "AGGREGATE",
-  "objects": [["Order", "o"]],
-  "returns": [["METRIC", "COUNT", "o.*", "cnt"]]
-}
-```
-
-#### 约束
-
-1. `returns` 中至少包含一个 `METRIC`。
-2. 只允许 `GROUP_BY` 与 `METRIC`。
-3. 不得出现 `relationships`、`linkQuery`、`mutation`。
-
----
-
-### 4.3 `ASSOCIATION_QUERY`
-
-#### 最小结构
-
-```json
-{
-  "version": "1.0",
-  "schemaRef": "<SCHEMA_REF>",
-  "strict": true,
-  "operation": "ASSOCIATION_QUERY",
-  "objects": [["A", "a"], ["B", "b"]],
-  "relationships": [["rel_ab", "r1", "a", "b"]],
-  "returns": [["FIELDS", "b", ["id", "name"]]]
-}
-```
-
-#### 约束
-
-1. `objects` 必须非空。
-2. `relationships` 必须非空。
-3. `returns` 必须非空，且只允许 `FIELDS`。
-4. 不得出现 `linkQuery`、`mutation`。
-
----
-
-### 4.4 `LINK_QUERY`
-
-#### 最小结构
-
-```json
-{
-  "version": "1.0",
-  "schemaRef": "<SCHEMA_REF>",
-  "strict": true,
-  "operation": "LINK_QUERY",
-  "objects": [["Order", "o"], ["Invoice", "i"]],
-  "conditions": ["o.orderNo", "EQ", "ORD-001"],
-  "returns": [["FIELDS", "i", ["id", "invoiceNo"]]],
-  "linkQuery": {
-    "mode": "LIST",
-    "relationshipType": "has_invoice",
-    "sourceRef": "o",
-    "targetRef": "i"
-  }
-}
-```
-
-#### 约束
-
-1. `objects` 必须且仅能为 2 个。
-2. `conditions` 必须存在。
-3. `returns` 必须存在，且只允许 `FIELDS`。
-4. `linkQuery` 必须存在。
-5. 不得出现 `relationships`、`mutation`。
-
----
-
-### 4.5 `CREATE`
-
-#### 最小结构
-
-```json
-{
-  "version": "1.0",
-  "schemaRef": "<SCHEMA_REF>",
-  "strict": true,
-  "operation": "CREATE",
-  "objects": [["Product", "p"]],
-  "mutation": {
-    "data": {
-      "name": "iPhone 16"
-    }
-  }
-}
-```
-
-#### 约束
-
-1. `objects` 必须且仅能为 1 个。
-2. `mutation.data` 必须存在且非空。
-3. 不得出现 `conditions`、`returns`、`orders`、`relationships`、`linkQuery`、`sourceQuery`。
-
----
-
-### 4.6 `UPDATE`
-
-#### 最小结构
-
-```json
-{
-  "version": "1.0",
-  "schemaRef": "<SCHEMA_REF>",
-  "strict": true,
-  "operation": "UPDATE",
-  "objects": [["Product", "p"]],
-  "conditions": ["p.id", "EQ", "prod_001"],
-  "mutation": {
-    "scope": "ONE",
-    "set": {
-      "price": 7999
-    }
-  }
-}
-```
-
-#### 约束
-
-1. `objects` 必须且仅能为 1 个。
-2. `conditions` 必须存在。
-3. `mutation.scope` 与 `mutation.set` 必须存在。
-4. `mutation.scope` 仅允许 `ONE` / `MANY`。
-5. 不得出现 `returns`、`orders`、`relationships`、`linkQuery`、`sourceQuery`。
-
----
-
-### 4.7 `DELETE`
-
-#### 最小结构
-
-```json
-{
-  "version": "1.0",
-  "schemaRef": "<SCHEMA_REF>",
-  "strict": true,
-  "operation": "DELETE",
-  "objects": [["Order", "o"]],
-  "conditions": ["o.orderNo", "EQ", "ORD-001"],
-  "mutation": {
-    "scope": "ONE"
-  }
-}
-```
-
-#### 约束
-
-1. `objects` 必须且仅能为 1 个。
-2. `conditions` 必须存在。
-3. `mutation.scope` 必须存在，且仅允许 `ONE` / `MANY`。
-4. 不得出现 `mutation.set`、`mutation.data`。
-5. 不得出现 `returns`、`orders`、`relationships`、`linkQuery`、`sourceQuery`。
-
----
-
-### 4.8 `UPSERT`
-
-#### 最小结构
-
-```json
-{
-  "version": "1.0",
-  "schemaRef": "<SCHEMA_REF>",
-  "strict": true,
-  "operation": "UPSERT",
-  "objects": [["Order", "o"]],
-  "mutation": {
-    "matchBy": ["sourceSystem", "orderNo"],
-    "data": {
-      "sourceSystem": "ERP",
-      "orderNo": "ORD-001"
-    }
-  }
-}
-```
-
-#### 约束
-
-1. `objects` 必须且仅能为 1 个。
-2. `mutation.matchBy` 必须非空。
-3. `mutation.data` 必须非空。
-4. `matchBy` 中列出的字段必须全部出现在 `mutation.data` 中。
-5. 不得出现 `conditions`、`returns`、`orders`、`relationships`、`linkQuery`、`sourceQuery`。
-
----
-
-### 4.9 `BATCH`
-
-#### 最小结构
-
-```json
-{
-  "version": "1.0",
-  "schemaRef": "<SCHEMA_REF>",
-  "strict": true,
-  "operation": "BATCH",
-  "mutation": {
-    "atomic": true,
-    "items": [
-      {
-        "operation": "CREATE",
-        "objects": [["Product", "p"]],
-        "mutation": {
-          "data": {
-            "name": "iPhone 16"
-          }
+  "kind": "FUNCTION",
+  "name": "COALESCE",
+  "args": [
+    {
+      "kind": "FUNCTION",
+      "name": "TRIM",
+      "args": [
+        {
+          "kind": "FIELD",
+          "ref": "o",
+          "field": "customerName"
         }
-      }
-    ]
-  }
+      ]
+    },
+    {
+      "kind": "VALUE",
+      "value": "unknown"
+    }
+  ]
 }
 ```
 
-#### 约束
+内置函数名称建议使用大写。常见函数包括：
 
-1. 顶层不得出现 `objects`、`conditions`、`returns`、`orders`、`relationships`、`linkQuery`、`sourceQuery`。
-2. `mutation.atomic` 与 `mutation.items` 必须存在。
-3. `mutation.items` 必须非空。
-4. 子项不得为 `BATCH`。
-5. 子项不再包含 `version`、`schemaRef`、`strict`；这些值继承外层。
+- 数值：`ABS`、`ROUND`、`CEIL`、`FLOOR`
+- 字符串：`LENGTH`、`LOWER`、`UPPER`、`TRIM`、`SUBSTRING`
+- 时间：`NOW`、`DATE_TRUNC`、`YEAR`、`MONTH`、`DAY`
+- 空值处理：`COALESCE`、`IFNULL`
 
----
+聚合函数不使用 `Expr` 表达，必须通过 `returns.kind = "METRIC"` 表达。
 
-## 5. S-OQL 到 canonical OQL 的转换逻辑
+### 3.4 `conditions`：条件树
 
-### 5.1 总原则
+`conditions` 采用显式条件树结构。
 
-1. 最终输入统一采用本规范定义的 S-OQL。
-2. 执行前必须转换为 canonical OQL。
-3. `sourceQuery` 与 `BATCH.items[]` 必须递归进行相同转换。
-4. 转换完成后不得残留 S-OQL 元组或 `"$fn"` 原样结构。
-
----
-
-### 5.2 `objects` 转换
-
-S-OQL：
+#### 3.4.1 字段条件
 
 ```json
-["Order", "o"]
-```
-
-canonical：
-
-```json
-{ "objectType": "Order", "alias": "o" }
-```
-
-S-OQL：
-
-```json
-["CompletedOrder", "co", "completed_orders"]
-```
-
-canonical：
-
-```json
-{ "objectType": "CompletedOrder", "alias": "co", "fromSource": "completed_orders" }
-```
-
----
-
-### 5.3 `relationships` 转换
-
-S-OQL：
-
-```json
-["installed_on", "r1", "d", "s"]
-```
-
-canonical：
-
-```json
-{ "relationshipType": "installed_on", "alias": "r1", "from": "d", "to": "s" }
-```
-
----
-
-### 5.4 `conditions` 转换
-
-#### 字段条件
-
-S-OQL：
-
-```json
-["o.status", "EQ", "completed"]
-```
-
-canonical：
-
-```json
-{
+"conditions": {
   "kind": "PREDICATE",
   "ref": "o",
   "field": "status",
@@ -841,47 +278,31 @@ canonical：
 }
 ```
 
-#### 函数条件
-
-S-OQL：
+#### 3.4.2 表达式条件
 
 ```json
-[
-  { "$fn": "ABS", "args": ["o.deltaAmount"] },
-  "GT",
-  10
-]
-```
-
-canonical：
-
-```json
-{
+"conditions": {
   "kind": "PREDICATE",
-  "expr": {
+  "left": {
     "kind": "FUNCTION",
-    "name": "ABS",
+    "name": "LENGTH",
     "args": [
-      { "kind": "FIELD_REF", "ref": "o", "field": "deltaAmount" }
+      {
+        "kind": "FIELD",
+        "ref": "o",
+        "field": "comment"
+      }
     ]
   },
   "operator": "GT",
-  "values": [10]
+  "values": [100]
 }
 ```
 
-#### 逻辑组
-
-S-OQL：
+#### 3.4.3 逻辑组
 
 ```json
-{ "all": [["o.status", "EQ", "completed"], ["o.amount", "GTE", 1000]] }
-```
-
-canonical：
-
-```json
-{
+"conditions": {
   "kind": "GROUP",
   "relation": "AND",
   "children": [
@@ -903,33 +324,52 @@ canonical：
 }
 ```
 
----
+字段说明：
 
-### 5.5 `returns` 转换
+| 字段 | 说明 |
+| --- | --- |
+| `kind` | `PREDICATE` 或 `GROUP` |
+| `ref` / `field` | 字段条件左值；适用于普通字段条件 |
+| `left` | 表达式条件左值；与 `ref` / `field` 二选一 |
+| `operator` | 条件操作符 |
+| `values` | 条件右值数组；可包含字面量或 `Expr` |
+| `relation` | `AND` / `OR` / `NOT` |
+| `children` | 子条件数组 |
 
-#### `FIELDS`
+操作符：
 
-S-OQL：
+- `EQ` / `NE`
+- `GT` / `GTE` / `LT` / `LTE`
+- `IN` / `NOT_IN`
+- `BETWEEN`
+- `LIKE` / `CONTAINS` / `STARTS_WITH` / `ENDS_WITH`
+- `IS_NULL` / `IS_NOT_NULL`
+
+约束：
+
+1. `PREDICATE` 必须使用 `ref + field` 或 `left` 表达左值。
+2. `ref` 必须引用当前层对象 alias 或关系 alias。
+3. `IN` / `NOT_IN` 的 `values` 必须包含一个数组值，或直接由执行器解释为集合值。
+4. `BETWEEN` 的 `values` 必须恰好包含两个值。
+5. `IS_NULL` / `IS_NOT_NULL` 不得包含 `values`。
+6. `GROUP.relation = NOT` 时，`children` 必须且仅有一个子条件。
+7. `GROUP.children` 必须非空。
+
+### 3.5 `returns`：返回定义
+
+`returns` 使用显式对象结构。
+
+#### 3.5.1 字段返回
 
 ```json
-["FIELDS", "o", ["id", "orderNo"]]
+{
+  "kind": "FIELDS",
+  "ref": "o",
+  "fields": ["id", "orderNo", "amount", "status"]
+}
 ```
 
-canonical：
-
-```json
-{ "kind": "FIELDS", "ref": "o", "fields": ["id", "orderNo"] }
-```
-
-#### `EXPR`
-
-S-OQL：
-
-```json
-["EXPR", { "$fn": "ABS", "args": ["o.deltaAmount"] }, "absDeltaAmount"]
-```
-
-canonical：
+#### 3.5.2 派生表达式返回
 
 ```json
 {
@@ -938,404 +378,889 @@ canonical：
     "kind": "FUNCTION",
     "name": "ABS",
     "args": [
-      { "kind": "FIELD_REF", "ref": "o", "field": "deltaAmount" }
+      {
+        "kind": "FIELD",
+        "ref": "o",
+        "field": "deltaAmount"
+      }
     ]
   },
   "alias": "absDeltaAmount"
 }
 ```
 
-#### `GROUP_BY`
-
-S-OQL：
-
-```json
-["GROUP_BY", "o.region", "region"]
-```
-
-canonical：
-
-```json
-{ "kind": "GROUP_BY", "ref": "o", "field": "region", "alias": "region" }
-```
-
-#### `METRIC`
-
-S-OQL：
-
-```json
-["METRIC", "COUNT", "o.*", "orderCount"]
-```
-
-canonical：
-
-```json
-{ "kind": "METRIC", "ref": "o", "field": "*", "function": "COUNT", "alias": "orderCount" }
-```
-
----
-
-### 5.6 `orders` 转换
-
-S-OQL：
-
-```json
-["ORDER_BY", "o", "createdAt", "DESC"]
-```
-
-canonical：
-
-```json
-{ "ref": "o", "field": "createdAt", "direction": "DESC" }
-```
-
----
-
-### 5.7 `mutation` 转换
-
-#### `CREATE` / `UPSERT`
-
-S-OQL：
+#### 3.5.3 分组字段
 
 ```json
 {
-  "mutation": {
-    "data": {
-      "name": "iPhone 16",
-      "price": 8999
-    }
-  }
+  "kind": "GROUP_BY",
+  "ref": "o",
+  "field": "region",
+  "alias": "region"
 }
 ```
 
-canonical：
+#### 3.5.4 函数型分组字段
 
 ```json
 {
-  "mutation": {
-    "data": {
-      "properties": {
-        "name": "iPhone 16",
-        "price": 8999
+  "kind": "GROUP_BY",
+  "expr": {
+    "kind": "FUNCTION",
+    "name": "DATE_TRUNC",
+    "args": [
+      {
+        "kind": "VALUE",
+        "value": "month"
+      },
+      {
+        "kind": "FIELD",
+        "ref": "o",
+        "field": "createdAt"
+      }
+    ]
+  },
+  "alias": "createdMonth"
+}
+```
+
+#### 3.5.5 聚合指标
+
+```json
+{
+  "kind": "METRIC",
+  "function": "SUM",
+  "ref": "o",
+  "field": "amount",
+  "alias": "totalAmount"
+}
+```
+
+```json
+{
+  "kind": "METRIC",
+  "function": "COUNT",
+  "ref": "o",
+  "field": "*",
+  "alias": "orderCount"
+}
+```
+
+约束：
+
+1. `QUERY`、`ASSOCIATION_QUERY`、`LINK_QUERY` 允许 `FIELDS` 和 `EXPR`。
+2. `AGGREGATE` 只允许 `GROUP_BY` 和 `METRIC`。
+3. `FIELDS.fields` 必须显式列出，不允许 `*`。
+4. `EXPR`、`GROUP_BY`、`METRIC` 必须声明 `alias`。
+5. `COUNT` 允许 `field = "*"`，其他聚合函数不允许 `*`。
+6. 聚合函数仅允许 `COUNT`、`SUM`、`AVG`、`MIN`、`MAX`。
+
+### 3.6 `orders`：排序定义
+
+```json
+"orders": [
+  {
+    "ref": "o",
+    "field": "createdAt",
+    "direction": "DESC"
+  },
+  {
+    "ref": "o",
+    "field": "orderNo",
+    "direction": "ASC"
+  }
+]
+```
+
+字段说明：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | :--: | --- |
+| `ref` | string | 是 | 对象 alias，或聚合结果上下文中的输出 alias 所属引用 |
+| `field` | string | 是 | 对象字段名或 `returns.alias` |
+| `direction` | enum | 是 | `ASC` / `DESC` |
+
+约束：
+
+1. `direction` 只能为 `ASC` 或 `DESC`。
+2. 普通查询排序字段必须可从对象字段或返回字段解释。
+3. 聚合查询排序字段优先引用 `returns.alias`。
+4. 多个排序条件按数组顺序生效。
+
+### 3.7 `sourceQuery`：中间结果查询
+
+`sourceQuery` 用于先生成中间结果，再让当前层对象通过 `fromSource` 引用。
+
+```json
+"sourceQuery": [
+  {
+    "outputAs": "completed_orders",
+    "operation": "QUERY",
+    "objects": [
+      {
+        "objectType": "Order",
+        "alias": "o"
+      }
+    ],
+    "conditions": {
+      "kind": "PREDICATE",
+      "ref": "o",
+      "field": "status",
+      "operator": "EQ",
+      "values": ["completed"]
+    },
+    "returns": [
+      {
+        "kind": "FIELDS",
+        "ref": "o",
+        "fields": ["id", "customerId", "amount"]
+      }
+    ]
+  }
+]
+```
+
+约束：
+
+1. `outputAs` 在同层必须唯一。
+2. `sourceQuery` 只能用于查询类操作。
+3. `sourceQuery` 内部必须继续使用 canonical OQL。
+4. `sourceQuery` 不允许引用外层 alias。
+5. `strict = true` 时，建议最大嵌套深度为 2。
+
+### 3.8 `linkQuery`：一跳关联查询参数
+
+`linkQuery` 仅用于 `LINK_QUERY`。
+
+```json
+"linkQuery": {
+  "mode": "LIST",
+  "relationshipType": "has_invoice",
+  "sourceRef": "o",
+  "targetRef": "i",
+  "direction": "OUTBOUND"
+}
+```
+
+字段说明：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | :--: | --- |
+| `mode` | enum | 是 | `LIST` / `ONE` |
+| `relationshipType` | string | 是 | 本体关系类型 |
+| `sourceRef` | string | 是 | 源对象 alias |
+| `targetRef` | string | 是 | 目标对象 alias |
+| `direction` | enum | 否 | `OUTBOUND` / `INBOUND` / `BIDIRECTIONAL`，默认 `OUTBOUND` |
+
+约束：
+
+1. `LINK_QUERY.objects` 必须且仅有两个对象。
+2. `sourceRef` / `targetRef` 必须引用当前层对象 alias。
+3. `LINK_QUERY` 不使用 `relationships`。
+4. `mode = ONE` 时，执行结果必须恰好一条，否则应返回错误。
+
+### 3.9 `mutation`：写操作参数
+
+#### 3.9.1 `CREATE`
+
+```json
+"mutation": {
+  "data": {
+    "properties": {
+      "name": "iPhone 16",
+      "createdAt": {
+        "kind": "FUNCTION",
+        "name": "NOW",
+        "args": []
       }
     }
   }
 }
 ```
 
-#### `UPDATE` / `DELETE`
-
-`scope` 与 `set` 结构保持不变，只做递归值表达式转换。
-
-#### `BATCH`
-
-`BATCH` 顶层结构不变，但 `items[]` 中每个子项都要递归执行本章相同转换。
-
----
-
-## 6. 校验与错误
-
-### 6.1 校验阶段
-
-1. 结构校验：顶层字段、类型、枚举、最小槽位。
-2. 引用校验：alias、`from` / `to`、`sourceRef` / `targetRef`、`fromSource`。
-3. 语义校验：operation 与专用块是否匹配。
-4. 执行期校验：唯一性、存在性、后端执行失败等。
-
-### 6.2 通用校验约束
-
-1. `version`、`schemaRef`、`operation` 必须存在。
-2. `objects[].alias` 在当前层必须唯一。
-3. `relationships[].alias` 在当前层必须唯一，且不得与对象 alias 冲突。
-4. 所有 `ref` / `from` / `to` / `sourceRef` / `targetRef` 必须引用当前层已声明 alias。
-5. `QUERY` / `AGGREGATE` / `ASSOCIATION_QUERY` / `LINK_QUERY` 必须包含非空 `returns`。
-6. `UPDATE` / `DELETE` 必须包含 `conditions`。
-7. `CREATE` / `UPSERT` 不得包含 `conditions`。
-8. `UPSERT.matchBy` 中字段必须全部出现在 `mutation.data` 中。
-9. `maxResults` 范围为 `1` 到 `100000`。
-10. `sourceQuery` 在 `strict=true` 时最大嵌套深度为 2。
-11. `BATCH.items[]` 必须非空，且子项不得为 `BATCH`。
-12. `LINK_QUERY.mode = ONE` 时，结果必须恰好一条。
-
-### 6.3 错误分类
-
-| 分类 | 说明 |
-| --- | --- |
-| `VALIDATION_ERROR` | 结构、类型、枚举、必填项错误 |
-| `REFERENCE_ERROR` | alias、source、返回别名等引用错误 |
-| `SEMANTIC_ERROR` | 操作语义不成立 |
-| `EXECUTION_ERROR` | 执行阶段失败 |
-| `INTERNAL_ERROR` | 执行器内部异常 |
-
-### 6.4 常用错误码
-
-| 错误码 | 说明 |
-| --- | --- |
-| `MISSING_REQUIRED_FIELD` | 缺少必填字段 |
-| `INVALID_FIELD` | 出现未知字段或不允许字段 |
-| `INVALID_FIELD_TYPE` | 字段类型错误 |
-| `INVALID_ENUM_VALUE` | 枚举值非法 |
-| `UNDECLARED_ALIAS` | 引用了未声明 alias |
-| `DUPLICATE_ALIAS` | alias 重复声明 |
-| `INVALID_SOURCE_REFERENCE` | `fromSource` 或 `outputAs` 引用非法 |
-| `INVALID_RELATION_ENDPOINT` | `relationships.from` / `to` 非法 |
-| `INVALID_LINK_REFERENCE` | `linkQuery.sourceRef` / `targetRef` 非法 |
-| `INVALID_OPERATION_FIELD` | 当前 operation 不允许出现某字段 |
-| `INVALID_OBJECT_COUNT` | 当前 operation 的 `objects` 数量非法 |
-| `MISSING_CONDITIONS` | 缺少必须提供的 `conditions` |
-| `CONDITIONS_NOT_ALLOWED` | 当前 operation 不允许提供 `conditions` |
-| `MISSING_METRIC` | `AGGREGATE` 缺少 `METRIC` |
-| `INVALID_SCOPE` | `scope` 非法或与操作不匹配 |
-| `MATCH_BY_FIELD_MISSING` | `matchBy` 字段未出现在 `mutation.data` 中 |
-| `NESTED_BATCH_NOT_ALLOWED` | 不允许嵌套 `BATCH` |
-| `NON_UNIQUE_RESULT` | 期望唯一结果却匹配多条 |
-| `NO_RESULT` | 期望唯一结果却没有匹配 |
-| `TIMEOUT` | 执行超时 |
-| `BACKEND_UNAVAILABLE` | 后端不可用 |
-
-### 6.5 标准错误响应
+#### 3.9.2 `UPDATE`
 
 ```json
-{
-  "success": false,
-  "operation": "QUERY",
-  "errors": [
-    {
-      "code": "MISSING_REQUIRED_FIELD",
-      "category": "VALIDATION_ERROR",
-      "message": "Missing required field: returns",
-      "path": "$.returns"
+"mutation": {
+  "scope": "ONE",
+  "set": {
+    "status": "paid",
+    "updatedAt": {
+      "kind": "FUNCTION",
+      "name": "NOW",
+      "args": []
     }
-  ],
-  "trace": {
-    "executionTimeMs": 3,
-    "requestId": "req_1001"
   }
 }
 ```
 
+#### 3.9.3 `DELETE`
+
+```json
+"mutation": {
+  "scope": "ONE"
+}
+```
+
+#### 3.9.4 `UPSERT`
+
+```json
+"mutation": {
+  "matchBy": ["sourceSystem", "orderNo"],
+  "data": {
+    "properties": {
+      "sourceSystem": "ERP",
+      "orderNo": "ORD-001",
+      "status": "paid"
+    }
+  }
+}
+```
+
+#### 3.9.5 `BATCH`
+
+```json
+"mutation": {
+  "atomic": true,
+  "items": []
+}
+```
+
+约束：
+
+1. `CREATE` 与 `UPSERT` 必须使用 `mutation.data.properties`。
+2. `UPDATE` 必须包含 `mutation.scope` 与非空 `mutation.set`。
+3. `DELETE` 只能包含删除范围相关字段，不得出现 `set` 或 `data`。
+4. `UPSERT.matchBy` 必须非空，且其中每个字段都必须出现在 `data.properties` 中。
+5. `BATCH.items[]` 内部子请求使用 canonical OQL，且不得嵌套 `BATCH`。
+6. `BATCH.items[]` 不包含 `version`、`schemaRef`、`strict`，这些值继承外层。
+
 ---
 
-## 7. 代表性完整样例
+## 4. Operation 规范
 
-### 7.1 普通查询
+### 4.1 `QUERY`：普通对象查询
 
 ```json
 {
   "version": "1.0",
-  "schemaRef": "sales@1.0",
+  "schemaRef": "sales-v1",
   "strict": true,
   "operation": "QUERY",
-  "objects": [["Order", "o"]],
+  "objects": [
+    {
+      "objectType": "Order",
+      "alias": "o"
+    }
+  ],
   "conditions": {
-    "all": [
-      ["o.status", "EQ", "completed"],
-      ["o.amount", "GTE", 1000]
-    ]
+    "kind": "PREDICATE",
+    "ref": "o",
+    "field": "status",
+    "operator": "EQ",
+    "values": ["completed"]
   },
   "returns": [
-    ["FIELDS", "o", ["id", "orderNo", "amount", "status"]],
-    ["EXPR", { "$fn": "ABS", "args": ["o.deltaAmount"] }, "absDeltaAmount"]
+    {
+      "kind": "FIELDS",
+      "ref": "o",
+      "fields": ["id", "orderNo", "amount", "status"]
+    },
+    {
+      "kind": "EXPR",
+      "expr": {
+        "kind": "FUNCTION",
+        "name": "ABS",
+        "args": [
+          {
+            "kind": "FIELD",
+            "ref": "o",
+            "field": "deltaAmount"
+          }
+        ]
+      },
+      "alias": "absDeltaAmount"
+    }
   ],
   "orders": [
-    ["ORDER_BY", "o", "createdAt", "DESC"]
+    {
+      "ref": "o",
+      "field": "createdAt",
+      "direction": "DESC"
+    }
   ],
-  "maxResults": 1000
+  "maxResults": 100
 }
 ```
 
-### 7.2 聚合查询
+约束：
+
+1. 必须包含 `objects` 与 `returns`。
+2. 不得出现 `relationships`、`linkQuery`、`mutation`。
+3. 多对象查询必须用 `conditions` 明确对象之间的关联条件。
+
+### 4.2 `AGGREGATE`：聚合查询
 
 ```json
 {
   "version": "1.0",
-  "schemaRef": "sales@1.0",
+  "schemaRef": "sales-v1",
   "strict": true,
   "operation": "AGGREGATE",
-  "objects": [["Order", "o"]],
-  "conditions": ["o.status", "EQ", "completed"],
+  "objects": [
+    {
+      "objectType": "Order",
+      "alias": "o"
+    }
+  ],
+  "conditions": {
+    "kind": "PREDICATE",
+    "ref": "o",
+    "field": "status",
+    "operator": "EQ",
+    "values": ["completed"]
+  },
   "returns": [
-    ["GROUP_BY", "o.region", "region"],
-    ["METRIC", "SUM", "o.amount", "totalAmount"],
-    ["METRIC", "COUNT", "o.*", "orderCount"]
+    {
+      "kind": "GROUP_BY",
+      "ref": "o",
+      "field": "region",
+      "alias": "region"
+    },
+    {
+      "kind": "METRIC",
+      "function": "SUM",
+      "ref": "o",
+      "field": "amount",
+      "alias": "totalAmount"
+    },
+    {
+      "kind": "METRIC",
+      "function": "COUNT",
+      "ref": "o",
+      "field": "*",
+      "alias": "orderCount"
+    }
   ],
   "orders": [
-    ["ORDER_BY", "o", "totalAmount", "DESC"]
-  ],
-  "maxResults": 1000
+    {
+      "ref": "o",
+      "field": "totalAmount",
+      "direction": "DESC"
+    }
+  ]
 }
 ```
 
-### 7.3 多跳关联查询
+约束：
+
+1. `returns` 至少包含一个 `METRIC`。
+2. `returns` 只允许 `GROUP_BY` 与 `METRIC`。
+3. 不得出现 `relationships`、`linkQuery`、`mutation`。
+
+### 4.3 `ASSOCIATION_QUERY`：显式路径关联查询
 
 ```json
 {
   "version": "1.0",
-  "schemaRef": "infra@1.0",
+  "schemaRef": "infra-v1",
   "strict": true,
   "operation": "ASSOCIATION_QUERY",
   "objects": [
-    ["Device", "d"],
-    ["Server", "s"],
-    ["DataCenter", "dc"]
+    {
+      "objectType": "Device",
+      "alias": "d"
+    },
+    {
+      "objectType": "Service",
+      "alias": "s"
+    },
+    {
+      "objectType": "DataCenter",
+      "alias": "dc"
+    }
   ],
   "relationships": [
-    ["installed_on", "r1", "d", "s"],
-    ["deployed_in", "r2", "s", "dc"]
+    {
+      "relationshipType": "installed_on",
+      "alias": "r1",
+      "from": "d",
+      "to": "s"
+    },
+    {
+      "relationshipType": "deployed_in",
+      "alias": "r2",
+      "from": "s",
+      "to": "dc"
+    }
   ],
   "conditions": {
-    "all": [
-      ["d.status", "EQ", "running"],
-      ["dc.region", "EQ", "华东"]
-    ]
+    "kind": "PREDICATE",
+    "ref": "d",
+    "field": "status",
+    "operator": "EQ",
+    "values": ["running"]
   },
   "returns": [
-    ["FIELDS", "d", ["id", "name", "status"]],
-    ["FIELDS", "s", ["id", "hostname"]],
-    ["FIELDS", "dc", ["id", "name", "region"]]
-  ],
-  "maxResults": 5000
+    {
+      "kind": "FIELDS",
+      "ref": "dc",
+      "fields": ["id", "name", "region"]
+    }
+  ]
 }
 ```
 
-### 7.4 一跳关联查询
+约束：
+
+1. 必须包含 `objects`、`relationships`、`returns`。
+2. `relationships` 按路径顺序声明。
+3. 不得出现 `linkQuery`、`mutation`。
+
+### 4.4 `LINK_QUERY`：一跳关系导航查询
 
 ```json
 {
   "version": "1.0",
-  "schemaRef": "billing@1.0",
+  "schemaRef": "sales-v1",
   "strict": true,
   "operation": "LINK_QUERY",
   "objects": [
-    ["Order", "o"],
-    ["Invoice", "i"]
+    {
+      "objectType": "Order",
+      "alias": "o"
+    },
+    {
+      "objectType": "Invoice",
+      "alias": "i"
+    }
   ],
-  "conditions": ["o.orderNo", "EQ", "ORD-20240301-001"],
+  "conditions": {
+    "kind": "PREDICATE",
+    "ref": "o",
+    "field": "orderNo",
+    "operator": "EQ",
+    "values": ["ORD-001"]
+  },
   "returns": [
-    ["FIELDS", "i", ["id", "invoiceNo", "amount", "status"]]
+    {
+      "kind": "FIELDS",
+      "ref": "i",
+      "fields": ["id", "invoiceNo", "amount"]
+    }
   ],
   "linkQuery": {
-    "mode": "ONE",
+    "mode": "LIST",
     "relationshipType": "has_invoice",
     "sourceRef": "o",
     "targetRef": "i",
     "direction": "OUTBOUND"
-  },
-  "maxResults": 1
+  }
 }
 ```
 
-### 7.5 创建
+约束：
+
+1. `objects` 必须且仅有两个。
+2. 必须包含 `conditions`、`returns`、`linkQuery`。
+3. 不得出现 `relationships`、`mutation`。
+
+### 4.5 `CREATE`：创建对象
 
 ```json
 {
   "version": "1.0",
-  "schemaRef": "catalog@1.0",
+  "schemaRef": "catalog-v1",
   "strict": true,
   "operation": "CREATE",
-  "objects": [["Product", "p"]],
+  "objects": [
+    {
+      "objectType": "Product",
+      "alias": "p"
+    }
+  ],
   "mutation": {
     "data": {
-      "name": "iPhone 16",
-      "price": 8999,
-      "createdAt": { "$fn": "NOW" }
+      "properties": {
+        "name": "iPhone 16",
+        "price": 7999,
+        "createdAt": {
+          "kind": "FUNCTION",
+          "name": "NOW",
+          "args": []
+        }
+      }
     }
   }
 }
 ```
 
-### 7.6 更新
+约束：
+
+1. `objects` 必须且仅有一个。
+2. `mutation.data.properties` 必须非空。
+3. 不得出现 `conditions`、`returns`、`orders`、`relationships`、`linkQuery`、`sourceQuery`。
+
+### 4.6 `UPDATE`：更新对象
 
 ```json
 {
   "version": "1.0",
-  "schemaRef": "catalog@1.0",
+  "schemaRef": "catalog-v1",
   "strict": true,
   "operation": "UPDATE",
-  "objects": [["Product", "p"]],
-  "conditions": ["p.id", "EQ", "prod_001"],
+  "objects": [
+    {
+      "objectType": "Product",
+      "alias": "p"
+    }
+  ],
+  "conditions": {
+    "kind": "PREDICATE",
+    "ref": "p",
+    "field": "id",
+    "operator": "EQ",
+    "values": ["prod_001"]
+  },
   "mutation": {
     "scope": "ONE",
     "set": {
-      "price": 7999,
-      "updatedAt": { "$fn": "NOW" }
+      "price": 6999,
+      "updatedAt": {
+        "kind": "FUNCTION",
+        "name": "NOW",
+        "args": []
+      }
     }
   }
 }
 ```
 
-### 7.7 删除
+约束：
+
+1. `objects` 必须且仅有一个。
+2. 必须包含 `conditions`。
+3. `mutation.scope` 只能为 `ONE` 或 `MANY`。
+4. `mutation.set` 必须非空。
+5. 不得出现 `returns`、`orders`、`relationships`、`linkQuery`、`sourceQuery`。
+
+### 4.7 `DELETE`：删除对象
 
 ```json
 {
   "version": "1.0",
-  "schemaRef": "sales@1.0",
+  "schemaRef": "sales-v1",
   "strict": true,
   "operation": "DELETE",
-  "objects": [["Order", "o"]],
-  "conditions": ["o.orderNo", "EQ", "ORD-20240301-001"],
+  "objects": [
+    {
+      "objectType": "Order",
+      "alias": "o"
+    }
+  ],
+  "conditions": {
+    "kind": "PREDICATE",
+    "ref": "o",
+    "field": "orderNo",
+    "operator": "EQ",
+    "values": ["ORD-001"]
+  },
   "mutation": {
     "scope": "ONE"
   }
 }
 ```
 
-### 7.8 UPSERT
+约束：
+
+1. `objects` 必须且仅有一个。
+2. 必须包含 `conditions`。
+3. `mutation.scope` 只能为 `ONE` 或 `MANY`。
+4. 不得出现 `mutation.set`、`mutation.data`、`returns`、`orders`、`relationships`、`linkQuery`、`sourceQuery`。
+5. 当删除范围不明确时，Agent 必须请求用户补充条件，不得生成宽泛删除请求。
+
+### 4.8 `UPSERT`：存在则更新，否则创建
 
 ```json
 {
   "version": "1.0",
-  "schemaRef": "sales@1.0",
+  "schemaRef": "sales-v1",
   "strict": true,
   "operation": "UPSERT",
-  "objects": [["Order", "o"]],
+  "objects": [
+    {
+      "objectType": "Order",
+      "alias": "o"
+    }
+  ],
   "mutation": {
     "matchBy": ["sourceSystem", "orderNo"],
     "data": {
-      "sourceSystem": "ERP",
-      "orderNo": "ORD-20240301-001",
-      "status": "shipped",
-      "amount": 19999
+      "properties": {
+        "sourceSystem": "ERP",
+        "orderNo": "ORD-001",
+        "status": "paid"
+      }
     }
   }
 }
 ```
 
-### 7.9 BATCH
+约束：
+
+1. `objects` 必须且仅有一个。
+2. `mutation.matchBy` 必须非空。
+3. `mutation.data.properties` 必须非空。
+4. `matchBy` 中列出的字段必须全部出现在 `data.properties` 中。
+5. 不得出现 `conditions`、`returns`、`orders`、`relationships`、`linkQuery`、`sourceQuery`。
+
+### 4.9 `BATCH`：批处理
 
 ```json
 {
   "version": "1.0",
-  "schemaRef": "billing@1.0",
+  "schemaRef": "catalog-v1",
   "strict": true,
   "operation": "BATCH",
   "mutation": {
     "atomic": true,
     "items": [
       {
-        "operation": "UPDATE",
-        "objects": [["Order", "o"]],
-        "conditions": ["o.orderNo", "EQ", "ORD-20240301-001"],
+        "operation": "CREATE",
+        "objects": [
+          {
+            "objectType": "Product",
+            "alias": "p1"
+          }
+        ],
         "mutation": {
-          "scope": "ONE",
-          "set": {
-            "status": "paid",
-            "paidAt": { "$fn": "NOW" }
+          "data": {
+            "properties": {
+              "name": "Product A"
+            }
           }
         }
       },
       {
-        "operation": "CREATE",
-        "objects": [["Invoice", "i"]],
+        "operation": "UPDATE",
+        "objects": [
+          {
+            "objectType": "Product",
+            "alias": "p2"
+          }
+        ],
+        "conditions": {
+          "kind": "PREDICATE",
+          "ref": "p2",
+          "field": "id",
+          "operator": "EQ",
+          "values": ["prod_002"]
+        },
         "mutation": {
-          "data": {
-            "invoiceNo": "INV-20240301-001",
-            "orderNo": "ORD-20240301-001",
-            "amount": 19999
+          "scope": "ONE",
+          "set": {
+            "status": "active"
           }
         }
       }
     ]
   }
+}
+```
+
+约束：
+
+1. `BATCH` 顶层不得出现 `objects`、`conditions`、`returns`、`orders`、`relationships`、`linkQuery`、`sourceQuery`。
+2. 必须包含 `mutation.atomic` 与非空 `mutation.items`。
+3. 子项只允许 `CREATE` / `UPDATE` / `DELETE` / `UPSERT`。
+4. 子项不得再使用 `BATCH`。
+5. 子项不包含 `version`、`schemaRef`、`strict`。
+6. 每个子项的 alias 引用只在子项内部闭包。
+
+---
+
+## 5. Agent 生成流程
+
+### 5.1 生成步骤
+
+1. 识别用户意图属于查询、聚合、路径关联、一跳关系导航、创建、更新、删除、存在则更新或批处理。
+2. 选择唯一 `operation`。
+3. 明确 `schemaRef`。
+4. 声明参与对象与 alias。
+5. 根据 operation 填写必要模块。
+6. 使用 canonical OQL 对象结构直接生成 JSON。
+7. 省略所有未使用字段。
+8. 调用 builder 做字段顺序和默认值稳定化。
+9. 调用 validator 做结构与引用校验。
+10. 仅当用户明确要求执行且请求校验通过时，才进入执行。
+
+### 5.2 缺失信息处理
+
+当缺少必要信息时，不要猜测，应返回结构化错误：
+
+```json
+{
+  "success": false,
+  "errors": [
+    {
+      "code": "MISSING_REQUIRED_INFORMATION",
+      "message": "缺少要查询的对象类型和返回字段。",
+      "missing": ["objectType", "returns"]
+    }
+  ]
+}
+```
+
+### 5.3 生成禁忌
+
+1. 不输出 Markdown 包装的 JSON。
+2. 不输出注释。
+3. 不输出 `null` 字段。
+4. 不输出空数组或空对象占位。
+5. 不使用位置元组表达对象、关系、条件、返回或排序。
+6. 不在查询操作中输出 `mutation`。
+7. 不在写操作中输出 `returns` 或 `orders`，除非未来扩展明确允许。
+8. 不跨 `sourceQuery` 层级引用 alias。
+9. 不在 `BATCH.items[]` 中嵌套 `BATCH`。
+10. 不伪造 schema 中不存在的对象、关系或字段。
+
+---
+
+## 6. 校验规则摘要
+
+### 6.1 通用校验
+
+- `version` 必须为 `1.0`。
+- `schemaRef` 必须非空。
+- `operation` 必须为合法枚举。
+- 顶层不得出现未知字段。
+- 所有 alias 必须先声明后引用。
+- 所有对象、关系、字段必须存在于绑定 schema。
+
+### 6.2 条件校验
+
+- `conditions.kind` 必须为 `PREDICATE` 或 `GROUP`。
+- `PREDICATE` 必须有合法左值和合法操作符。
+- `GROUP.children` 必须非空。
+- `NOT` 组只能有一个子条件。
+- 操作符与 `values` 个数必须匹配。
+
+### 6.3 返回校验
+
+- 查询类操作必须有 `returns`。
+- `FIELDS.fields` 不得为空且不得包含 `*`。
+- `EXPR.alias` 必须存在。
+- `GROUP_BY.alias` 必须存在。
+- `METRIC.alias` 必须存在。
+- `AGGREGATE` 必须至少有一个 `METRIC`。
+
+### 6.4 写入校验
+
+- `CREATE` 必须有 `mutation.data.properties`。
+- `UPDATE` 必须有 `conditions`、`mutation.scope`、`mutation.set`。
+- `DELETE` 必须有 `conditions` 与 `mutation.scope`。
+- `UPSERT` 必须有 `mutation.matchBy` 与 `mutation.data.properties`。
+- `BATCH` 必须有 `mutation.atomic` 与非空 `mutation.items`。
+
+---
+
+## 7. 错误返回格式
+
+校验或执行失败时，建议统一返回：
+
+```json
+{
+  "success": false,
+  "errors": [
+    {
+      "code": "OQL_VALIDATION_ERROR",
+      "message": "returns.ref must reference known alias: x",
+      "path": "returns[0].ref",
+      "details": {
+        "ref": "x"
+      }
+    }
+  ]
+}
+```
+
+字段说明：
+
+| 字段 | 说明 |
+| --- | --- |
+| `success` | 固定为 `false` |
+| `errors[].code` | 错误码 |
+| `errors[].message` | 可读错误信息 |
+| `errors[].path` | 错误字段路径 |
+| `errors[].details` | 可选上下文 |
+
+---
+
+## 8. 附录：最小操作模板
+
+### 8.1 QUERY
+
+```json
+{
+  "version": "1.0",
+  "schemaRef": "<SCHEMA_REF>",
+  "strict": true,
+  "operation": "QUERY",
+  "objects": [{"objectType": "<ObjectType>", "alias": "o"}],
+  "returns": [{"kind": "FIELDS", "ref": "o", "fields": ["id"]}]
+}
+```
+
+### 8.2 AGGREGATE
+
+```json
+{
+  "version": "1.0",
+  "schemaRef": "<SCHEMA_REF>",
+  "strict": true,
+  "operation": "AGGREGATE",
+  "objects": [{"objectType": "<ObjectType>", "alias": "o"}],
+  "returns": [{"kind": "METRIC", "function": "COUNT", "ref": "o", "field": "*", "alias": "cnt"}]
+}
+```
+
+### 8.3 CREATE
+
+```json
+{
+  "version": "1.0",
+  "schemaRef": "<SCHEMA_REF>",
+  "strict": true,
+  "operation": "CREATE",
+  "objects": [{"objectType": "<ObjectType>", "alias": "o"}],
+  "mutation": {"data": {"properties": {"name": "value"}}}
+}
+```
+
+### 8.4 UPDATE
+
+```json
+{
+  "version": "1.0",
+  "schemaRef": "<SCHEMA_REF>",
+  "strict": true,
+  "operation": "UPDATE",
+  "objects": [{"objectType": "<ObjectType>", "alias": "o"}],
+  "conditions": {"kind": "PREDICATE", "ref": "o", "field": "id", "operator": "EQ", "values": ["id-001"]},
+  "mutation": {"scope": "ONE", "set": {"name": "new value"}}
+}
+```
+
+### 8.5 DELETE
+
+```json
+{
+  "version": "1.0",
+  "schemaRef": "<SCHEMA_REF>",
+  "strict": true,
+  "operation": "DELETE",
+  "objects": [{"objectType": "<ObjectType>", "alias": "o"}],
+  "conditions": {"kind": "PREDICATE", "ref": "o", "field": "id", "operator": "EQ", "values": ["id-001"]},
+  "mutation": {"scope": "ONE"}
 }
 ```
