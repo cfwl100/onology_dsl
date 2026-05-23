@@ -2,7 +2,7 @@
 
 > 本文档定义面向 Agent / 大模型直接生成的 canonical OQL 规范。Agent 不再先生成中间简化语法，也不再依赖二次转换层；应直接输出可校验、可解释、可执行的 OQL JSON。
 >
-> 本版本已将历史 `LINK_QUERY` 合并到 `ASSOCIATION_QUERY`。一跳关系导航是关系路径长度为 1 的特例，统一通过 `relationships` 表达。`LINK_QUERY` 与 `linkQuery` 仅作为历史兼容输入，不属于 canonical OQL 标准输出。
+> 对象关系查询统一使用 `ASSOCIATION_QUERY` 表达。一跳关系导航是关系路径长度为 1 的特例，也通过 `relationships` 表达。
 
 ---
 
@@ -10,11 +10,9 @@
 
 | 修订项 | 处理方式 |
 | --- | --- |
-| `LINK_QUERY` | 从 canonical operation 中移除，仅保留历史兼容说明 |
-| `linkQuery` | 从顶层标准结构中移除，历史请求由 Builder / Validator 归一化 |
 | 一跳关系导航 | 统一使用 `ASSOCIATION_QUERY + relationships[0]` 表达 |
-| `relationships` | 增加 `direction` 与 `mode`，覆盖原 `linkQuery.direction` 与 `linkQuery.mode` |
-| Agent 生成规则 | 禁止新生成 `LINK_QUERY` 和 `linkQuery` |
+| `relationships` | 增加 `direction` 与 `mode`，支持关系方向和单条/列表结果期望 |
+| Agent 生成规则 | 关系查询统一生成 `ASSOCIATION_QUERY` |
 
 ---
 
@@ -81,8 +79,6 @@ OQL 不直接面向物理表、物理列或数据库方言。执行时由 OAC（
 
 上面仅展示全部可能字段。实际生成时必须省略未使用字段。
 
-`linkQuery` 为历史兼容字段，不属于 canonical OQL 标准输出字段；Agent 不得新生成。
-
 ### 2.2 推荐字段顺序
 
 ```text
@@ -120,8 +116,6 @@ extensions
 | `mutation` | object | 条件必填 | 写操作专用参数块 |
 | `options` | object | 否 | 执行选项 |
 | `extensions` | object | 否 | 扩展字段，无明确约定时省略 |
-
-兼容说明：`LINK_QUERY` 与 `linkQuery` 仅用于接收旧版请求。规范化后必须转换为 `ASSOCIATION_QUERY + relationships`，canonical OQL 不得输出 `LINK_QUERY` 或 `linkQuery`。
 
 ---
 
@@ -204,7 +198,7 @@ extensions
 | `from` | string | 是 | 起点对象 alias |
 | `to` | string | 是 | 终点对象 alias |
 | `direction` | enum | 否 | `OUTBOUND` / `INBOUND` / `BIDIRECTIONAL`，默认 `OUTBOUND` |
-| `mode` | enum | 否 | `LIST` / `ONE`，默认 `LIST`；由原 `linkQuery.mode` 合并而来，用于声明该关系的结果期望 |
+| `mode` | enum | 否 | `LIST` / `ONE`，默认 `LIST`；用于声明该关系的结果期望 |
 
 约束：
 
@@ -471,56 +465,9 @@ extensions
 4. `sourceQuery` 不允许引用外层 alias。
 5. `strict = true` 时，建议最大嵌套深度为 2。
 
-### 3.8 `linkQuery`：历史兼容字段（Deprecated）
+### 3.8 `mutation`：写操作参数
 
-`linkQuery` 已合并到 `relationships`，不再作为 canonical OQL 标准字段。
-
-旧版 `LINK_QUERY` 请求可在兼容期继续被解析，但必须在 Builder / Validator 阶段归一化为 `ASSOCIATION_QUERY`。
-
-兼容转换规则：
-
-```json
-{
-  "operation": "LINK_QUERY",
-  "linkQuery": {
-    "mode": "LIST",
-    "relationshipType": "has_invoice",
-    "sourceRef": "o",
-    "targetRef": "i",
-    "direction": "OUTBOUND"
-  }
-}
-```
-
-等价转换为：
-
-```json
-{
-  "operation": "ASSOCIATION_QUERY",
-  "relationships": [
-    {
-      "relationshipType": "has_invoice",
-      "alias": "r1",
-      "from": "o",
-      "to": "i",
-      "direction": "OUTBOUND",
-      "mode": "LIST"
-    }
-  ]
-}
-```
-
-兼容约束：
-
-1. Agent 不得新生成 `LINK_QUERY`。
-2. Agent 不得新生成 `linkQuery`。
-3. 接收到历史 `LINK_QUERY` 时，Builder 应自动转换为 `ASSOCIATION_QUERY`。
-4. 转换后必须移除 `linkQuery` 字段。
-5. 转换时应返回 deprecated warning，例如：`LINK_QUERY is deprecated; use ASSOCIATION_QUERY with relationships instead.`
-
-### 3.9 `mutation`：写操作参数
-
-#### 3.9.1 `CREATE`
+#### 3.8.1 `CREATE`
 
 ```json
 "mutation": {
@@ -537,7 +484,7 @@ extensions
 }
 ```
 
-#### 3.9.2 `UPDATE`
+#### 3.8.2 `UPDATE`
 
 ```json
 "mutation": {
@@ -553,7 +500,7 @@ extensions
 }
 ```
 
-#### 3.9.3 `DELETE`
+#### 3.8.3 `DELETE`
 
 ```json
 "mutation": {
@@ -561,7 +508,7 @@ extensions
 }
 ```
 
-#### 3.9.4 `UPSERT`
+#### 3.8.4 `UPSERT`
 
 ```json
 "mutation": {
@@ -576,7 +523,7 @@ extensions
 }
 ```
 
-#### 3.9.5 `BATCH`
+#### 3.8.5 `BATCH`
 
 ```json
 "mutation": {
@@ -640,7 +587,7 @@ extensions
 约束：
 
 1. 必须包含 `objects` 与 `returns`。
-2. 不得出现 `relationships`、`linkQuery`、`mutation`。
+2. 不得出现 `relationships`、`mutation`。
 3. 多对象查询必须用 `conditions` 明确对象之间的关联条件。
 
 ### 4.2 `AGGREGATE`：聚合查询
@@ -686,7 +633,7 @@ extensions
 
 1. `returns` 至少包含一个 `METRIC`。
 2. `returns` 只允许 `GROUP_BY` 与 `METRIC`。
-3. 不得出现 `relationships`、`linkQuery`、`mutation`。
+3. 不得出现 `relationships`、`mutation`。
 
 ### 4.3 `ASSOCIATION_QUERY`：对象关系 / 路径关联查询
 
@@ -802,27 +749,10 @@ extensions
 2. `relationships` 至少包含一条关系。
 3. `relationships` 按路径顺序声明。
 4. `relationships[].from` / `relationships[].to` 必须引用当前层 `objects[].alias`。
-5. 不得出现 `linkQuery`、`mutation`。
-6. 一跳关系导航不得使用 `LINK_QUERY`，必须使用 `ASSOCIATION_QUERY`。
+5. 不得出现 `mutation`。
+6. 一跳关系导航必须使用 `ASSOCIATION_QUERY`。
 
-### 4.4 `LINK_QUERY`：Deprecated
-
-`LINK_QUERY` 已合并到 `ASSOCIATION_QUERY`，不再作为 canonical OQL 的标准 operation。
-
-历史 `LINK_QUERY` 请求必须按以下规则转换：
-
-| 原字段 | 新字段 |
-| --- | --- |
-| `operation = LINK_QUERY` | `operation = ASSOCIATION_QUERY` |
-| `linkQuery.relationshipType` | `relationships[0].relationshipType` |
-| `linkQuery.sourceRef` | `relationships[0].from` |
-| `linkQuery.targetRef` | `relationships[0].to` |
-| `linkQuery.direction` | `relationships[0].direction` |
-| `linkQuery.mode` | `relationships[0].mode` |
-
-Agent 不得新生成 `LINK_QUERY`。
-
-### 4.5 `CREATE`：创建对象
+### 4.4 `CREATE`：创建对象
 
 ```json
 {
@@ -856,9 +786,9 @@ Agent 不得新生成 `LINK_QUERY`。
 
 1. `objects` 必须且仅有一个。
 2. `mutation.data.properties` 必须非空。
-3. 不得出现 `conditions`、`returns`、`orders`、`relationships`、`linkQuery`、`sourceQuery`。
+3. 不得出现 `conditions`、`returns`、`orders`、`relationships`、`sourceQuery`。
 
-### 4.6 `UPDATE`：更新对象
+### 4.5 `UPDATE`：更新对象
 
 ```json
 {
@@ -899,9 +829,9 @@ Agent 不得新生成 `LINK_QUERY`。
 2. 必须包含 `conditions`。
 3. `mutation.scope` 只能为 `ONE` 或 `MANY`。
 4. `mutation.set` 必须非空。
-5. 不得出现 `returns`、`orders`、`relationships`、`linkQuery`、`sourceQuery`。
+5. 不得出现 `returns`、`orders`、`relationships`、`sourceQuery`。
 
-### 4.7 `DELETE`：删除对象
+### 4.6 `DELETE`：删除对象
 
 ```json
 {
@@ -933,10 +863,10 @@ Agent 不得新生成 `LINK_QUERY`。
 1. `objects` 必须且仅有一个。
 2. 必须包含 `conditions`。
 3. `mutation.scope` 只能为 `ONE` 或 `MANY`。
-4. 不得出现 `mutation.set`、`mutation.data`、`returns`、`orders`、`relationships`、`linkQuery`、`sourceQuery`。
+4. 不得出现 `mutation.set`、`mutation.data`、`returns`、`orders`、`relationships`、`sourceQuery`。
 5. 当删除范围不明确时，Agent 必须请求用户补充条件，不得生成宽泛删除请求。
 
-### 4.8 `UPSERT`：存在则更新，否则创建
+### 4.7 `UPSERT`：存在则更新，否则创建
 
 ```json
 {
@@ -969,9 +899,9 @@ Agent 不得新生成 `LINK_QUERY`。
 2. `mutation.matchBy` 必须非空。
 3. `mutation.data.properties` 必须非空。
 4. `matchBy` 中列出的字段必须全部出现在 `data.properties` 中。
-5. 不得出现 `conditions`、`returns`、`orders`、`relationships`、`linkQuery`、`sourceQuery`。
+5. 不得出现 `conditions`、`returns`、`orders`、`relationships`、`sourceQuery`。
 
-### 4.9 `BATCH`：批处理
+### 4.8 `BATCH`：批处理
 
 ```json
 {
@@ -1027,7 +957,7 @@ Agent 不得新生成 `LINK_QUERY`。
 
 约束：
 
-1. `BATCH` 顶层不得出现 `objects`、`conditions`、`returns`、`orders`、`relationships`、`linkQuery`、`sourceQuery`。
+1. `BATCH` 顶层不得出现 `objects`、`conditions`、`returns`、`orders`、`relationships`、`sourceQuery`。
 2. 必须包含 `mutation.atomic` 与非空 `mutation.items`。
 3. 子项只允许 `CREATE` / `UPDATE` / `DELETE` / `UPSERT`。
 4. 子项不得再使用 `BATCH`。
@@ -1080,8 +1010,8 @@ Agent 不得新生成 `LINK_QUERY`。
 8. 不跨 `sourceQuery` 层级引用 alias。
 9. 不在 `BATCH.items[]` 中嵌套 `BATCH`。
 10. 不伪造 schema 中不存在的对象、关系或字段。
-11. 不生成 `LINK_QUERY`；一跳关系导航必须生成 `ASSOCIATION_QUERY`。
-12. 不生成 `linkQuery`；关系类型、方向和返回模式必须通过 `relationships` 表达。
+11. 一跳关系导航必须生成 `ASSOCIATION_QUERY`。
+12. 关系类型、方向和返回模式必须通过 `relationships` 表达。
 
 ---
 
@@ -1092,9 +1022,6 @@ Agent 不得新生成 `LINK_QUERY`。
 - `version` 必须为 `1.0`。
 - `schemaRef` 必须非空。
 - `operation` 必须为 canonical 合法枚举。
-- canonical OQL 的 `operation` 不得为 `LINK_QUERY`。
-- canonical OQL 顶层不得出现 `linkQuery`。
-- 接收到历史 `LINK_QUERY` 时，应在兼容层转换为 `ASSOCIATION_QUERY` 后再执行标准校验。
 - 顶层不得出现未知字段。
 - 所有 alias 必须先声明后引用。
 - 所有对象、关系、字段必须存在于绑定 schema。
@@ -1123,36 +1050,6 @@ Agent 不得新生成 `LINK_QUERY`。
 - `DELETE` 必须有 `conditions` 与 `mutation.scope`。
 - `UPSERT` 必须有 `mutation.matchBy` 与 `mutation.data.properties`。
 - `BATCH` 必须有 `mutation.atomic` 与非空 `mutation.items`。
-
-### 6.5 历史兼容转换校验
-
-兼容层接收到旧版 `LINK_QUERY` 时，应执行如下归一化：
-
-```pseudo
-if oql.operation == "LINK_QUERY":
-    assert oql.linkQuery exists
-    lq = oql.linkQuery
-
-    oql.operation = "ASSOCIATION_QUERY"
-    oql.relationships = [
-        {
-            "relationshipType": lq.relationshipType,
-            "alias": generateRelationshipAlias(oql, "r"),
-            "from": lq.sourceRef,
-            "to": lq.targetRef,
-            "direction": lq.direction or "OUTBOUND",
-            "mode": lq.mode or "LIST"
-        }
-    ]
-
-    remove oql.linkQuery
-
-    addWarning(
-        code = "DEPRECATED_OPERATION",
-        message = "LINK_QUERY is deprecated; use ASSOCIATION_QUERY with relationships instead.",
-        path = "operation"
-    )
-```
 
 ---
 
