@@ -1,6 +1,20 @@
 # 本体对象操作语言（OQL）DSL 规范 v1.2 - Agent 最终版
 
 > 本文档定义面向 Agent / 大模型直接生成的 canonical OQL 规范。Agent 不再先生成中间简化语法，也不再依赖二次转换层；应直接输出可校验、可解释、可执行的 OQL JSON。
+>
+> 本版本已将历史 `LINK_QUERY` 合并到 `ASSOCIATION_QUERY`。一跳关系导航是关系路径长度为 1 的特例，统一通过 `relationships` 表达。`LINK_QUERY` 与 `linkQuery` 仅作为历史兼容输入，不属于 canonical OQL 标准输出。
+
+---
+
+## 0. 本次修订说明
+
+| 修订项 | 处理方式 |
+| --- | --- |
+| `LINK_QUERY` | 从 canonical operation 中移除，仅保留历史兼容说明 |
+| `linkQuery` | 从顶层标准结构中移除，历史请求由 Builder / Validator 归一化 |
+| 一跳关系导航 | 统一使用 `ASSOCIATION_QUERY + relationships[0]` 表达 |
+| `relationships` | 增加 `direction` 与 `mode`，覆盖原 `linkQuery.direction` 与 `linkQuery.mode` |
+| Agent 生成规则 | 禁止新生成 `LINK_QUERY` 和 `linkQuery` |
 
 ---
 
@@ -28,6 +42,7 @@ OQL 不直接面向物理表、物理列或数据库方言。执行时由 OAC（
 6. **字段显式**：返回字段、排序字段、更新字段必须显式列出，不使用隐式 `*`，除 `COUNT` 指标允许 `field = "*"`。
 7. **省略未使用字段**：不得输出 `null`、空对象或空数组占位。
 8. **查询与写入分离**：查询类操作不得出现 `mutation`；写入类操作不得混入返回、排序或关系路径字段，除非本规范明确允许。
+9. **关系查询统一入口**：对象关系、路径关联、一跳关系导航均使用 `ASSOCIATION_QUERY`。
 
 ### 1.3 不再使用中间转换层的原因
 
@@ -58,7 +73,6 @@ OQL 不直接面向物理表、物理列或数据库方言。执行时由 OAC（
   "orders": [],
   "maxResults": 1000,
   "sourceQuery": [],
-  "linkQuery": {},
   "mutation": {},
   "options": {},
   "extensions": {}
@@ -66,6 +80,8 @@ OQL 不直接面向物理表、物理列或数据库方言。执行时由 OAC（
 ```
 
 上面仅展示全部可能字段。实际生成时必须省略未使用字段。
+
+`linkQuery` 为历史兼容字段，不属于 canonical OQL 标准输出字段；Agent 不得新生成。
 
 ### 2.2 推荐字段顺序
 
@@ -81,7 +97,6 @@ returns
 orders
 maxResults
 sourceQuery
-linkQuery
 mutation
 options
 extensions
@@ -94,18 +109,19 @@ extensions
 | `version` | string | 是 | 固定为 `1.0` |
 | `schemaRef` | string | 是 | 本次请求绑定的本体 schema 标识 |
 | `strict` | boolean | 否 | 是否启用严格校验，默认 `true` |
-| `operation` | enum | 是 | `QUERY` / `AGGREGATE` / `ASSOCIATION_QUERY` / `LINK_QUERY` / `CREATE` / `UPDATE` / `DELETE` / `UPSERT` / `BATCH` |
+| `operation` | enum | 是 | `QUERY` / `AGGREGATE` / `ASSOCIATION_QUERY` / `CREATE` / `UPDATE` / `DELETE` / `UPSERT` / `BATCH` |
 | `objects` | array | 条件必填 | 对象声明 |
-| `relationships` | array | 条件必填 | 关系路径声明，仅 `ASSOCIATION_QUERY` 使用 |
+| `relationships` | array | 条件必填 | 关系路径声明，仅 `ASSOCIATION_QUERY` 使用；一跳关系导航也通过该字段表达 |
 | `conditions` | object | 条件必填 | 条件树；`UPDATE` / `DELETE` 必填 |
 | `returns` | array | 条件必填 | 返回定义；查询类操作必填 |
 | `orders` | array | 否 | 排序定义 |
 | `maxResults` | integer | 否 | 最大返回数量，默认 `1000`，最大 `100000` |
 | `sourceQuery` | array | 否 | 中间结果查询，仅查询类操作使用 |
-| `linkQuery` | object | 条件必填 | `LINK_QUERY` 专用参数块 |
 | `mutation` | object | 条件必填 | 写操作专用参数块 |
 | `options` | object | 否 | 执行选项 |
 | `extensions` | object | 否 | 扩展字段，无明确约定时省略 |
+
+兼容说明：`LINK_QUERY` 与 `linkQuery` 仅用于接收旧版请求。规范化后必须转换为 `ASSOCIATION_QUERY + relationships`，canonical OQL 不得输出 `LINK_QUERY` 或 `linkQuery`。
 
 ---
 
@@ -149,12 +165,15 @@ extensions
 1. `alias` 在当前层必须唯一。
 2. `fromSource` 只能引用同层 `sourceQuery[].outputAs`。
 3. `CREATE` / `UPDATE` / `DELETE` / `UPSERT` 中 `objects` 必须且仅有一个对象。
-4. `LINK_QUERY` 中 `objects` 必须且仅有两个对象。
-5. `BATCH` 顶层不得出现 `objects`。
+4. `ASSOCIATION_QUERY` 中 `objects` 必须覆盖 `relationships[].from` / `relationships[].to` 引用到的全部对象 alias。
+5. 一跳关系导航场景通常包含两个对象；多跳路径关联场景可以包含两个及以上对象。
+6. `BATCH` 顶层不得出现 `objects`。
 
 ### 3.2 `relationships`：关系路径声明
 
-`relationships` 仅用于 `ASSOCIATION_QUERY`，用于显式声明路径关系。数组顺序即路径顺序。
+`relationships` 仅用于 `ASSOCIATION_QUERY`，用于显式声明对象之间的关系路径。数组顺序即路径顺序。
+
+一跳关系导航也必须通过 `relationships` 表达，表现为 `relationships` 数组中只有一条关系。
 
 ```json
 "relationships": [
@@ -162,13 +181,16 @@ extensions
     "relationshipType": "installed_on",
     "alias": "r1",
     "from": "d",
-    "to": "s"
+    "to": "s",
+    "direction": "OUTBOUND",
+    "mode": "LIST"
   },
   {
     "relationshipType": "deployed_in",
     "alias": "r2",
     "from": "s",
-    "to": "dc"
+    "to": "dc",
+    "direction": "OUTBOUND"
   }
 ]
 ```
@@ -181,18 +203,24 @@ extensions
 | `alias` | string | 是 | 关系别名 |
 | `from` | string | 是 | 起点对象 alias |
 | `to` | string | 是 | 终点对象 alias |
+| `direction` | enum | 否 | `OUTBOUND` / `INBOUND` / `BIDIRECTIONAL`，默认 `OUTBOUND` |
+| `mode` | enum | 否 | `LIST` / `ONE`，默认 `LIST`；由原 `linkQuery.mode` 合并而来，用于声明该关系的结果期望 |
 
 约束：
 
 1. `from` / `to` 必须引用当前层 `objects[].alias`。
 2. 关系 alias 不得与对象 alias 冲突。
 3. `relationships` 仅允许出现在 `ASSOCIATION_QUERY` 中。
+4. `relationships` 至少包含一条关系。
+5. 一跳关系导航使用单条 `relationships` 表达。
+6. 多跳路径关联按数组顺序表达路径。
+7. `mode = ONE` 时，该关系扩展结果必须恰好一条，否则应返回错误。
 
 ### 3.3 表达式 `Expr`
 
 表达式用于条件、返回派生列、函数型分组、写入值等位置。
 
-#### 3.3.1 字段表达式
+字段表达式：
 
 ```json
 {
@@ -202,7 +230,7 @@ extensions
 }
 ```
 
-#### 3.3.2 字面量表达式
+字面量表达式：
 
 ```json
 {
@@ -211,7 +239,7 @@ extensions
 }
 ```
 
-#### 3.3.3 函数表达式
+函数表达式：
 
 ```json
 {
@@ -222,32 +250,6 @@ extensions
       "kind": "FIELD",
       "ref": "o",
       "field": "deltaAmount"
-    }
-  ]
-}
-```
-
-#### 3.3.4 嵌套函数表达式
-
-```json
-{
-  "kind": "FUNCTION",
-  "name": "COALESCE",
-  "args": [
-    {
-      "kind": "FUNCTION",
-      "name": "TRIM",
-      "args": [
-        {
-          "kind": "FIELD",
-          "ref": "o",
-          "field": "customerName"
-        }
-      ]
-    },
-    {
-      "kind": "VALUE",
-      "value": "unknown"
     }
   ]
 }
@@ -264,9 +266,7 @@ extensions
 
 ### 3.4 `conditions`：条件树
 
-`conditions` 采用显式条件树结构。
-
-#### 3.4.1 字段条件
+字段条件：
 
 ```json
 "conditions": {
@@ -278,7 +278,7 @@ extensions
 }
 ```
 
-#### 3.4.2 表达式条件
+表达式条件：
 
 ```json
 "conditions": {
@@ -299,7 +299,7 @@ extensions
 }
 ```
 
-#### 3.4.3 逻辑组
+逻辑组：
 
 ```json
 "conditions": {
@@ -336,30 +336,20 @@ extensions
 | `relation` | `AND` / `OR` / `NOT` |
 | `children` | 子条件数组 |
 
-操作符：
-
-- `EQ` / `NE`
-- `GT` / `GTE` / `LT` / `LTE`
-- `IN` / `NOT_IN`
-- `BETWEEN`
-- `LIKE` / `CONTAINS` / `STARTS_WITH` / `ENDS_WITH`
-- `IS_NULL` / `IS_NOT_NULL`
+操作符：`EQ` / `NE` / `GT` / `GTE` / `LT` / `LTE` / `IN` / `NOT_IN` / `BETWEEN` / `LIKE` / `CONTAINS` / `STARTS_WITH` / `ENDS_WITH` / `IS_NULL` / `IS_NOT_NULL`。
 
 约束：
 
 1. `PREDICATE` 必须使用 `ref + field` 或 `left` 表达左值。
 2. `ref` 必须引用当前层对象 alias 或关系 alias。
-3. `IN` / `NOT_IN` 的 `values` 必须包含一个数组值，或直接由执行器解释为集合值。
-4. `BETWEEN` 的 `values` 必须恰好包含两个值。
-5. `IS_NULL` / `IS_NOT_NULL` 不得包含 `values`。
-6. `GROUP.relation = NOT` 时，`children` 必须且仅有一个子条件。
-7. `GROUP.children` 必须非空。
+3. `BETWEEN` 的 `values` 必须恰好包含两个值。
+4. `IS_NULL` / `IS_NOT_NULL` 不得包含 `values`。
+5. `GROUP.relation = NOT` 时，`children` 必须且仅有一个子条件。
+6. `GROUP.children` 必须非空。
 
 ### 3.5 `returns`：返回定义
 
-`returns` 使用显式对象结构。
-
-#### 3.5.1 字段返回
+字段返回：
 
 ```json
 {
@@ -369,7 +359,7 @@ extensions
 }
 ```
 
-#### 3.5.2 派生表达式返回
+派生表达式返回：
 
 ```json
 {
@@ -389,7 +379,7 @@ extensions
 }
 ```
 
-#### 3.5.3 分组字段
+分组字段：
 
 ```json
 {
@@ -400,41 +390,7 @@ extensions
 }
 ```
 
-#### 3.5.4 函数型分组字段
-
-```json
-{
-  "kind": "GROUP_BY",
-  "expr": {
-    "kind": "FUNCTION",
-    "name": "DATE_TRUNC",
-    "args": [
-      {
-        "kind": "VALUE",
-        "value": "month"
-      },
-      {
-        "kind": "FIELD",
-        "ref": "o",
-        "field": "createdAt"
-      }
-    ]
-  },
-  "alias": "createdMonth"
-}
-```
-
-#### 3.5.5 聚合指标
-
-```json
-{
-  "kind": "METRIC",
-  "function": "SUM",
-  "ref": "o",
-  "field": "amount",
-  "alias": "totalAmount"
-}
-```
+聚合指标：
 
 ```json
 {
@@ -448,7 +404,7 @@ extensions
 
 约束：
 
-1. `QUERY`、`ASSOCIATION_QUERY`、`LINK_QUERY` 允许 `FIELDS` 和 `EXPR`。
+1. `QUERY`、`ASSOCIATION_QUERY` 允许 `FIELDS` 和 `EXPR`。
 2. `AGGREGATE` 只允许 `GROUP_BY` 和 `METRIC`。
 3. `FIELDS.fields` 必须显式列出，不允许 `*`。
 4. `EXPR`、`GROUP_BY`、`METRIC` 必须声明 `alias`。
@@ -463,22 +419,9 @@ extensions
     "ref": "o",
     "field": "createdAt",
     "direction": "DESC"
-  },
-  {
-    "ref": "o",
-    "field": "orderNo",
-    "direction": "ASC"
   }
 ]
 ```
-
-字段说明：
-
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | :--: | --- |
-| `ref` | string | 是 | 对象 alias，或聚合结果上下文中的输出 alias 所属引用 |
-| `field` | string | 是 | 对象字段名或 `returns.alias` |
-| `direction` | enum | 是 | `ASC` / `DESC` |
 
 约束：
 
@@ -528,36 +471,52 @@ extensions
 4. `sourceQuery` 不允许引用外层 alias。
 5. `strict = true` 时，建议最大嵌套深度为 2。
 
-### 3.8 `linkQuery`：一跳关联查询参数
+### 3.8 `linkQuery`：历史兼容字段（Deprecated）
 
-`linkQuery` 仅用于 `LINK_QUERY`。
+`linkQuery` 已合并到 `relationships`，不再作为 canonical OQL 标准字段。
+
+旧版 `LINK_QUERY` 请求可在兼容期继续被解析，但必须在 Builder / Validator 阶段归一化为 `ASSOCIATION_QUERY`。
+
+兼容转换规则：
 
 ```json
-"linkQuery": {
-  "mode": "LIST",
-  "relationshipType": "has_invoice",
-  "sourceRef": "o",
-  "targetRef": "i",
-  "direction": "OUTBOUND"
+{
+  "operation": "LINK_QUERY",
+  "linkQuery": {
+    "mode": "LIST",
+    "relationshipType": "has_invoice",
+    "sourceRef": "o",
+    "targetRef": "i",
+    "direction": "OUTBOUND"
+  }
 }
 ```
 
-字段说明：
+等价转换为：
 
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | :--: | --- |
-| `mode` | enum | 是 | `LIST` / `ONE` |
-| `relationshipType` | string | 是 | 本体关系类型 |
-| `sourceRef` | string | 是 | 源对象 alias |
-| `targetRef` | string | 是 | 目标对象 alias |
-| `direction` | enum | 否 | `OUTBOUND` / `INBOUND` / `BIDIRECTIONAL`，默认 `OUTBOUND` |
+```json
+{
+  "operation": "ASSOCIATION_QUERY",
+  "relationships": [
+    {
+      "relationshipType": "has_invoice",
+      "alias": "r1",
+      "from": "o",
+      "to": "i",
+      "direction": "OUTBOUND",
+      "mode": "LIST"
+    }
+  ]
+}
+```
 
-约束：
+兼容约束：
 
-1. `LINK_QUERY.objects` 必须且仅有两个对象。
-2. `sourceRef` / `targetRef` 必须引用当前层对象 alias。
-3. `LINK_QUERY` 不使用 `relationships`。
-4. `mode = ONE` 时，执行结果必须恰好一条，否则应返回错误。
+1. Agent 不得新生成 `LINK_QUERY`。
+2. Agent 不得新生成 `linkQuery`。
+3. 接收到历史 `LINK_QUERY` 时，Builder 应自动转换为 `ASSOCIATION_QUERY`。
+4. 转换后必须移除 `linkQuery` 字段。
+5. 转换时应返回 deprecated warning，例如：`LINK_QUERY is deprecated; use ASSOCIATION_QUERY with relationships instead.`
 
 ### 3.9 `mutation`：写操作参数
 
@@ -665,21 +624,6 @@ extensions
       "kind": "FIELDS",
       "ref": "o",
       "fields": ["id", "orderNo", "amount", "status"]
-    },
-    {
-      "kind": "EXPR",
-      "expr": {
-        "kind": "FUNCTION",
-        "name": "ABS",
-        "args": [
-          {
-            "kind": "FIELD",
-            "ref": "o",
-            "field": "deltaAmount"
-          }
-        ]
-      },
-      "alias": "absDeltaAmount"
     }
   ],
   "orders": [
@@ -733,20 +677,6 @@ extensions
       "ref": "o",
       "field": "amount",
       "alias": "totalAmount"
-    },
-    {
-      "kind": "METRIC",
-      "function": "COUNT",
-      "ref": "o",
-      "field": "*",
-      "alias": "orderCount"
-    }
-  ],
-  "orders": [
-    {
-      "ref": "o",
-      "field": "totalAmount",
-      "direction": "DESC"
     }
   ]
 }
@@ -758,7 +688,60 @@ extensions
 2. `returns` 只允许 `GROUP_BY` 与 `METRIC`。
 3. 不得出现 `relationships`、`linkQuery`、`mutation`。
 
-### 4.3 `ASSOCIATION_QUERY`：显式路径关联查询
+### 4.3 `ASSOCIATION_QUERY`：对象关系 / 路径关联查询
+
+`ASSOCIATION_QUERY` 用于表达对象之间的关系查询，包括：
+
+1. 一跳关系导航；
+2. 多跳路径关联；
+3. 明确关系类型、方向和路径顺序的关联查询。
+
+#### 4.3.1 一跳关系导航示例
+
+```json
+{
+  "version": "1.0",
+  "schemaRef": "sales-v1",
+  "strict": true,
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Order",
+      "alias": "o"
+    },
+    {
+      "objectType": "Invoice",
+      "alias": "i"
+    }
+  ],
+  "relationships": [
+    {
+      "relationshipType": "has_invoice",
+      "alias": "r1",
+      "from": "o",
+      "to": "i",
+      "direction": "OUTBOUND",
+      "mode": "LIST"
+    }
+  ],
+  "conditions": {
+    "kind": "PREDICATE",
+    "ref": "o",
+    "field": "orderNo",
+    "operator": "EQ",
+    "values": ["ORD-001"]
+  },
+  "returns": [
+    {
+      "kind": "FIELDS",
+      "ref": "i",
+      "fields": ["id", "invoiceNo", "amount"]
+    }
+  ]
+}
+```
+
+#### 4.3.2 多跳路径关联示例
 
 ```json
 {
@@ -785,13 +768,15 @@ extensions
       "relationshipType": "installed_on",
       "alias": "r1",
       "from": "d",
-      "to": "s"
+      "to": "s",
+      "direction": "OUTBOUND"
     },
     {
       "relationshipType": "deployed_in",
       "alias": "r2",
       "from": "s",
-      "to": "dc"
+      "to": "dc",
+      "direction": "OUTBOUND"
     }
   ],
   "conditions": {
@@ -814,56 +799,28 @@ extensions
 约束：
 
 1. 必须包含 `objects`、`relationships`、`returns`。
-2. `relationships` 按路径顺序声明。
-3. 不得出现 `linkQuery`、`mutation`。
+2. `relationships` 至少包含一条关系。
+3. `relationships` 按路径顺序声明。
+4. `relationships[].from` / `relationships[].to` 必须引用当前层 `objects[].alias`。
+5. 不得出现 `linkQuery`、`mutation`。
+6. 一跳关系导航不得使用 `LINK_QUERY`，必须使用 `ASSOCIATION_QUERY`。
 
-### 4.4 `LINK_QUERY`：一跳关系导航查询
+### 4.4 `LINK_QUERY`：Deprecated
 
-```json
-{
-  "version": "1.0",
-  "schemaRef": "sales-v1",
-  "strict": true,
-  "operation": "LINK_QUERY",
-  "objects": [
-    {
-      "objectType": "Order",
-      "alias": "o"
-    },
-    {
-      "objectType": "Invoice",
-      "alias": "i"
-    }
-  ],
-  "conditions": {
-    "kind": "PREDICATE",
-    "ref": "o",
-    "field": "orderNo",
-    "operator": "EQ",
-    "values": ["ORD-001"]
-  },
-  "returns": [
-    {
-      "kind": "FIELDS",
-      "ref": "i",
-      "fields": ["id", "invoiceNo", "amount"]
-    }
-  ],
-  "linkQuery": {
-    "mode": "LIST",
-    "relationshipType": "has_invoice",
-    "sourceRef": "o",
-    "targetRef": "i",
-    "direction": "OUTBOUND"
-  }
-}
-```
+`LINK_QUERY` 已合并到 `ASSOCIATION_QUERY`，不再作为 canonical OQL 的标准 operation。
 
-约束：
+历史 `LINK_QUERY` 请求必须按以下规则转换：
 
-1. `objects` 必须且仅有两个。
-2. 必须包含 `conditions`、`returns`、`linkQuery`。
-3. 不得出现 `relationships`、`mutation`。
+| 原字段 | 新字段 |
+| --- | --- |
+| `operation = LINK_QUERY` | `operation = ASSOCIATION_QUERY` |
+| `linkQuery.relationshipType` | `relationships[0].relationshipType` |
+| `linkQuery.sourceRef` | `relationships[0].from` |
+| `linkQuery.targetRef` | `relationships[0].to` |
+| `linkQuery.direction` | `relationships[0].direction` |
+| `linkQuery.mode` | `relationships[0].mode` |
+
+Agent 不得新生成 `LINK_QUERY`。
 
 ### 4.5 `CREATE`：创建对象
 
@@ -1083,7 +1040,7 @@ extensions
 
 ### 5.1 生成步骤
 
-1. 识别用户意图属于查询、聚合、路径关联、一跳关系导航、创建、更新、删除、存在则更新或批处理。
+1. 识别用户意图属于查询、聚合、对象关系/路径关联、创建、更新、删除、存在则更新或批处理；一跳关系导航归入对象关系/路径关联。
 2. 选择唯一 `operation`。
 3. 明确 `schemaRef`。
 4. 声明参与对象与 alias。
@@ -1123,6 +1080,8 @@ extensions
 8. 不跨 `sourceQuery` 层级引用 alias。
 9. 不在 `BATCH.items[]` 中嵌套 `BATCH`。
 10. 不伪造 schema 中不存在的对象、关系或字段。
+11. 不生成 `LINK_QUERY`；一跳关系导航必须生成 `ASSOCIATION_QUERY`。
+12. 不生成 `linkQuery`；关系类型、方向和返回模式必须通过 `relationships` 表达。
 
 ---
 
@@ -1132,7 +1091,10 @@ extensions
 
 - `version` 必须为 `1.0`。
 - `schemaRef` 必须非空。
-- `operation` 必须为合法枚举。
+- `operation` 必须为 canonical 合法枚举。
+- canonical OQL 的 `operation` 不得为 `LINK_QUERY`。
+- canonical OQL 顶层不得出现 `linkQuery`。
+- 接收到历史 `LINK_QUERY` 时，应在兼容层转换为 `ASSOCIATION_QUERY` 后再执行标准校验。
 - 顶层不得出现未知字段。
 - 所有 alias 必须先声明后引用。
 - 所有对象、关系、字段必须存在于绑定 schema。
@@ -1161,6 +1123,36 @@ extensions
 - `DELETE` 必须有 `conditions` 与 `mutation.scope`。
 - `UPSERT` 必须有 `mutation.matchBy` 与 `mutation.data.properties`。
 - `BATCH` 必须有 `mutation.atomic` 与非空 `mutation.items`。
+
+### 6.5 历史兼容转换校验
+
+兼容层接收到旧版 `LINK_QUERY` 时，应执行如下归一化：
+
+```pseudo
+if oql.operation == "LINK_QUERY":
+    assert oql.linkQuery exists
+    lq = oql.linkQuery
+
+    oql.operation = "ASSOCIATION_QUERY"
+    oql.relationships = [
+        {
+            "relationshipType": lq.relationshipType,
+            "alias": generateRelationshipAlias(oql, "r"),
+            "from": lq.sourceRef,
+            "to": lq.targetRef,
+            "direction": lq.direction or "OUTBOUND",
+            "mode": lq.mode or "LIST"
+        }
+    ]
+
+    remove oql.linkQuery
+
+    addWarning(
+        code = "DEPRECATED_OPERATION",
+        message = "LINK_QUERY is deprecated; use ASSOCIATION_QUERY with relationships instead.",
+        path = "operation"
+    )
+```
 
 ---
 
@@ -1224,7 +1216,33 @@ extensions
 }
 ```
 
-### 8.3 CREATE
+### 8.3 ASSOCIATION_QUERY
+
+```json
+{
+  "version": "1.0",
+  "schemaRef": "<SCHEMA_REF>",
+  "strict": true,
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {"objectType": "<SourceObjectType>", "alias": "s"},
+    {"objectType": "<TargetObjectType>", "alias": "t"}
+  ],
+  "relationships": [
+    {
+      "relationshipType": "<RelationshipType>",
+      "alias": "r1",
+      "from": "s",
+      "to": "t",
+      "direction": "OUTBOUND",
+      "mode": "LIST"
+    }
+  ],
+  "returns": [{"kind": "FIELDS", "ref": "t", "fields": ["id"]}]
+}
+```
+
+### 8.4 CREATE
 
 ```json
 {
@@ -1237,7 +1255,7 @@ extensions
 }
 ```
 
-### 8.4 UPDATE
+### 8.5 UPDATE
 
 ```json
 {
@@ -1251,7 +1269,7 @@ extensions
 }
 ```
 
-### 8.5 DELETE
+### 8.6 DELETE
 
 ```json
 {
