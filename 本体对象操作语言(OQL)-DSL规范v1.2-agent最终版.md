@@ -5,6 +5,8 @@
 > 对象关系查询统一使用 `ASSOCIATION_QUERY` 表达。一跳关系导航是关系路径长度为 1 的特例，也通过 `relationships` 表达。
 >
 > 聚合结果过滤统一使用 `aggregateFilter` 表达。`aggregateFilter` 语义等价于 SQL 中的 `HAVING`，但 OQL 不直接暴露数据库方言关键字。
+>
+> OQL 支持受控的函数表达式能力。核心内置函数仅覆盖对象属性轻量转换、时间归一、空值处理等语义访问必要能力；非核心函数应通过 OAC 函数注册表扩展，不应直接暴露数据库方言函数。
 
 ---
 
@@ -35,6 +37,7 @@ OQL 不直接面向物理表、物理列或数据库方言。执行时由 OAC（
 8. **查询与写入分离**：查询类操作不得出现 `mutation`；写入类操作不得混入返回、排序或关系路径字段，除非本规范明确允许。
 9. **关系查询统一入口**：对象关系、路径关联、一跳关系导航均使用 `ASSOCIATION_QUERY`。
 10. **聚合过滤语义化**：聚合后过滤统一使用 `aggregateFilter`，不得使用 `having` 字段。
+11. **函数能力受控**：OQL 函数仅用于对象属性值的轻量转换、归一化、派生和过滤；非核心函数必须通过 OAC 函数注册表扩展。
 
 ---
 
@@ -178,7 +181,9 @@ extensions
 
 ### 3.3 `Expr`：表达式
 
-表达式用于条件、返回派生列、函数型分组和写入值等位置，是 OQL 语义表达能力的一部分，不应删除。
+表达式用于条件、返回派生列、函数型分组和写入值等位置，是 OQL 语义表达能力的一部分。
+
+OQL 中的 `FUNCTION` 定位为**受控函数表达式**，用于对象属性值的轻量转换、标准化、时间归一、派生和过滤。OQL 函数不是数据库函数的直接映射，不允许把具体数据源方言函数直接暴露给 Agent。
 
 #### 3.3.1 字段表达式
 
@@ -201,6 +206,8 @@ extensions
 
 #### 3.3.3 函数表达式
 
+核心内置函数示例：
+
 ```json
 {
   "kind": "FUNCTION",
@@ -215,23 +222,180 @@ extensions
 }
 ```
 
-#### 3.3.4 常见函数
+扩展函数示例：
 
-| 类型 | 函数 |
+```json
+{
+  "kind": "FUNCTION",
+  "namespace": "custom",
+  "name": "NORMALIZE_CELL_ID",
+  "args": [
+    {
+      "kind": "FIELD",
+      "ref": "c",
+      "field": "cellId"
+    }
+  ]
+}
+```
+
+字段说明：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | :--: | --- |
+| `kind` | enum | 是 | 固定为 `FUNCTION` |
+| `namespace` | string | 否 | 函数命名空间。核心内置函数省略；扩展函数建议使用 `custom`、`domain`、`vendor` 等命名空间 |
+| `name` | string | 是 | 函数名称。核心内置函数或已注册扩展函数 |
+| `args` | array | 是 | 函数参数列表，元素必须为合法表达式或字面值 |
+
+#### 3.3.4 核心内置函数
+
+OQL 默认只内置语义访问必要的核心函数。核心函数必须具备可校验、可移植、可下推或可由 OAC 执行层解释的能力。
+
+| 类型 | 核心函数 |
 | --- | --- |
 | 数值函数 | `ABS`、`ROUND`、`CEIL`、`FLOOR` |
-| 字符串函数 | `LENGTH`、`LOWER`、`UPPER`、`TRIM`、`SUBSTRING`、`CONCAT`、`REPLACE`、`LPAD`、`RPAD` |
-| 时间函数 | `NOW`、`DATE_TRUNC`、`YEAR`、`MONTH`、`DAY`、`DATEDIFF`、`DATE_ADD`、`DATE_SUB`、`DATE_FORMAT`、`HOUR`、`MINUTE`、`SECOND` |
+| 字符串函数 | `LENGTH`、`LOWER`、`UPPER`、`TRIM`、`SUBSTRING`、`CONCAT` |
+| 时间函数 | `NOW`、`DATE_TRUNC`、`YEAR`、`MONTH`、`DAY`、`HOUR`、`MINUTE`、`SECOND`、`DATE_ADD`、`DATE_SUB`、`DATEDIFF` |
 | 空值处理 | `COALESCE`、`IFNULL` |
-| 逻辑函数 | `IF` |
 
-约束：
+以下函数不作为核心内置函数默认开放，如确有需要，应通过扩展函数注册机制开放：
 
-1. 内置函数名称建议使用大写。
-2. 聚合函数不使用 `Expr` 表达，必须通过 `returns.kind = "METRIC"` 表达。
-3. `Expr.ref` 必须引用当前层已声明 alias。
-4. 函数参数必须为合法 `Expr` 或字面值。
-5. 写操作中的动态值，例如 `updatedAt = NOW()`，可以使用 `kind = "FUNCTION"` 表达。
+```text
+DATE_FORMAT
+REPLACE
+LPAD
+RPAD
+IF
+TO_STRING
+TO_NUMBER
+TO_DATE
+TO_DATETIME
+```
+
+以下函数不建议进入 OQL 函数体系：
+
+```text
+数据库方言函数
+窗口函数
+任意脚本函数
+未治理的 UDF
+随机函数
+系统环境函数
+关系遍历函数
+聚合函数
+```
+
+其中，聚合函数必须通过 `returns.kind = "METRIC"` 表达，不得通过 `kind = "FUNCTION"` 表达。
+
+错误示例：
+
+```json
+{
+  "kind": "FUNCTION",
+  "name": "AVG",
+  "args": [
+    {
+      "kind": "FIELD",
+      "ref": "ck",
+      "field": "prbUsage"
+    }
+  ]
+}
+```
+
+正确示例：
+
+```json
+{
+  "kind": "METRIC",
+  "function": "AVG",
+  "ref": "ck",
+  "field": "prbUsage",
+  "alias": "avgPrbUsage"
+}
+```
+
+#### 3.3.5 扩展函数注册机制
+
+OAC 可以通过函数注册表开放扩展函数。扩展函数必须先注册、后使用；Agent 不得生成未注册函数。
+
+建议函数注册信息至少包含：
+
+| 字段 | 说明 |
+| --- | --- |
+| `namespace` | 函数命名空间，例如 `custom`、`domain`、`vendor` |
+| `name` | 函数名称 |
+| `description` | 函数语义说明 |
+| `args` | 参数个数、参数类型、是否可为空 |
+| `returnType` | 返回类型 |
+| `deterministic` | 是否确定性函数 |
+| `allowedIn` | 允许出现的位置，例如 `conditions.left`、`returns.expr`、`returns.groupByExpr`、`mutation.set` |
+| `nullPolicy` | 空值处理策略 |
+| `pushdownMappings` | 针对不同数据源的可选下推映射 |
+| `fallback` | 不能下推时是否允许 OAC 执行层解释执行 |
+| `owner` | 函数责任方 |
+| `version` | 函数版本 |
+
+扩展函数注册样例：
+
+```json
+{
+  "namespace": "domain",
+  "name": "NORMALIZE_CELL_ID",
+  "description": "归一化小区标识格式",
+  "args": [
+    {
+      "name": "cellId",
+      "type": "string",
+      "nullable": false
+    }
+  ],
+  "returnType": "string",
+  "deterministic": true,
+  "allowedIn": [
+    "conditions.left",
+    "returns.expr"
+  ],
+  "nullPolicy": "RETURN_NULL_IF_ANY_ARG_NULL",
+  "pushdownMappings": {
+    "mysql": "NORMALIZE_CELL_ID({0})",
+    "clickhouse": "normalizeCellId({0})"
+  },
+  "fallback": "OAC_EXECUTION",
+  "owner": "telecom-domain-team",
+  "version": "1.0"
+}
+```
+
+扩展函数约束：
+
+1. `namespace + name` 必须在 OAC 函数注册表中唯一。
+2. 扩展函数不得直接暴露任意 SQL 片段、脚本代码或未治理 UDF。
+3. 扩展函数必须声明参数类型、返回类型和允许出现的位置。
+4. 扩展函数必须声明是否可以下推到具体数据源；不可下推时必须声明是否允许 OAC 执行层解释执行。
+5. 扩展函数不得破坏本体对象、关系、属性的语义边界。
+6. 复杂业务规则应优先沉淀为本体派生属性、指标模型、预聚合模型或领域服务，不应大量塞入 OQL 函数。
+
+#### 3.3.6 函数使用位置
+
+`FUNCTION` 允许出现在以下位置：
+
+1. `conditions.left`：用于函数过滤条件；
+2. `returns.kind = "EXPR"` 的 `expr`：用于返回派生字段；
+3. `returns.kind = "GROUP_BY"` 的 `expr`：用于函数型分组，例如时间桶；
+4. `mutation.data.properties` 或 `mutation.set`：用于写操作动态值。
+
+`FUNCTION` 不允许出现在以下位置：
+
+1. `operation`；
+2. `objectType`；
+3. `alias`；
+4. `relationshipType`；
+5. `ref`；
+6. `field`；
+7. `metricAlias`；
+8. `relationships.from` / `relationships.to`。
 
 ### 3.4 `conditions`：对象级条件树
 
@@ -349,7 +513,31 @@ extensions
 }
 ```
 
-分组字段：
+函数型分组字段：
+
+```json
+{
+  "kind": "GROUP_BY",
+  "expr": {
+    "kind": "FUNCTION",
+    "name": "DATE_TRUNC",
+    "args": [
+      {
+        "kind": "VALUE",
+        "value": "hour"
+      },
+      {
+        "kind": "FIELD",
+        "ref": "ck",
+        "field": "collectTime"
+      }
+    ]
+  },
+  "alias": "collectHour"
+}
+```
+
+普通分组字段：
 
 ```json
 {
@@ -380,6 +568,7 @@ extensions
 4. `EXPR`、`GROUP_BY`、`METRIC` 必须声明 `alias`。
 5. `COUNT` 允许 `field = "*"`，其他聚合函数不允许 `*`。
 6. 聚合函数仅允许 `COUNT`、`SUM`、`AVG`、`MIN`、`MAX`。
+7. `GROUP_BY` 必须使用 `ref + field` 或 `expr` 表达分组维度。
 
 ### 3.6 `aggregateFilter`：聚合结果过滤
 
@@ -743,6 +932,25 @@ maxResults       -> LIMIT / OFFSET
   "returns": [
     {
       "kind": "GROUP_BY",
+      "expr": {
+        "kind": "FUNCTION",
+        "name": "DATE_TRUNC",
+        "args": [
+          {
+            "kind": "VALUE",
+            "value": "hour"
+          },
+          {
+            "kind": "FIELD",
+            "ref": "ck",
+            "field": "collectTime"
+          }
+        ]
+      },
+      "alias": "collectHour"
+    },
+    {
+      "kind": "GROUP_BY",
       "ref": "ck",
       "field": "cellId",
       "alias": "cellId"
@@ -789,33 +997,6 @@ maxResults       -> LIMIT / OFFSET
   "maxResults": {
     "limit": 100,
     "offset": 0
-  }
-}
-```
-
-错误示例：聚合指标不得放入 `conditions`。
-
-```json
-{
-  "conditions": {
-    "kind": "PREDICATE",
-    "ref": "ck",
-    "field": "avgPrbUsage",
-    "operator": "GT",
-    "values": [80]
-  }
-}
-```
-
-正确写法：
-
-```json
-{
-  "aggregateFilter": {
-    "kind": "METRIC_PREDICATE",
-    "metricAlias": "avgPrbUsage",
-    "operator": "GT",
-    "values": [80]
   }
 }
 ```
@@ -1027,11 +1208,12 @@ maxResults       -> LIMIT / OFFSET
 6. 对于对象级过滤，生成 `conditions`。
 7. 对于聚合查询，生成 `GROUP_BY` 和 `METRIC`。
 8. 如果用户意图包含“聚合结果满足某条件”，生成 `aggregateFilter`。
-9. 使用 canonical OQL 对象结构直接生成 JSON。
-10. 省略所有未使用字段。
-11. 调用 builder 做字段顺序和默认值稳定化。
-12. 调用 validator 做结构与引用校验。
-13. 仅当用户明确要求执行且请求校验通过时，才进入执行。
+9. 如果需要轻量属性变换、时间归一、空值处理等表达能力，优先使用核心内置函数；如需领域函数，必须使用已注册扩展函数。
+10. 使用 canonical OQL 对象结构直接生成 JSON。
+11. 省略所有未使用字段。
+12. 调用 builder 做字段顺序和默认值稳定化。
+13. 调用 validator 做结构与引用校验。
+14. 仅当用户明确要求执行且请求校验通过时，才进入执行。
 
 生成禁忌：
 
@@ -1050,6 +1232,8 @@ maxResults       -> LIMIT / OFFSET
 13. 聚合指标过滤必须生成 `aggregateFilter`，不得生成 `having` 字段。
 14. 聚合指标 alias 不得放入 `conditions`。
 15. 函数表达式必须使用 `kind = "FUNCTION"` 结构，不得将函数调用退化为字符串拼接。
+16. 不得生成未注册扩展函数。
+17. 不得生成数据库方言函数、脚本函数、窗口函数、随机函数或系统环境函数。
 
 ---
 
@@ -1078,12 +1262,16 @@ maxResults       -> LIMIT / OFFSET
 7. 操作符与 `values` 个数必须匹配。
 8. 不允许生成 `having` 字段。
 
-### 6.3 表达式校验
+### 6.3 表达式与函数校验
 
 1. `FIELD.ref` 必须引用当前层已声明 alias。
-2. `FUNCTION.name` 必须为允许的内置函数或扩展函数。
-3. `FUNCTION.args` 必须为合法表达式或字面值。
-4. 聚合函数不得通过 `kind = "FUNCTION"` 表达，必须通过 `returns.kind = "METRIC"` 表达。
+2. `FUNCTION.name` 必须为核心内置函数或 OAC 函数注册表中的已注册扩展函数。
+3. `FUNCTION.namespace` 为空时，优先按核心内置函数解析；不为空时按 `namespace + name` 解析扩展函数。
+4. `FUNCTION.args` 必须满足函数注册表声明的参数个数、参数类型和空值规则。
+5. `FUNCTION` 只能出现在规范允许的位置。
+6. 聚合函数不得通过 `kind = "FUNCTION"` 表达，必须通过 `returns.kind = "METRIC"` 表达。
+7. 扩展函数必须具备函数注册信息，包括参数类型、返回类型、允许位置、是否可下推和不可下推时的 fallback 策略。
+8. 如果函数不可下推且 OAC 执行层不支持解释执行，应返回校验或执行计划错误。
 
 ---
 
@@ -1101,6 +1289,25 @@ maxResults       -> LIMIT / OFFSET
       "path": "returns[0].ref",
       "details": {
         "ref": "x"
+      }
+    }
+  ]
+}
+```
+
+函数相关错误建议使用：
+
+```json
+{
+  "success": false,
+  "errors": [
+    {
+      "code": "UNREGISTERED_FUNCTION",
+      "message": "Function domain.NORMALIZE_CELL_ID is not registered in OAC function registry.",
+      "path": "conditions.left",
+      "details": {
+        "namespace": "domain",
+        "name": "NORMALIZE_CELL_ID"
       }
     }
   ]
@@ -1204,5 +1411,40 @@ maxResults       -> LIMIT / OFFSET
       }
     }
   }
+}
+```
+
+### 8.4 QUERY with extension FUNCTION
+
+```json
+{
+  "version": "2.0",
+  "schemaRef": "telecom-v1",
+  "strict": true,
+  "operation": "QUERY",
+  "objects": [
+    {
+      "objectType": "Cell",
+      "alias": "c"
+    }
+  ],
+  "returns": [
+    {
+      "kind": "EXPR",
+      "expr": {
+        "kind": "FUNCTION",
+        "namespace": "domain",
+        "name": "NORMALIZE_CELL_ID",
+        "args": [
+          {
+            "kind": "FIELD",
+            "ref": "c",
+            "field": "cellId"
+          }
+        ]
+      },
+      "alias": "normalizedCellId"
+    }
+  ]
 }
 ```
