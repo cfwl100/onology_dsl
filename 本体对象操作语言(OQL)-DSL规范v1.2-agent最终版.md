@@ -59,7 +59,6 @@ OQL 不直接面向物理表、物理列或数据库方言。执行时由 OAC（
     "offset": 0
   },
   "sourceQuery": [],
-  "linkQuery": {},
   "mutation": {},
   "options": {},
   "extensions": {}
@@ -83,7 +82,6 @@ aggregateFilter
 orders
 maxResults
 sourceQuery
-linkQuery
 mutation
 options
 extensions
@@ -96,7 +94,7 @@ extensions
 | `version` | string | 是 | OQL 协议版本，统一使用当前规范版本 |
 | `schemaRef` | string | 是 | 本次请求绑定的本体 schema 标识 |
 | `strict` | boolean | 否 | 是否启用严格校验，默认 `true` |
-| `operation` | enum | 是 | `QUERY` / `AGGREGATE` / `ASSOCIATION_QUERY` / `LINK_QUERY` / `CREATE` / `UPDATE` / `DELETE` / `UPSERT` / `BATCH` |
+| `operation` | enum | 是 | `QUERY` / `AGGREGATE` / `ASSOCIATION_QUERY` / `CREATE` / `UPDATE` / `DELETE` / `UPSERT` / `BATCH` |
 | `objects` | array | 条件必填 | 对象声明 |
 | `relationships` | array | 条件必填 | 关系路径声明，仅 `ASSOCIATION_QUERY` 使用 |
 | `conditions` | object | 条件必填 | 对象级、明细级条件树 |
@@ -105,7 +103,6 @@ extensions
 | `orders` | array | 否 | 排序定义 |
 | `maxResults` | object | 否 | 最大返回数量与偏移量控制 |
 | `sourceQuery` | array | 否 | 中间结果查询 |
-| `linkQuery` | object | 条件必填 | 链接查询参数，仅 `LINK_QUERY` 使用 |
 | `mutation` | object | 条件必填 | 写操作参数块 |
 | `options` | object | 否 | 执行选项 |
 | `extensions` | object | 否 | 扩展字段，无明确约定时省略 |
