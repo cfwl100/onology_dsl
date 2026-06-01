@@ -1,4 +1,4 @@
-# 本体对象操作语言（OQL）DSL 规范 v1.2 - Agent 最终版
+# 本体对象操作语言（OQL）DSL 规范 - 面向Agent最终版
 
 > 本文档定义面向 Agent / 大模型直接生成的 canonical OQL 规范。Agent 不再先生成中间简化语法，也不再依赖二次转换层；应直接输出可校验、可解释、可执行的 OQL JSON。
 >
@@ -13,6 +13,24 @@
 | 一跳关系导航 | 统一使用 `ASSOCIATION_QUERY + relationships[0]` 表达 |
 | `relationships` | 增加 `direction` 与 `mode`，支持关系方向和单条/列表结果期望 |
 | Agent 生成规则 | 关系查询统一生成 `ASSOCIATION_QUERY` |
+
+---
+
+## 0.1 版本 2.0 扩展说明
+
+> **生效条件**：`version: "2.0"` 时启用以下扩展特性，`version: "1.0"` 保持向后兼容。
+
+| 扩展项 | 说明 | 适用 Operation |
+| --- | --- | --- |
+| `having` | HAVING 子句，对聚合结果进行二次过滤 | AGGREGATE |
+| `maxResults` 对象化 | `{ limit, offset }` 格式，支持分页偏移 | 所有查询类 |
+| 子查询 IN/EXISTS | `values` 支持 SUBQUERY，新增 EXISTS/NOT_EXISTS | 所有查询类 |
+| 函数扩展（第一批） | DATEDIFF、DATE_ADD、DATE_SUB、DATE_FORMAT、HOUR、MINUTE、SECOND、TIME、CONCAT、REPLACE、SUBSTRING_INDEX、LPAD、RPAD、IF | 所有查询类 |
+
+### version 兼容性
+
+- `version: "1.0"`：使用旧语法（maxResults 为数值、无 having 子句、无子查询函数扩展）
+- `version: "2.0"`：使用完整新语法
 
 ---
 
@@ -102,7 +120,7 @@ extensions
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | :--: | --- |
-| `version` | string | 是 | 固定为 `1.0` |
+| `version` | string | 是 | 版本号，支持 `1.0` 和 `2.0`；`2.0` 启用扩展语法 |
 | `schemaRef` | string | 是 | 本次请求绑定的本体 schema 标识 |
 | `strict` | boolean | 否 | 是否启用严格校验，默认 `true` |
 | `operation` | enum | 是 | `QUERY` / `AGGREGATE` / `ASSOCIATION_QUERY` / `CREATE` / `UPDATE` / `DELETE` / `UPSERT` / `BATCH` |
@@ -111,7 +129,7 @@ extensions
 | `conditions` | object | 条件必填 | 条件树；`UPDATE` / `DELETE` 必填 |
 | `returns` | array | 条件必填 | 返回定义；查询类操作必填 |
 | `orders` | array | 否 | 排序定义 |
-| `maxResults` | integer | 否 | 最大返回数量，默认 `1000`，最大 `100000` |
+| `maxResults` | integer / object | 否 | 最大返回数量，默认 `1000`；`version: "2.0"` 支持对象格式 `{ limit, offset }` |
 | `sourceQuery` | array | 否 | 中间结果查询，仅查询类操作使用 |
 | `mutation` | object | 条件必填 | 写操作专用参数块 |
 | `options` | object | 否 | 执行选项 |
@@ -256,6 +274,37 @@ extensions
 - 时间：`NOW`、`DATE_TRUNC`、`YEAR`、`MONTH`、`DAY`
 - 空值处理：`COALESCE`、`IFNULL`
 
+> **version 2.0 扩展**：新增以下函数（第一批）
+
+**时间日期函数**：
+
+| 函数 | 说明 | 示例 |
+| --- | --- | --- |
+| `DATEDIFF(date1, date2)` | 计算两个日期之间的天数差 | `DATEDIFF(o.createdAt, NOW())` |
+| `DATE_ADD(date, interval)` | 向日期增加时间间隔 | `DATE_ADD(o.createdAt, '7 DAY')` |
+| `DATE_SUB(date, interval)` | 从日期减去时间间隔 | `DATE_SUB(o.createdAt, '1 MONTH')` |
+| `DATE_FORMAT(date, format)` | 格式化日期为字符串 | `DATE_FORMAT(o.createdAt, '%Y-%m-%d')` |
+| `HOUR(time)` | 提取时间的小时部分 | `HOUR(o.createdAt)` |
+| `MINUTE(time)` | 提取时间的分钟部分 | `MINUTE(o.createdAt)` |
+| `SECOND(time)` | 提取时间的秒部分 | `SECOND(o.createdAt)` |
+| `TIME(expr)` | 从日期时间提取时间部分 | `TIME(o.createdAt)` |
+
+**字符串函数**：
+
+| 函数 | 说明 | 示例 |
+| --- | --- | --- |
+| `CONCAT(str1, str2, ...)` | 拼接多个字符串 | `CONCAT(o.firstName, ' ', o.lastName)` |
+| `REPLACE(str, from, to)` | 替换字符串中的子串 | `REPLACE(o.comment, 'old', 'new')` |
+| `SUBSTRING_INDEX(str, delim, count)` | 按分隔符截取字符串 | `SUBSTRING_INDEX(o.tags, ',', 2)` |
+| `LPAD(str, length, pad)` | 向左填充字符串 | `LPAD(o.code, 6, '0')` |
+| `RPAD(str, length, pad)` | 向右填充字符串 | `RPAD(o.name, 10, ' ')` |
+
+**逻辑函数**：
+
+| 函数 | 说明 | 示例 |
+| --- | --- | --- |
+| `IF(cond, trueVal, falseVal)` | 条件表达式 | `IF(o.amount > 1000, 'high', 'low')` |
+
 聚合函数不使用 `Expr` 表达，必须通过 `returns.kind = "METRIC"` 表达。
 
 ### 3.4 `conditions`：条件树
@@ -326,20 +375,72 @@ extensions
 | `ref` / `field` | 字段条件左值；适用于普通字段条件 |
 | `left` | 表达式条件左值；与 `ref` / `field` 二选一 |
 | `operator` | 条件操作符 |
-| `values` | 条件右值数组；可包含字面量或 `Expr` |
+| `values` | 条件右值数组；可包含字面量、`Expr` 或 `SUBQUERY`（version 2.0） |
 | `relation` | `AND` / `OR` / `NOT` |
 | `children` | 子条件数组 |
 
-操作符：`EQ` / `NE` / `GT` / `GTE` / `LT` / `LTE` / `IN` / `NOT_IN` / `BETWEEN` / `LIKE` / `CONTAINS` / `STARTS_WITH` / `ENDS_WITH` / `IS_NULL` / `IS_NOT_NULL`。
+操作符：`EQ` / `NE` / `GT` / `GTE` / `LT` / `LTE` / `IN` / `NOT_IN` / `BETWEEN` / `LIKE` / `CONTAINS` / `STARTS_WITH` / `ENDS_WITH` / `IS_NULL` / `IS_NOT_NULL` / `IS_EMPTY` / `IS_NOT_EMPTY` / `EXISTS` / `NOT_EXISTS`。
+
+> **version 2.0 扩展**：新增 `EXISTS` 和 `NOT_EXISTS` 操作符，用于子查询存在性判断；新增 `IS_EMPTY` 和 `IS_NOT_EMPTY` 用于判断空值（null、空字符串、空对象、空数组）。
+
+**子查询 IN**：
+
+```json
+{
+  "kind": "PREDICATE",
+  "ref": "o",
+  "field": "authorId",
+  "operator": "IN",
+  "values": {
+    "kind": "SUBQUERY",
+    "operation": "QUERY",
+    "objects": [
+      { "objectType": "Author", "alias": "a" }
+    ],
+    "returns": [
+      { "kind": "FIELDS", "ref": "a", "fields": ["id"] }
+    ]
+  }
+}
+```
+
+**子查询 EXISTS**：
+
+```json
+{
+  "kind": "PREDICATE",
+  "operator": "EXISTS",
+  "subquery": {
+    "operation": "QUERY",
+    "objects": [
+      { "objectType": "Invoice", "alias": "i" }
+    ],
+    "conditions": {
+      "kind": "PREDICATE",
+      "ref": "i",
+      "field": "orderId",
+      "operator": "EQ",
+      "values": [{ "kind": "FIELD", "ref": "o", "field": "id" }]
+    },
+    "returns": [
+      { "kind": "FIELDS", "ref": "i", "fields": ["id"] }
+    ]
+  }
+}
+```
 
 约束：
 
 1. `PREDICATE` 必须使用 `ref + field` 或 `left` 表达左值。
 2. `ref` 必须引用当前层对象 alias 或关系 alias。
 3. `BETWEEN` 的 `values` 必须恰好包含两个值。
-4. `IS_NULL` / `IS_NOT_NULL` 不得包含 `values`。
+4. `IS_NULL` / `IS_NOT_NULL` / `IS_EMPTY` / `IS_NOT_EMPTY` 不得包含 `values`。
 5. `GROUP.relation = NOT` 时，`children` 必须且仅有一个子条件。
 6. `GROUP.children` 必须非空。
+7. `EXISTS` / `NOT_EXISTS` 不使用 `values`，使用 `subquery` 字段代替。
+8. `version: "1.0"` 时，`values` 不支持 SUBQUERY，也不得使用 `EXISTS` / `NOT_EXISTS`。
+9. 子查询深度不得超过 2 层。
+10. 子查询不允许包含 `BATCH` operation。
 
 ### 3.5 `returns`：返回定义
 
@@ -424,7 +525,47 @@ extensions
 3. 聚合查询排序字段优先引用 `returns.alias`。
 4. 多个排序条件按数组顺序生效。
 
-### 3.7 `sourceQuery`：中间结果查询
+### 3.7 `maxResults` 对象化（version 2.0）
+
+`version: "2.0"` 支持将 `maxResults` 从单一数值扩展为包含 `limit` 和 `offset` 的对象：
+
+```json
+{
+  "maxResults": {
+    "limit": 10,
+    "offset": 40
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `limit` | integer | 最大返回数量，正整数 |
+| `offset` | integer | 偏移量，从 0 开始 |
+
+**兼容旧语法**：
+
+```json
+"maxResults": 1000
+```
+
+等效于：
+
+```json
+"maxResults": {
+  "limit": 1000,
+  "offset": 0
+}
+```
+
+约束：
+
+1. `version: "2.0"` 时，`maxResults` 可以是数值或对象。
+2. `offset` 必须为非负整数。
+3. `limit` 必须为正整数（> 0）。
+4. `version: "1.0"` 时，`maxResults` 必须为数值。
+
+### 3.8 `sourceQuery`：中间结果查询
 
 `sourceQuery` 用于先生成中间结果，再让当前层对象通过 `fromSource` 引用。
 
@@ -465,7 +606,7 @@ extensions
 4. `sourceQuery` 不允许引用外层 alias。
 5. `strict = true` 时，建议最大嵌套深度为 2。
 
-### 3.8 `mutation`：写操作参数
+### 3.9 `mutation`：写操作参数
 
 #### 3.8.1 `CREATE`
 
@@ -594,7 +735,7 @@ extensions
 
 ```json
 {
-  "version": "1.0",
+  "version": "2.0",
   "schemaRef": "sales-v1",
   "strict": true,
   "operation": "AGGREGATE",
@@ -625,15 +766,56 @@ extensions
       "field": "amount",
       "alias": "totalAmount"
     }
+  ],
+  "having": {
+    "kind": "GROUP",
+    "relation": "AND",
+    "children": [
+      {
+        "kind": "METRIC_PREDICATE",
+        "metricAlias": "totalAmount",
+        "operator": "GT",
+        "value": 10000
+      }
+    ]
+  }
+}
+```
+
+> **version 2.0 扩展**：`having` 字段用于对聚合结果进行二次过滤，仅在 `version: "2.0"` 时可用。
+
+**having 子句**：
+
+```json
+"having": {
+  "kind": "GROUP",
+  "relation": "AND",
+  "children": [
+    {
+      "kind": "METRIC_PREDICATE",
+      "metricAlias": "totalAmount",
+      "operator": "GT",
+      "value": 10000
+    }
   ]
 }
 ```
 
+| having 字段 | 说明 |
+| --- | --- |
+| `kind` | `GROUP` 或 `METRIC_PREDICATE` |
+| `metricAlias` | 引用 `returns` 中 METRIC 的 alias |
+| `operator` | 仅支持 `GT`、`GTE`、`LT`、`LTE`、`EQ`、`NEQ` |
+| `value` | 比较值 |
+| `relation` | `AND` / `OR` / `NOT` |
+
 约束：
 
-1. `returns` 至少包含一个 `METRIC`。
-2. `returns` 只允许 `GROUP_BY` 与 `METRIC`。
-3. 不得出现 `relationships`、`mutation`。
+1. `version: "2.0"` 时，`having` 仅允许在 `AGGREGATE` operation 中使用。
+2. `version: "1.0"` 时，不得出现 `having` 字段。
+3. `returns` 至少包含一个 `METRIC`。
+4. `returns` 只允许 `GROUP_BY` 与 `METRIC`。
+5. 不得出现 `relationships`、`mutation`。
 
 ### 4.3 `ASSOCIATION_QUERY`：对象关系 / 路径关联查询
 
