@@ -176,7 +176,64 @@ extensions
 5. 多跳路径关联按数组顺序表达路径。
 6. `mode = ONE` 时，该关系扩展结果必须恰好一条，否则应返回错误。
 
-### 3.3 `conditions`：对象级条件树
+### 3.3 `Expr`：表达式
+
+表达式用于条件、返回派生列、函数型分组和写入值等位置，是 OQL 语义表达能力的一部分，不应删除。
+
+#### 3.3.1 字段表达式
+
+```json
+{
+  "kind": "FIELD",
+  "ref": "o",
+  "field": "amount"
+}
+```
+
+#### 3.3.2 字面量表达式
+
+```json
+{
+  "kind": "VALUE",
+  "value": 100
+}
+```
+
+#### 3.3.3 函数表达式
+
+```json
+{
+  "kind": "FUNCTION",
+  "name": "ABS",
+  "args": [
+    {
+      "kind": "FIELD",
+      "ref": "o",
+      "field": "deltaAmount"
+    }
+  ]
+}
+```
+
+#### 3.3.4 常见函数
+
+| 类型 | 函数 |
+| --- | --- |
+| 数值函数 | `ABS`、`ROUND`、`CEIL`、`FLOOR` |
+| 字符串函数 | `LENGTH`、`LOWER`、`UPPER`、`TRIM`、`SUBSTRING`、`CONCAT`、`REPLACE`、`LPAD`、`RPAD` |
+| 时间函数 | `NOW`、`DATE_TRUNC`、`YEAR`、`MONTH`、`DAY`、`DATEDIFF`、`DATE_ADD`、`DATE_SUB`、`DATE_FORMAT`、`HOUR`、`MINUTE`、`SECOND` |
+| 空值处理 | `COALESCE`、`IFNULL` |
+| 逻辑函数 | `IF` |
+
+约束：
+
+1. 内置函数名称建议使用大写。
+2. 聚合函数不使用 `Expr` 表达，必须通过 `returns.kind = "METRIC"` 表达。
+3. `Expr.ref` 必须引用当前层已声明 alias。
+4. 函数参数必须为合法 `Expr` 或字面值。
+5. 写操作中的动态值，例如 `updatedAt = NOW()`，可以使用 `kind = "FUNCTION"` 表达。
+
+### 3.4 `conditions`：对象级条件树
 
 `conditions` 表达聚合前的对象级、明细级过滤条件，语义上对应 SQL 中的 `WHERE`。
 
@@ -190,6 +247,29 @@ extensions
     "field": "status",
     "operator": "EQ",
     "values": ["completed"]
+  }
+}
+```
+
+表达式条件：
+
+```json
+{
+  "conditions": {
+    "kind": "PREDICATE",
+    "left": {
+      "kind": "FUNCTION",
+      "name": "LENGTH",
+      "args": [
+        {
+          "kind": "FIELD",
+          "ref": "o",
+          "field": "comment"
+        }
+      ]
+    },
+    "operator": "GT",
+    "values": [100]
   }
 }
 ```
@@ -235,7 +315,7 @@ extensions
 8. 子查询深度建议不超过 2 层。
 9. 子查询不允许包含 `BATCH` operation。
 
-### 3.4 `returns`：返回定义
+### 3.5 `returns`：返回定义
 
 `returns` 用于定义查询结果中的字段、表达式、分组字段或聚合指标。
 
@@ -246,6 +326,26 @@ extensions
   "kind": "FIELDS",
   "ref": "o",
   "fields": ["id", "orderNo", "amount", "status"]
+}
+```
+
+派生表达式返回：
+
+```json
+{
+  "kind": "EXPR",
+  "expr": {
+    "kind": "FUNCTION",
+    "name": "ABS",
+    "args": [
+      {
+        "kind": "FIELD",
+        "ref": "o",
+        "field": "deltaAmount"
+      }
+    ]
+  },
+  "alias": "absDeltaAmount"
 }
 ```
 
@@ -281,13 +381,13 @@ extensions
 5. `COUNT` 允许 `field = "*"`，其他聚合函数不允许 `*`。
 6. 聚合函数仅允许 `COUNT`、`SUM`、`AVG`、`MIN`、`MAX`。
 
-### 3.5 `aggregateFilter`：聚合结果过滤
+### 3.6 `aggregateFilter`：聚合结果过滤
 
-#### 3.5.1 定位
+#### 3.6.1 定位
 
 `aggregateFilter` 用于对 `AGGREGATE` 操作中已经计算完成的聚合指标进行二次过滤。它表达的是“聚合后过滤”语义，等价于 SQL 中的 `HAVING`，但 OQL 不直接使用 `HAVING` 关键字，统一使用更贴近本体语义的 `aggregateFilter`。
 
-#### 3.5.2 与 `conditions` 的区别
+#### 3.6.2 与 `conditions` 的区别
 
 | 字段 | 过滤阶段 | 过滤对象 | 是否可引用聚合指标 | 类 SQL 对应语义 |
 | --- | --- | --- | --- | --- |
@@ -308,7 +408,7 @@ extensions
 
 不能把 `AVG(prbUsage) > 80` 放在 `conditions` 中，因为 `conditions` 执行时聚合指标尚未产生。
 
-#### 3.5.3 基本结构
+#### 3.6.3 基本结构
 
 单个聚合指标过滤：
 
@@ -348,7 +448,7 @@ extensions
 }
 ```
 
-#### 3.5.4 字段说明
+#### 3.6.4 字段说明
 
 `METRIC_PREDICATE`：
 
@@ -369,7 +469,7 @@ extensions
 
 支持的操作符：`EQ` / `NE` / `GT` / `GTE` / `LT` / `LTE` / `BETWEEN` / `IN` / `NOT_IN` / `IS_NULL` / `IS_NOT_NULL`。
 
-#### 3.5.5 约束规则
+#### 3.6.5 约束规则
 
 1. `aggregateFilter` 仅允许出现在 `operation = "AGGREGATE"` 中。
 2. 使用 `aggregateFilter` 时，`returns` 必须至少包含一个 `METRIC`。
@@ -384,7 +484,7 @@ extensions
 11. `aggregateFilter` 不建议包含子查询；如需复杂聚合后再查询，应优先使用 `sourceQuery` 拆分为多阶段查询。
 12. `orders` 在聚合查询中优先引用 `returns.alias`，可以引用被 `aggregateFilter` 使用的指标 alias。
 
-#### 3.5.6 执行语义
+#### 3.6.6 执行语义
 
 OAC 执行 `AGGREGATE` 时，应按如下逻辑处理：
 
@@ -409,7 +509,7 @@ maxResults       -> LIMIT / OFFSET
 2. 如果数据源不支持，应由 OAC 执行层完成聚合和过滤；
 3. 如果需要拉取大量明细数据才能聚合，应进行数据量保护，例如时间范围限制、最大扫描量限制、异步任务或预聚合表。
 
-### 3.6 `orders`：排序定义
+### 3.7 `orders`：排序定义
 
 ```json
 {
@@ -436,7 +536,7 @@ maxResults       -> LIMIT / OFFSET
 }
 ```
 
-### 3.7 `maxResults`：分页与数量限制
+### 3.8 `maxResults`：分页与数量限制
 
 推荐统一使用对象结构：
 
@@ -806,7 +906,12 @@ maxResults       -> LIMIT / OFFSET
     "data": {
       "properties": {
         "name": "iPhone 16",
-        "price": 7999
+        "price": 7999,
+        "createdAt": {
+          "kind": "FUNCTION",
+          "name": "NOW",
+          "args": []
+        }
       }
     }
   }
@@ -837,7 +942,12 @@ maxResults       -> LIMIT / OFFSET
   "mutation": {
     "scope": "ONE",
     "set": {
-      "price": 6999
+      "price": 6999,
+      "updatedAt": {
+        "kind": "FUNCTION",
+        "name": "NOW",
+        "args": []
+      }
     }
   }
 }
@@ -939,6 +1049,7 @@ maxResults       -> LIMIT / OFFSET
 12. 关系类型、方向和返回模式必须通过 `relationships` 表达。
 13. 聚合指标过滤必须生成 `aggregateFilter`，不得生成 `having` 字段。
 14. 聚合指标 alias 不得放入 `conditions`。
+15. 函数表达式必须使用 `kind = "FUNCTION"` 结构，不得将函数调用退化为字符串拼接。
 
 ---
 
@@ -954,6 +1065,7 @@ maxResults       -> LIMIT / OFFSET
 6. 所有对象、关系、字段必须存在于绑定 schema。
 7. 所有未使用字段必须省略。
 8. 不允许出现 `having` 字段；聚合后过滤统一使用 `aggregateFilter`。
+9. 不允许出现 `linkQuery` 字段或 `LINK_QUERY` operation。
 
 ### 6.2 聚合过滤校验
 
@@ -965,6 +1077,13 @@ maxResults       -> LIMIT / OFFSET
 6. `GROUP.relation = NOT` 时，`children` 必须且仅有一个。
 7. 操作符与 `values` 个数必须匹配。
 8. 不允许生成 `having` 字段。
+
+### 6.3 表达式校验
+
+1. `FIELD.ref` 必须引用当前层已声明 alias。
+2. `FUNCTION.name` 必须为允许的内置函数或扩展函数。
+3. `FUNCTION.args` 必须为合法表达式或字面值。
+4. 聚合函数不得通过 `kind = "FUNCTION"` 表达，必须通过 `returns.kind = "METRIC"` 表达。
 
 ---
 
@@ -1050,6 +1169,40 @@ maxResults       -> LIMIT / OFFSET
     "metricAlias": "cnt",
     "operator": "GT",
     "values": [10]
+  }
+}
+```
+
+### 8.3 UPDATE with FUNCTION
+
+```json
+{
+  "version": "2.0",
+  "schemaRef": "<SCHEMA_REF>",
+  "strict": true,
+  "operation": "UPDATE",
+  "objects": [
+    {
+      "objectType": "<ObjectType>",
+      "alias": "o"
+    }
+  ],
+  "conditions": {
+    "kind": "PREDICATE",
+    "ref": "o",
+    "field": "id",
+    "operator": "EQ",
+    "values": ["id_001"]
+  },
+  "mutation": {
+    "scope": "ONE",
+    "set": {
+      "updatedAt": {
+        "kind": "FUNCTION",
+        "name": "NOW",
+        "args": []
+      }
+    }
   }
 }
 ```
