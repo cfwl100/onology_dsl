@@ -4,6 +4,7 @@ import com.onology.oac.queryframework.domain.PlanModels;
 import com.onology.oac.queryframework.domain.ResultModels.FragmentResult;
 import com.onology.oac.queryframework.domain.ResultModels.OacError;
 import com.onology.oac.queryframework.registry.QueryExtensionRegistry;
+import com.onology.oac.queryframework.spi.QueryFrameworkSpi.DatasourceExecutor;
 import com.onology.oac.queryframework.spi.QueryFrameworkSpi.ExecutionContext;
 import com.onology.oac.queryframework.spi.QueryFrameworkSpi.PhysicalQuery;
 import com.onology.oac.queryframework.spi.QueryFrameworkSpi.PlannerContext;
@@ -42,10 +43,11 @@ public class QueryExecutionEngine {
                              Map<String, OacError> errors) {
         try {
             PhysicalQuery query = (PhysicalQuery) translator.translate(sourceNode, plannerContext);
-            registry.executor(query.datasourceType()).ifPresentOrElse(executor ->
-                    results.put(sourceNode.nodeId(), executor.execute(query, executionContext)),
-                    () -> errors.put(sourceNode.nodeId(), OacError.of("EXECUTE_FAILED",
-                            "executor not found for datasource type: " + query.datasourceType(), sourceNode.nodeId())));
+            registry.executor(query.datasourceType()).ifPresentOrElse(executor -> {
+                DatasourceExecutor rawExecutor = (DatasourceExecutor) executor;
+                results.put(sourceNode.nodeId(), rawExecutor.execute(query, executionContext));
+            }, () -> errors.put(sourceNode.nodeId(), OacError.of("EXECUTE_FAILED",
+                    "executor not found for datasource type: " + query.datasourceType(), sourceNode.nodeId())));
         } catch (RuntimeException ex) {
             errors.put(sourceNode.nodeId(), OacError.of("EXECUTE_FAILED", ex.getMessage(), sourceNode.nodeId()));
         }
