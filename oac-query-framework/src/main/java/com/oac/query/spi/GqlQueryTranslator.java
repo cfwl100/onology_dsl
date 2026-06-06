@@ -23,5 +23,12 @@ public class GqlQueryTranslator implements QueryTranslator<PhysicalQuery> {
 
     public PhysicalQuery translate(PhysicalSourceQueryNode fragment, PlannerContext context) {
         String label = fragment.getObjectType() == null ? fragment.getObjectAlias() : fragment.getObjectType();
-        StringBuilder builder = new StringBuilder();
-        builder.append("MATCH (v:").append(label).append(")");
+        StringBuilder gql = new StringBuilder();
+        gql.append("MATCH (v:").append(safeName(label)).append(")");
+        if (!fragment.getDynamicInputs().isEmpty()) {
+            gql.append(" WHERE ");
+            int index = 0;
+            for (String field : fragment.getDynamicInputs().keySet()) {
+                if (index++ > 0) {
+                    gql.append(" AND ");
+                }
