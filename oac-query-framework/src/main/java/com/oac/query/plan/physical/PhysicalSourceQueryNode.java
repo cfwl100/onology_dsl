@@ -33,6 +33,13 @@ public class PhysicalSourceQueryNode implements PhysicalPlan.PhysicalPlanNode {
     private final List<OrderDecl> orders;
     private final MaxResults maxResults;
     private final Map<String, List<Object>> dynamicInputs = new LinkedHashMap<String, List<Object>>();
+    private boolean pushdownJoin;
+    private boolean pushdownAggregation;
+    private boolean pushdownHaving;
+    private boolean partialAggregate;
+    private boolean nativeAssociation;
+    private String upstreamNodeId;
+    private String path;
 
     public PhysicalSourceQueryNode(String id, String datasourceId, DatasourceType datasourceType, String objectAlias,
                                    String objectType, List<String> projections, Condition condition) {
@@ -146,5 +153,61 @@ public class PhysicalSourceQueryNode implements PhysicalPlan.PhysicalPlanNode {
 
     public Map<String, List<Object>> getDynamicInputs() {
         return Collections.unmodifiableMap(dynamicInputs);
+    }
+
+    public boolean isPushdownJoin() {
+        return pushdownJoin;
+    }
+
+    public void setPushdownJoin(boolean pushdownJoin) {
+        this.pushdownJoin = pushdownJoin;
+    }
+
+    public boolean isPushdownAggregation() {
+        return pushdownAggregation;
+    }
+
+    public void setPushdownAggregation(boolean pushdownAggregation) {
+        this.pushdownAggregation = pushdownAggregation;
+    }
+
+    public boolean isPushdownHaving() {
+        return pushdownHaving;
+    }
+
+    public void setPushdownHaving(boolean pushdownHaving) {
+        this.pushdownHaving = pushdownHaving;
+    }
+
+    public boolean isNativeAssociation() {
+        return nativeAssociation;
+    }
+
+    public void setNativeAssociation(boolean nativeAssociation) {
+        this.nativeAssociation = nativeAssociation;
+    }
+
+    public boolean isPartialAggregate() {
+        return partialAggregate;
+    }
+
+    public void setPartialAggregate(boolean partialAggregate) {
+        this.partialAggregate = partialAggregate;
+    }
+
+    public String getUpstreamNodeId() {
+        return upstreamNodeId;
+    }
+
+    public void setUpstreamNodeId(String upstreamNodeId) {
+        this.upstreamNodeId = upstreamNodeId;
+    }
+
+    public String getPath() {
+        return path;
+    }
+
+    public void setPath(String path) {
+        this.path = path;
     }
 }
