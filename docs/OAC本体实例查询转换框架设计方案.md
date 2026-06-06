@@ -253,21 +253,35 @@ flowchart TD
 ---
 
 
-### 7.4 SplitStrategy 转换样例
+### 7.4 SplitStrategy 转换样例（刷新版）
 
-本节给出各类 `SplitStrategy` 的典型转换样例。每个样例均包含三部分：
+本节补充各类 `SplitStrategy` 的转换样例。需要特别说明的是：`ASSOCIATION_QUERY` 不只是“关系怎么查”，还包含“关系两端对象属性怎么查”。因此，`ASSOCIATION_QUERY` 内部会被拆成两类子计划：
 
-1. **OQL 语句**：调用方输入的 canonical OQL；
-2. **数据源绑定信息**：本体对象、属性、关系到物理数据源的映射；
-3. **最终物理查询**：OAC 根据逻辑计划、物理计划和策略选择生成的 SQL、GQL、API、DAC、ES 请求或多阶段查询计划。
+1. **关系路径计划**：负责找到对象之间的关联，例如图边遍历、关系表 Join、属性值关联、API 关系查询；
+2. **对象属性补全计划**：负责补齐参与关系查询的对象属性。每一个对象的属性补全都可能出现和普通 `QUERY` 一样的策略，包括：
+    - `SINGLE_SOURCE_SINGLE_TABLE`
+    - `SINGLE_SOURCE_MULTI_TABLE_JOIN`
+    - `CROSS_SOURCE_MEMORY_MERGE`
+    - `DAG_DEPENDENT_QUERY`
 
-> 说明：以下 SQL 均采用参数化表达，示例中的 `?` 表示绑定参数，避免直接拼接用户输入。
+也就是说，`ASSOCIATION_QUERY` 的最终物理计划通常不是单一策略，而可能是组合策略：
+
+```text
+ASSOCIATION_QUERY
+  -> 关系路径策略：ASSOCIATION_GRAPH_PUSHDOWN / ASSOCIATION_RELATIONAL_JOIN / ASSOCIATION_MULTI_STAGE_ASSEMBLE
+  -> 对象属性补全策略：SINGLE_SOURCE_SINGLE_TABLE / SINGLE_SOURCE_MULTI_TABLE_JOIN / CROSS_SOURCE_MEMORY_MERGE / DAG_DEPENDENT_QUERY
+  -> ResultAssembler：objects + relationships 统一装配
+```
+
+下面按照典型策略给出 OQL、数据源绑定信息和最终生成的物理查询示例。
+
+> 说明：以下 SQL 示例均采用参数化表达，`?` 表示绑定参数；实际实现中应通过 `SqlPhysicalQuery.parameters` 传递参数，禁止直接拼接用户输入。
 
 ---
 
-#### 7.4.1 `SINGLE_SOURCE_SINGLE_TABLE`：单数据源单表下推
+#### 7.4.1 `SINGLE_SOURCE_SINGLE_TABLE`：普通 QUERY 单源单表下推
 
-**适用场景**：查询对象的所有返回字段和过滤字段都来自同一个数据源、同一个物理表，且数据源支持投影、过滤、排序和分页下推。
+**适用场景**：查询对象的过滤字段和返回字段都来自同一个数据源、同一个物理表。
 
 **OQL 示例**
 
@@ -297,11 +311,11 @@ flowchart TD
 
 **数据源绑定信息**
 
-| 本体字段 | 数据源 | 数据库/Schema/表 | 物理字段 |
+| 本体字段 | 数据源 | 物理表 | 物理字段 |
 |---|---|---|---|
-| `Cell.cellId` | `mysql_1` | `oac.public.dim_cell` | `cell_id` |
-| `Cell.cellName` | `mysql_1` | `oac.public.dim_cell` | `cell_name` |
-| `Cell.city` | `mysql_1` | `oac.public.dim_cell` | `city` |
+| `Cell.cellId` | `mysql_1` | `dim_cell` | `cell_id` |
+| `Cell.cellName` | `mysql_1` | `dim_cell` | `cell_name` |
+| `Cell.city` | `mysql_1` | `dim_cell` | `city` |
 
 **生成物理查询**
 
@@ -332,9 +346,9 @@ PhysicalSourceQueryNode(mysql_1)
 
 ---
 
-#### 7.4.2 `SINGLE_SOURCE_MULTI_TABLE_JOIN`：单数据源多表 Join 下推
+#### 7.4.2 `SINGLE_SOURCE_MULTI_TABLE_JOIN`：普通 QUERY 单源多表 Join 下推
 
-**适用场景**：对象属性来自同一个 SQL 数据源的多个表，并且数据源支持 Join，Join Key 可由 `PropertyBinding` 或 `RelationshipBinding` 推导。
+**适用场景**：同一个对象的属性分布在同一个 SQL 数据源的多个表中，且 Join Key 可由 `PropertyBinding` 推导。
 
 **OQL 示例**
 
@@ -361,7 +375,7 @@ PhysicalSourceQueryNode(mysql_1)
 
 **数据源绑定信息**
 
-| 本体字段 | 数据源 | 表 | 物理字段 | 说明 |
+| 本体字段 | 数据源 | 物理表 | 物理字段 | 说明 |
 |---|---|---|---|---|
 | `Cell.cellId` | `mysql_1` | `dim_cell` | `cell_id` | 主键/Join Key |
 | `Cell.cellName` | `mysql_1` | `dim_cell` | `cell_name` | 维度属性 |
@@ -404,9 +418,9 @@ PhysicalSourceQueryNode(mysql_1, joinPushdown=true)
 
 ---
 
-#### 7.4.3 `CROSS_SOURCE_MEMORY_MERGE`：跨数据源查询后内存合并
+#### 7.4.3 `CROSS_SOURCE_MEMORY_MERGE`：普通 QUERY 跨源查询后内存合并
 
-**适用场景**：同一个本体对象的属性来自多个不同数据源，底层无法直接 Join，需要 OAC 分别查询后按 `rid` 或主键合并。
+**适用场景**：同一个本体对象的属性来自多个数据源，底层无法直接 Join，需要 OAC 分别查询后按 `rid` 或主键合并。
 
 **OQL 示例**
 
@@ -449,12 +463,6 @@ FROM dim_cell
 WHERE city = ?
 ```
 
-**参数**
-
-```json
-["深圳"]
-```
-
 **生成物理查询二：DAC**
 
 ```json
@@ -492,21 +500,11 @@ MySQL.cellId = DAC.cell_id = ES.cell_id
 合并策略 = FIRST_NON_NULL
 ```
 
-**执行计划**
-
-```text
-PhysicalSourceQueryNode(mysql_1)
-PhysicalSourceQueryNode(dac_1)
-PhysicalSourceQueryNode(es_1)
-  -> PhysicalMergeJoinNode(joinKey=cellId)
-  -> ObjectAssembler
-```
-
 ---
 
-#### 7.4.4 `ASSOCIATION_GRAPH_PUSHDOWN`：图数据库关系查询下推
+#### 7.4.4 `ASSOCIATION_GRAPH_PUSHDOWN`：关系路径图数据库下推 + 对象属性图内返回
 
-**适用场景**：对象关系存储为图数据库原生边，且数据源支持图遍历，可直接生成 GQL / nGQL / Gremlin 等图查询。
+**适用场景**：关系路径和返回对象属性都在同一个图数据库中，可直接下推为一次 GQL 查询。
 
 **OQL 示例**
 
@@ -545,13 +543,17 @@ PhysicalSourceQueryNode(es_1)
 | `Cell` | `nebula_1` | `space=telecom, tag=Cell` |
 | `locatedIn` | `nebula_1` | `edge=locatedIn` |
 | `contains` | `nebula_1` | `edge=contains` |
+| `Cell.cellId` | `nebula_1` | `Cell.cellId` |
+| `Cell.cellName` | `nebula_1` | `Cell.cellName` |
 
 **生成物理查询：nGQL 示例**
 
 ```ngql
 MATCH (u:User {userId: $userId})-[:locatedIn]->(g:Grid)-[:contains]->(c:Cell)
 RETURN c.cellId AS cellId,
-       c.cellName AS cellName
+       c.cellName AS cellName,
+       id(u) AS sourceRid,
+       id(c) AS targetRid
 ```
 
 **参数**
@@ -571,9 +573,268 @@ PhysicalSourceQueryNode(nebula_1, graphTraversal=true)
 
 ---
 
-#### 7.4.5 `ASSOCIATION_RELATIONAL_JOIN`：关系表 Join 下推
+#### 7.4.5 `ASSOCIATION_QUERY + SINGLE_SOURCE_SINGLE_TABLE`：关系查询后，对象属性单源单表补全
 
-**适用场景**：对象关系不在图数据库中，而是通过关系表存储，且源对象表、关系表、目标对象表位于同一个 SQL 数据源。
+**适用场景**：关系路径在图数据库中，但返回对象 `Cell` 的完整属性不在图数据库，而在 MySQL 单表中。此时 `ASSOCIATION_QUERY` 的关系路径先走 `ASSOCIATION_GRAPH_PUSHDOWN`，对象属性补全走 `SINGLE_SOURCE_SINGLE_TABLE`，并通过 DAG 依赖把图查询得到的 `cellId` 注入到 MySQL 查询。
+
+**OQL 示例**
+
+```json
+{
+  "operation": "ASSOCIATION_QUERY",
+  "schemaRef": "telecom-relation",
+  "objects": [
+    {"objectType": "User", "alias": "u"},
+    {"objectType": "Cell", "alias": "c"}
+  ],
+  "relationships": [
+    {"relationshipType": "servedByCell", "alias": "r", "from": "u", "to": "c", "direction": "OUTBOUND", "mode": "LIST"}
+  ],
+  "conditions": {
+    "kind": "PREDICATE",
+    "ref": "u",
+    "field": "userId",
+    "operator": "EQ",
+    "values": ["user_001"]
+  },
+  "returns": [
+    {"kind": "FIELDS", "ref": "c", "fields": ["cellId", "cellName", "city"]}
+  ]
+}
+```
+
+**数据源绑定信息**
+
+| 本体元素 | 数据源 | 物理位置 |
+|---|---|---|
+| `User` | `nebula_1` | `tag=User` |
+| `servedByCell` | `nebula_1` | `edge=servedByCell` |
+| `Cell.cellId` | `mysql_1` | `dim_cell.cell_id` |
+| `Cell.cellName` | `mysql_1` | `dim_cell.cell_name` |
+| `Cell.city` | `mysql_1` | `dim_cell.city` |
+
+**物理查询 A：图关系查询**
+
+```ngql
+MATCH (u:User {userId: $userId})-[:servedByCell]->(c:Cell)
+RETURN c.cellId AS cellId,
+       id(u) AS sourceRid,
+       c.cellId AS targetRid
+```
+
+**物理查询 B：MySQL 对象属性补全**
+
+```sql
+SELECT cell_id AS cellId,
+       cell_name AS cellName,
+       city AS city
+FROM dim_cell
+WHERE cell_id IN (?, ?, ...)
+```
+
+**DAG 依赖**
+
+```text
+A.cellId -> B.cell_id IN
+```
+
+**执行计划**
+
+```text
+PhysicalSourceQueryNode(A: nebula_1, associationPath)
+  -> FragmentDependency(A.cellId -> B.cell_id IN)
+  -> PhysicalSourceQueryNode(B: mysql_1, objectEnrichment, singleTable)
+  -> RelationRows + ObjectAssembler
+```
+
+---
+
+#### 7.4.6 `ASSOCIATION_QUERY + SINGLE_SOURCE_MULTI_TABLE_JOIN`：关系查询后，对象属性多表 Join 补全
+
+**适用场景**：关系路径得到目标对象主键后，目标对象的返回属性分布在同一个 SQL 数据源的多个表中，需要对目标对象执行多表 Join 补全。
+
+**OQL 示例**
+
+```json
+{
+  "operation": "ASSOCIATION_QUERY",
+  "schemaRef": "telecom-relation",
+  "objects": [
+    {"objectType": "User", "alias": "u"},
+    {"objectType": "Cell", "alias": "c"}
+  ],
+  "relationships": [
+    {"relationshipType": "servedByCell", "alias": "r", "from": "u", "to": "c", "direction": "OUTBOUND", "mode": "LIST"}
+  ],
+  "conditions": {
+    "kind": "PREDICATE",
+    "ref": "u",
+    "field": "userId",
+    "operator": "EQ",
+    "values": ["user_001"]
+  },
+  "returns": [
+    {"kind": "FIELDS", "ref": "c", "fields": ["cellId", "cellName", "prbUsage", "userCount"]}
+  ]
+}
+```
+
+**数据源绑定信息**
+
+| 本体元素/字段 | 数据源 | 物理位置 |
+|---|---|---|
+| `User -> Cell` | `nebula_1` | `edge=servedByCell` |
+| `Cell.cellId` | `mysql_1` | `dim_cell.cell_id` |
+| `Cell.cellName` | `mysql_1` | `dim_cell.cell_name` |
+| `Cell.prbUsage` | `mysql_1` | `sdr_cell_kpi.prb_usage` |
+| `Cell.userCount` | `mysql_1` | `sdr_cell_kpi.user_count` |
+
+**物理查询 A：图关系查询**
+
+```ngql
+MATCH (u:User {userId: $userId})-[:servedByCell]->(c:Cell)
+RETURN c.cellId AS cellId
+```
+
+**物理查询 B：MySQL 多表 Join 补全对象属性**
+
+```sql
+SELECT d.cell_id AS cellId,
+       d.cell_name AS cellName,
+       k.prb_usage AS prbUsage,
+       k.user_count AS userCount
+FROM dim_cell d
+LEFT JOIN sdr_cell_kpi k
+       ON d.cell_id = k.cell_id
+WHERE d.cell_id IN (?, ?, ...)
+```
+
+**DAG 依赖**
+
+```text
+A.cellId -> B.cell_id IN
+```
+
+**执行计划**
+
+```text
+A: ASSOCIATION_GRAPH_PUSHDOWN
+B: SINGLE_SOURCE_MULTI_TABLE_JOIN(objectEnrichment)
+A -> B: cellId IN
+ResultAssembler: relationships + enriched Cell objects
+```
+
+---
+
+#### 7.4.7 `ASSOCIATION_QUERY + CROSS_SOURCE_MEMORY_MERGE`：关系查询后，对象属性跨源补全
+
+**适用场景**：关系路径得到目标对象主键后，目标对象属性分布在多个数据源中。例如 `Cell` 的基础信息在 MySQL，KPI 在 DAC，告警在 ES。
+
+**OQL 示例**
+
+```json
+{
+  "operation": "ASSOCIATION_QUERY",
+  "schemaRef": "telecom-relation",
+  "objects": [
+    {"objectType": "User", "alias": "u"},
+    {"objectType": "Cell", "alias": "c"}
+  ],
+  "relationships": [
+    {"relationshipType": "servedByCell", "alias": "r", "from": "u", "to": "c", "direction": "OUTBOUND", "mode": "LIST"}
+  ],
+  "conditions": {
+    "kind": "PREDICATE",
+    "ref": "u",
+    "field": "userId",
+    "operator": "EQ",
+    "values": ["user_001"]
+  },
+  "returns": [
+    {"kind": "FIELDS", "ref": "c", "fields": ["cellId", "cellName", "prbUsage", "alarmCount"]}
+  ]
+}
+```
+
+**数据源绑定信息**
+
+| 本体元素/字段 | 数据源 | 物理位置 |
+|---|---|---|
+| `User -> Cell` | `nebula_1` | `edge=servedByCell` |
+| `Cell.cellId` | `mysql_1` | `dim_cell.cell_id` |
+| `Cell.cellName` | `mysql_1` | `dim_cell.cell_name` |
+| `Cell.prbUsage` | `dac_1` | `metric=prb_usage` |
+| `Cell.alarmCount` | `es_1` | `index=alarm_index, field=alarm_count` |
+
+**物理查询 A：图关系查询**
+
+```ngql
+MATCH (u:User {userId: $userId})-[:servedByCell]->(c:Cell)
+RETURN c.cellId AS cellId,
+       id(u) AS sourceRid,
+       c.cellId AS targetRid
+```
+
+**物理查询 B1：MySQL 基础属性补全**
+
+```sql
+SELECT cell_id AS cellId,
+       cell_name AS cellName
+FROM dim_cell
+WHERE cell_id IN (?, ?, ...)
+```
+
+**物理查询 B2：DAC KPI 查询**
+
+```json
+{
+  "requestType": "QUERY",
+  "dimensions": ["cell_id"],
+  "metrics": ["prb_usage"],
+  "filters": [
+    {"field": "cell_id", "operator": "IN", "values": ["..."]}
+  ]
+}
+```
+
+**物理查询 B3：ES 告警聚合**
+
+```json
+{
+  "index": "alarm_index",
+  "query": {
+    "terms": {"cell_id": ["..."]}
+  },
+  "aggs": {
+    "alarmCountByCell": {
+      "terms": {"field": "cell_id"}
+    }
+  }
+}
+```
+
+**DAG 依赖**
+
+```text
+A.cellId -> B1.cell_id IN
+A.cellId -> B2.cell_id IN
+A.cellId -> B3.cell_id IN
+```
+
+**执行计划**
+
+```text
+A: ASSOCIATION_GRAPH_PUSHDOWN
+B1/B2/B3: CROSS_SOURCE_MEMORY_MERGE(objectEnrichment)
+MergeKey: cellId
+ResultAssembler: relationships + merged Cell objects
+```
+
+---
+
+#### 7.4.8 `ASSOCIATION_RELATIONAL_JOIN`：SQL 关系表 Join 下推
+
+**适用场景**：对象关系通过 SQL 关系表存储，源对象表、关系表、目标对象表在同一个 SQL 数据源。
 
 **OQL 示例**
 
@@ -625,12 +886,6 @@ JOIN dim_grid g
 WHERE c.cell_id = ?
 ```
 
-**参数**
-
-```json
-["cell_001"]
-```
-
 **执行计划**
 
 ```text
@@ -642,9 +897,9 @@ PhysicalSourceQueryNode(mysql_1, relationalJoin=true)
 
 ---
 
-#### 7.4.6 `ASSOCIATION_MULTI_STAGE_ASSEMBLE`：跨源关系多阶段组装
+#### 7.4.9 `ASSOCIATION_MULTI_STAGE_ASSEMBLE`：跨源关系多阶段组装
 
-**适用场景**：关系路径跨越多个数据源，或其中某段关系只能通过 API/DAC/ES 查询，无法一次下推到同一个物理引擎。
+**适用场景**：关系路径跨越多个数据源，或者其中某段关系通过 API/DAC/ES 查询，无法一次下推到同一个物理引擎。
 
 **OQL 示例**
 
@@ -685,7 +940,7 @@ PhysicalSourceQueryNode(mysql_1, relationalJoin=true)
 | `Cell.cellId` | `api_1` | `cellId` |
 | `Cell.cellName` | `api_1` | `cellName` |
 
-**生成物理查询一：MySQL 查询用户所在栅格**
+**物理查询 A：MySQL 查询用户所在栅格**
 
 ```sql
 SELECT user_id AS userId,
@@ -694,40 +949,33 @@ FROM dim_user
 WHERE user_id = ?
 ```
 
-**参数**
-
-```json
-["user_001"]
-```
-
-**生成物理查询二：API 查询栅格下小区**
+**物理查询 B：API 查询栅格下小区**
 
 ```http
 GET /grid/{gridId}/cells
 ```
 
-**动态输入**
+**DAG 依赖**
 
 ```text
-Fragment-1.gridId -> Fragment-2.path.gridId
+A.gridId -> B.path.gridId
 ```
 
 **执行计划**
 
 ```text
-PhysicalSourceQueryNode(mysql_1)
-  -> FragmentResult(gridId)
-  -> DagInputResolver
-  -> PhysicalSourceQueryNode(api_1, path.gridId = 上游 gridId)
-  -> PhysicalAssociationAssembleNode
-  -> RelationRows + ObjectAssembler
+A: PhysicalSourceQueryNode(mysql_1)
+B: PhysicalSourceQueryNode(api_1)
+A -> B: gridId path parameter
+PhysicalAssociationAssembleNode
+ResultAssembler: Cell objects + locatedInGrid/gridContainsCell relationships
 ```
 
 ---
 
-#### 7.4.7 `AGGREGATE_PUSHDOWN`：聚合完全下推
+#### 7.4.10 `AGGREGATE_PUSHDOWN`：聚合下推
 
-**适用场景**：分组字段、指标字段、过滤字段都来自同一个支持 `GROUP BY` 和 `HAVING` 的 SQL / DAC / ES 数据源。
+**适用场景**：分组字段、指标字段和过滤字段来自同一个支持聚合的 SQL 数据源，并且支持 `HAVING`。
 
 **OQL 示例**
 
@@ -754,11 +1002,7 @@ PhysicalSourceQueryNode(mysql_1)
     "metricAlias": "avgPrbUsage",
     "operator": "GT",
     "values": [80]
-  },
-  "orders": [
-    {"field": "avgPrbUsage", "direction": "DESC"}
-  ],
-  "maxResults": {"limit": 20}
+  }
 }
 ```
 
@@ -767,8 +1011,8 @@ PhysicalSourceQueryNode(mysql_1)
 | 本体字段 | 数据源 | 表 | 物理字段 |
 |---|---|---|---|
 | `CellKpi.city` | `mysql_1` | `sdr_cell_kpi` | `city` |
-| `CellKpi.collectTime` | `mysql_1` | `sdr_cell_kpi` | `collect_time` |
 | `CellKpi.prbUsage` | `mysql_1` | `sdr_cell_kpi` | `prb_usage` |
+| `CellKpi.collectTime` | `mysql_1` | `sdr_cell_kpi` | `collect_time` |
 
 **生成物理查询**
 
@@ -779,30 +1023,19 @@ FROM sdr_cell_kpi
 WHERE collect_time >= ?
 GROUP BY city
 HAVING AVG(prb_usage) > ?
-ORDER BY avgPrbUsage DESC
-LIMIT ?
 ```
 
 **参数**
 
 ```json
-["2026-06-01 00:00:00", 80, 20]
-```
-
-**执行计划**
-
-```text
-PhysicalSourceQueryNode(mysql_1, aggregatePushdown=true)
-  -> SqlPhysicalQuery(groupBy/having)
-  -> SqlExecutor
-  -> MetricRows
+["2026-06-01 00:00:00", 80]
 ```
 
 ---
 
-#### 7.4.8 `AGGREGATE_PARTIAL_PUSHDOWN_MERGE`：局部聚合下推 + OAC 二次合并
+#### 7.4.11 `AGGREGATE_PARTIAL_PUSHDOWN_MERGE`：局部聚合下推 + OAC 二次聚合
 
-**适用场景**：聚合数据分布在多个库、多个分区或多个数据源中，各数据源支持局部聚合，但最终聚合结果需要由 OAC 合并。
+**适用场景**：数据按库、分区或多源分布，各子源支持局部聚合，最终需要 OAC 合并。
 
 **OQL 示例**
 
@@ -822,56 +1055,44 @@ PhysicalSourceQueryNode(mysql_1, aggregatePushdown=true)
 
 **数据源绑定信息**
 
-| 本体字段 | 数据源 | 物理表 |
+| 数据分片 | 数据源 | 表 |
 |---|---|---|
-| `CellKpi.city` | `mysql_202605` | `sdr_cell_kpi_202605` |
-| `CellKpi.prbUsage` | `mysql_202605` | `sdr_cell_kpi_202605` |
-| `CellKpi.city` | `mysql_202606` | `sdr_cell_kpi_202606` |
-| `CellKpi.prbUsage` | `mysql_202606` | `sdr_cell_kpi_202606` |
+| 2026-05 | `mysql_202605` | `sdr_cell_kpi_202605` |
+| 2026-06 | `mysql_202606` | `sdr_cell_kpi_202606` |
 
-**生成物理查询一：202605 分区**
+**局部物理查询**
 
 ```sql
-SELECT city AS city,
-       SUM(prb_usage) AS sum_prbUsage,
-       COUNT(prb_usage) AS count_prbUsage
+SELECT city,
+       SUM(prb_usage) AS sumPrbUsage,
+       COUNT(prb_usage) AS countPrbUsage
 FROM sdr_cell_kpi_202605
 GROUP BY city
 ```
 
-**生成物理查询二：202606 分区**
-
 ```sql
-SELECT city AS city,
-       SUM(prb_usage) AS sum_prbUsage,
-       COUNT(prb_usage) AS count_prbUsage
+SELECT city,
+       SUM(prb_usage) AS sumPrbUsage,
+       COUNT(prb_usage) AS countPrbUsage
 FROM sdr_cell_kpi_202606
 GROUP BY city
 ```
 
-**OAC 二次合并逻辑**
+**OAC 二次聚合规则**
 
 ```text
-totalSum(city) = sum(sum_prbUsage)
-totalCount(city) = sum(count_prbUsage)
-avgPrbUsage(city) = totalSum(city) / totalCount(city)
+totalSum = sum(sumPrbUsage)
+totalCount = sum(countPrbUsage)
+avgPrbUsage = totalSum / totalCount
 ```
 
-**执行计划**
-
-```text
-PhysicalSourceQueryNode(mysql_202605, partialAggregate=true)
-PhysicalSourceQueryNode(mysql_202606, partialAggregate=true)
-  -> PhysicalMemoryAggregateNode(groupKey=city, metric=AVG)
-  -> AvgAccumulator(sum/count)
-  -> MetricRows
-```
+> 注意：AVG 跨源合并不能使用 `avg(avg1, avg2)`，必须使用 `sum/count`。
 
 ---
 
-#### 7.4.9 `AGGREGATE_MEMORY`：明细查询 + OAC 内存聚合
+#### 7.4.12 `AGGREGATE_MEMORY`：明细查询后 OAC 内存聚合
 
-**适用场景**：数据源不支持聚合下推，或者分组字段和指标字段来自不同数据源，必须先查询明细，再由 OAC 聚合。
+**适用场景**：数据源不支持聚合，或者聚合需要跨源合并后才能计算。
 
 **OQL 示例**
 
@@ -880,18 +1101,12 @@ PhysicalSourceQueryNode(mysql_202606, partialAggregate=true)
   "operation": "AGGREGATE",
   "schemaRef": "telecom-kpi",
   "objects": [
-    {"objectType": "Cell", "alias": "c"}
+    {"objectType": "Alarm", "alias": "a"}
   ],
   "returns": [
-    {"kind": "GROUP_BY", "ref": "c", "field": "city", "alias": "city"},
-    {"kind": "METRIC", "ref": "c", "field": "prbUsage", "function": "AVG", "alias": "avgPrbUsage"}
-  ],
-  "aggregateFilter": {
-    "kind": "METRIC_PREDICATE",
-    "metricAlias": "avgPrbUsage",
-    "operator": "GT",
-    "values": [80]
-  }
+    {"kind": "GROUP_BY", "ref": "a", "field": "cellId", "alias": "cellId"},
+    {"kind": "METRIC", "ref": "a", "field": "alarmId", "function": "COUNT", "alias": "alarmCount"}
+  ]
 }
 ```
 
@@ -899,156 +1114,95 @@ PhysicalSourceQueryNode(mysql_202606, partialAggregate=true)
 
 | 本体字段 | 数据源 | 物理位置 |
 |---|---|---|
-| `Cell.city` | `mysql_1` | `dim_cell.city` |
-| `Cell.cellId` | `mysql_1` | `dim_cell.cell_id` |
-| `Cell.prbUsage` | `api_1` | `GET /cell/{cellId}/kpi.prbUsage` |
+| `Alarm.cellId` | `api_1` | `response.cellId` |
+| `Alarm.alarmId` | `api_1` | `response.alarmId` |
 
-**生成物理查询一：MySQL 查询城市和小区 ID**
-
-```sql
-SELECT cell_id AS cellId,
-       city AS city
-FROM dim_cell
-```
-
-**生成物理查询二：API 批量查询 KPI**
+**生成物理请求：API 明细查询**
 
 ```http
-POST /cell/kpi/batch
-Content-Type: application/json
-
-{
-  "cellIds": ["cell_001", "cell_002", "cell_003"],
-  "metrics": ["prbUsage"]
-}
+GET /alarms?startTime=2026-06-01T00:00:00
 ```
 
-**OAC 内存聚合逻辑**
+**OAC 内存聚合**
 
 ```text
-1. 按 cellId 合并 city 与 prbUsage；
-2. 按 city 分组；
-3. 计算 AVG(prbUsage)；
-4. 执行 aggregateFilter: avgPrbUsage > 80；
-5. 输出 aggregations。
-```
-
-**执行计划**
-
-```text
-PhysicalSourceQueryNode(mysql_1)
-PhysicalSourceQueryNode(api_1)
-  -> PhysicalMergeJoinNode(joinKey=cellId)
-  -> PhysicalMemoryAggregateNode(groupKey=city, metric=AVG)
-  -> MetricRows
+GroupKey = cellId
+Metric = COUNT(alarmId)
 ```
 
 ---
 
-#### 7.4.10 `DAG_DEPENDENT_QUERY`：上游输出驱动下游查询
+#### 7.4.13 `DAG_DEPENDENT_QUERY`：上游查询结果作为下游 QUERY 条件
 
-**适用场景**：B 查询需要依赖 A 的结果才能构造输入条件，典型为图数据库查询结果驱动 SQL / API / DAC / ES 查询。
+**适用场景**：上游图查询、API 查询或维表查询得到对象 ID 列表，下游 SQL / DAC / ES 使用这些 ID 作为 `IN` 条件。
 
 **OQL 示例**
 
 ```json
 {
-  "operation": "ASSOCIATION_QUERY",
+  "operation": "QUERY",
   "schemaRef": "telecom-kpi",
   "objects": [
-    {"objectType": "User", "alias": "u"},
-    {"objectType": "Cell", "alias": "c"},
-    {"objectType": "CellKpi", "alias": "k"}
+    {"objectType": "Cell", "alias": "c"}
   ],
-  "relationships": [
-    {"relationshipType": "accessCell", "alias": "r", "from": "u", "to": "c", "direction": "OUTBOUND", "mode": "LIST"}
+  "sourceQuery": [
+    {
+      "operation": "ASSOCIATION_QUERY",
+      "objects": [
+        {"objectType": "User", "alias": "u"},
+        {"objectType": "Cell", "alias": "c"}
+      ],
+      "relationships": [
+        {"relationshipType": "servedByCell", "alias": "r", "from": "u", "to": "c", "direction": "OUTBOUND", "mode": "LIST"}
+      ],
+      "conditions": {
+        "kind": "PREDICATE",
+        "ref": "u",
+        "field": "userId",
+        "operator": "EQ",
+        "values": ["user_001"]
+      },
+      "returns": [
+        {"kind": "FIELDS", "ref": "c", "fields": ["cellId"]}
+      ]
+    }
   ],
-  "conditions": {
-    "kind": "PREDICATE",
-    "ref": "u",
-    "field": "userId",
-    "operator": "EQ",
-    "values": ["user_001"]
-  },
   "returns": [
-    {"kind": "FIELDS", "ref": "c", "fields": ["cellId", "cellName"]},
-    {"kind": "FIELDS", "ref": "k", "fields": ["prbUsage", "userCount"]}
+    {"kind": "FIELDS", "ref": "c", "fields": ["cellId", "cellName", "prbUsage"]}
   ]
 }
 ```
 
-**数据源绑定信息**
-
-| 本体元素 | 数据源 | 物理位置 |
-|---|---|---|
-| `User` | `nebula_1` | `tag=User` |
-| `Cell` | `nebula_1` | `tag=Cell` |
-| `accessCell` | `nebula_1` | `edge=accessCell` |
-| `CellKpi.cellId` | `mysql_1` | `sdr_cell_kpi.cell_id` |
-| `CellKpi.prbUsage` | `mysql_1` | `sdr_cell_kpi.prb_usage` |
-| `CellKpi.userCount` | `mysql_1` | `sdr_cell_kpi.user_count` |
-
-**生成物理查询 A：NebulaGraph**
+**物理查询 A：上游 GQL**
 
 ```ngql
-MATCH (u:User {userId: $userId})-[:accessCell]->(c:Cell)
-RETURN c.cellId AS cellId,
-       c.cellName AS cellName
+MATCH (u:User {userId: $userId})-[:servedByCell]->(c:Cell)
+RETURN c.cellId AS cellId
 ```
 
-**参数**
-
-```json
-{"userId": "user_001"}
-```
-
-**FragmentDependency**
-
-```json
-{
-  "upstreamNodeId": "A",
-  "upstreamOutputField": "cellId",
-  "downstreamNodeId": "B",
-  "downstreamInputField": "cell_id",
-  "operator": "IN",
-  "required": true,
-  "maxInputSize": 1000
-}
-```
-
-**生成物理查询 B：MySQL**
+**物理查询 B：下游 SQL**
 
 ```sql
-SELECT cell_id AS cellId,
-       prb_usage AS prbUsage,
-       user_count AS userCount
-FROM sdr_cell_kpi
-WHERE cell_id IN (?, ?, ?)
+SELECT d.cell_id AS cellId,
+       d.cell_name AS cellName,
+       k.prb_usage AS prbUsage
+FROM dim_cell d
+LEFT JOIN sdr_cell_kpi k
+       ON d.cell_id = k.cell_id
+WHERE d.cell_id IN (?, ?, ...)
 ```
 
-**动态参数来源**
+**DAG 依赖**
 
 ```text
-A.rows[*].cellId -> B.cell_id IN (...)
-```
-
-**执行计划**
-
-```text
-PhysicalSourceQueryNode(A, nebula_1)
-  -> FragmentResult(cellId)
-  -> DagInputResolver(A.cellId -> B.cell_id IN)
-  -> DagRuntimeContext
-  -> PhysicalSourceQueryNode(B, mysql_1)
-  -> PhysicalMergeJoinNode(joinKey=cellId)
-  -> ObjectAssembler
+A.cellId -> B.cell_id IN
 ```
 
 ---
 
-#### 7.4.11 `DAG_DEPENDENT_AGGREGATE`：依赖型查询后的聚合
+#### 7.4.14 `DAG_DEPENDENT_AGGREGATE`：上游对象集合驱动下游聚合
 
-**适用场景**：先通过图查询或关系查询确定对象集合，再对这些对象在 SQL / DAC / ES 中进行聚合统计。
+**适用场景**：先查询对象集合，再对该集合范围内的数据做聚合。例如先查询用户关联的小区，再统计这些小区的平均 PRB 利用率。
 
 **OQL 示例**
 
@@ -1057,70 +1211,87 @@ PhysicalSourceQueryNode(A, nebula_1)
   "operation": "AGGREGATE",
   "schemaRef": "telecom-kpi",
   "objects": [
-    {"objectType": "User", "alias": "u"},
     {"objectType": "CellKpi", "alias": "k"}
   ],
-  "conditions": {
-    "kind": "PREDICATE",
-    "ref": "u",
-    "field": "userId",
-    "operator": "EQ",
-    "values": ["user_001"]
-  },
-  "returns": [
-    {"kind": "GROUP_BY", "ref": "k", "field": "city", "alias": "city"},
-    {"kind": "METRIC", "ref": "k", "field": "prbUsage", "function": "AVG", "alias": "avgPrbUsage"}
+  "sourceQuery": [
+    {
+      "operation": "ASSOCIATION_QUERY",
+      "objects": [
+        {"objectType": "User", "alias": "u"},
+        {"objectType": "Cell", "alias": "c"}
+      ],
+      "relationships": [
+        {"relationshipType": "servedByCell", "alias": "r", "from": "u", "to": "c", "direction": "OUTBOUND", "mode": "LIST"}
+      ],
+      "conditions": {
+        "kind": "PREDICATE",
+        "ref": "u",
+        "field": "userId",
+        "operator": "EQ",
+        "values": ["user_001"]
+      },
+      "returns": [
+        {"kind": "FIELDS", "ref": "c", "fields": ["cellId"]}
+      ]
+    }
   ],
-  "aggregateFilter": {
-    "kind": "METRIC_PREDICATE",
-    "metricAlias": "avgPrbUsage",
-    "operator": "GT",
-    "values": [80]
-  }
+  "returns": [
+    {"kind": "GROUP_BY", "ref": "k", "field": "cellId", "alias": "cellId"},
+    {"kind": "METRIC", "ref": "k", "field": "prbUsage", "function": "AVG", "alias": "avgPrbUsage"}
+  ]
 }
 ```
 
-**数据源绑定信息**
-
-| 本体元素 | 数据源 | 物理位置 |
-|---|---|---|
-| `User -> Cell` | `nebula_1` | `User-[:accessCell]->Cell` |
-| `CellKpi.cellId` | `mysql_1` | `sdr_cell_kpi.cell_id` |
-| `CellKpi.city` | `mysql_1` | `sdr_cell_kpi.city` |
-| `CellKpi.prbUsage` | `mysql_1` | `sdr_cell_kpi.prb_usage` |
-
-**生成物理查询 A：获取用户关联小区**
+**物理查询 A：上游图查询**
 
 ```ngql
-MATCH (u:User {userId: $userId})-[:accessCell]->(c:Cell)
+MATCH (u:User {userId: $userId})-[:servedByCell]->(c:Cell)
 RETURN c.cellId AS cellId
 ```
 
-**生成物理查询 B：对关联小区做聚合**
+**物理查询 B：下游聚合 SQL**
 
 ```sql
-SELECT city AS city,
+SELECT cell_id AS cellId,
        AVG(prb_usage) AS avgPrbUsage
 FROM sdr_cell_kpi
-WHERE cell_id IN (?, ?, ?)
-GROUP BY city
-HAVING AVG(prb_usage) > ?
+WHERE cell_id IN (?, ?, ...)
+GROUP BY cell_id
 ```
 
-**动态参数来源**
+**DAG 依赖**
 
 ```text
-A.rows[*].cellId -> B.cell_id IN (...)
+A.cellId -> B.cell_id IN
 ```
 
-**执行计划**
+---
+
+#### 7.4.15 策略组合总结
+
+`ASSOCIATION_QUERY` 的策略选择建议拆成两层：
+
+| 层次 | 解决问题 | 可选策略 |
+|---|---|---|
+| 关系路径层 | 如何找到对象之间的关系 | `ASSOCIATION_GRAPH_PUSHDOWN`、`ASSOCIATION_RELATIONAL_JOIN`、`ASSOCIATION_MULTI_STAGE_ASSEMBLE` |
+| 对象属性补全层 | 如何补齐参与关系对象的属性 | `SINGLE_SOURCE_SINGLE_TABLE`、`SINGLE_SOURCE_MULTI_TABLE_JOIN`、`CROSS_SOURCE_MEMORY_MERGE`、`DAG_DEPENDENT_QUERY` |
+| 结果装配层 | 如何输出统一结果 | `ObjectAssembler`、`RelationRows`、`MetricRows` |
+
+因此，`ASSOCIATION_QUERY` 的物理计划应允许组合表达：
 
 ```text
-PhysicalSourceQueryNode(A, nebula_1)
-  -> DagInputResolver(cellId)
-  -> PhysicalSourceQueryNode(B, mysql_1, aggregatePushdown=true)
-  -> MetricRows
+ASSOCIATION_QUERY PhysicalPlan
+  ├── PathFragment：关系路径查询
+  ├── ObjectFragment：源对象属性补全
+  ├── ObjectFragment：目标对象属性补全
+  ├── FragmentDependency：PathFragment.output -> ObjectFragment.input
+  └── ResultAssembler：objects + relationships
 ```
+
+这种设计可以避免把 `ASSOCIATION_QUERY` 简化为单一图查询或单一关系表 Join，从而覆盖真实业务中的对象属性多表、跨源、依赖补全等复杂场景。
+
+---
+
 
 ## 8. DAG 依赖型多阶段查询设计
 
