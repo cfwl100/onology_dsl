@@ -2,33 +2,26 @@
 """Get Function Params Spec: 获取函数参数规格
 
 Usage:
-    python get_function_params_spec.py --function-id <dtmi_string>
+    python get_function_params_spec.py --ontology-id <ontology_id> --function-id <dtmi_string>
 
 Examples:
-    python get_function_params_spec.py --function-id "dtmi:test:test:8888"
+    python get_function_params_spec.py --ontology-id "dtmi:com:huawei:ict:IP" --function-id "dtmi:test:test:8888"
 """
 from __future__ import annotations
 import argparse
 import json
+import os
 import requests
 import time
 import warnings
 from pathlib import Path
 
-# 禁用不安全的 HTTPS 请求警告
-warnings.filterwarnings("ignore", message="Unverified HTTPS request")
+warnings.filterwarnings("ignore")
 
-# Configuration
 SCRIPTS_ROOT = Path(__file__).resolve().parent
-TOOLS_DIR = SCRIPTS_ROOT / "tools"
 
-FUNC_TYPE_URL = "https://7.220.122.186:31842"
-OAC_CERT = str(TOOLS_DIR / "client.crt.pem")
-OAC_KEY = str(TOOLS_DIR / "client.key.pem")
-
-# Retry config
 MAX_RETRIES = 3
-RETRY_DELAY = 1  # seconds
+RETRY_DELAY = 1
 
 
 def _simplify_inputs(inputs: list) -> list:
@@ -54,25 +47,46 @@ def _simplify_outputs(outputs: dict) -> dict:
     }
 
 
-def get_params_spec(function_id: str) -> dict:
+def get_params_spec(ontology_id: str, function_id: str) -> dict:
     """获取函数参数规格"""
-    url = f"{FUNC_TYPE_URL}/ontologymanagement/rest/api/v1/ontologies/test/function-types/{function_id}/query"
+    namespace = os.environ.get("SERVICE_NAMESPACE")
+    tenant_id = os.environ.get("TENANT_ID")
+
+    if not namespace:
+        return {
+            "success": False,
+            "error": {
+                "exception_type": "EnvironmentError",
+                "message": "环境变量 SERVICE_NAMESPACE 未设置，请检查集群配置"
+            }
+        }
+
+    if not tenant_id:
+        return {
+            "success": False,
+            "error": {
+                "exception_type": "EnvironmentError",
+                "message": "环境变量 TENANT_ID 未设置，请检查租户配置"
+            }
+        }
+
+    url = f"http://api-gateway-mesh.{namespace}.svc.cluster.local:39071/oms/rest/api/v1/ontologies/{ontology_id}/function-types/{function_id}/query"
     headers = {
         "accept": "*/*",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "x-gde-tenant-id": tenant_id
     }
-    cert = (OAC_CERT, OAC_KEY)
 
     for attempt in range(MAX_RETRIES):
         try:
-            response = requests.get(url, headers=headers, cert=cert, verify=False)
+            response = requests.get(url, headers=headers, verify=False)
             response.raise_for_status()
             raw_data = response.json()['result']
 
-            # Simplify metadata, only keep key info
             simplified = {
                 "id": raw_data.get("id", ""),
                 "name": raw_data.get("name", ""),
+                "physicalName": raw_data.get("physicalName", ""),
                 "display": raw_data.get("display", {}),
                 "description": raw_data.get("description", {}),
                 "status": raw_data.get("status", ""),
@@ -100,14 +114,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Get Function Params Spec: 获取函数参数规格"
     )
+    parser.add_argument("--ontology-id", required=True, help="Ontology ID (如 network@1.0)")
     parser.add_argument("--function-id", required=True, help="Function ID (dtmi string)")
     parser.add_argument("--output", help="输出文件路径 (可选)")
     args = parser.parse_args()
 
-    # 执行获取
-    result = get_params_spec(args.function_id)
+    result = get_params_spec(args.ontology_id, args.function_id)
 
-    # 输出结果
     output = json.dumps(result, ensure_ascii=False)
 
     if args.output:

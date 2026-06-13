@@ -13,12 +13,22 @@
 ### 调用示例（必须按照示例格式调用）
 ```bash
 # 直接传 JSON 字符串（不写文件）
-python scripts/semantic_subgraph_search.py --query "设备故障诊断"
+python scripts/semantic_subgraph_search.py --query "设备故障诊断" --ontologyId "本体id"
 ```
 
 ## 输入契约
-至少需要：
-- 用户问题或检索目标
+**必填参数：**
+- `query`: 用户问题或业务主题
+- `ontologyId`: 本体 ID
+
+**可选参数：**
+- `similarityThreshold`: 相似度阈值（默认 0.6）
+- `includeFunctions`: 是否返回Function（默认 0）
+- `includeActions`:是否返回Action（默认 0）
+- `seedRetrievalMode`:种子节点检索模式（默认"vector"）
+- `topK`:种子节点语义检索相似度匹配阈值topK（默认为3）
+- `graphExpansionStrategy`:子图检索策略（默认"minimal"）
+- `hopLimit`:种子节点向外扩散的深度，当graphExpansionStrategy = khop时该值有意义（默认为3）
 
 可选增强信息：
 - 业务上下文

@@ -6,32 +6,6 @@ allowed_tools:
 
 # 故障传播分析 Skill
 
-> **共享约束规则**：参见 `platform-skill/shared-constraints.md`
-
-## 快速路由参考
-
-| 用户关键词 | 意图 | 读取的 knowledge |
-|-----------|-----|-----------------|
-| "查询告警"、"获取告警"、"有没有告警" | 查询网元告警 | `knowledge/nealarm.md` |
-| "传播关系"、"传播链"、"故障传播" | 传播关系分析 | `knowledge/propagation.md` |
-| "同站点"、"对端网元"、"业务路径"、"验证证据" | 传播证据验证 | `knowledge/evidence.md` |
-
-## Skill 边界
-
-```
-alarm-propagation 只做业务语义判断，不做执行规划
-                        ↓
-           ┌────────────────────────────┐
-           │ 1. 识别用户意图             │
-           │ 2. 读取对应 knowledge       │
-           │ 3. 生成语义请求             │
-           └────────────────────────────┘
-                        ↓
-           委托给 ontology-planning 执行
-                        ↓
-           不直接调用任何原始 Tool
-```
-
 ## 任务概述
 
 你是故障传播分析的**业务语义层**。你的职责是：
@@ -43,7 +17,7 @@ alarm-propagation 只做业务语义判断，不做执行规划
 
 ---
 
-## 三个意图与对应 knowledge
+## 三个意图与对应knowledge
 
 | 意图 | 关键词 | 对应 knowledge |
 |------|--------|---------------|
@@ -55,11 +29,9 @@ alarm-propagation 只做业务语义判断，不做执行规划
 
 ## 业务知识文件（位于 knowledge/ 目录）
 
-| 文件 | 说明 |
-|------|------|
-| `knowledge/nealarm.md` | 获取网元告警的知识 |
-| `knowledge/propagation.md` | 获取传播关系的知识 |
-| `knowledge/evidence.md` | 验证传播证据的知识 |
+- `nealarm.md`：获取网元告警的知识
+- `propagation.md`：获取传播关系的知识
+- `evidence.md`：验证传播证据的知识
 
 ---
 
@@ -91,28 +63,7 @@ alarm-propagation 只做业务语义判断，不做执行规划
 
 ---
 
-## 委托协议
-
-### 调用 ontology-planning
-
-调用 `ontology-planning` 时传入：
-- 当前意图
-- 用户输入的完整语义
-- 对应 knowledge 文件的内容摘要
-
-### 委托格式示例
-
-```json
-{
-  "意图": "查询网元告警",
-  "网元名称": "MC-PADANG",
-  "knowledge摘要": "（从nealarm.md提取的关键信息）"
-}
-```
-
----
-
-## 术语约束
+## 术语替换约束（面向用户输出时禁止出现技术术语）
 
 | 技术术语 | 替换为 |
 |---------|--------|
@@ -139,3 +90,15 @@ alarm-propagation 只做业务语义判断，不做执行规划
 网元ID: 601851d2fcf2df6cca73d6d883fd1c15cdc7
 告警: Ethernet Physical (ETPI) Send bandwidth usage rate threshold crossed
 ```
+
+---
+
+## Skill 调用协议
+
+你不能直接调用任何原始 Tool。
+所有执行请求必须委托给 `ontology-planning` Skill。
+
+调用 `ontology-planning` 时传入：
+- 当前意图
+- 用户输入的完整语义
+- 对应 knowledge 文件的内容摘要
