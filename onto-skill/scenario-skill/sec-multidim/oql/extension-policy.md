@@ -1,131 +1,61 @@
-# SEC OQL 扩展参数与 OAC 输入生成策略
+# SEC OQL 扩展参数自然语言注入策略
 
-## 1. 完整 OQL 优先
+本文说明业务 Skill 如何通过自然语言方式向平台表达 OQL 扩展诉求。这里不要求平台 Skill 支持新的输入模板，也不要求平台识别 `completeOql`、`oacSkillInput`、`executionPlan` 等协议。
 
-SEC 业务 Skill 能够确定查询动作、对象、字段、条件和返回内容时，应直接生成完整 `completeOql`，并按照 OAC Skill 输入模板传递给平台本体访问能力。
+## 1. 基本原则
 
-推荐输入结构：
+1. 业务 Skill 不直接修改平台 Skill。
+2. 业务 Skill 不直接生成 DAC 私有请求。
+3. 业务 Skill 可以在自然语言委托中明确要求：生成 OQL 时，如果支持 `extensions`，请把 SEC 扩展诉求放入 `extensions.sec`。
+4. 时间、后端倾向、维度升维、关系解析等扩展诉求，都以自然语言说明。
+5. 如果平台或 OAC 当前不支持某个扩展参数，应返回能力缺失说明，不得伪造执行结果。
 
-```yaml
-oacSkillInput:
-  requestType: COMPLETE_OQL
-  description: <本次 SEC 多维查询目的>
-  completeOql: {...}
-  messageType: <可选>
-  validateOnly: false
+## 2. SEC 扩展诉求表达方式
+
+### 分表时间
+
+自然语言表达：
+
+```text
+这是 SEC 分表时间查询。生成 OQL 时，如果支持 extensions，请在 extensions.sec.partitionTime 中表达 timeMode、sourceTimeZone、partitionField；同时仍需把时间范围作为 conditions 条件。
 ```
 
-平台 Skill 收到 `completeOql` 后，只做校验、紧凑化和执行，不应重新按关键词改写 `operation`。
+### DAC 后端倾向
 
----
+自然语言表达：
 
-## 2. extensions 命名空间
-
-SEC 场景所有扩展参数必须放在 `completeOql.extensions.sec` 下：
-
-```yaml
-completeOql:
-  extensions:
-    sec:
-      <key>: <value>
+```text
+这是 SEC 多维模型查询，优先按 DAC 多维模型映射执行；不要直接生成 DAC 私有请求，由 OAC 根据本体映射决定是否下发到 DAC。
 ```
 
-禁止将 SEC 扩展参数直接放到 OQL 顶层，也禁止放到 `oacSkillInput` 顶层。
+### 维度升维
 
----
+自然语言表达：
 
-## 3. 推荐扩展字段
-
-| 字段 | 说明 |
-|---|---|
-| `extensions.sec.queryScene` | 业务查询场景，如 `COMPOSITE_DIMENSION` |
-| `extensions.sec.targetBackend` | 后端倾向，如 `DAC`、`OntoAccess` |
-| `extensions.sec.dacAction` | DAC 操作类型，如 `AGGRE_XDR` |
-| `extensions.sec.partitionTime` | 分表时间策略 |
-| `extensions.sec.dimensionLift` | 是否使用多维模型升维能力 |
-| `extensions.sec.relationResolve` | 关系主键解析策略 |
-| `extensions.sec.deduplicateMetrics` | 是否需要指标去重 |
-
-不推荐在 `extensions.sec` 中表达跨步骤绑定，例如 `inputBinding`。跨步骤绑定属于业务 Skill 内部逻辑，应由业务 Skill 在生成下一步 `completeOql` 前完成。
-
----
-
-## 4. SEC 分表时间扩展示例
-
-```yaml
-completeOql:
-  extensions:
-    sec:
-      targetBackend: DAC
-      dacAction: AGGRE_XDR
-      partitionTime:
-        timeMode: UTC
-        sourceTimeZone: Asia/Shanghai
-        partitionField: "3600"
+```text
+这是归属过滤的多维查询。如果多维模型支持通过栅格维度过滤并返回小区维度，请使用 QUERY，并在生成 OQL 时通过扩展参数表达 dimensionLift=true；如果不支持，则由本业务 Skill 改走两步查询。
 ```
 
----
+### 关系主键解析
 
-## 5. ID / NAME 维度函数策略
+自然语言表达：
 
-推荐使用结构化函数表达式：
-
-```yaml
-kind: EXPR
-expr:
-  kind: FUNCTION
-  namespace: sec
-  name: NAME
-  args:
-    - kind: FIELD
-      ref: o
-      field: release_cause
-alias: release_cause_name
+```text
+这是关系主键发现步骤。请通过 ASSOCIATION_QUERY 从 grid 沿 locateIn 关系查询 cell 的 CELL_ID；如 OQL 支持 extensions，请表达 relationResolve=GRID_TO_CELL。
 ```
 
-不推荐写成普通字符串：
+### ID / NAME 维度函数
 
-```yaml
-kind: FUNCTION
-field: NAME(release_cause)
+自然语言表达：
+
+```text
+返回字段需要区分 ID 维度和名称维度。生成 OQL 时，如果支持维度函数，请使用 ID(field) 或 NAME(field)；如果不支持，请明确能力缺失。
 ```
 
----
+## 3. 禁止事项
 
-## 6. 后端倾向
-
-业务 Skill 可以在 `completeOql.extensions.sec.targetBackend` 中声明后端倾向。
-
-推荐：
-
-```yaml
-completeOql:
-  extensions:
-    sec:
-      targetBackend: DAC
-```
-
-平台侧仍需根据 OAC 能力、schema mapping 和数据源 capability 做最终校验。后端倾向不是绕过 OAC 编译或能力校验的强制指令。
-
----
-
-## 7. 多步查询策略
-
-如果 OAC 不支持单条查询，业务 Skill 应自行拆分多步调用：
-
-1. 为第一步生成独立 `oacSkillInput`。
-2. 调用 OAC 并读取结果。
-3. 将结果填入第二步 `completeOql`。
-4. 为第二步生成独立 `oacSkillInput`。
-
-禁止将业务 `workflow`、`executionPlan`、`stepId`、`dependsOn`、`variableBinding`、`fallbackPolicy` 传给平台 OAC。
-
----
-
-## 8. 约束
-
-1. `extensions` 只传递受控业务参数，不传物理查询语句。
-2. `extensions.sec.targetBackend` 是后端倾向，不是强制绕过 OAC 编译。
-3. `completeOql` 中的 object、field、relationship 必须来自本体模型或业务 Skill 已确认的模型配置。
-4. 若使用扩展函数，函数必须在 OAC 扩展函数注册表中存在。
-5. 多步执行顺序和变量绑定属于业务 Skill 内部逻辑，不属于平台 OAC 输入协议。
+1. 禁止把 `extensions` 当成绕过 schema、mapping、能力校验的通道。
+2. 禁止在 `extensions` 中写物理 SQL、GQL、TQL。
+3. 禁止直接写 DAC 私有请求结构。
+4. 禁止把跨步骤变量绑定交给平台 Skill；变量读取和填充由业务 Skill 自己完成。
+5. 禁止因为用户说“归属”就一律改成 `ASSOCIATION_QUERY`，必须先判断是否支持多维模型维度升维。
