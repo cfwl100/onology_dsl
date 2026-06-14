@@ -1,169 +1,103 @@
 ---
 name: sec-multidim
-description: SEC 多维查询业务定制 Skill。用于识别栅格维度、小区维度、组合维度查询、归属过滤查询、SEC 分表时间、本地时间/UTC 时间、DAC 后端倾向、id/name 维度函数；由业务 Skill 自行规划执行步骤，并按 OAC Skill 输入模板逐步调用平台能力。
+description: SEC 多维查询业务定制 Skill。用于识别栅格维度、小区维度、组合维度查询、归属过滤查询、SEC 分表时间、本地时间/UTC 时间、DAC 后端倾向、id/name 维度函数，并以自然语言方式委托平台 Skill 完成本体子图检索、OAC 查询和 Function 调用。
 ---
 
 # SEC 多维查询 Skill
 
-## 任务概述
+## 1. 任务定位
 
-你是 **SEC 多维查询业务语义层与业务编排层**。你的职责是：
+你是 **SEC 多维查询业务定制 Skill**。本 Skill 只承载业务侧定制逻辑，不修改、不覆盖、不假设平台稳态 Skill 的内部协议。
 
-1. 识别用户原始问题属于哪类 SEC 多维查询场景。
-2. 判断当前查询应使用 `QUERY`、`ASSOCIATION_QUERY`、`AGGREGATE` 还是多步组合。
-3. 识别对象、维度、指标、度量、过滤条件、时间条件、后端倾向。
-4. 业务侧自行规划执行步骤和执行顺序。
-5. 每次需要访问 OAC 时，按照平台 OAC Skill 输入模板生成当前步骤的 `oacSkillInput`。
-6. 不直接访问物理库，不直接生成 DAC 私有请求，不绕过 OAC。
+你的职责是：
 
-平台稳态 Skill 不感知本 Skill 内部 workflow。本 Skill 如果需要“先执行对象 Function，再执行 OAC 查询”或“先查关系主键，再查指标”，必须在本 Skill 内部完成步骤规划、结果读取和参数填充，然后逐步调用平台能力。
+1. 理解用户原始问题属于哪类 SEC 多维查询场景。
+2. 判断查询动作应表达为 `QUERY`、`ASSOCIATION_QUERY`、`AGGREGATE`，或多个自然语言步骤组合。
+3. 识别对象、维度、指标、度量、过滤条件、时间条件、后端倾向和 OQL 扩展诉求。
+4. 用自然语言方式把当前步骤委托给 `Ontology-based-planning-skill` / `Ontology-platform-unified-skill`。
+5. 多步业务流程由本 Skill 自己规划：先做什么、后做什么、前一步结果如何作为后一步条件，均由本 Skill 在自然语言步骤中说明。
 
----
+你不负责：
 
-## 适用场景
-
-当用户问题中出现以下业务要素时，优先使用本 Skill：
-
-- SEC、XDR、SDR、DAC、多维模型、多维查询
-- 栅格、小区、EPC网络、接口、原因码、释放原因
-- RSRP、PRB、KPI、指标、度量、维度
-- 组合维度、归属、对应、栅格对应的小区
-- 本地时间、UTC 时间、分表时间、时间字段 3600
-- ID 维度、名称维度、id(field)、name(field)
+- 不修改 `platform-skill` 下任何 Skill。
+- 不要求平台识别 `workflowId`、`executionPlan`、`dependsOn`、`variableBinding`、`oacSkillInput`、`completeOql` 等新增协议。
+- 不直接访问物理库，不直接生成 DAC 私有请求。
+- 不绕过平台 OAC 的 OQL 组装、校验和执行逻辑。
 
 ---
 
-## 业务边界
+## 2. 总体调用方式
 
-### 本 Skill 负责
+本 Skill 对平台的委托必须使用自然语言，而不是新增结构化平台协议。
 
-- 业务场景识别
-- 查询模式判断
-- 业务 workflow 规划
-- 步骤执行顺序控制
-- 上一步结果到下一步输入的业务绑定
-- 业务字段到本体对象/属性的语义映射
-- SEC 分表时间扩展参数生成
-- DAC / OntoAccess 后端倾向声明
-- 每个 OAC 步骤的 `oacSkillInput` 生成
+推荐委托格式：
 
-### 本 Skill 不负责
-
-- 不执行 OAC 脚本
-- 不调用 DAC 私有接口
-- 不拼物理 SQL / GQL / TQL
-- 不伪造对象、字段、关系、函数
-- 不绕过本体 schema / mapping / capability 校验
-- 不要求平台 Skill 理解本 Skill 的 workflow
-
----
-
-## 核心流程
-
-### Step1：识别场景类型
-
-读取 `knowledge/multidim-query.md`，将用户问题归类为：
-
-1. `S1_SINGLE_OBJECT_DIMENSION`：不跨对象查询维度
-2. `S2_COMPOSITE_DIMENSION_SAME_METRIC`：跨对象关联相同指标/度量，显式给出多个维度
-3. `S3_OWNERSHIP_FILTER_SAME_METRIC`：跨对象关联相同指标/度量，用户表达归属关系
-4. `S4_COMPOSITE_DIMENSION_DIFFERENT_METRIC`：跨对象未关联相同指标/度量，但显式给出多个维度
-5. `S5_RELATION_KEY_THEN_METRIC`：跨对象未关联相同指标/度量，且不存在维表升维，需要两步查询
-
-### Step2：识别时间语义
-
-读取 `knowledge/sec-time.md`，判断：
-
-- 用户使用本地时间还是 UTC 时间
-- 时间字段是否为 SEC 分表字段，例如 `3600`
-- OQL `conditions` 中的时间范围
-- OQL `extensions.sec.partitionTime` 中的时间模式
-
-### Step3：识别维度函数语义
-
-读取 `knowledge/id-name-function.md`，判断返回字段是：
-
-- ID 维度：使用 `sec.ID(field)` 或 `style: IDENTIFIER`
-- 名称维度：使用 `sec.NAME(field)` 或 `style: NAME`
-- 普通指标 / 度量：使用 `FIELDS`
-
-### Step4：业务侧规划执行步骤
-
-业务 workflow 只存在于本 Skill 内部。例如：
-
-- 如果单条 OQL 可表达，生成一个 OAC 调用步骤。
-- 如果需要先查关系主键，再查指标，本 Skill 先执行第一步 OAC，读取结果，再生成第二步 OAC。
-- 如果需要先执行对象 Function，再查询对象数据，本 Skill 先调用 Function，读取函数输出，再将结果填入当前 OAC 的 `completeOql`。
-
-### Step5：生成 OAC Skill 输入
-
-每个 OAC 步骤必须按照平台模板生成输入：
-
-```yaml
-oacSkillInput:
-  requestType: COMPLETE_OQL
-  description: <本次 OAC 查询目的>
-  completeOql:
-    version: "1.0"
-    schemaRef: <schemaRef>
-    strict: true
-    operation: QUERY | ASSOCIATION_QUERY | AGGREGATE
-    objects: []
-    relationships: []
-    conditions: {}
-    returns: []
-    extensions: {}
-    maxResults: 1000
-  messageType: <可选>
-  validateOnly: false
+```text
+请调用本体平台的数据访问能力，按如下要求生成并执行 OQL：
+- schemaRef：<本体 schema>
+- 操作类型：QUERY / ASSOCIATION_QUERY / AGGREGATE
+- 查询对象：<对象与别名>
+- 关系路径：<仅 ASSOCIATION_QUERY 需要，关系名必须来自本体子图或业务已确认建模>
+- 过滤条件：<字段、操作符、值>
+- 返回字段：<对象、字段、指标、维度函数>
+- 扩展要求：<如 SEC 分表时间、本地时间/UTC、DAC 后端倾向、维度升维策略>
+- 返回要求：保留 OAC 原始字段，不省略字段；结果为空即为空，不重复查询。
 ```
 
-平台 Skill 只接收当前这一步的 `oacSkillInput`，不接收本 Skill 的业务 workflow。
+当需要先执行 Function 再查询 OAC 时，本 Skill 先自然语言委托平台调用 Function，拿到函数结果后，再把结果填入下一条自然语言 OAC 委托中。
+
+当需要两步查询时，本 Skill 先完成第一步查询，读取结果，再将结果作为第二步自然语言查询条件；不要把变量绑定协议交给平台。
 
 ---
 
-## 多步调用规则
+## 3. 业务场景识别
 
-### 规则1：先 Function 后 OAC
+读取 `knowledge/multidim-query.md`，按以下场景分类：
 
-如果业务要求先执行对象 Function，再执行 OAC 查询：
-
-1. 本 Skill 先调用平台函数能力。
-2. 本 Skill 读取函数返回结果。
-3. 本 Skill 将函数输出填入后续 OAC 的 `completeOql.conditions` 或 `completeOql.returns`。
-4. 本 Skill 再按照 OAC 输入模板调用本体访问能力。
-
-平台 Skill 不需要知道这是一个 workflow，只处理每一次当前调用。
-
-### 规则2：先关系主键后指标
-
-如果业务要求先通过栅格 A 查小区 ID，再查小区 PRB：
-
-1. 本 Skill 生成 Step1 的 `ASSOCIATION_QUERY` 型 `oacSkillInput`。
-2. 调用 OAC 后读取返回的 `CELL_ID`。
-3. 本 Skill 将 `CELL_ID` 填入 Step2 的 `QUERY` 型 `completeOql.conditions.children[].values`。
-4. 再次调用 OAC。
-
-禁止把 `variableBinding` 传给平台 OAC；绑定动作必须由本业务 Skill 自己完成。
+1. 不跨对象查询维度。
+2. 跨对象关联相同指标/度量，且用户显式指定多个维度。
+3. 跨对象关联相同指标/度量，用户表达“对应 / 归属”。
+4. 跨对象未关联相同指标/度量，但用户显式指定多个维度。
+5. 跨对象未关联相同指标/度量，且不存在维表升维，需要先查关系主键，再查目标指标。
 
 ---
 
-## 输出要求
+## 4. 时间语义处理
 
-1. 本 Skill 对平台 OAC 的输出必须是 `oacSkillInput`，不是 `executionPlan`。
-2. `completeOql` 必须是合法 OQL JSON。
-3. 查询动作必须写在 `completeOql.operation` 中。
-4. 如果使用 SEC 扩展参数，必须放到 `completeOql.extensions.sec` 下。
-5. 如果使用 ID / NAME 维度函数，必须使用 OQL 结构化函数表达式。
-6. 如果模型信息不足，明确指出缺少对象、字段、关系或能力，不得臆造。
+读取 `knowledge/sec-time.md`。
+
+- 如果用户说明本地时间，则在自然语言委托中明确“按本地时间解释，并要求 OQL extensions 中携带本地时间分表策略”。
+- 如果用户说明 UTC 时间，则明确“按 UTC 时间解释，并要求 OQL extensions 中携带 UTC 分表策略”。
+- 如果用户未说明时间制式，则按场景默认策略处理；仍需在自然语言委托中写清楚所采用的默认时间制式。
 
 ---
 
-## 参考文件
+## 5. ID / NAME 维度函数处理
 
-- `knowledge/multidim-query.md`：多维查询场景识别规则
-- `knowledge/sec-time.md`：SEC 时间与分表时间语义
-- `knowledge/id-name-function.md`：ID / NAME 维度函数语义
-- `workflows/sec-multidim-workflows.md`：业务侧 workflow 示例
-- `oql/extension-policy.md`：OQL extensions 和 `oacSkillInput` 生成约束
-- `platform-skill/Ontology-platform-unified-skill/references/oac-skill-input-template.md`：平台 OAC 输入模板
+读取 `knowledge/id-name-function.md`。
+
+- 用户要 ID 维度时，要求平台生成 OQL 时使用 ID 维度表达，例如 `ID(field)` 或平台已注册的等价函数。
+- 用户要名称维度时，要求平台生成 OQL 时使用 NAME 维度表达，例如 `NAME(field)` 或平台已注册的等价函数。
+- 若平台不支持该函数表达，应说明需要 OAC / DAC 注册对应函数，不得把 ID 和 NAME 混为一个字段。
+
+---
+
+## 6. 执行原则
+
+1. 业务步骤顺序由本 Skill 自己规划。
+2. 平台 Skill 只接收当前自然语言步骤，不感知本 Skill 内部 workflow。
+3. 每一步委托都要说清楚操作类型、对象、条件、返回字段和扩展要求。
+4. 涉及关系路径时，关系名优先来自本体子图；若业务已确认建模关系，也要明确说明关系名和方向。
+5. 如果第一步结果为空，后续依赖步骤直接为空，不重复查询。
+6. OAC 返回什么字段，就原样保留什么字段；本 Skill 只在最终回答中做业务解释。
+
+---
+
+## 7. 参考文档
+
+- `knowledge/multidim-query.md`：多维查询场景识别规则。
+- `knowledge/sec-time.md`：SEC 时间语义和分表时间规则。
+- `knowledge/id-name-function.md`：ID / NAME 维度函数语义。
+- `workflows/sec-multidim-workflows.md`：自然语言业务流程示例。
+- `oql/extension-policy.md`：OQL 扩展参数的自然语言注入策略。
+- `templates/oac-natural-language-request.md`：业务 Skill 调用 OAC 的自然语言委托模板。
