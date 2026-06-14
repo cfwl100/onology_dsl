@@ -1,77 +1,64 @@
 # SEC 时间语义与分表时间规则
 
-## 1. 职责
+本文件定义 SEC 多维查询中时间语义的业务识别规则。业务 Skill 只用自然语言把时间要求传递给平台，不要求平台识别新增协议字段。
 
-本文件定义 SEC 多维查询中，自然语言时间表达到 OQL 条件和 `extensions.sec.partitionTime` 的映射规则。
+## 1. 时间语义识别
 
-业务 Skill 负责识别用户原始问题中的时间语义，并将结果注入到 `completeOql.conditions` 与 `completeOql.extensions.sec.partitionTime`。
+用户可能使用以下时间表达：
 
----
+- 最近 5 分钟、最近 1 小时、最近一天
+- 今天、昨天、本周、本月
+- 本地时间
+- UTC 时间
+- 业务忙时、账期时间、采样时间
 
-## 2. 时间模式
+业务 Skill 必须先判断：
 
-SEC 场景支持两类分表时间：
+1. 用户是否明确指定时间范围。
+2. 用户是否明确指定本地时间或 UTC 时间。
+3. 当前查询对象默认使用哪个时间字段。
+4. SEC 分表时间字段是否需要额外说明。
 
-| timeMode | 含义 | 适用场景 |
-|---|---|---|
-| `LOCAL_TIME` | 本地时间 | 用户明确说“本地时间”、业务默认按本地账期/本地自然日切分 |
-| `UTC` | UTC 时间 | 用户明确说“UTC”、数据源按 UTC 时间戳分表 |
+## 2. 本地时间与 UTC 时间
 
-如果用户未明确指定，按场景配置决定默认值。建议 SEC 默认：
+### 本地时间
 
-```yaml
-defaultTimeMode: UTC
-defaultSourceTimeZone: Asia/Shanghai
+如果用户说“本地时间”“北京时间”“当地时间”，自然语言委托中必须说明：
+
+```text
+时间条件按本地时间解释。生成 OQL 时，请把时间范围转换为 OAC 可识别的时间条件；如果 OQL 支持 extensions，请在 SEC 扩展参数中表达 partitionTime.timeMode=LOCAL，并标明 sourceTimeZone。
 ```
 
----
+### UTC 时间
 
-## 3. OQL 条件注入
+如果用户说“UTC 时间”“按 UTC 查”，自然语言委托中必须说明：
 
-时间范围必须进入 `conditions`：
-
-```yaml
-conditions:
-  - ref: o
-    field: "3600"
-    operator: GTE
-    values: ["<startEpoch>"]
-  - ref: o
-    field: "3600"
-    operator: LT
-    values: ["<endEpoch>"]
+```text
+时间条件按 UTC 时间解释。生成 OQL 时，请把时间范围作为 UTC 时间条件处理；如果 OQL 支持 extensions，请在 SEC 扩展参数中表达 partitionTime.timeMode=UTC。
 ```
 
----
+### 用户未说明时间制式
 
-## 4. extensions 注入
+如果用户没有说明时间制式，按场景默认策略处理。默认策略应在自然语言委托中显式说明，例如：
 
-SEC 分表时间相关扩展参数必须放到：
-
-```yaml
-extensions:
-  sec:
-    partitionTime:
-      timeMode: UTC
-      sourceTimeZone: Asia/Shanghai
-      partitionField: "3600"
+```text
+用户未说明时间制式，本次按 SEC 场景默认本地时间处理。
 ```
 
-字段说明：
+## 3. 分表时间表达
 
-| 字段 | 说明 |
-|---|---|
-| `timeMode` | `UTC` 或 `LOCAL_TIME` |
-| `sourceTimeZone` | 原始业务时间所属时区，例如 `Asia/Shanghai` |
-| `partitionField` | 分表时间字段，例如 `3600` |
-| `timeRangeSource` | 可选，说明时间来自用户输入、业务默认值或上一步结果 |
+SEC 场景存在分表时间诉求。业务 Skill 不直接调用物理分表逻辑，但必须在自然语言中说明：
 
----
+```text
+这是 SEC 分表时间查询。生成 OQL 时，如支持 extensions，请将分表时间要求放入 extensions.sec.partitionTime，包含 timeMode、sourceTimeZone、partitionField 等信息；不得把分表时间硬编码为物理 SQL。
+```
 
-## 5. 约束
+## 4. 时间条件与业务条件的关系
 
-1. 时间范围必须写入 `conditions`，不能只写入 `extensions`。
-2. `extensions.sec.partitionTime` 只描述分表时间策略，不能替代过滤条件。
-3. 不得在 `extensions` 中写物理查询语句。
-4. 如果用户没有给时间，且业务场景要求必须给时间，应返回缺失信息。
-5. 如果业务场景允许默认时间，必须在 `extensions.sec.partitionTime.timeRangeSource` 标明默认来源。
+时间范围必须作为查询过滤条件的一部分，不能只写在扩展参数中。
+
+自然语言委托示例：
+
+```text
+过滤条件包括：采样时间字段 3600 大于等于 1774483250 且小于 1774569650；本次时间按 UTC 解释；如生成 OQL 支持 extensions，请同步表达 SEC 分表时间 timeMode=UTC，partitionField=3600。
+```
