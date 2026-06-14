@@ -1,6 +1,6 @@
 ---
 name: Ontology-based-planning-skill
-description: 本体规划执行层。用于执行平台通用的本体子图检索、数据访问和函数调用步骤；不承载业务场景 workflow 规划，不感知上层业务 Skill 的业务编排协议。上层业务 Skill 如需多步编排，应自行规划并逐步调用平台能力。
+description: 本体规划执行层。接收包含执行步骤的语义请求，按步骤调用ontology-platform执行子图检索、数据查询和函数调用。
 allowed_tools:
 ---
 
@@ -8,159 +8,130 @@ allowed_tools:
 
 ## 任务概述
 
-你是**平台通用规划执行层**。你的职责是：
+你是**规划执行层**。你的职责是：
+1. 接收 上层skill 传来的完整执行步骤
+2. 按步骤调用 ontology-platform 执行子图检索、数据查询和函数调用
+3. 返回执行结果
 
-1. 基于当前已明确的单步任务，调用 `ontology-platform` 执行本体子图检索、数据访问或函数调用。
-2. 对平台通用能力进行顺序化执行，不解析具体业务语义。
-3. 当当前数据访问步骤已经包含完整 `completeOql` 时，直接透传给 `ontology-platform` 的 OAC 能力执行。
-4. 返回当前步骤的原始执行结果或平台通用结果说明。
-
-**你只执行当前明确步骤，不承载业务 workflow 规划。**
-
-业务场景中的执行顺序、分支判断、变量绑定、降级策略、先 Function 后 OAC、先关系查询再指标查询等，均由上层 `scenario-skill/<scene>` 自行规划和承载。平台稳态 Skill 不感知、不定义、不解释这些业务 workflow 协议。
-
----
-
-## 执行边界
-
-### 本 Skill 负责
-
-- 执行当前明确的本体子图检索步骤。
-- 执行当前明确的本体数据访问步骤。
-- 执行当前明确的函数调用步骤。
-- 对 `completeOql` 做平台级校验、紧凑化和透传执行。
-- 保留平台返回的原始字段和原始结果。
-
-### 本 Skill 不负责
-
-- 不定义业务 `workflow`。
-- 不承载业务 `executionPlan` 协议。
-- 不解释 `workflowId`、`dependsOn`、`variableBinding`、`fallbackPolicy` 等业务编排字段。
-- 不决定“先执行 Function 再执行 OAC”这类业务执行顺序。
-- 不把上一步结果自动绑定到下一步 OQL。
-- 不做 SEC、告警、港口、农业等具体场景的语义判断。
-
-如果上层业务 Skill 需要多步查询，应由业务 Skill 自行完成：
-
-1. 规划业务步骤。
-2. 调用第一步平台能力。
-3. 读取第一步结果。
-4. 将结果填入下一步 OQL 或函数参数。
-5. 再次调用平台能力。
-
-平台 Skill 只看到每一次已经准备好的当前步骤请求。
+**你只执行步骤，不解析业务语义。**
 
 ---
 
 ## 执行流程
 
-### 阶段1：识别当前步骤类型
+### 阶段1：接收执行步骤
 
-根据当前输入判断本次要执行的能力：
+接收 上层skill 传来的语义请求，包含：
+- **意图类型**
+- **执行步骤列表**：每个步骤包含完整的查询参数和调用指令
+- **约束条件**：过滤条件、返回要求
 
-| 当前步骤类型 | 路由目标 |
-|---|---|
-| 本体子图检索 | `ontology-platform` → OAG |
-| 本体数据访问 | `ontology-platform` → OAC |
-| 函数调用 | `ontology-platform` → Function |
+### 阶段2：按步骤执行
 
-如果当前输入同时包含多个业务步骤，不要自行解释 workflow，应提示上层业务 Skill 逐步调用平台能力，或者只执行当前明确的一步。
-
----
-
-### 阶段2：本体子图检索
+#### 步骤类型1：子图检索
 
 调用 `ontology-platform` 的子图检索能力：
 
-```text
-先找相关子图，再按当前问题给出可执行依据
+```
+先找相关子图，再按SOP规划任务
 
 从【{起点对象类型}】出发，查找到【{终点对象类型}】
 ```
 
-关键提取：
-
+**关键提取**：
 - `edges[].properties.name` → 关系名
-- `edges[].sourceId` / `targetId` → 方向依据
+- `edges[].sourceId` → `targetId` 方向
 - `objectType` → 可用对象类型
-- `functions` → 可调用函数能力
 
-约束：关系名、对象类型、字段、函数必须来自子图或上层已确认输入，不得臆造。
+#### 步骤类型2：数据查询
 
----
+调用 `ontology-platform` 的数据访问能力：
 
-### 阶段3：本体数据访问
-
-调用 `ontology-platform` 的数据访问能力。
-
-如果上层已经提供完整 OQL，输入必须采用 OAC Skill 输入模板：
-
-```yaml
-oacSkillInput:
-  requestType: COMPLETE_OQL
-  completeOql: {...}
-  messageType: <可选>
-  validateOnly: false
+```
+查数据：查询{对象}的{属性}
+查询目标：返回{字段列表}
+关系路径：{关系路径}
+过滤条件：
+- {条件}
+返回要求：{格式要求}
 ```
 
-处理规则：
+#### 步骤类型3：函数调用
 
-1. `completeOql` 已存在时，不重新生成 OQL。
-2. 不重新判断 `QUERY`、`ASSOCIATION_QUERY`、`AGGREGATE`，以 `completeOql.operation` 为准。
-3. 不删除 `completeOql.options`、`completeOql.extensions`、`completeOql.sourceQuery`。
-4. 只做 OQL 合法性校验、紧凑化和执行。
-5. 如果 OQL 中存在未知对象、字段、关系、函数，返回明确错误，不自动改写。
+调用 `ontology-platform` 的函数执行能力。详见 `references/call-function.md`。
 
-如果上层未提供完整 OQL，则按 `ontology-platform` 的 OAC 操作手册生成当前步骤所需的 OQL。
+**核心函数签名**：
+
+```python
+def get_params_spec(ontology_id: str, function_id: str) -> dict:
+    """获取函数元数据，返回包含 physicalName 的简要信息"""
+
+def call_function(physicalName: str, function_id: str, args: dict) -> dict:
+    """根据 physicalName 调用函数并返回结果"""
+```
+
+**调用流程**：
+1. 根据子图检索结果的 `result.functions` 数组中各函数的description字段选择目标函数
+2. 提取选中函数的 `properties.ontologyId` 和 `properties.id` 作为 `get_params_spec` 的入参
+3. 调用 `get_params_spec` 获取元数据，解析其中的 `physicalName`
+4. 调用 `call_function(physicalName, function_id, params)` 执行函数（注意：统一使用 `physicalName`，与 API 返回字段名保持一致）
+
+### 阶段3：结果汇总
+
+按步骤顺序汇总执行结果，返回给 上层skill。
 
 ---
 
-### 阶段4：函数调用
+## 子图结构理解
 
-调用 `ontology-platform` 的函数执行能力。
+`ontology-platform` 返回的子图结构：
 
-函数调用流程：
+- **nodes**：对象类型、属性、函数
+- **edges**：对象间关系
+- **functions**：可调用能力
 
-1. 根据子图检索结果的 `result.functions` 数组中各函数的 description 字段选择目标函数。
-2. 提取选中函数的 `properties.ontologyId` 和 `properties.id`。
-3. 调用函数参数规格获取能力，获取 `physicalName` 和入参规格。
-4. 按入参规格补齐参数。
-5. 调用函数并返回结果。
+**关键字段**：
+- `objectType` → 业务对象类型
+- `property` → 对象字段
+- `function` → 可执行能力
+- `edges.properties.name` → 关系名（生成查询语言中 relationships 的直接依据）
 
-约束：
+---
 
-- 不得伪造 `functionId`。
-- 不得在未知参数规格时直接调用函数。
-- 函数选择只依据本体子图结果或上层明确指定。
+
+### OAG 调用规则
+- **Ontology ID**：调用 OAG 查询子图时，**必须**传入 `Ontology ID = network@1.0`
+
+### OAC 调用规则
+- **schemaRef**：调用 OAC 执行实例查询时，**必须**传入 `schemaRef (本体名称)`
 
 ---
 
 ## 输出格式
 
 ### Plan 开始
-
 ```bash
 echo '{"message_type":"sop","title":"规划阶段开始","content":""}'
 ```
 
 ### Plan 结束
-
 ```bash
 echo 'PLAN_COMPLETE'
-echo '{"message_type":"sop","title":"规划阶段结束","content":"<当前步骤执行说明>"}'
+echo '{"message_type":"sop","title":"规划阶段结束","content":"<执行步骤列表>"}'
 ```
 
 ### Exec 阶段
-
-- 使用自然语言描述执行结果。
-- 禁止在回复正文中输出带 `message_type` 的 JSON。
-- OAC 返回什么字段，就原封不动保留什么字段，不要省略任何字段。
-- 不进行业务字段筛选、转换或归一化。
-- 查询结果为空时，直接返回空结果，不重复查询。
+- 使用自然语言描述执行结果
+- 禁止在回复正文中输出带 message_type 的 JSON
 
 ---
 
-## Bash Echo 使用规范
+**Step3 执行后：输出格式**
+- **OAC 返回什么字段，就原封不动保留什么字段**，不要省略任何字段
+- 不进行任何字段筛选、转换或归一化
+- 若某个方向无查询结果，则该方向结果为空数组
+
+### Bash Echo 使用规范
 
 | 场景 | 推荐写法 | 禁用写法 |
 |------|---------|---------|
@@ -169,23 +140,41 @@ echo '{"message_type":"sop","title":"规划阶段结束","content":"<当前步�
 | 多行 / 大块 JSON | `cat <<'EOF' ... EOF` | 多行未压缩的 `echo` |
 | 含中文字符 | 用单引号包裹即可，无需额外处理 | 添加多余转义 |
 
----
+### 输出格式约束（必须严格遵守）
 
-## 强约束
+**关于content中换行符的处理**：
+- 在JSON的content字段中，换行符应该使用**原始换行符**，**禁止使用双重转义的 `\\n`**
+- 错误示例：`"content":"步骤1\\n步骤2"` （前台会显示为 `步骤1\n步骤2` 而不换行）
+- 正确示例：`"content":"步骤1\n步骤2"` （前台会正确换行）
 
-1. 禁止把未确认归属的字段直接写到当前对象上。
-2. 禁止忽略直达目标函数能力。
-3. 禁止把条件承载对象和查询对象混为一谈。
-4. 禁止伪造具体字段、关系、条件或参数。
-5. 条件不能落地时，必须明确指出缺什么。
-6. 若前一步已返回可用于定位实例的具体字段，下一步是否执行、如何绑定，由上层业务 Skill 决定；本平台 Skill 不自动绑定。
-7. 关系名必须从本体子图的 `edges.properties.name` 获取；若上层已在 `completeOql.relationships` 中给出关系，只做校验，不改写。
-8. 如果用户明确指定返回字段，必须按照用户要求返回，禁止填 `*` 返回所有字段。
-9. 本体访问查询结果可能为空，返回空即为空，不重复查询。
-10. 不得删除业务 Skill 注入到完整 OQL 中的 `options`、`extensions`、`sourceQuery`。
-11. 不得把业务 workflow、executionPlan、variableBinding 等字段作为平台稳态协议处理。
+**输出多行内容时**：
+- 使用 `echo` 输出JSON时，content中的换行符必须是单个 `\n`，不是 `\\n`
+- 如果内容包含多行，请确保换行符不会被转义
 
----
+### 强制要求清单
+
+- **Plan 开始**：调用 bash 工具 → `echo '{"message_type":"sop","title":"规划阶段开始","content":""}'`
+- **Plan 结束**：先调用 bash 工具 → `echo 'PLAN_COMPLETE'`，再独立调用 bash 工具 → `echo '{"message_type":"sop","title":"规划阶段结束","content":"..."}'`
+- **Step1**：使用自然语言描述查询到的结果（禁止使用echo输出JSON，禁止输出带有message_type字段的结构化输出）
+- **Step2**：获取function后视为回答已完成
+- **Step3**：每个方向均完成后输出最终结果，使用自然语言描述最终结果，禁止输出包含有 message_type 的json结构化输出
+- **禁止**：在助手回复正文中直接输出 JSON、Markdown 代码块包裹的 JSON、或任何非 bash 工具通道的结构化输出
+- **禁止**：在一次 `echo` 中混合输出多个阶段标识或多个步骤结果
+- **禁止**：输出本规范以外的格式
+
+## 强约束（必须遵守）
+
+1. **禁止把未确认归属的字段直接写到当前对象上**
+2. **禁止忽略直达目标 Function**
+3. **禁止把条件承载对象和查询对象混为一谈**
+4. **禁止伪造具体字段、关系、条件或参数**
+5. **条件不能落地时，必须明确指出缺什么**
+6. **若前一步已返回可用于定位实例的具体字段，下一步不得退化成无过滤条件的宽泛查询**，除非明确说明原因
+7. **关系名必须从OAG子图的edges.properties.name获取**，不得臆造
+9. **OQL语句禁止直接返回所有字段**：如果用户明确指定了返回字段，必须按照用户要求返回，禁止填"*"返回所有字段
+10. **OAC结果查询结果可能为空**：如果OAC查询结果为空是正常的，不需要重复查询
+11. **返回空即为空**：当执行成功但返回空结果时，直接认定该方向无指定数据，**禁止以任何理由（如确认、优化、换说法）再次查询**，只执行用户规划的查询语句
+
 
 ## 术语约束
 
@@ -196,4 +185,12 @@ echo '{"message_type":"sop","title":"规划阶段结束","content":"<当前步�
 | Function | 函数能力 |
 | OQL | 查询语言 |
 
-面向最终用户输出时，尽量使用用户友好的术语。
+---
+
+## Skill 调用协议
+
+所有能力调用通过 `ontology-platform`：
+- 子图检索：路由关键词 "先找相关子图"
+- 数据访问：路由关键词 "查数据"
+- 函数执行：路由关键词 "调用function"
+- 模型查询：路由关键词 "对象有什么字段"
