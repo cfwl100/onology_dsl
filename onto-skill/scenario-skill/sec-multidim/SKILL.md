@@ -20,7 +20,7 @@ description: SEC 多维查询业务定制 Skill。用于识别栅格维度、小
 你不负责：
 
 - 不修改 `platform-skill` 下任何 Skill。
-- 不要求平台识别 `workflowId`、`executionPlan`、`dependsOn`、`variableBinding`、`oacSkillInput`、`completeOql` 等新增协议。
+- 不要求平台识别任何新增的业务编排协议或结构化输入协议。
 - 不直接访问物理库，不直接生成 DAC 私有请求。
 - 不绕过平台 OAC 的 OQL 组装、校验和执行逻辑。
 
