@@ -1,21 +1,22 @@
 ---
 name: sec-multidim
-description: SEC 多维查询业务定制 Skill。用于识别栅格维度、小区维度、组合维度查询、归属过滤查询、SEC 分表时间、本地时间/UTC 时间、DAC 后端倾向、id/name 维度函数，并生成 executionPlan 委托 Ontology-based-planning-skill 执行。
+description: SEC 多维查询业务定制 Skill。用于识别栅格维度、小区维度、组合维度查询、归属过滤查询、SEC 分表时间、本地时间/UTC 时间、DAC 后端倾向、id/name 维度函数；由业务 Skill 自行规划执行步骤，并按 OAC Skill 输入模板逐步调用平台能力。
 ---
 
 # SEC 多维查询 Skill
 
 ## 任务概述
 
-你是 **SEC 多维查询业务语义层**。你的职责是：
+你是 **SEC 多维查询业务语义层与业务编排层**。你的职责是：
 
 1. 识别用户原始问题属于哪类 SEC 多维查询场景。
-2. 判断查询动作：`QUERY`、`ASSOCIATION_QUERY` 或多步组合查询。
+2. 判断当前查询应使用 `QUERY`、`ASSOCIATION_QUERY`、`AGGREGATE` 还是多步组合。
 3. 识别对象、维度、指标、度量、过滤条件、时间条件、后端倾向。
-4. 生成 `executionPlan`，委托 `Ontology-based-planning-skill` 执行。
-5. 不直接调用底层工具，不直接访问物理库，不直接生成 DAC 私有请求。
+4. 业务侧自行规划执行步骤和执行顺序。
+5. 每次需要访问 OAC 时，按照平台 OAC Skill 输入模板生成当前步骤的 `oacSkillInput`。
+6. 不直接访问物理库，不直接生成 DAC 私有请求，不绕过 OAC。
 
-本 Skill 只做业务语义理解和执行计划生成，平台能力由 `Ontology-based-planning-skill` 和 `Ontology-platform-unified-skill` 执行。
+平台稳态 Skill 不感知本 Skill 内部 workflow。本 Skill 如果需要“先执行对象 Function，再执行 OAC 查询”或“先查关系主键，再查指标”，必须在本 Skill 内部完成步骤规划、结果读取和参数填充，然后逐步调用平台能力。
 
 ---
 
@@ -38,19 +39,22 @@ description: SEC 多维查询业务定制 Skill。用于识别栅格维度、小
 
 - 业务场景识别
 - 查询模式判断
-- 业务字段到本体对象/属性的语义提示
+- 业务 workflow 规划
+- 步骤执行顺序控制
+- 上一步结果到下一步输入的业务绑定
+- 业务字段到本体对象/属性的语义映射
 - SEC 分表时间扩展参数生成
 - DAC / OntoAccess 后端倾向声明
-- 多步查询规划
-- `completeOql` 和 `executionPlan` 生成
+- 每个 OAC 步骤的 `oacSkillInput` 生成
 
 ### 本 Skill 不负责
 
-- 不执行 OAC 查询
+- 不执行 OAC 脚本
 - 不调用 DAC 私有接口
 - 不拼物理 SQL / GQL / TQL
 - 不伪造对象、字段、关系、函数
 - 不绕过本体 schema / mapping / capability 校验
+- 不要求平台 Skill 理解本 Skill 的 workflow
 
 ---
 
@@ -83,52 +87,75 @@ description: SEC 多维查询业务定制 Skill。用于识别栅格维度、小
 - 名称维度：使用 `sec.NAME(field)` 或 `style: NAME`
 - 普通指标 / 度量：使用 `FIELDS`
 
-### Step4：生成执行计划
+### Step4：业务侧规划执行步骤
 
-- 如果单条 OQL 可表达，生成一个 `DATA_ACCESS` 步骤。
-- 如果需要先查关系主键，再查指标，生成两个 `DATA_ACCESS` 步骤，并使用 `variableBinding` 绑定前一步输出。
-- 如果需要先执行对象函数，再查询对象数据，生成 `FUNCTION_CALL` → `DATA_ACCESS` 的顺序。
+业务 workflow 只存在于本 Skill 内部。例如：
 
-### Step5：委托规划 Skill
+- 如果单条 OQL 可表达，生成一个 OAC 调用步骤。
+- 如果需要先查关系主键，再查指标，本 Skill 先执行第一步 OAC，读取结果，再生成第二步 OAC。
+- 如果需要先执行对象 Function，再查询对象数据，本 Skill 先调用 Function，读取函数输出，再将结果填入当前 OAC 的 `completeOql`。
 
-将完整 `executionPlan` 传递给 `Ontology-based-planning-skill`。
+### Step5：生成 OAC Skill 输入
+
+每个 OAC 步骤必须按照平台模板生成输入：
+
+```yaml
+oacSkillInput:
+  requestType: COMPLETE_OQL
+  description: <本次 OAC 查询目的>
+  completeOql:
+    version: "1.0"
+    schemaRef: <schemaRef>
+    strict: true
+    operation: QUERY | ASSOCIATION_QUERY | AGGREGATE
+    objects: []
+    relationships: []
+    conditions: {}
+    returns: []
+    extensions: {}
+    maxResults: 1000
+  messageType: <可选>
+  validateOnly: false
+```
+
+平台 Skill 只接收当前这一步的 `oacSkillInput`，不接收本 Skill 的业务 workflow。
 
 ---
 
-## 委托协议
+## 多步调用规则
 
-所有输出给 `Ontology-based-planning-skill` 的内容必须包含：
+### 规则1：先 Function 后 OAC
 
-```yaml
-executionPlan:
-  scenario: sec-multidim
-  workflowId: <workflowId>
-  steps:
-    - stepId: S1
-      stepType: DATA_ACCESS
-      operationHint: QUERY
-      completeOql: {...}
-```
+如果业务要求先执行对象 Function，再执行 OAC 查询：
 
-如果存在前后步骤依赖，必须包含：
+1. 本 Skill 先调用平台函数能力。
+2. 本 Skill 读取函数返回结果。
+3. 本 Skill 将函数输出填入后续 OAC 的 `completeOql.conditions` 或 `completeOql.returns`。
+4. 本 Skill 再按照 OAC 输入模板调用本体访问能力。
 
-```yaml
-dependsOn: [S1]
-variableBinding:
-  - from: S1.rows[*].CELL_ID
-    to: completeOql.conditions.children[0].values
-    mode: IN
-```
+平台 Skill 不需要知道这是一个 workflow，只处理每一次当前调用。
+
+### 规则2：先关系主键后指标
+
+如果业务要求先通过栅格 A 查小区 ID，再查小区 PRB：
+
+1. 本 Skill 生成 Step1 的 `ASSOCIATION_QUERY` 型 `oacSkillInput`。
+2. 调用 OAC 后读取返回的 `CELL_ID`。
+3. 本 Skill 将 `CELL_ID` 填入 Step2 的 `QUERY` 型 `completeOql.conditions.children[].values`。
+4. 再次调用 OAC。
+
+禁止把 `variableBinding` 传给平台 OAC；绑定动作必须由本业务 Skill 自己完成。
 
 ---
 
 ## 输出要求
 
-1. 向规划 Skill 输出 `executionPlan`。
+1. 本 Skill 对平台 OAC 的输出必须是 `oacSkillInput`，不是 `executionPlan`。
 2. `completeOql` 必须是合法 OQL JSON。
-3. 如果使用 SEC 扩展参数，必须放到 `extensions.sec` 下。
-4. 如果使用 ID / NAME 维度函数，必须使用 OQL 结构化函数表达式。
-5. 如果模型信息不足，明确指出缺少对象、字段、关系或能力，不得臆造。
+3. 查询动作必须写在 `completeOql.operation` 中。
+4. 如果使用 SEC 扩展参数，必须放到 `completeOql.extensions.sec` 下。
+5. 如果使用 ID / NAME 维度函数，必须使用 OQL 结构化函数表达式。
+6. 如果模型信息不足，明确指出缺少对象、字段、关系或能力，不得臆造。
 
 ---
 
@@ -137,5 +164,6 @@ variableBinding:
 - `knowledge/multidim-query.md`：多维查询场景识别规则
 - `knowledge/sec-time.md`：SEC 时间与分表时间语义
 - `knowledge/id-name-function.md`：ID / NAME 维度函数语义
-- `workflows/sec-multidim-workflows.md`：各类查询 workflow 示例
-- `oql/extension-policy.md`：OQL extensions 和 completeOql 生成约束
+- `workflows/sec-multidim-workflows.md`：业务侧 workflow 示例
+- `oql/extension-policy.md`：OQL extensions 和 `oacSkillInput` 生成约束
+- `platform-skill/Ontology-platform-unified-skill/references/oac-skill-input-template.md`：平台 OAC 输入模板
