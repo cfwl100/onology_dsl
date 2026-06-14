@@ -6,7 +6,7 @@
 >
 > 聚合结果过滤统一使用 `aggregateFilter` 表达。`aggregateFilter` 语义等价于 SQL 中的 `HAVING`，但 OQL 不直接暴露数据库方言关键字。
 >
-> OQL 支持受控的函数表达式能力。核心内置函数仅覆盖对象属性轻量转换、时间归一、空值处理等语义访问必要能力；非核心函数应通过 OAC 函数注册表扩展，不应直接暴露数据库方言函数。
+> OQL 支持受控的函数表达式能力。核心内置函数仅覆盖对象属性轻量转换、时间归一、空值处理、字段语义标识等语义访问必要能力；非核心函数应通过 OAC 函数注册表扩展，不应直接暴露数据库方言函数。
 
 ---
 
@@ -258,6 +258,7 @@ OQL 默认只内置语义访问必要的核心函数。核心函数必须具备�
 | 字符串函数 | `LENGTH`、`LOWER`、`UPPER`、`TRIM`、`SUBSTRING`、`CONCAT` |
 | 时间函数 | `NOW`、`DATE_TRUNC`、`YEAR`、`MONTH`、`DAY`、`HOUR`、`MINUTE`、`SECOND`、`DATE_ADD`、`DATE_SUB`、`DATEDIFF` |
 | 空值处理 | `COALESCE`、`IFNULL` |
+| 字段语义标识函数 | `ID`、`NAME` |
 
 以下函数不作为核心内置函数默认开放，如确有需要，应通过扩展函数注册机制开放：
 
@@ -316,7 +317,82 @@ TO_DATETIME
 }
 ```
 
-#### 3.3.5 扩展函数注册机制
+#### 3.3.5 字段语义标识函数 `ID` / `NAME`
+
+`ID` 与 `NAME` 是 OQL 核心内置函数，用于在返回字段或分组字段中显式标识某个字段承载的是“标识值（id）”还是“名称值（name）”。这两个函数是**字段语义标记函数**，不表示数据库函数调用，也不改变字段原始值。
+
+Agent 在理解到用户表达“ID、标识、编号、编码、id(field)”等语义时，应使用 `ID(field)`；理解到“名称、名字、name(field)”等语义时，应使用 `NAME(field)`。
+
+规范化表达要求：
+
+1. JSON 中函数名统一使用大写 `ID`、`NAME`；用户自然语言或伪代码中的 `id()`、`name()` 应规范化为 `ID`、`NAME`。
+2. `ID` / `NAME` 必须且只能有 1 个参数。
+3. 参数必须是 `kind = "FIELD"` 的字段表达式，不允许嵌套函数、字面量、聚合指标或关系遍历表达式。
+4. `ID` / `NAME` 只能用于标识返回维度或分组维度的字段语义，不应用于普通指标、度量值或写入值。
+5. `ID` / `NAME` 不要求通过扩展函数注册表注册；其语义由 OQL 核心规范固定定义。
+6. 执行层可将 `ID(field)` 映射为“维度字段：标识样式”，将 `NAME(field)` 映射为“维度字段：名称样式”。
+
+返回 ID 字段示例：
+
+```json
+{
+  "kind": "EXPR",
+  "expr": {
+    "kind": "FUNCTION",
+    "name": "ID",
+    "args": [
+      {
+        "kind": "FIELD",
+        "ref": "c",
+        "field": "cellId"
+      }
+    ]
+  },
+  "alias": "cellId"
+}
+```
+
+返回名称字段示例：
+
+```json
+{
+  "kind": "EXPR",
+  "expr": {
+    "kind": "FUNCTION",
+    "name": "NAME",
+    "args": [
+      {
+        "kind": "FIELD",
+        "ref": "c",
+        "field": "cellName"
+      }
+    ]
+  },
+  "alias": "cellName"
+}
+```
+
+函数型分组示例：
+
+```json
+{
+  "kind": "GROUP_BY",
+  "expr": {
+    "kind": "FUNCTION",
+    "name": "ID",
+    "args": [
+      {
+        "kind": "FIELD",
+        "ref": "c",
+        "field": "regionId"
+      }
+    ]
+  },
+  "alias": "regionId"
+}
+```
+
+#### 3.3.6 扩展函数注册机制
 
 OAC 可以通过函数注册表开放扩展函数。扩展函数必须先注册、后使用；Agent 不得生成未注册函数。
 
@@ -377,14 +453,14 @@ OAC 可以通过函数注册表开放扩展函数。扩展函数必须先注册�
 5. 扩展函数不得破坏本体对象、关系、属性的语义边界。
 6. 复杂业务规则应优先沉淀为本体派生属性、指标模型、预聚合模型或领域服务，不应大量塞入 OQL 函数。
 
-#### 3.3.6 函数使用位置
+#### 3.3.7 函数使用位置
 
 `FUNCTION` 允许出现在以下位置：
 
 1. `conditions.left`：用于函数过滤条件；
-2. `returns.kind = "EXPR"` 的 `expr`：用于返回派生字段；
-3. `returns.kind = "GROUP_BY"` 的 `expr`：用于函数型分组，例如时间桶；
-4. `mutation.data.properties` 或 `mutation.set`：用于写操作动态值。
+2. `returns.kind = "EXPR"` 的 `expr`：用于返回派生字段，或通过 `ID` / `NAME` 标识返回字段语义；
+3. `returns.kind = "GROUP_BY"` 的 `expr`：用于函数型分组，例如时间桶，或通过 `ID` / `NAME` 标识分组字段语义；
+4. `mutation.data.properties` 或 `mutation.set`：用于写操作动态值，但 `ID` / `NAME` 不允许用于写操作。
 
 `FUNCTION` 不允许出现在以下位置：
 
@@ -1232,8 +1308,9 @@ maxResults       -> LIMIT / OFFSET
 13. 聚合指标过滤必须生成 `aggregateFilter`，不得生成 `having` 字段。
 14. 聚合指标 alias 不得放入 `conditions`。
 15. 函数表达式必须使用 `kind = "FUNCTION"` 结构，不得将函数调用退化为字符串拼接。
-16. 不得生成未注册扩展函数。
-17. 不得生成数据库方言函数、脚本函数、窗口函数、随机函数或系统环境函数。
+16. 不得生成未注册扩展函数；`ID` / `NAME` 是核心字段语义标识函数，不按扩展函数处理。
+17. 当用户要求返回字段的 ID、标识、编号、编码、名称或名字语义时，优先用 `ID` / `NAME` 函数包装对应字段，而不是仅依赖 alias 命名。
+18. 不得生成数据库方言函数、脚本函数、窗口函数、随机函数或系统环境函数。
 
 ---
 
@@ -1267,11 +1344,12 @@ maxResults       -> LIMIT / OFFSET
 1. `FIELD.ref` 必须引用当前层已声明 alias。
 2. `FUNCTION.name` 必须为核心内置函数或 OAC 函数注册表中的已注册扩展函数。
 3. `FUNCTION.namespace` 为空时，优先按核心内置函数解析；不为空时按 `namespace + name` 解析扩展函数。
-4. `FUNCTION.args` 必须满足函数注册表声明的参数个数、参数类型和空值规则。
+4. `FUNCTION.args` 必须满足核心函数定义或函数注册表声明的参数个数、参数类型和空值规则。
 5. `FUNCTION` 只能出现在规范允许的位置。
 6. 聚合函数不得通过 `kind = "FUNCTION"` 表达，必须通过 `returns.kind = "METRIC"` 表达。
-7. 扩展函数必须具备函数注册信息，包括参数类型、返回类型、允许位置、是否可下推和不可下推时的 fallback 策略。
-8. 如果函数不可下推且 OAC 执行层不支持解释执行，应返回校验或执行计划错误。
+7. `ID` / `NAME` 为核心字段语义标识函数，函数名必须规范化为大写，必须且只能接收 1 个 `FIELD` 参数，且只允许用于 `returns.kind = "EXPR"` 或 `returns.kind = "GROUP_BY"` 的 `expr`。
+8. 扩展函数必须具备函数注册信息，包括参数类型、返回类型、允许位置、是否可下推和不可下推时的 fallback 策略。
+9. 如果函数不可下推且 OAC 执行层不支持解释执行，应返回校验或执行计划错误。
 
 ---
 
