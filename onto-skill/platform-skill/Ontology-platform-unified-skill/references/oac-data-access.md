@@ -32,7 +32,7 @@ OAC 支持三种主要数据访问操作：
 | 4 | 查询对象 | 是 | 对象类型、对象别名、对象职责。 |
 | 5 | 关系路径 | 条件必填 | 仅关联路径查询必填；无关系路径时写“无”。 |
 | 6 | 过滤条件 | 建议 | 字段归属对象、字段名、操作符、取值；时间范围也必须写在过滤条件中。 |
-| 7 | 返回字段 | 是 | 返回哪个对象或关系的哪些字段；用户指定字段时不要使用 `*`。如果用户明确要求返回“ID/标识/编号/编码”或“名称/名字”，应在返回字段说明中标记为 `ID(field)` 或 `NAME(field)` 语义。 |
+| 7 | 返回字段 | 是 | 返回哪个对象或关系的哪些字段；用户指定字段时不要使用 `*`。如果用户明确要求返回“ID/标识/编号/编码”或“名称/名字”，应在返回字段说明中标记为 `ID(field)` 或 `NAME(field)` 语义，并在 OQL returns 中生成 `kind = FUNCTION`。 |
 | 8 | 聚合要求 | 条件必填 | 仅统计聚合场景填写；包括分组字段、指标函数、指标别名、聚合后过滤条件。 |
 | 9 | 排序/限制 | 否 | 排序字段、升降序、最大返回条数。 |
 | 10 | 时间要求 | 否 | 时间字段、时间范围、时间口径。本地时间或 UTC 时间只表示时间口径，不能替代过滤条件。 |
@@ -68,7 +68,7 @@ OAC 支持三种主要数据访问操作：
 2. 如果操作类型表达“统计、聚合、分组、计数、求和、平均、最大、最小”等含义，必须填写“聚合要求”。
 3. 如果用户明确指定字段，返回字段不应写成 `*`。
 4. 如果只写了本地时间或 UTC 时间，但没有时间范围，应补充过滤条件中的时间范围。
-5. 如果用户表达“返回 ID/标识/编号/编码”或写出 `id(field)`，应在返回字段中明确使用 `ID(field)` 语义；如果用户表达“返回名称/名字”或写出 `name(field)`，应明确使用 `NAME(field)` 语义。
+5. 如果用户表达“返回 ID/标识/编号/编码”或写出 `id(field)`，应在返回字段中明确使用 `ID(field)` 语义，并生成 `returns.kind = FUNCTION`；如果用户表达“返回名称/名字”或写出 `name(field)`，应明确使用 `NAME(field)` 语义，并生成 `returns.kind = FUNCTION`。
 
 纠正建议：
 1. 操作类型过于宽泛时，补充“操作选择依据”。
@@ -103,94 +103,76 @@ OAC 支持三种主要数据访问操作：
 }
 ```
 
-## OQL 字段语义标识函数 ID / NAME
+## OQL 返回字段类型指定函数 ID / NAME
 
-按照《本体对象操作语言（OQL）DSL 规范 v1.2-agent 最终版》，`ID` 与 `NAME` 是 OQL 核心内置函数，用于在返回字段或分组字段中显式标识某个字段承载的是“标识值”还是“名称值”。它们是字段语义标记函数，不表示数据库函数调用，也不改变字段原始值。
+`id(field)` 与 `name(field)` 是 OQL 在 `returns` 中使用的字段类型指定函数，用于多维模型维度字段的语义标注：
+
+- `id(field)` 表示字段 `field` 是多维模型中的“ID”维度。
+- `name(field)` 表示字段 `field` 是多维模型中的“名称”维度。
+
+这两个函数用于返回字段声明，不表示数据库函数调用，不改变字段原始值，也不通过 `returns.kind = EXPR` 表达。
 
 ### 识别规则
 
-- 用户表达“ID、标识、编号、编码、主键、唯一标识、id(field)”等语义时，Agent 应生成 `ID(field)` 语义。
-- 用户表达“名称、名字、显示名、中文名、name(field)”等语义时，Agent 应生成 `NAME(field)` 语义。
-- 用户自然语言或伪代码中的 `id()`、`name()` 应规范化为 OQL JSON 中的大写函数名 `ID`、`NAME`。
+- 用户表达“ID、标识、编号、编码、主键、唯一标识、id(field)”等语义时，Agent 应生成 `ID(field)` 字段类型指定。
+- 用户表达“名称、名字、显示名、中文名、name(field)”等语义时，Agent 应生成 `NAME(field)` 字段类型指定。
+- 用户自然语言或伪代码中的 `id()`、`name()` 应规范化为 OQL JSON 中的 `ID(field)`、`NAME(field)`，并写入 `returns[].field`。
+
+### returns 生成格式
+
+`ID` / `NAME` 在 `returns` 中的标准格式如下：
+
+```json
+{
+  "kind": "FUNCTION",
+  "ref": "o",
+  "field": "NAME(release_cause)",
+  "alias": "release_cause_name"
+}
+```
+
+字段说明：
+
+| 字段 | 必填 | 说明 |
+|---|:--:|---|
+| `kind` | 是 | 固定为 `FUNCTION`，表示返回字段类型指定函数。 |
+| `ref` | 是 | 字段所属对象 alias。 |
+| `field` | 是 | 使用 `ID(fieldName)` 或 `NAME(fieldName)` 表示维度语义。 |
+| `alias` | 是 | 返回结果别名。ID 维度通常使用原字段名或 `_id` 后缀，名称维度通常使用 `_name` 后缀。 |
+
+### 示例
+
+返回 release_cause 的名称维度：
+
+```json
+{
+  "kind": "FUNCTION",
+  "ref": "o",
+  "field": "NAME(release_cause)",
+  "alias": "release_cause_name"
+}
+```
+
+返回 release_cause 的 ID 维度：
+
+```json
+{
+  "kind": "FUNCTION",
+  "ref": "o",
+  "field": "ID(release_cause)",
+  "alias": "release_cause_id"
+}
+```
 
 ### 生成约束
 
-1. `ID` / `NAME` 必须且只能有 1 个参数。
-2. 参数必须是 `kind = "FIELD"` 的字段表达式。
-3. 不允许把字面量、聚合指标、关系路径、嵌套函数作为 `ID` / `NAME` 参数。
-4. `ID` / `NAME` 可用于 `returns.kind = "EXPR"` 的 `expr`，用于返回字段语义标识。
-5. `ID` / `NAME` 可用于 `returns.kind = "GROUP_BY"` 的 `expr`，用于分组维度语义标识。
-6. `ID` / `NAME` 不用于普通指标、度量值或写入值；写操作中不得使用 `ID` / `NAME`。
-7. `ID` / `NAME` 是核心内置函数，不需要通过扩展函数注册表注册。
-
-### 返回字段示例
-
-返回小区标识：
-
-```json
-{
-  "kind": "EXPR",
-  "expr": {
-    "kind": "FUNCTION",
-    "name": "ID",
-    "args": [
-      {
-        "kind": "FIELD",
-        "ref": "c",
-        "field": "cellId"
-      }
-    ]
-  },
-  "alias": "cellId"
-}
-```
-
-返回小区名称：
-
-```json
-{
-  "kind": "EXPR",
-  "expr": {
-    "kind": "FUNCTION",
-    "name": "NAME",
-    "args": [
-      {
-        "kind": "FIELD",
-        "ref": "c",
-        "field": "cellName"
-      }
-    ]
-  },
-  "alias": "cellName"
-}
-```
-
-分组维度示例：
-
-```json
-{
-  "kind": "GROUP_BY",
-  "expr": {
-    "kind": "FUNCTION",
-    "name": "ID",
-    "args": [
-      {
-        "kind": "FIELD",
-        "ref": "c",
-        "field": "regionId"
-      }
-    ]
-  },
-  "alias": "regionId"
-}
-```
-
-### 禁止写法
-
-- 不要生成小写函数名：`id`、`name`。
-- 不要把 `ID` / `NAME` 写成数据库函数或 SQL 片段。
-- 不要对 `ID` / `NAME` 再套其他函数。
-- 不要用 `ID` / `NAME` 表达聚合指标，聚合指标必须使用 `returns.kind = "METRIC"`。
+1. `field` 中只能使用 `ID(<fieldName>)` 或 `NAME(<fieldName>)`。
+2. `<fieldName>` 必须是当前 `ref` 对象下的字段名，不得写成关系路径、聚合指标、字面量或嵌套函数。
+3. `ID` / `NAME` 只用于 `returns` 字段类型指定，不用于 `conditions`、`orders`、`mutation`。
+4. 不要生成旧式 `EXPR + expr.kind = FUNCTION + args` 写法。
+5. 不要生成小写函数名：`id`、`name`。
+6. 不要把 `ID` / `NAME` 写成 SQL 函数或数据源方言函数。
+7. 不要用 `ID` / `NAME` 表达聚合指标；聚合指标必须使用 `returns.kind = METRIC`。
 
 ## OQL 扩展字段 extensions
 
