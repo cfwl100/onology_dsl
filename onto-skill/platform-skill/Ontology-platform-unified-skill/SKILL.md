@@ -80,5 +80,5 @@ description: 统一的本体平台能力，覆盖本体子图检索（OAG）、�
 7. 调用 execute_oac_operation.py 时，如果用户指定了返回消息格式 message_type，必须使用用户指定的值作为 message_type 字段
 8. 用户指定完整多跳查询路径时，不要拆成单跳查询
 9. 构建oql时，如果用户明确指定了返回字段，必须按照用户要求返回，禁止填“*”返回所有字段
-10. 生成oql前，必须明确当前查询的操作类型是什么，用户必须提供具体的schamaRef
+10. 生成oql前，必须明确当前查询的操作意图；schemaRef 可以由环境变量 `ONTOLOGY_SCHEMA_REF` 提供，用户显式传递 schemaRef 时以用户传入值为准
 11. OQL JSON必须为紧凑单行格式，禁止添加不必要的空格、缩进、换行等格式化字符
