@@ -1,0 +1,18 @@
+{
+  "version": "2.0",
+  "schemaRef": "example-v1",
+  "strict": true,
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {"objectType": "SourceObject", "alias": "s"},
+    {"objectType": "TargetObject", "alias": "t"}
+  ],
+  "relationships": [
+    {"relationshipType": "connects", "alias": "r1", "from": "s", "to": "t"}
+  ],
+  "returns": [
+    {"kind": "FIELDS", "ref": "s", "fields": ["id"]},
+    {"kind": "FIELDS", "ref": "r1", "fields": ["id"]},
+    {"kind": "FIELDS", "ref": "t", "fields": ["id"]}
+  ]
+}
