@@ -33,9 +33,9 @@ description: 统一的本体平台能力，覆盖本体子图检索（OAG）、�
 
 ### OAC 子操作路由
 判断使用哪种 OAC 操作：
-- 用户只说"查XX有哪些属性"、"没有提到对象间关系" → `references/oac-query.md`，并使用 `schemas/oql-query-association-aggregate.schema.json#/definitions/queryOperation` 做结构约束
-- 用户明确提到"关系"、"路径"、"遍历"、"连接"、"经过"、"一跳"、"多跳" → `references/oac-association-query.md`，并使用 `schemas/oql-query-association-aggregate.schema.json#/definitions/associationQueryOperation` 做结构约束
-- 用户提到"统计"、"聚合"、"分组"、"计数"、"求和"、"平均"、"总和"、"最大值"、"最小值" → `references/oac-aggregate.md`，并使用 `schemas/oql-query-association-aggregate.schema.json#/definitions/aggregateOperation` 做结构约束
+- 用户只说"查XX有哪些属性"、"没有提到对象间关系" → `references/oac-query.md`
+- 用户明确提到"关系"、"路径"、"遍历"、"连接"、"经过"、"一跳"、"多跳" → `references/oac-association-query.md`
+- 用户提到"统计"、"聚合"、"分组"、"计数"、"求和"、"平均"、"总和"、"最大值"、"最小值" → `references/oac-aggregate.md`
 
 ## 缺失信息识别
 - 子图检索常缺：检索问题、业务上下文、任务目标
@@ -55,12 +55,6 @@ description: 统一的本体平台能力，覆盖本体子图检索（OAG）、�
 5. 桥接目录，并按内部操作目录与脚本完成归一化、组装、校验。
 6. 如果信息不足，明确指出缺失项；不要编造模型、子图、对象、关系、字段、函数名或参数值。
 
-## OQL JSON Schema 使用规则
-1. 生成 `QUERY`、`ASSOCIATION_QUERY`、`AGGREGATE` 三类 OQL JSON 前，必须先按操作类型选择并参考 `schemas/oql-query-association-aggregate.schema.json` 中对应 operation 定义。
-2. JSON Schema 使用 draft-07 编写，主要用于约束顶层字段、operation 兼容性、conditions 递归结构、returns 类型、aggregateFilter、orders 与 maxResults。
-3. JSON Schema 不能完全表达 alias 引用闭包、对象/关系/字段是否存在、metricAlias 是否引用已声明指标、扩展函数是否已注册等语义规则；这些仍必须交给 OAC validator 或执行前语义校验。
-4. 当手册描述与 `schemas/oql-query-association-aggregate.schema.json` 对结构字段的约束不一致时，优先遵循最新 OQL 规范对应的 schema，再由执行脚本做运行时兼容校验。
-
 ## 输出原则
 - 模型查询：输出结构化、可验证的模型说明；信息不足时指出缺失的模型范围。
 - 子图检索：先拿到子图，再基于子图与 SOP 输出下一步任务规划；不要跳过检索直接编造子图。
@@ -74,7 +68,6 @@ description: 统一的本体平台能力，覆盖本体子图检索（OAG）、�
 - `references/oac-association-query.md`：ASSOCIATION_QUERY 操作手册（有关联）。
 - `references/oac-aggregate.md`：AGGREGATE 操作手册（聚合查询）。
 - `references/call-function.md`：函数发现、参数确认、执行手册。
-- `schemas/`：QUERY、ASSOCIATION_QUERY、AGGREGATE 的 JSON Schema（draft-07）定义，统一收敛在 `oql-query-association-aggregate.schema.json` 中，用于辅助 Agent 生成可校验 OQL JSON。
 - `scripts/`：数据访问能力用到的归一化、组装、校验脚本。
 
 ## 约束规则
@@ -89,4 +82,3 @@ description: 统一的本体平台能力，覆盖本体子图检索（OAG）、�
 9. 构建oql时，如果用户明确指定了返回字段，必须按照用户要求返回，禁止填“*”返回所有字段
 10. 生成oql前，必须明确当前查询的操作意图；schemaRef 可以由环境变量 `ONTOLOGY_SCHEMA_REF` 提供，用户显式传递 schemaRef 时以用户传入值为准
 11. OQL JSON必须为紧凑单行格式，禁止添加不必要的空格、缩进、换行等格式化字符
-12. 生成 `QUERY`、`ASSOCIATION_QUERY`、`AGGREGATE` 时，必须优先参考 `schemas/oql-query-association-aggregate.schema.json` 中对应 operation 定义，避免输出结构上不可校验的 OQL JSON
