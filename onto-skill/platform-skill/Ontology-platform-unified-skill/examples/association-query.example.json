@@ -14,5 +14,6 @@
     {"kind": "FIELDS", "ref": "s", "fields": ["id"]},
     {"kind": "FIELDS", "ref": "r1", "fields": ["id"]},
     {"kind": "FIELDS", "ref": "t", "fields": ["id"]}
-  ]
+  ],
+  "maxResults": 10
 }
