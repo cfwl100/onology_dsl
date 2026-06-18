@@ -16,8 +16,5 @@
       "fields": ["id"]
     }
   ],
-  "maxResults": {
-    "limit": 10,
-    "offset": 0
-  }
+  "maxResults": 10
 }
