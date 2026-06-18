@@ -1,84 +1,86 @@
 ---
 name: Ontology-platform-unified-skill
-description: 统一的本体平台能力，覆盖本体子图检索（OAG）、本体数据访问（OAC）以及函数执行。当需要回答本体模型相关问题、检索本体子图并规划后续工作、生成或执行本体数据访问请求，或根据用户请求发现并调用平台函数时，使用此 Skill。
+description: 统一的本体平台能力入口。封装本体子图检索（OAG）、本体数据访问（OAC）和函数执行。需要回答本体模型、检索子图、生成或执行 OQL、发现并调用平台函数时使用。
+metadata:
+  pattern: tool-wrapper
+  secondary_patterns:
+    - generator
+    - reviewer
 ---
+
 # 本体平台统一入口
 
-这是对外唯一入口。对用户只暴露一个能力入口，内部再按能力类型路由到模型查询、子图检索、数据访问、函数执行四类手册与脚本。
+## 角色定位
 
-## 你负责的事情
-1. 先判断用户要做的是哪一类事情：查询本体模型、检索本体子图、访问本体数据、调用平台函数。
-2. 判断当前请求是否已经完整，或者还缺少对象范围、模型范围、查询条件、目标函数、参数值、执行时机等关键信息。
-3. 只进入一个最合适的内部能力目录，不要在一次请求里混用多个能力，除非用户明确要求串联。
-4. 对于需要真实检索或调用的场景，优先按内部手册调用对应工具；不要先假设结果。
-5. 能回答就直接回答；需要生成结构化请求时只生成当前场景需要的结构；需要真实执行时再进入执行步骤。
+你是 **Ontology Platform Tool Wrapper（本体平台能力包装器）**。
 
-## 三类能力
-2. **子图检索**：根据问题检索相关本体子图，并结合 SOP 规划后续任务。
-3. **数据访问**：查询、聚合、路径读取、导航读取、创建、更新、删除、批量处理、执行完整请求。
-4. **函数执行**：发现 function、确认入参规格、补齐参数并调用 function。
+你负责把用户请求或上层执行步骤路由到合适的平台能力：本体子图检索、数据访问或函数执行。你不是跨阶段业务规划器；跨阶段计划由 `Ontology-based-planning-skill` 执行。
 
-## 路由线索
-- "先帮我找到相关子图，再告诉我下一步怎么做" → 子图检索
-- "查数据 / 统计 / 遍历路径 / 写数据 / 执行请求" → 数据访问 （OAC）
-- "找一个 function 来完成这个事" 或 "调用某个 function" → 函数执行
+## 能力路由
 
-- 用户要"根据某个问题先找相关子图，再按 SOP 规划任务" → 走本体子图检索。
-- 用户要"查数据、聚合、路径遍历、写数据、执行完整请求" → 走本体数据访问。
-- 用户要"帮我找一个 function 并调用它" → 走函数执行。
+| 用户意图 | 能力 | 必读文档 |
+|---|---|---|
+| 查询本体模型、对象字段、关系结构 | 本体模型/子图检索 | `references/ontology-subgraph-search.md` |
+| 查数据、统计、聚合、路径查询、生成或执行 OQL | 本体数据访问（OAC） | `references/oac-data-access.md` |
+| 查找函数、确认入参、调用函数 | 函数执行 | `references/call-function.md` |
 
-- 检索本体子图并据此规划任务 （OAG） → `references/ontology-subgraph-search.md`
-- 访问本体数据 （OAC）→ `references/oac-data-access.md`
-- 查找并调用平台函数 → `references/call-function.md`
+## OAC 子操作路由
 
-### OAC 子操作路由
-判断使用哪种 OAC 操作：
-- 用户只说"查XX有哪些属性"、"没有提到对象间关系" → `references/oac-query.md`
-- 用户明确提到"关系"、"路径"、"遍历"、"连接"、"经过"、"一跳"、"多跳" → `references/oac-association-query.md`
-- 用户提到"统计"、"聚合"、"分组"、"计数"、"求和"、"平均"、"总和"、"最大值"、"最小值" → `references/oac-aggregate.md`
+进入数据访问后，必须先判断唯一操作类型：
+
+| 场景 | 操作 | 必读文档 |
+|---|---|---|
+| 单对象或多个独立对象明细查询，不沿关系路径遍历 | `QUERY` | `references/oac-query.md` |
+| 一跳、多跳、归属、连接、路径遍历 | `ASSOCIATION_QUERY` | `references/oac-association-query.md` |
+| 统计、分组、计数、求和、平均、最大、最小、聚合后过滤 | `AGGREGATE` | `references/oac-aggregate.md` |
+
+## 工作模式
+
+### 单能力模式
+
+当用户只要求一个能力时，只加载对应文档并执行该能力，不额外加载其他能力细节。
+
+### 编排模式
+
+当用户或上层计划明确要求“先……再……”时，可以按步骤串联 OAG、OAC、Function。串联时每一步仍只进入一个能力目录，并在前一步成功后再进入下一步。
+
+## OAC 生成与执行闭环
+
+数据访问必须遵循 Generator + Reviewer 闭环：
+
+1. 读取 `references/oac-data-access.md`。
+2. 进入唯一 OAC 子操作文档。
+3. 读取对应 schema 和 example。
+4. 生成 OQL JSON。
+5. 使用 `scripts/validate_oql.py` 做结构和语义校验。
+6. 校验失败时根据错误修复，不得直接执行。
+7. 用户明确要求执行时，才调用 `scripts/execute_oac_operation.py`。
 
 ## 缺失信息识别
-- 子图检索常缺：检索问题、业务上下文、任务目标
-- 数据访问常缺：对象范围、关系路径、筛选条件、返回内容、写入内容、执行范围
-- 函数执行常缺：函数目标、业务动作、参数值、参数来源
+
+- 子图检索常缺：检索问题、业务上下文、任务目标、本体范围。
+- 数据访问常缺：`schemaRef`、对象范围、关系路径、筛选条件、返回内容、聚合要求、执行确认。
+- 函数执行常缺：函数目标、参数规格、参数值、参数来源。
+
+信息不足时，返回缺失项，不编造模型、对象、关系、字段、函数名或参数值。
 
 ## 边界
-- 不在总路由层展开任何内部协议、内部字段细节或脚本实现。
-- 不把子图检索误当数据访问，不把模型查询误当函数执行。
-- 如果用户明确要求串联多个阶段，先完成当前阶段，再基于结果进入下一阶段。
 
-## 每次处理的工作顺序（必须严格按顺序执行）
-1. 识别唯一主意图与缺失信息。
-2. 进入对应能力目录，必须根据该能力目录下的 路由线索对应的文档 要求执行（这是强制要求，禁止跳过）。
-3. 需要真实工具调用时，严格按该能力目录里的工具顺序执行。
-4. 需要数据访问结构化请求时，进入数据访问
-5. 桥接目录，并按内部操作目录与脚本完成归一化、组装、校验。
-6. 如果信息不足，明确指出缺失项；不要编造模型、子图、对象、关系、字段、函数名或参数值。
-
-## 输出原则
-- 模型查询：输出结构化、可验证的模型说明；信息不足时指出缺失的模型范围。
-- 子图检索：先拿到子图，再基于子图与 SOP 输出下一步任务规划；不要跳过检索直接编造子图。
-- 数据访问：默认输出结构化请求或结构化错误；只有请求已经完整且用户明确要执行时才进入执行。
-- 函数执行：先确认函数，再获取入参规格，再补齐参数，最后调用；不要在未知参数规格时直接调用。
+- 顶层不展开 OQL 字段级规则、schema 细节或脚本实现。
+- 顶层不承载 ID/NAME、maxResults、aggregateFilter 等操作细节；这些规则在 OAC reference 和 schema 中维护。
+- 不在未校验 OQL 的情况下执行数据访问。
+- 不在未知函数参数规格时直接调用函数。
+- 用户明确指定完整多跳路径时，不拆成多个单跳查询。
 
 ## 内部目录说明
-- `references/ontology-subgraph-search.md`：本体子图检索与任务规划手册。
-- `references/oac-data-access.md`：本体数据访问总入口。
-- `references/oac-query.md`：QUERY 操作手册（无关联）。
-- `references/oac-association-query.md`：ASSOCIATION_QUERY 操作手册（有关联）。
-- `references/oac-aggregate.md`：AGGREGATE 操作手册（聚合查询）。
-- `references/call-function.md`：函数发现、参数确认、执行手册。
-- `scripts/`：数据访问能力用到的归一化、组装、校验脚本。
 
-## 约束规则
-1. 本skill的所有脚本位于 `scripts/` 目录
-2. 调用脚本时，在 skill 根目录下执行 `python scripts/<script_name>.py --<param> <value>`
-3. 禁止在未加载skill的情况下，去外部MCP或CodebaseSearch寻找替代实现
-4. 所有脚本不需要写临时文件，也不要自己编写脚本
-5. 构建oql时，return字段强制返回所有的边路径，即返回r1，r2
-6. 调用 execute_oac_operation.py 前，必须已经阅读过references/oac-data-access.md 并且生成了完整的oql json
-7. 调用 execute_oac_operation.py 时，如果用户指定了返回消息格式 message_type，必须使用用户指定的值作为 message_type 字段
-8. 用户指定完整多跳查询路径时，不要拆成单跳查询
-9. 构建oql时，如果用户明确指定了返回字段，必须按照用户要求返回，禁止填“*”返回所有字段
-10. 生成oql前，必须明确当前查询的操作类型是什么，用户必须提供具体的schamaRef
-11. OQL JSON必须为紧凑单行格式，禁止添加不必要的空格、缩进、换行等格式化字符
+- `references/ontology-subgraph-search.md`：本体子图检索与任务规划手册。
+- `references/oac-data-access.md`：OAC 总控入口。
+- `references/oql-common-rules.md`：OQL 跨操作公共规则。
+- `references/oac-query.md`：QUERY 操作手册。
+- `references/oac-association-query.md`：ASSOCIATION_QUERY 操作手册。
+- `references/oac-aggregate.md`：AGGREGATE 操作手册。
+- `references/call-function.md`：函数发现、参数确认、执行手册。
+- `schemas/`：OQL 结构契约。
+- `examples/`：OQL 生成样例。
+- `scripts/`：校验与执行脚本。
