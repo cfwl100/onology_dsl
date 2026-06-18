@@ -75,13 +75,23 @@ public class PhysicalPlan {
 
     public static class PhysicalMergeJoinNode implements PhysicalPlanNode {
         private final String id;
+        private final String joinKey;
 
         public PhysicalMergeJoinNode(String id) {
+            this(id, "rid");
+        }
+
+        public PhysicalMergeJoinNode(String id, String joinKey) {
             this.id = id;
+            this.joinKey = joinKey;
         }
 
         public String getId() {
             return id;
+        }
+
+        public String getJoinKey() {
+            return joinKey;
         }
 
         public String getNodeType() {
