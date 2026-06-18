@@ -8,5 +8,6 @@
   ],
   "returns": [
     {"kind": "METRIC", "function": "COUNT", "ref": "o", "field": "id", "alias": "cnt"}
-  ]
+  ],
+  "maxResults": 10
 }
