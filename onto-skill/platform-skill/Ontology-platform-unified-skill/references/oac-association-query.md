@@ -23,7 +23,7 @@ ASSOCIATION_QUERY 适用于以下场景：
 ## 工作顺序（每步都必须执行）
 
 1. 阅读本文件，了解该操作的输入/输出契约。
-1. 组装简OQL 请求，生成完整的json（拼请求时强制返回关系路径）。
+1. 遵循 Schema: `schemas/oql-association-query.schema.json` 组装 OQL 请求，生成完整的json（拼请求时强制返回关系路径）；生成完成后，使用 `scripts/validate_oql.py` 做结构和语义校验。
 3. 运行 `python scripts/execute_oac_operation.py --oac-json '<oql_json>' --message-type '<类型>'` 执行查询（必须填用户指定的message-type）。
 4. 返回结果totalCount为2只是个示例，并不是真实条数，
 
@@ -59,6 +59,77 @@ OQL 抛弃了扁平的 WHERE 子句，采用强类型的递归语法树。
 - `returns` 必须是一个对象和关系数组，指定要获取哪些对象和关系的哪些字段。
 - 格式必须为 `{"kind": "FIELDS", "ref": "对象别名或者关系别名", "fields": ["字段1", "字段2"]}`。
 - **【强制要求】`returns` 必须包含所有 `relationships` 中声明的边的返回**，即每条关系都必须添加到 `returns` 数组中，使用 `{"kind": "FIELDS", "ref": "<关系别名>", "fields": ["*"]}` 格式。如果遗漏任何关系路径，将导致返回结果不完整。
+
+## OQL 返回字段类型指定函数 ID / NAME
+
+`id(field)` 与 `name(field)` 是 OQL 在 `returns` 中使用的字段类型指定函数，用于多维模型维度字段的语义标注：
+
+- `id(field)` 表示字段 `field` 是多维模型中的“ID”维度。
+- `name(field)` 表示字段 `field` 是多维模型中的“名称”维度。
+
+这两个函数用于返回字段声明，不表示数据库函数调用，不改变字段原始值，也不通过 `returns.kind = EXPR` 表达。
+
+### 识别规则
+
+- 用户表达“ID、标识、编号、编码、主键、唯一标识、id(field)”等语义时，Agent 应生成 `ID(field)` 字段类型指定。
+- 用户表达“名称、名字、显示名、中文名、name(field)”等语义时，Agent 应生成 `NAME(field)` 字段类型指定。
+- 用户自然语言或伪代码中的 `id()`、`name()` 应规范化为 OQL JSON 中的 `ID(field)`、`NAME(field)`，并写入 `returns[].field`。
+
+### returns 生成格式
+
+`ID` / `NAME` 在 `returns` 中的标准格式如下：
+
+```json
+{
+  "kind": "FUNCTION",
+  "ref": "o",
+  "field": "NAME(release_cause)",
+  "alias": "release_cause_name"
+}
+```
+
+字段说明：
+
+| 字段 | 必填 | 说明 |
+|---|:--:|---|
+| `kind` | 是 | 固定为 `FUNCTION`，表示返回字段类型指定函数。 |
+| `ref` | 是 | 字段所属对象 alias。 |
+| `field` | 是 | 使用 `ID(fieldName)` 或 `NAME(fieldName)` 表示维度语义。 |
+| `alias` | 是 | 返回结果别名。ID 维度通常使用原字段名或 `_id` 后缀，名称维度通常使用 `_name` 后缀。 |
+
+### 示例
+
+返回 release_cause 的名称维度：
+
+```json
+{
+  "kind": "FUNCTION",
+  "ref": "o",
+  "field": "NAME(release_cause)",
+  "alias": "release_cause_name"
+}
+```
+
+返回 release_cause 的 ID 维度：
+
+```json
+{
+  "kind": "FUNCTION",
+  "ref": "o",
+  "field": "ID(release_cause)",
+  "alias": "release_cause_id"
+}
+```
+
+### 生成约束
+
+1. `field` 中只能使用 `ID(<fieldName>)` 或 `NAME(<fieldName>)`。
+2. `<fieldName>` 必须是当前 `ref` 对象下的字段名，不得写成关系路径、聚合指标、字面量或嵌套函数。
+3. `ID` / `NAME` 只用于 `returns` 字段类型指定，不用于 `conditions`、`orders`、`mutation`。
+4. 不要生成旧式 `EXPR + expr.kind = FUNCTION + args` 写法。
+5. 不要生成小写函数名：`id`、`name`。
+6. 不要把 `ID` / `NAME` 写成 SQL 函数或数据源方言函数。
+7. 不要用 `ID` / `NAME` 表达聚合指标；聚合指标必须使用 `returns.kind = METRIC`。
 
 ## 额外的硬性规则 (Additional hard rules)
 1. 即使是单跳关系遍历，也必须使用带有 `relationships` 数组的 `ASSOCIATION_QUERY`。
@@ -119,7 +190,14 @@ OQL 抛弃了扁平的 WHERE 子句，采用强类型的递归语法树。
 | `EQ` / `NE`                             | 恰好 1 个值       | 等于 / 不等于                     |
 | `GT` / `GTE` / `LT` / `LTE`             | 恰好 1 个值       | 大于 / 大于等于 / 小于 / 小于等于 |
 | `IN` / `NOT_IN`                         | 至少 1 个值       | 属于 / 不属于                     |
-| `CONTAINS`                  | 恰好 1 个字符串值         | 字符串匹配                    |
+| `CONTAINS`                              | 恰好 1 个字符串值 | 字符串包含匹配                    |
+| `BETWEEN`                               | 恰好 2 个值       | 范围（包含边界），如 `BETWEEN [10, 100]` |
+| `STARTS_WITH`                           | 恰好 1 个字符串值 | 前缀匹配                          |
+| `ENDS_WITH`                             | 恰好 1 个字符串值 | 后缀匹配                          |
+| `IS_NULL`                               | 不允许            | 空值判断                          |
+| `IS_NOT_NULL`                           | 不允许            | 非空判断                          |
+| `IS_EMPTY`                              | 不允许            | 空字符串判断                      |
+| `IS_NOT_EMPTY`                          | 不允许            | 非空字符串判断                    |
 
 ### `conditions` 统一条件表达式注意事项
 1. `conditions` 统一表达查询筛选、更新目标与删除目标。

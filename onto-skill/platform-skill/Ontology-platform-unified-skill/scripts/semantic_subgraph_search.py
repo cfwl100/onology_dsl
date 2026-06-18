@@ -20,16 +20,6 @@ from pathlib import Path
 # 禁用不安全的 HTTPS 请求警告
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
-# Configuration
-SCRIPTS_ROOT = Path(__file__).resolve().parent
-TOOLS_DIR = SCRIPTS_ROOT / "tools"
-
-# OAG_URL = "https://7.220.122.186:30281/data-pilot/cse/ontology-knowledge-api"
-# OAG_CERT = str(TOOLS_DIR / "client.crt.pem")
-# OAG_KEY = str(TOOLS_DIR / "client.key.pem")
-# OAG_TOKEN = "test-token"
-# OAG_TENANT_ID = "2001"
-
 MAX_RETRIES = 3
 RETRY_DELAY = 1
 
@@ -58,11 +48,12 @@ def search_subgraph(ontologyId: str, query: str, similarityThreshold: float = 0.
             }
         }
     """执行语义子图搜索"""
-    url = f"http://api-gateway-mesh.{namespace}.svc.cluster.local:39071/ontoretrieval/rest/onto-retrieval-api/v1/onto-retrieval/{ontologyId}/subgraph/semantic-search"
+    url = (f"http://api-gateway-mesh.{namespace}.svc.cluster.local:39071/ontoretrieval/rest/onto-retrieval-api/v1/onto"
+           f"-retrieval/{ontologyId}/subgraph/semantic-search")
     headers = {
         "Content-Type": "application/json",
         "accept": "*/*",
-        "x-cse-context": json.dumps({"x-gde-tenant-id": tenant_id}, ensure_ascii=False),
+        "x-gde-tenant-id": tenant_id,
     }
     payload = {
         "query": query,
@@ -134,7 +125,7 @@ def main() -> int:
         try:
             payload = json.loads(args.query_json)
             # 同时支持下划线和连字符格式
-            ontology_id = payload.get("ontology_id")
+            ontology_id = payload.get("ontology_id") or os.environ.get("ONTOLOGY_ID")
             query = payload.get("query")
             similarity_threshold = payload.get("similarityThreshold") or args.similarity_threshold
             include_functions = payload.get("includeFunctions") or args.include_functions
@@ -152,7 +143,7 @@ def main() -> int:
                 print(output)
             return 1
     else:
-        ontology_id = args.ontology_id
+        ontology_id = args.ontology_id or os.environ.get("ONTOLOGY_ID")
         query = args.query
         similarity_threshold = args.similarity_threshold
         include_functions = args.include_functions

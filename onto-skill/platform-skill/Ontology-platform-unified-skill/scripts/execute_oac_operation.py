@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 
 import requests
 import sys
@@ -110,6 +111,11 @@ def validate_oac_json(oac_json: dict) -> tuple[bool, str | None]:
             return False, f"objects[{i}].alias 不能为空"
         if not object_type:
             return False, f"objects[{i}].objectType 不能为空"
+        # objects 只允许 alias 和 objectType 两个字段
+        allowed_keys = {"alias", "objectType"}
+        extra_keys = set(obj.keys()) - allowed_keys
+        if extra_keys:
+            return False, f"objects[{i}] 只允许包含 alias 和 objectType 字段，当前包含多余字段: {extra_keys}"
         if alias in object_aliases:
             return False, f"objects alias 必须唯一，当前重复: {alias}"
         object_aliases.add(alias)
@@ -178,10 +184,7 @@ def validate_oac_json(oac_json: dict) -> tuple[bool, str | None]:
             return False, error
 
     # 12. maxResults 校验
-    if "maxResults" in oac_json and oac_json["maxResults"]:
-        error = validate_max_results(oac_json["maxResults"])
-        if error:
-            return False, error
+
 
     # 13. mutation 校验
     if "mutation" in oac_json and oac_json["mutation"]:
@@ -385,22 +388,6 @@ def validate_orders(orders: list) -> str | None:
             return f"orders[{i}].field 不能为空"
     return None
 
-
-def validate_max_results(mr: dict) -> str | None:
-    """校验 maxResults 定义"""
-    if not mr:
-        return None
-    limit = mr.get("limit")
-    offset = mr.get("offset", 0)
-    if limit is not None:
-        if not isinstance(limit, int) or limit <= 0:
-            return "maxResults.limit 必须为大于 0 的整数"
-    if offset is not None:
-        if not isinstance(offset, int) or offset < 0:
-            return "maxResults.offset 必须为大于等于 0 的整数"
-    return None
-
-
 def validate_mutation(mutation: dict, operation: str, properties: dict | None = None) -> str | None:
     """校验 mutation 定义"""
     if operation == "CREATE":
@@ -462,6 +449,19 @@ def validate_operation_compatibility(oac_json: dict) -> str | None:
 
 def execute_operation(oac_json: dict) -> dict:
 
+    # 调测模式：是否调测 OAC
+    debug_oac = os.environ.get("DEBUG_OAC", "false").lower()
+    if debug_oac == "true":
+        debug_dir = os.environ.get("DEBUG_OAC_DIR", "/tmp")
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        debug_file = os.path.join(debug_dir, f"oac_debug_{timestamp}.json")
+        with open(debug_file, "w", encoding="utf-8") as f:
+            json.dump(oac_json, f, ensure_ascii=False, indent=2)
+        return {
+            "success": True,
+            "data": json.dumps({"data": [f"DEBUG_MODE: OQL 已写入 {debug_file}"]})
+        }
+
     namespace = os.environ.get("SERVICE_NAMESPACE")
     tenant_id = os.environ.get("TENANT_ID")
 
@@ -484,8 +484,6 @@ def execute_operation(oac_json: dict) -> dict:
         }
 
     url = f"http://api-gateway-mesh.{namespace}.svc.cluster.local:39071/ontoaccess/rest/v1/objects/query"
-
-    """执行 OAC 操作"""
     headers = {
         "Content-Type": "application/json",
         "X-Request-Id": "multiDatasource",

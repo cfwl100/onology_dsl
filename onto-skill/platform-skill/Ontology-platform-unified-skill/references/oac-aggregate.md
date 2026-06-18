@@ -12,7 +12,7 @@ AGGREGATE 适用于以下场景：
 ## （强约束）输入契约
 你生成的 JSON 必须严格按照以下顶层顺序和格式构建：
 至少需要：
-- `schemaRef` 必填（本体名字）
+- `schemaRef` 可选，如用户传入则必填（本体名字）
 - `operation` 必填且只能是 "AGGREGATE"
 - `objects`（声明参与聚合的对象类型）
 - `returns`（必须包含 GROUP_BY 和 METRIC）
@@ -21,7 +21,7 @@ AGGREGATE 适用于以下场景：
 ## 工作顺序（每步都必须执行）
 
 1. 阅读本文件，了解该操作的输入/输出契约。
-2. 组装 OQL 请求，生成完整的 json。
+2. 遵循 Schema: `schemas/oql-aggregate.schema.json` 组装 OQL 请求，生成完整的json；生成完成后，使用 `scripts/validate_oql.py` 做结构和语义校验。
 3. 运行 `python scripts/execute_oac_operation.py --oac-json '<oql_json>' --message-type '<类型>'` 执行查询（必须填用户指定的message-type）。
 4. 返回结果。
 
@@ -33,7 +33,7 @@ AGGREGATE 适用于以下场景：
 4. **返回投影 (`returns`)**：只能包含 `GROUP_BY`（分组字段）或者 `METRIC`（聚合指标）。
 5. **聚合后过滤 (`aggregateFilter`)**：可选，用于对聚合指标结果进行二次过滤，等价于 SQL HAVING。
 6. **排序 (`orders`)**：推荐按 `returns.alias` 排序。
-7. **数量限制 (`maxResults`)**：控制返回规模，默认 limit=1000。
+7. **数量限制 (`maxResults`)**：控制返回规模，默认值为1000。
 
 ## 关键模块解释
 
@@ -71,7 +71,13 @@ OQL 抛弃了扁平的 WHERE 子句，采用强类型的递归语法树。
 | `EQ` / `NE`                             | 恰好 1 个值       | 等于 / 不等于                     |
 | `GT` / `GTE` / `LT` / `LTE`             | 恰好 1 个值       | 大于 / 大于等于 / 小于 / 小于等于 |
 | `IN` / `NOT_IN`                         | 至少 1 个值       | 属于 / 不属于                     |
-| `BETWEEN`                               | 恰好 2 个值       | 范围（包含边界）                  |
+| `BETWEEN`                               | 恰好 2 个值       | 范围（包含边界），如 `BETWEEN [10, 100]` |
+| `STARTS_WITH`                           | 恰好 1 个字符串值 | 前缀匹配                          |
+| `ENDS_WITH`                             | 恰好 1 个字符串值 | 后缀匹配                          |
+| `IS_NULL`                               | 不允许            | 空值判断                          |
+| `IS_NOT_NULL`                           | 不允许            | 非空判断                          |
+| `IS_EMPTY`                              | 不允许            | 空字符串判断                      |
+| `IS_NOT_EMPTY`                          | 不允许            | 非空字符串判断                    |
 
 ## 输出约定 (Output contract)
 - 仅输出严格规范的 OQL JSON。
@@ -128,10 +134,7 @@ OQL 抛弃了扁平的 WHERE 子句，采用强类型的递归语法树。
   "orders": [
     { "field": "<指标别名>", "direction": "DESC" }
   ],
-  "maxResults": {
-    "limit": 1000,
-    "offset": 0
-  }
+  "maxResults": 1000
 }
 ```
 
@@ -176,10 +179,7 @@ OQL 抛弃了扁平的 WHERE 子句，采用强类型的递归语法树。
   "orders": [
     { "field": "totalAmount", "direction": "DESC" }
   ],
-  "maxResults": {
-    "limit": 100,
-    "offset": 0
-  }
+  "maxResults": 1000
 }
 ```
 
@@ -260,10 +260,7 @@ OQL 抛弃了扁平的 WHERE 子句，采用强类型的递归语法树。
   "orders": [
     { "field": "avgPrbUsage", "direction": "DESC" }
   ],
-  "maxResults": {
-    "limit": 100,
-    "offset": 0
-  }
+  "maxResults": 1000
 }
 ```
 
@@ -309,10 +306,7 @@ OQL 抛弃了扁平的 WHERE 子句，采用强类型的递归语法树。
       "alias": "kpiCount"
     }
   ],
-  "maxResults": {
-    "limit": 1000,
-    "offset": 0
-  }
+  "maxResults": 1000
 }
 ```
 

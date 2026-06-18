@@ -1,4 +1,4 @@
-# ontology-platform
+# Ontology-platform-unified-skill
 
 统一的本体平台 Skill，对外只暴露一个入口，内部包含四类能力：
 

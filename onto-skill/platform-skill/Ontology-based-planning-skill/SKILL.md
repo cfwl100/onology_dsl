@@ -1,6 +1,6 @@
 ---
 name: Ontology-based-planning-skill
-description: 本体规划执行层。接收包含执行步骤的语义请求，按步骤调用ontology-platform执行子图检索、数据查询和函数调用。
+description: 本体规划执行层。接收包含执行步骤的语义请求，按步骤调用Ontology-platform-unified-skill执行子图检索、数据查询和函数调用。
 allowed_tools:
 ---
 
@@ -10,7 +10,7 @@ allowed_tools:
 
 你是**规划执行层**。你的职责是：
 1. 接收 上层skill 传来的完整执行步骤
-2. 按步骤调用 ontology-platform 执行子图检索、数据查询和函数调用
+2. 按步骤调用 Ontology-platform-unified-skill 执行子图检索、数据查询和函数调用
 3. 返回执行结果
 
 **你只执行步骤，不解析业务语义。**
@@ -30,7 +30,7 @@ allowed_tools:
 
 #### 步骤类型1：子图检索
 
-调用 `ontology-platform` 的子图检索能力：
+调用 `Ontology-platform-unified-skill` 的子图检索能力：
 
 ```
 先找相关子图，再按SOP规划任务
@@ -45,8 +45,8 @@ allowed_tools:
 
 #### 步骤类型2：数据查询
 
-调用 `ontology-platform` 的数据访问能力：
-
+调用 `Ontology-platform-unified-skill` 的数据访问能力：
+**查询语句格式**：
 ```
 查数据：查询{对象}的{属性}
 查询目标：返回{字段列表}
@@ -58,7 +58,7 @@ allowed_tools:
 
 #### 步骤类型3：函数调用
 
-调用 `ontology-platform` 的函数执行能力。详见 `references/call-function.md`。
+调用 `Ontology-platform-unified-skill` 的函数执行能力。详见 `references/call-function.md`。
 
 **核心函数签名**：
 
@@ -84,7 +84,7 @@ def call_function(physicalName: str, function_id: str, args: dict) -> dict:
 
 ## 子图结构理解
 
-`ontology-platform` 返回的子图结构：
+`Ontology-platform-unified-skill` 返回的子图结构：
 
 - **nodes**：对象类型、属性、函数
 - **edges**：对象间关系
@@ -100,7 +100,7 @@ def call_function(physicalName: str, function_id: str, args: dict) -> dict:
 
 
 ### OAG 调用规则
-- **Ontology ID**：调用 OAG 查询子图时，**必须**传入 `Ontology ID = network@1.0`
+- **Ontology ID**：调用 OAG 查询子图时，**必须**传入 `ontologyId (本体id)`
 
 ### OAC 调用规则
 - **schemaRef**：调用 OAC 执行实例查询时，**必须**传入 `schemaRef (本体名称)`
@@ -189,7 +189,7 @@ echo '{"message_type":"sop","title":"规划阶段结束","content":"<执行步�
 
 ## Skill 调用协议
 
-所有能力调用通过 `ontology-platform`：
+所有能力调用通过 `Ontology-platform-unified-skill`：
 - 子图检索：路由关键词 "先找相关子图"
 - 数据访问：路由关键词 "查数据"
 - 函数执行：路由关键词 "调用function"

@@ -39,12 +39,6 @@ OAC 支持三种主要数据访问操作：
 | 11 | 扩展说明 | 否 | 只填写已约定扩展参数；无明确约定时写“无”。 |
 | 12 | 结果处理 | 否 | 结果为空是否结束、是否保留原始字段、是否需要摘要。 |
 
-### schemaRef 获取规则
-
-`schemaRef` 可以不由用户每次填写。执行 OAC 请求时，如果 OQL JSON 中没有 `schemaRef`，脚本会读取环境变量 `ONTOLOGY_SCHEMA_REF`。如果环境变量也不存在，则返回错误。
-
-优先级：用户显式传入 schemaRef > 环境变量 `ONTOLOGY_SCHEMA_REF` > 报错。
-
 ### 操作类型自然语言示例
 
 | 自然语言动作 | 平台路由倾向 |
@@ -61,7 +55,6 @@ OAC 支持三种主要数据访问操作：
 1. 必须有“操作类型”，可以是中文自然语言动作。
 2. 必须有“查询对象”，需要说明对象类型、别名或业务对象范围。
 3. 必须有“返回字段”，需要说明返回哪个对象或关系的哪些字段。
-4. `schemaRef` 可以为空，但执行环境必须提供 `ONTOLOGY_SCHEMA_REF`；如果两者都没有，应先补齐。
 
 条件必填检查：
 1. 如果操作类型表达“关系、路径、遍历、归属、一跳、多跳、对应”等含义，必须填写“关系路径”。
@@ -103,77 +96,6 @@ OAC 支持三种主要数据访问操作：
 }
 ```
 
-## OQL 返回字段类型指定函数 ID / NAME
-
-`id(field)` 与 `name(field)` 是 OQL 在 `returns` 中使用的字段类型指定函数，用于多维模型维度字段的语义标注：
-
-- `id(field)` 表示字段 `field` 是多维模型中的“ID”维度。
-- `name(field)` 表示字段 `field` 是多维模型中的“名称”维度。
-
-这两个函数用于返回字段声明，不表示数据库函数调用，不改变字段原始值，也不通过 `returns.kind = EXPR` 表达。
-
-### 识别规则
-
-- 用户表达“ID、标识、编号、编码、主键、唯一标识、id(field)”等语义时，Agent 应生成 `ID(field)` 字段类型指定。
-- 用户表达“名称、名字、显示名、中文名、name(field)”等语义时，Agent 应生成 `NAME(field)` 字段类型指定。
-- 用户自然语言或伪代码中的 `id()`、`name()` 应规范化为 OQL JSON 中的 `ID(field)`、`NAME(field)`，并写入 `returns[].field`。
-
-### returns 生成格式
-
-`ID` / `NAME` 在 `returns` 中的标准格式如下：
-
-```json
-{
-  "kind": "FUNCTION",
-  "ref": "o",
-  "field": "NAME(release_cause)",
-  "alias": "release_cause_name"
-}
-```
-
-字段说明：
-
-| 字段 | 必填 | 说明 |
-|---|:--:|---|
-| `kind` | 是 | 固定为 `FUNCTION`，表示返回字段类型指定函数。 |
-| `ref` | 是 | 字段所属对象 alias。 |
-| `field` | 是 | 使用 `ID(fieldName)` 或 `NAME(fieldName)` 表示维度语义。 |
-| `alias` | 是 | 返回结果别名。ID 维度通常使用原字段名或 `_id` 后缀，名称维度通常使用 `_name` 后缀。 |
-
-### 示例
-
-返回 release_cause 的名称维度：
-
-```json
-{
-  "kind": "FUNCTION",
-  "ref": "o",
-  "field": "NAME(release_cause)",
-  "alias": "release_cause_name"
-}
-```
-
-返回 release_cause 的 ID 维度：
-
-```json
-{
-  "kind": "FUNCTION",
-  "ref": "o",
-  "field": "ID(release_cause)",
-  "alias": "release_cause_id"
-}
-```
-
-### 生成约束
-
-1. `field` 中只能使用 `ID(<fieldName>)` 或 `NAME(<fieldName>)`。
-2. `<fieldName>` 必须是当前 `ref` 对象下的字段名，不得写成关系路径、聚合指标、字面量或嵌套函数。
-3. `ID` / `NAME` 只用于 `returns` 字段类型指定，不用于 `conditions`、`orders`、`mutation`。
-4. 不要生成旧式 `EXPR + expr.kind = FUNCTION + args` 写法。
-5. 不要生成小写函数名：`id`、`name`。
-6. 不要把 `ID` / `NAME` 写成 SQL 函数或数据源方言函数。
-7. 不要用 `ID` / `NAME` 表达聚合指标；聚合指标必须使用 `returns.kind = METRIC`。
-
 ## OQL 扩展字段 extensions
 
 OQL 可选支持 `extensions` 字段。该字段用于承载业务侧与 OAC 已经约定的扩展参数；无明确约定时应省略。
@@ -194,3 +116,9 @@ OQL 可选支持 `extensions` 字段。该字段用于承载业务侧与 OAC 已
 - `oac-query.md` - QUERY 操作手册（无关联）
 - `oac-association-query.md` - ASSOCIATION_QUERY 操作手册（有关联）
 - `oac-aggregate.md` - AGGREGATE 操作手册（聚合查询）
+
+## 脚本
+调用脚本前，必须已经阅读过 oac-data-access.md 中对应操作类型的文档并且生成了完整的oql json
+| 脚本 | 作用 |
+|------|------|
+| `execute_oac_operation.py` | 执行 OAC 请求 |
