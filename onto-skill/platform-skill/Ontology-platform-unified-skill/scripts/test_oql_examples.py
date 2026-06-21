@@ -1,29 +1,60 @@
 #!/usr/bin/env python3
-"""Regression checks for OQL examples and common invalid cases."""
+"""Regression checks for OQL validation contracts."""
 from __future__ import annotations
 
 import copy
-import json
-from pathlib import Path
 
 from oql_validator import validate_oql_dict
 
-ROOT = Path(__file__).resolve().parents[1]
-EXAMPLES = [
-    ROOT / "examples" / "query.example.json",
-    ROOT / "examples" / "association-query.example.json",
-    ROOT / "examples" / "agg.example.json",
-]
+
+def query_sample() -> dict:
+    return {
+        "version": "2.0",
+        "schemaRef": "example-v1",
+        "strict": True,
+        "operation": "QUERY",
+        "objects": [{"objectType": "ExampleObject", "alias": "o"}],
+        "returns": [{"kind": "FIELDS", "ref": "o", "fields": ["id"]}],
+        "maxResults": 10,
+    }
 
 
-def load(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+def association_sample() -> dict:
+    return {
+        "version": "2.0",
+        "schemaRef": "example-v1",
+        "strict": True,
+        "operation": "ASSOCIATION_QUERY",
+        "objects": [
+            {"objectType": "SourceObject", "alias": "s"},
+            {"objectType": "TargetObject", "alias": "t"},
+        ],
+        "relationships": [{"relationshipType": "connects", "alias": "r1", "from": "s", "to": "t"}],
+        "returns": [
+            {"kind": "FIELDS", "ref": "s", "fields": ["id"]},
+            {"kind": "FIELDS", "ref": "r1", "fields": ["id"]},
+            {"kind": "FIELDS", "ref": "t", "fields": ["id"]},
+        ],
+        "maxResults": 10,
+    }
 
 
-def assert_valid(path: Path) -> None:
-    errors = validate_oql_dict(load(path))
+def aggregate_sample() -> dict:
+    return {
+        "version": "2.0",
+        "schemaRef": "example-v1",
+        "strict": True,
+        "operation": "AGGREGATE",
+        "objects": [{"objectType": "ExampleObject", "alias": "o"}],
+        "returns": [{"kind": "METRIC", "function": "COUNT", "ref": "o", "field": "id", "alias": "cnt"}],
+        "maxResults": 10,
+    }
+
+
+def assert_valid(name: str, oql: dict) -> None:
+    errors = validate_oql_dict(oql)
     if errors:
-        raise AssertionError(f"{path} should be valid: {errors}")
+        raise AssertionError(f"{name} should be valid: {errors}")
 
 
 def assert_invalid(name: str, oql: dict) -> None:
@@ -33,10 +64,14 @@ def assert_invalid(name: str, oql: dict) -> None:
 
 
 def main() -> int:
-    for example in EXAMPLES:
-        assert_valid(example)
+    query = query_sample()
+    association = association_sample()
+    aggregate = aggregate_sample()
 
-    query = load(ROOT / "examples" / "query.example.json")
+    assert_valid("QUERY sample", query)
+    assert_valid("ASSOCIATION_QUERY sample", association)
+    assert_valid("AGGREGATE sample", aggregate)
+
     invalid_max_results = copy.deepcopy(query)
     invalid_max_results["maxResults"] = {"limit": 10, "offset": 0}
     assert_invalid("maxResults object format", invalid_max_results)
@@ -49,12 +84,11 @@ def main() -> int:
     invalid_expr_id_name["returns"] = [{"kind": "EXPR", "expr": {"kind": "FUNCTION", "name": "NAME", "args": []}, "alias": "name"}]
     assert_invalid("ID/NAME legacy EXPR function", invalid_expr_id_name)
 
-    aggregate = load(ROOT / "examples" / "agg.example.json")
     invalid_aggregate_function = copy.deepcopy(aggregate)
     invalid_aggregate_function["returns"].append({"kind": "FUNCTION", "ref": "o", "field": "NAME(id)", "alias": "id_name"})
     assert_invalid("ID/NAME in AGGREGATE", invalid_aggregate_function)
 
-    print("OQL example regression checks passed")
+    print("OQL validation contract checks passed")
     return 0
 
 
