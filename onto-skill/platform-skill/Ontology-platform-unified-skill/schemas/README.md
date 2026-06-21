@@ -2,12 +2,12 @@
 
 This directory stores operation-level schema files.
 
-## Schema and example mapping
+## Schema and reference mapping
 
-| Operation | Schema | Example |
+| Operation | Schema | Operation reference |
 | --- | --- | --- |
-| `QUERY` | `schemas/oql-query.schema.json` | `examples/query.example.json` |
-| `ASSOCIATION_QUERY` | `schemas/oql-association-query.schema.json` | `examples/association-query.example.json` |
-| `AGGREGATE` | `schemas/oql-aggregate.schema.json` | `examples/agg.example.json` |
+| `QUERY` | `schemas/oql-query.schema.json` | `references/oac-query.md` |
+| `ASSOCIATION_QUERY` | `schemas/oql-association-query.schema.json` | `references/oac-association-query.md` |
+| `AGGREGATE` | `schemas/oql-aggregate.schema.json` | `references/oac-aggregate.md` |
 
-Use `scripts/validate_oql.py` to validate generated OQL JSON or the built-in examples.
+Use `scripts/validate_oql.py` to validate generated OQL JSON. Operation references already include minimal examples, so agents do not need to read a separate examples directory.
