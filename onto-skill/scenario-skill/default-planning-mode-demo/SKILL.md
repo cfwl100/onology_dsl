@@ -1,6 +1,6 @@
 ---
 name: default-planning-mode-demo
-description: 默认规划模式业务 Skill 示例。用于演示上层业务 Skill 不提供完整 steps，只传入业务目标、ontologyId、schemaRef 和少量实体变量，由 Ontology-based-planning-skill 使用默认本体子图规划流程生成执行步骤。
+description: 默认规划模式业务 Skill 示例。用于演示上层业务 Skill 不提供完整 steps，只传入业务目标、自然语言问题、ontologyId、schemaRef 和少量实体变量，由 Ontology-based-planning-skill 先整理规划上下文，再使用默认本体子图规划流程生成执行步骤。
 allowed_tools:
 ---
 
@@ -21,11 +21,12 @@ allowed_tools:
 你是上层业务 Skill 示例，只负责提供最小业务上下文：
 
 1. 识别用户目标。
-2. 提取对象、实体、过滤条件、返回要求。
-3. 注入 `ontologyId` 和 `schemaRef`。
-4. 委托 `Ontology-based-planning-skill` 走默认规划流程。
+2. 保留用户原始自然语言问题，用于本体子图检索。
+3. 提取实体、过滤条件、返回要求。
+4. 注入 `ontologyId` 和 `schemaRef`。
+5. 委托 `Ontology-based-planning-skill` 走默认规划流程。
 
-你不生成完整 steps，不直接生成查询语言，不直接调用平台能力。
+你不生成完整 steps，不直接生成查询语言，不直接调用平台能力，不提前臆造对象、字段或关系。
 
 ## 传给本体规划层的输入
 
@@ -33,6 +34,7 @@ allowed_tools:
 
 ```json
 {
+  "originalQuestion": "查询船高大于 10 的货轮",
   "goal": "查询满足条件的船舶信息",
   "intent": "默认本体查询规划",
   "entities": {
@@ -61,14 +63,20 @@ allowed_tools:
 }
 ```
 
+说明：
+
+- `originalQuestion` 保持自然语言，规划层会优先用它作为本体子图检索问题。
+- `startObjectHint` 只是检索提示，不等同于已经确认的对象类型。
+- `filters.field` 和 `returnFields` 也只是用户或业务侧期望，最终必须通过本体子图的 `has_property` 确认字段归属后才能进入查询语言。
+
 ## 委托规则
 
 必须将上述输入交给 `Ontology-based-planning-skill`。
 
 规划层会默认执行：
 
-1. 归一化语义请求。
-2. 检索本体子图。
+1. 输入整理与规划上下文构造。
+2. 使用自然语言问题检索本体子图。
 3. 从子图中识别 `objectType`、`property`、`has_property`、`defines_relation`。
 4. 生成数据访问步骤。
 5. 校验字段归属和关系来源。
