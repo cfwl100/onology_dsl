@@ -1,6 +1,6 @@
 ---
 name: Ontology-based-planning-skill
-description: 本体规划执行层。作为可被上层业务 Skill 定制的默认本体子图规划层，接收语义请求或执行步骤，先基于本体子图形成默认执行流程，再按步骤调用 Ontology-platform-unified-skill 执行子图检索、数据查询和函数调用。
+description: 本体规划执行层。作为可被上层业务 Skill 定制的默认本体子图规划层，接收语义请求、业务定制输入或显式执行步骤，先基于本体子图形成默认执行流程，再按步骤调用 Ontology-platform-unified-skill 执行子图检索、数据查询和函数调用。
 allowed_tools:
 metadata:
   pattern: pipeline
@@ -27,12 +27,13 @@ metadata:
 1. 接收上层 Skill 或用户传来的语义请求、业务定制输入或完整执行步骤。
 2. 基于默认本体子图流程生成、合并或检查执行步骤。
 3. 按步骤调用 `Ontology-platform-unified-skill` 执行子图检索、数据访问和函数调用。
-4. 保留执行轨迹、绑定关系和平台返回结果。
-5. 返回执行结果、缺失信息、空结果说明或失败原因。
+4. 理解本体子图结构，提取对象、属性、关系、函数候选和绑定依据。
+5. 保留执行轨迹、绑定关系和平台返回结果。
+6. 返回执行结果、缺失信息、空结果说明或失败原因。
 
 你不是行业业务语义层。业务意图理解、知识注入、变量值传递应优先由上层业务 Skill 完成。你可以做通用语义归一化和执行编排，但禁止凭空补充行业知识、对象、关系、字段、条件或函数参数。
 
-## 2. 两种输入模式
+## 2. 三种输入模式
 
 ### 2.1 默认规划模式
 
@@ -51,9 +52,9 @@ metadata:
 
 | 字段 | 作用 |
 |---|---|
-| `intent` | 业务意图，例如告警查询、传播关系分析、证据验证。 |
+| `intent` | 业务意图，例如告警查询、传播关系分析、船舶计划查询。 |
 | `knowledge` | 业务知识、规则、SOP、判断依据。 |
-| `entities` | 实体值，例如网元 ID、告警名、对象名。 |
+| `entities` | 实体值，例如网元 ID、告警名、船舶编号。 |
 | `variables` | 变量值，例如时间范围、过滤条件、工单范围。 |
 | `constraints` | 执行约束、返回要求、范围限制。 |
 | `stepOverrides` | 替换默认步骤的输入、输出要求或失败策略。 |
@@ -111,7 +112,51 @@ metadata:
 - 仅需要函数发现时，可以执行 S5 后结束。
 - 需要完整业务闭环时，按 S1 到 S7 执行。
 
-## 4. 执行流程
+## 4. 本体子图结构理解
+
+本层必须能理解 `docs/ontology_subgraph.json` 这类子图结构。典型结构如下：
+
+| 路径 | 含义 | 使用方式 |
+|---|---|---|
+| `result.seedNodes[]` | 检索命中的种子节点 | 用于理解用户问题命中了哪些对象、属性或业务词。 |
+| `result.nodes[]` | 子图节点集合 | 根据 `label` 区分对象、属性、函数等。 |
+| `result.edges[]` | 子图边集合 | 根据 `edgeType` 区分对象-属性归属和对象间关系。 |
+| `result.functions[]` | 可调用函数能力 | 用于函数发现或函数调用步骤。 |
+| `result.actions[]` | 可执行动作 | 当前为空时不得臆造动作。 |
+
+### 4.1 节点解析规则
+
+| 节点特征 | 解析结果 | 规划用途 |
+|---|---|---|
+| `nodes[].label == "objectType"` | 本体对象类型 | 可作为本体访问的 `objectType`。 |
+| `nodes[].label == "property"` | 对象属性字段 | 必须通过 `has_property` 边确认归属对象后才能用于查询条件或返回字段。 |
+| `nodes[].label == "function"` | 函数能力节点 | 只能作为函数候选，不得当作对象或字段。 |
+| `nodes[].properties.name` | 对象名、字段名或函数名 | 先结合 `label` 判断含义，再使用。 |
+| `nodes[].properties.display` | 中文显示名 | 可辅助语义理解，但不得替代 `properties.name` 作为平台字段名。 |
+| `nodes[].properties.primaryKeys` | 主键字段 ID 列表 | 可用于判断对象实例定位字段，但必须映射到具体 property 节点后使用。 |
+
+### 4.2 边解析规则
+
+| 边特征 | 解析结果 | 规划用途 |
+|---|---|---|
+| `edges[].edgeType == "has_property"` | 对象拥有属性 | 建立对象到字段的归属关系。 |
+| `edges[].edgeType == "defines_relation"` | 对象间关系 | 生成数据访问 relationships 的候选关系。 |
+| `edges[].sourceId` | 起点节点 ID | 对象-属性或对象-对象关系方向依据。 |
+| `edges[].targetId` | 终点节点 ID | 对象-属性或对象-对象关系方向依据。 |
+| `edges[].properties.name` | 对象间关系名 | 仅 `defines_relation` 边可作为 relationships.name。 |
+| `edges[].properties.cardinality` | 关系基数 | 可辅助判断一对多、一对一、多对多，不直接当作关系名。 |
+| `edges[].properties.businessSemanticType` | 业务语义描述 | 可辅助路径选择，不得替代关系名。 |
+
+关键约束：
+
+1. 属性字段不能仅凭 `nodes[].properties.name` 使用，必须先通过 `has_property` 确认归属对象。
+2. 关系名必须从 `defines_relation` 边的 `edges[].properties.name` 获取，不得从显示名、业务描述或用户话术中臆造。
+3. `has_property` 边没有关系查询语义，不得生成 relationships。
+4. 如果 `functions` 为空，说明当前子图没有可直接调用的函数能力，不得编造函数调用步骤。
+5. 如果 `actions` 为空，说明当前没有动作候选，不得编造动作。
+6. 示例中 `ship_info` 通过 `has_property` 拥有 `ship_type`、`ship_height`，`ship_info` 通过 `defines_relation` 指向 `ship_plan`，关系名来自该边的 `properties.name`。
+
+## 5. 执行流程
 
 ### 阶段1：接收语义请求或执行步骤
 
@@ -153,9 +198,9 @@ metadata:
 
 按步骤顺序汇总执行结果。只有前置步骤明确返回的字段才能绑定到后续步骤。绑定失败时停止执行并说明缺少哪个输出字段。
 
-## 5. 步骤类型规则
+## 6. 步骤类型规则
 
-### 5.1 子图检索步骤
+### 6.1 子图检索步骤
 
 调用 `Ontology-platform-unified-skill` 的子图检索能力。
 
@@ -166,32 +211,21 @@ metadata:
 - `先找相关子图，再按 SOP 规划任务。`
 - `从【{起点对象类型}】出发，查找到【{终点对象类型}】。`
 
-OAG 调用规则：
+调用规则：
 
 - 调用本体子图查询时必须传入 `ontologyId`。
 - `ontologyId` 来自用户输入、上层业务 Skill 注入或运行上下文；缺失时返回缺失项。
+- 子图查询结果必须按第 4 章的结构规则解析。
 
-子图返回结构理解：
+关键提取：
 
-| 字段 | 含义 |
-|---|---|
-| `nodes` | 对象类型、属性、函数等节点。 |
-| `edges` | 对象间关系。 |
-| `functions` | 可调用函数能力。 |
-| `objectType` | 业务对象类型。 |
-| `property` | 对象字段。 |
-| `function` | 可执行能力。 |
-| `edges[].properties.name` | 关系名，是生成查询语言 relationships 的直接依据。 |
-| `edges[].sourceId` / `edges[].targetId` | 关系方向依据。 |
-
-关键提取规则：
-
-- `edges[].properties.name` → 关系名。
-- `edges[].sourceId` → `targetId` 方向。
-- `objectType` → 可用对象类型。
+- `nodes[label=objectType].properties.name` → 可用对象类型。
+- `nodes[label=property].properties.name` + `has_property` → 对象字段及其归属。
+- `edges[edgeType=defines_relation].properties.name` → 关系名。
+- `edges[edgeType=defines_relation].sourceId/targetId` → 关系方向。
 - `result.functions[]` → 候选函数能力。
 
-### 5.2 数据查询步骤
+### 6.2 数据查询步骤
 
 调用 `Ontology-platform-unified-skill` 的数据访问能力。
 
@@ -205,11 +239,13 @@ OAG 调用规则：
 - `过滤条件：{条件}`。
 - `返回要求：{格式要求}`。
 
-OAC 调用规则：
+调用规则：
 
 - 调用本体访问执行实例查询时必须传入 `schemaRef`。
 - `schemaRef` 来自用户输入、上层业务 Skill 注入或运行上下文；缺失时返回缺失项。
-- 关系名必须来自本体子图的 `edges[].properties.name`，不得臆造。
+- 查询对象必须来自子图中的 `objectType` 节点。
+- 查询字段必须来自子图中的 `property` 节点，并通过 `has_property` 确认归属。
+- 关系名必须来自本体子图的 `defines_relation.properties.name`，不得臆造。
 - 如果用户明确指定返回字段，必须按用户要求返回，禁止填 `*` 返回所有字段。
 - 查询结果为空是正常结果，不自动改写条件重复查询。
 
@@ -220,7 +256,7 @@ Step3 执行后结果要求：
 - 不进行字段筛选、转换或归一化。
 - 若某个方向无查询结果，则该方向结果为空数组。
 
-### 5.3 函数调用步骤
+### 6.3 函数调用步骤
 
 调用 `Ontology-platform-unified-skill` 的函数执行能力。
 
@@ -240,28 +276,33 @@ Step3 执行后结果要求：
 
 注意：统一使用 `physicalName`，与 API 返回字段名保持一致。
 
-不得忽略直达目标 Function。如果子图中已经返回可直接满足用户目标的函数能力，必须优先识别并说明是否需要调用。
+不得忽略直达目标函数能力。如果子图中已经返回可直接满足用户目标的函数能力，必须优先识别并说明是否需要调用。如果 `result.functions` 为空，不得编造函数调用步骤。
 
-## 6. 执行检查点
+## 7. 执行检查点
 
 1. **输入分类**：判断是语义请求、显式步骤，还是定制输入。
 2. **定制合并**：合并业务知识、变量、步骤覆盖和默认流程。
 3. **步骤确认**：没有步骤时生成默认步骤；有步骤时检查步骤契约。
-4. **步骤输入检查**：执行前确认当前步骤所需对象、关系、条件、参数是否充分。
-5. **委托执行**：每步只调用 `Ontology-platform-unified-skill` 的一个能力。
-6. **结果绑定**：只绑定前一步明确返回的字段，不创造新字段。
-7. **失败和空结果处理**：失败按策略处理；空结果视为有效结果。
-8. **结果汇总**：汇总使用的默认步骤、业务覆盖、执行状态、关键输入输出、未执行步骤和原因。
+4. **子图解析**：从 `nodes` 和 `edges` 建立对象、属性归属、关系方向和函数候选。
+5. **步骤输入检查**：执行前确认当前步骤所需对象、关系、条件、参数是否充分。
+6. **委托执行**：每步只调用 `Ontology-platform-unified-skill` 的一个能力。
+7. **结果绑定**：只绑定前一步明确返回的字段，不创造新字段。
+8. **失败和空结果处理**：失败按策略处理；空结果视为有效结果。
+9. **结果汇总**：汇总默认步骤、业务覆盖、子图依据、执行状态、关键输入输出、未执行步骤和原因。
 
-## 7. 失败策略
+## 8. 失败策略
 
 | code | 触发场景 | 处理方式 |
 |---|---|---|
 | `MISSING_PLANNING_INPUT` | 既没有语义目标、意图、问题或知识，也没有可执行步骤 | 停止执行，返回需要补充的输入类型。 |
+| `MISSING_ONTOLOGY_ID` | 子图检索缺少 `ontologyId` | 停止执行，返回缺失本体 ID。 |
+| `MISSING_SCHEMA_REF` | 数据访问缺少 `schemaRef` | 停止执行，返回缺失本体名称。 |
 | `MISSING_PLAN_STEP_FIELD` | 显式步骤缺少 `stepId`、`actionType`、`input` 或 `expectedOutput` | 停止执行，返回缺失字段。 |
 | `MISSING_STEP_INPUT` | 当前步骤输入不足以调用第二层能力 | 停止执行，返回缺失输入。 |
 | `INVALID_CUSTOMIZATION` | `stepOverrides`、`stepAppends` 或 `stepSkips` 不符合定制契约 | 停止执行，返回定制错误位置。 |
 | `CUSTOMIZATION_CONFLICT` | 用户显式输入、业务变量、业务知识、默认流程之间存在冲突 | 停止或要求确认，不静默覆盖用户输入。 |
+| `INVALID_SUBGRAPH_FIELD_OWNERSHIP` | 字段没有通过 `has_property` 确认归属对象 | 停止生成数据查询步骤，返回字段归属缺失。 |
+| `INVALID_RELATION_SOURCE` | 关系名不是来自 `defines_relation.properties.name` | 停止生成关系查询步骤，返回关系来源错误。 |
 | `INVALID_STEP_BINDING` | 绑定引用不存在的前置输出 | 停止执行，返回绑定失败原因。 |
 | `PLATFORM_STEP_FAILED` | 第二层能力返回失败 | 停止执行或按步骤 `failurePolicy` 处理。 |
 | `EMPTY_RESULT` | 平台执行成功但结果为空 | 视为有效结果，不自动重试。 |
@@ -269,7 +310,7 @@ Step3 执行后结果要求：
 
 结构化错误至少包含：`success=false`、`error.code`、`error.message`、`missing` 或 `conflicts`。
 
-## 8. 输出格式
+## 9. 输出格式
 
 ### Plan 开始
 
@@ -316,7 +357,7 @@ content 中换行符处理：
 - 在一次 echo 中混合输出多个阶段标识或多个步骤结果。
 - 输出本规范以外的格式。
 
-## 9. 强约束
+## 10. 强约束
 
 1. 禁止把未确认归属的字段直接写到当前对象上。
 2. 禁止忽略直达目标函数能力。
@@ -324,14 +365,16 @@ content 中换行符处理：
 4. 禁止伪造具体字段、关系、条件或参数。
 5. 条件不能落地时，必须明确指出缺什么。
 6. 若前一步已返回可用于定位实例的具体字段，下一步不得退化成无过滤条件的宽泛查询，除非明确说明原因。
-7. 关系名必须从本体子图的 `edges[].properties.name` 获取，不得臆造。
+7. 关系名必须从本体子图的 `defines_relation.properties.name` 获取，不得臆造。
 8. 查询语言禁止直接返回所有字段；如果用户明确指定了返回字段，必须按照用户要求返回，禁止填 `*`。
 9. 本体访问查询结果可能为空；空结果是正常结果，不需要重复查询。
 10. 返回空即为空；执行成功但返回空结果时，直接认定该方向无指定数据，禁止以确认、优化、换说法等理由再次查询。
 11. 业务 Skill 注入的知识只能作为规划依据，不得覆盖平台实际返回结果。
 12. 不把上一步返回值改造成字段名、关系名或函数名。
+13. `has_property` 只能表示字段归属，不能当作对象间业务关系。
+14. `display`、`businessSemanticType`、`description` 只能辅助理解，不能替代平台字段名或关系名。
 
-## 10. 术语约束
+## 11. 术语约束
 
 面向用户输出时按下表替换技术术语：
 
@@ -344,7 +387,7 @@ content 中换行符处理：
 
 内部步骤可以使用 `OAG`、`OAC`、`FUNCTION_CALL` 等 actionType，但最终用户可见回答应使用替换后的业务表达。
 
-## 11. Skill 调用协议
+## 12. Skill 调用协议
 
 所有能力调用通过 `Ontology-platform-unified-skill`：
 
@@ -357,6 +400,6 @@ content 中换行符处理：
 
 本层只负责编排调用，不直接调用原始 Tool，不直接生成最终平台请求。
 
-## 12. 文件组织原则
+## 13. 文件组织原则
 
 为了减少 planning 层加载成本，本层默认规划、定制契约、执行检查点、失败策略、输出规范和强约束集中维护在当前 `SKILL.md` 中。除非规则继续膨胀，否则不要再拆分多个 planning reference 文件。
