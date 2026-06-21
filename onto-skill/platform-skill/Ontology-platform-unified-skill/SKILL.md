@@ -50,7 +50,7 @@ metadata:
 
 1. 读取 `references/oac-data-access.md`。
 2. 进入唯一 OAC 子操作文档。
-3. 读取对应 schema 和 example。
+3. 读取对应 schema；operation 文档内已包含最小示例，不再读取独立 examples 目录。
 4. 生成 OQL JSON。
 5. 使用 `scripts/validate_oql.py` 做结构和语义校验。
 6. 校验失败时根据错误修复，不得直接执行。
@@ -66,8 +66,8 @@ metadata:
 
 ## 边界
 
-- 顶层不展开 OQL 字段级规则、schema 细节或脚本实现。
-- 顶层不承载 ID/NAME、maxResults、aggregateFilter 等操作细节；这些规则在 OAC reference 和 schema 中维护。
+- 顶层只负责路由，不展开 OQL 字段级规则、schema 细节或脚本实现。
+- OAC 公共规则已内聚到三个 operation 文档中，不再额外读取公共规则文件。
 - 不在未校验 OQL 的情况下执行数据访问。
 - 不在未知函数参数规格时直接调用函数。
 - 用户明确指定完整多跳路径时，不拆成多个单跳查询。
@@ -76,11 +76,9 @@ metadata:
 
 - `references/ontology-subgraph-search.md`：本体子图检索与任务规划手册。
 - `references/oac-data-access.md`：OAC 总控入口。
-- `references/oql-common-rules.md`：OQL 跨操作公共规则。
-- `references/oac-query.md`：QUERY 操作手册。
-- `references/oac-association-query.md`：ASSOCIATION_QUERY 操作手册。
-- `references/oac-aggregate.md`：AGGREGATE 操作手册。
+- `references/oac-query.md`：QUERY 操作手册，内含公共规则和最小示例。
+- `references/oac-association-query.md`：ASSOCIATION_QUERY 操作手册，内含公共规则和最小示例。
+- `references/oac-aggregate.md`：AGGREGATE 操作手册，内含公共规则和最小示例。
 - `references/call-function.md`：函数发现、参数确认、执行手册。
 - `schemas/`：OQL 结构契约。
-- `examples/`：OQL 生成样例。
 - `scripts/`：校验与执行脚本。
