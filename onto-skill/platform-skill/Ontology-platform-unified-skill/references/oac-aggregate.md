@@ -17,35 +17,21 @@
 
 ## 必读资产
 
-- 公共规则：`oql-common-rules.md`
 - Schema：`schemas/oql-aggregate.schema.json`
-- Example：`examples/agg.example.json`
 - Validator：`scripts/validate_oql.py`
 
-## 顶层字段
+本文件已包含 AGGREGATE 所需公共规则和最小示例，不再读取 `oql-common-rules.md` 或独立 examples 目录。
 
-必填：
+## 结构边界
 
-- `operation`: 固定为 `AGGREGATE`。
-- `objects`: 聚合对象。
-- `returns`: 至少一个 `METRIC`，可包含 `GROUP_BY`。
+结构契约以 schema 为准。本手册只补充 Agent 生成时必须理解的语义规则。
 
-可选：
-
-- `version`
-- `schemaRef`
-- `strict`
-- `conditions`: 聚合前过滤。
-- `aggregateFilter`: 聚合后过滤。
-- `orders`
-- `maxResults`: 数字格式，例如 `1000`。
-- `extensions`
-
-禁止：
-
-- `relationships`
-- `mutation`
-- `returns.kind = FUNCTION`
+- `operation` 固定为 `AGGREGATE`。
+- 必须声明 `objects` 和 `returns`。
+- `returns` 至少包含一个 `METRIC`，可包含 `GROUP_BY`。
+- 不使用 `relationships`、`mutation`、`returns.kind = FUNCTION`。
+- `maxResults` 使用数字格式，例如 `1000`，不使用 `{"limit":1000,"offset":0}`。
+- 用户或上层计划已提供 `schemaRef` 时必须原样保留，不得编造。
 
 ## returns 规则
 
@@ -59,6 +45,7 @@
 - 至少一个 `METRIC`。
 - `COUNT` 可以使用 `field = "*"`。
 - `SUM`、`AVG`、`MIN`、`MAX` 不允许使用 `field = "*"`。
+- 聚合查询中不得使用 `FUNCTION`。
 - 不使用 `ID(field)` / `NAME(field)` 表达聚合指标。
 
 ## aggregateFilter 规则
@@ -75,6 +62,7 @@
 
 - `ref` 必须引用 `objects[].alias`。
 - 条件字段必须属于对应对象。
+- 条件值必须来自用户输入、上一步明确结果或已确认上下文，不得虚构。
 
 ## 生成步骤
 
@@ -84,7 +72,8 @@
 4. 将分组写入 `GROUP_BY`。
 5. 将统计指标写入 `METRIC`。
 6. 将聚合后过滤写入 `aggregateFilter`。
-7. 调用 `validate_oql.py` 校验。
+7. 生成给执行脚本的 OQL JSON 时使用紧凑单行格式。
+8. 调用 `validate_oql.py` 校验。
 
 ## 校验与修复
 
@@ -95,6 +84,7 @@
 - `aggregateFilter.metricAlias` 未引用已声明指标。
 - `SUM/AVG/MIN/MAX` 使用 `field = "*"`。
 - 把明细查询误写成聚合。
+- `maxResults` 使用旧对象格式。
 
 ## 最小示例
 
