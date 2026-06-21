@@ -61,7 +61,7 @@ OAC 子模块承担 Generator 模式，将用户目标、业务变量和本体�
 | `ASSOCIATION_QUERY` | `references/oac-association-query.md` | `schemas/oql-association-query.schema.json` |
 | `AGGREGATE` | `references/oac-aggregate.md` | `schemas/oql-aggregate.schema.json` |
 
-每个 operation 手册都是自包含生成器：包含适用场景、不适用场景、公共规则、专属规则和最小 OQL 示例，只读取对应 schema，不再额外读取公共规则文件或 examples 目录。
+每个 operation 手册都是自包含生成器：包含适用场景、不适用场景、业务生成规则和最小 OQL 示例；字段级语法以对应 schema 为准，不再额外读取公共规则文件或 examples 目录。
 
 生成链路：
 
@@ -95,7 +95,7 @@ OQL JSON
 - 校验 alias 引用。
 - 校验 relationship `from/to` 引用。
 - 校验 `aggregateFilter.metricAlias` 引用。
-- 校验 `ID(field)` / `NAME(field)` 的合法位置。
+- 校验特殊返回项、聚合项和排序项等跨字段语义。
 - 校验 `maxResults` 使用数字格式。
 
 执行链路：
