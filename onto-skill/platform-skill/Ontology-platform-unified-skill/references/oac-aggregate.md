@@ -29,24 +29,19 @@
 - `operation` 固定为 `AGGREGATE`。
 - 必须声明 `objects` 和 `returns`。
 - `returns` 至少包含一个 `METRIC`，可包含 `GROUP_BY`。
-- 不使用 `relationships`、`mutation`、`returns.kind = FUNCTION`。
+- 不使用 `relationships`、`mutation` 或非聚合返回项。
 - `maxResults` 使用数字格式，例如 `1000`，不使用 `{"limit":1000,"offset":0}`。
 - 用户或上层计划已提供 `schemaRef` 时必须原样保留，不得编造。
 
 ## returns 规则
 
-`returns` 只允许：
-
-- `GROUP_BY`：分组字段或分组表达式。
-- `METRIC`：聚合指标，函数只能是 `COUNT`、`SUM`、`AVG`、`MIN`、`MAX`。
-
-约束：
+`returns` 的结构、可选类型和字段语法以 `schemas/oql-aggregate.schema.json` 为准。本手册只强调业务生成原则：
 
 - 至少一个 `METRIC`。
-- `COUNT` 可以使用 `field = "*"`。
-- `SUM`、`AVG`、`MIN`、`MAX` 不允许使用 `field = "*"`。
-- 聚合查询中不得使用 `FUNCTION`。
-- 不使用 `ID(field)` / `NAME(field)` 表达聚合指标。
+- `COUNT` 可以统计全部记录。
+- `SUM`、`AVG`、`MIN`、`MAX` 必须绑定可聚合字段。
+- 分组需求写入 `GROUP_BY`。
+- 明细字段返回不属于聚合查询；需要明细时使用 `QUERY` 或 `ASSOCIATION_QUERY`。
 
 ## aggregateFilter 规则
 
@@ -80,9 +75,9 @@
 校验失败时根据错误修复 OQL。常见错误：
 
 - 没有 `METRIC`。
-- 在聚合中使用 `FUNCTION`。
+- 使用了非聚合返回项。
 - `aggregateFilter.metricAlias` 未引用已声明指标。
-- `SUM/AVG/MIN/MAX` 使用 `field = "*"`。
+- 聚合函数绑定字段不合法。
 - 把明细查询误写成聚合。
 - `maxResults` 使用旧对象格式。
 
