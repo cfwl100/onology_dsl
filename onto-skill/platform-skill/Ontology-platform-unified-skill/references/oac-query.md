@@ -17,34 +17,20 @@
 
 ## 必读资产
 
-- 公共规则：`oql-common-rules.md`
 - Schema：`schemas/oql-query.schema.json`
-- Example：`examples/query.example.json`
 - Validator：`scripts/validate_oql.py`
 
-## 顶层字段
+本文件已包含 QUERY 所需公共规则和最小示例，不再读取 `oql-common-rules.md` 或独立 examples 目录。
 
-必填：
+## 结构边界
 
-- `operation`: 固定为 `QUERY`。
-- `objects`: 至少一个对象。
-- `returns`: 至少一个返回项。
+结构契约以 schema 为准。本手册只补充 Agent 生成时必须理解的语义规则。
 
-可选：
-
-- `version`
-- `schemaRef`
-- `strict`
-- `conditions`
-- `orders`
-- `maxResults`: 数字格式，例如 `1000`。
-- `extensions`
-
-禁止：
-
-- `relationships`
-- `aggregateFilter`
-- `mutation`
+- `operation` 固定为 `QUERY`。
+- 必须声明 `objects` 和 `returns`。
+- 不使用 `relationships`、`aggregateFilter`、`mutation`。
+- `maxResults` 使用数字格式，例如 `1000`，不使用 `{"limit":1000,"offset":0}`。
+- 用户或上层计划已提供 `schemaRef` 时必须原样保留，不得编造。
 
 ## returns 规则
 
@@ -54,6 +40,15 @@
 - `EXPR`：返回表达式结果。
 - `FUNCTION`：仅用于 `ID(field)` / `NAME(field)` 字段类型指定。
 
+ID/NAME 规则：
+
+- 用户表达 ID、标识、编号、编码时，使用 `ID(field)`。
+- 用户表达名称、名字、显示名时，使用 `NAME(field)`。
+- 标准格式：`{"kind":"FUNCTION","ref":"o","field":"NAME(fieldName)","alias":"field_name"}`。
+- `ID/NAME` 只用于 `returns`，不用于 `conditions`、`orders`、`mutation`。
+- 不使用小写 `id()`、`name()`。
+- 不使用旧式 `EXPR + expr.kind = FUNCTION` 表达 ID/NAME。
+
 用户明确指定返回字段时必须显式列出。用户未指定返回字段时，可按平台默认规则返回对象字段，但不要覆盖用户已指定字段。
 
 ## conditions 规则
@@ -61,6 +56,7 @@
 - 条件使用 `PREDICATE` 或 `GROUP`。
 - `ref` 必须引用 `objects[].alias`。
 - 条件字段必须是当前对象真实字段，不得根据对象名臆造字段前缀。
+- 条件值必须来自用户输入、上一步明确结果或已确认上下文，不得虚构。
 
 ## 生成步骤
 
@@ -69,7 +65,8 @@
 3. 将用户过滤条件写入 `conditions`。
 4. 将返回字段写入 `returns`。
 5. 如需 ID/NAME 语义，使用 `returns.kind = FUNCTION`。
-6. 生成后调用 `validate_oql.py` 校验。
+6. 生成给执行脚本的 OQL JSON 时使用紧凑单行格式。
+7. 调用 `validate_oql.py` 校验。
 
 ## 校验与修复
 
