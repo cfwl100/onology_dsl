@@ -34,22 +34,12 @@
 
 ## returns 规则
 
-`returns` 允许：
+`returns` 的结构、可选类型和字段语法以 `schemas/oql-query.schema.json` 为准。本手册只强调业务生成原则：
 
-- `FIELDS`：返回对象字段。
-- `EXPR`：返回表达式结果。
-- `FUNCTION`：仅用于 `ID(field)` / `NAME(field)` 字段类型指定。
-
-ID/NAME 规则：
-
-- 用户表达 ID、标识、编号、编码时，使用 `ID(field)`。
-- 用户表达名称、名字、显示名时，使用 `NAME(field)`。
-- 标准格式：`{"kind":"FUNCTION","ref":"o","field":"NAME(fieldName)","alias":"field_name"}`。
-- `ID/NAME` 只用于 `returns`，不用于 `conditions`、`orders`、`mutation`。
-- 不使用小写 `id()`、`name()`。
-- 不使用旧式 `EXPR + expr.kind = FUNCTION` 表达 ID/NAME。
-
-用户明确指定返回字段时必须显式列出。用户未指定返回字段时，可按平台默认规则返回对象字段，但不要覆盖用户已指定字段。
+- 用户明确指定返回字段时必须显式列出。
+- 用户未指定返回字段时，可按平台默认规则返回对象字段，但不要覆盖用户已指定字段。
+- 返回项的 `ref` 必须引用 `objects[].alias`。
+- 不要把聚合指标或关系路径结果写入 `QUERY` 的 `returns`。
 
 ## conditions 规则
 
@@ -64,9 +54,8 @@ ID/NAME 规则：
 2. 声明 `objects` 和 alias。
 3. 将用户过滤条件写入 `conditions`。
 4. 将返回字段写入 `returns`。
-5. 如需 ID/NAME 语义，使用 `returns.kind = FUNCTION`。
-6. 生成给执行脚本的 OQL JSON 时使用紧凑单行格式。
-7. 调用 `validate_oql.py` 校验。
+5. 生成给执行脚本的 OQL JSON 时使用紧凑单行格式。
+6. 调用 `validate_oql.py` 校验。
 
 ## 校验与修复
 
@@ -74,7 +63,7 @@ ID/NAME 规则：
 
 - 错误加入 `relationships`。
 - 把统计需求误写成 `QUERY`。
-- 把 `ID/NAME` 写成 `EXPR` 函数。
+- `returns` 结构不符合 schema。
 - `maxResults` 使用旧对象格式。
 
 ## 最小示例
