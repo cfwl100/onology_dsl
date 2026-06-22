@@ -2,110 +2,109 @@
 
 ## 1. 目标
 
-业务定制 Skill 位于 `scenario-skill/`，负责把用户问题、业务知识、实体变量和执行约束整理成 `Ontology-based-planning-skill` 可消费的业务定制输入。
+业务定制 Skill 位于 `scenario-skill/`，负责把用户问题和业务知识注入给 `Ontology-based-planning-skill`。
 
-该契约用于解决两个问题：
+该契约的核心原则是：**自然语言优先，结构化字段可选**。
 
-1. 让上层业务 Skill 更方便地注入自己的定制内容。
-2. 避免只传 `knowledge.summary` 导致原始业务规则、硬约束、固定模板和返回要求丢失。
+上层业务 Skill 不需要为了适配 planning 层而强行填写复杂字段表。业务知识本来就是规则、SOP、模板、禁止项和执行经验，可以直接以自然语言注入。
 
 ---
 
-## 2. 推荐输入信封
+## 2. 推荐方式：自然语言定制输入
 
-业务定制 Skill 推荐生成以下结构：
+业务定制 Skill 推荐向 planning 层传递一段自然语言定制说明，包含以下内容即可：
 
-```json
-{
-  "mode": "customized_planning",
-  "scenario": "业务场景名",
-  "originalQuestion": "用户原始问题",
-  "intent": "业务意图",
-  "goal": "业务目标",
-  "ontologyId": "本体子图检索使用的本体ID",
-  "schemaRef": "本体访问使用的schemaRef",
-  "knowledgeRefs": ["knowledge/xxx.md"],
-  "knowledge": {
-    "facts": [],
-    "rules": [],
-    "constraints": [],
-    "oagHints": [],
-    "oacHints": [],
-    "functionHints": [],
-    "rawEvidenceRefs": []
-  },
-  "entities": {},
-  "variables": {},
-  "constraints": {},
-  "stepOverrides": [],
-  "stepAppends": [],
-  "stepSkips": [],
-  "failurePolicy": {}
-}
+```text
+场景：<业务 Skill 名称>
+用户原始问题：<用户输入原文>
+本体子图检索本体ID：<ontologyId，如已知>
+本体访问schemaRef：<schemaRef，如已知>
+业务意图：<当前识别出的主意图>
+已读取知识：<knowledge 文件路径>
+业务知识与规则：<从 knowledge 原文抽取或直接引用的规则、SOP、模板、禁止项、返回要求>
+执行定制要求：<哪些默认步骤需要改写、追加或跳过，用自然语言描述即可>
+缺失信息：<无法从用户输入或业务知识获得的信息>
 ```
 
+其中只有三类信息强烈建议保留：
+
+1. 用户原始问题。
+2. 实际读取的 knowledge 文件路径。
+3. 原始知识中的硬约束、固定模板、禁止项、返回字段和失败处理规则。
+
+`ontologyId`、`schemaRef` 如果业务 Skill 已知，应直接写入；如果未知，交给 planning 层返回缺失项。
+
 ---
 
-## 3. 字段说明
+## 3. 结构化字段只是可选增强
 
-| 字段 | 说明 |
+如果某些业务 Skill 已经方便地产生结构化字段，可以继续使用：
+
+| 字段 | 是否必填 | 说明 |
+|---|---|---|
+| `intent` | 可选 | 主意图。也可以用自然语言描述。 |
+| `knowledge` | 可选 | 业务知识。可以是自然语言段落，不要求拆成 facts/rules/constraints。 |
+| `entities` | 可选 | 实体值。可自然语言描述。 |
+| `variables` | 可选 | 时间范围、方向列表等变量。可自然语言描述。 |
+| `constraints` | 可选 | 执行约束。可自然语言描述。 |
+| `stepOverrides` | 可选 | 步骤覆盖。可用自然语言说明“改写 S2 子图检索问题”。 |
+| `stepAppends` | 可选 | 追加步骤。可用自然语言说明。 |
+| `stepSkips` | 可选 | 跳过步骤。可用自然语言说明原因。 |
+| `failurePolicy` | 可选 | 失败策略。可用自然语言说明。 |
+
+不要为了填字段而把原始知识强行拆碎。字段存在的目的只是方便 planning 层读取，不是业务 Skill 的强制接口。
+
+---
+
+## 4. Planning 层如何消费自然语言定制内容
+
+`Ontology-based-planning-skill` 收到自然语言定制说明后，应在 S1 阶段完成轻量整理：
+
+1. 保留用户原始问题，用作本体子图检索的优先自然语言输入。
+2. 从定制说明中识别已知的 `ontologyId` 和 `schemaRef`。
+3. 从业务知识中提取硬约束、固定模板、返回要求和禁止项。
+4. 判断默认流程中哪些步骤需要被自然语言改写。
+5. 不提前确定对象、字段、关系或函数；这些仍以本体子图和平台返回结果为准。
+
+---
+
+## 5. 无损注入原则
+
+1. 可以直接引用 knowledge 原文，不要求拆成结构化字段。
+2. 不要只传一句摘要，例如“当前意图对应的业务知识摘要”。
+3. 必须保留知识来源，例如 `knowledge/nealarm.md`、`knowledge/propagation.md`、`knowledge/evidence.md`。
+4. 硬约束、固定模板、禁止项、返回字段、方向顺序、不可重试规则必须完整保留。
+5. 用户原始问题必须保留。
+6. 用户显式输入与业务知识冲突时，以用户输入优先，并说明冲突。
+7. 业务知识只能作为规划依据；对象、字段、关系、函数最终仍以本体子图和平台返回结果为准。
+
+---
+
+## 6. 与三种模式的关系
+
+| 模式 | 上层业务 Skill 推荐做法 |
 |---|---|
-| `mode` | 固定为 `customized_planning`，表示业务定制模式。 |
-| `scenario` | 业务 Skill 名称，便于审计。 |
-| `originalQuestion` | 用户原始问题，必须保留，OAG 子图检索优先使用自然语言原文。 |
-| `intent` | 上层业务 Skill 识别出的唯一主意图。 |
-| `goal` | 最终业务目标。 |
-| `ontologyId` | 本体子图检索入参。 |
-| `schemaRef` | 本体访问入参。 |
-| `knowledgeRefs` | 已读取的业务知识文件路径。 |
-| `knowledge.facts` | 业务事实。 |
-| `knowledge.rules` | SOP、判断规则和推理规则。 |
-| `knowledge.constraints` | 禁止项、硬约束、串行/并行要求、不可重试要求。 |
-| `knowledge.oagHints` | 本体子图检索自然语言提示或固定模板。 |
-| `knowledge.oacHints` | 本体访问查询对象、字段、过滤、返回格式提示。 |
-| `knowledge.functionHints` | 函数发现或调用建议。 |
-| `knowledge.rawEvidenceRefs` | 需要保留的原始知识引用，例如文件名和章节名。 |
-| `entities` | 用户输入实体，例如网元、告警、船舶、业务路径等。 |
-| `variables` | 变量值，例如时间范围、方向列表、告警列表等。 |
-| `constraints` | 当前请求级约束。 |
-| `stepOverrides` | 覆盖默认步骤输入、期望输出、失败策略或备注。 |
-| `stepAppends` | 在默认流程后追加步骤。 |
-| `stepSkips` | 跳过默认步骤，必须给出原因。 |
-| `failurePolicy` | 失败处理策略。 |
+| 默认规划模式 | 传用户原始问题和必要上下文。 |
+| 业务定制模式 | 传自然语言定制说明，包含知识来源、规则、模板、禁止项、返回要求和必要 ID。 |
+| 显式步骤执行模式 | 直接传完整 steps；如果没有完整 steps，不要强行构造。 |
 
 ---
 
-## 4. 无损注入原则
+## 7. alarm-propagation 推荐注入方式
 
-1. 不要只传 `knowledge.summary`。
-2. 必须保留 `knowledgeRefs`，让 planning 层能知道知识来源。
-3. 强约束、禁止项、固定模板、返回字段、方向顺序、不可重试规则必须进入 `knowledge.constraints` 或 `constraints`。
-4. 用户原始问题必须进入 `originalQuestion`。
-5. 上层业务 Skill 已知的 `ontologyId`、`schemaRef` 必须直接注入。
-6. 业务知识只能作为规划依据；对象、字段、关系、函数最终仍以本体子图和平台返回结果为准。
-7. 如果用户显式输入与业务知识冲突，以用户显式输入优先，并在冲突中说明。
+`alarm-propagation` 可以保留原始 `evidence.md`、`nealarm.md`、`propagation.md` 的自然语言写法。
 
----
+注入给 planning 层时建议这样表达：
 
-## 5. 与三种模式的关系
+```text
+场景：alarm-propagation
+用户原始问题：<用户输入>
+本体子图检索本体ID：network@1.0
+本体访问schemaRef：network@1.0
+业务意图：<ne_alarm_query / propagation_relation_analysis / propagation_evidence_check>
+已读取知识：knowledge/<xxx>.md
+业务知识与规则：完整保留该 knowledge 文件中的目标、核心经验知识、OAG 调用规则、OAC 调用规则、执行建议、必须遵循的禁止项和返回要求。
+执行定制要求：按 knowledge 原文改写默认 S2 子图检索问题和 S4 本体访问要求；未明确的对象、字段、关系仍由本体子图确认。
+```
 
-| 模式 | 上层业务 Skill 应该怎么做 |
-|---|---|
-| 默认规划模式 | 只传 `originalQuestion`、`goal`、必要的 `ontologyId` / `schemaRef`。 |
-| 业务定制模式 | 使用本文定义的定制输入信封，注入业务知识、变量、约束和局部步骤改写。 |
-| 显式步骤执行模式 | 直接传完整 `steps`，planning 层只做步骤契约检查和绑定。 |
-
----
-
-## 6. alarm-propagation 示例要点
-
-`alarm-propagation` 不应只向 planning 层传递“当前意图对应的业务知识摘要”，而应按意图保留以下信息：
-
-- `knowledgeRefs`：实际读取的 knowledge 文件。
-- `knowledge.rules`：告警唯一标识符、传播链、证据验证等规则。
-- `knowledge.constraints`：禁止查 AbnormalStatus、禁止 Function、每个方向独立 OAG、禁止重复查询等硬约束。
-- `knowledge.oagHints`：固定 OAG 自然语言 query 模板。
-- `knowledge.oacHints`：返回字段、过滤条件、message_type、关系路径要求。
-- `entities`：网元名称、告警名称、告警 identifier。
-- `variables`：方向列表、每个方向的网元名称、告警类型列表、时间范围。
-- `stepOverrides`：只覆盖 S2 子图检索和 S4 数据访问的输入提示，不重写默认流程。
+这样上层业务 Skill 的编写方式仍然接近原始自然语言 Skill，不需要维护复杂字段表。
