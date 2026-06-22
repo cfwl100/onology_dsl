@@ -2,10 +2,11 @@
 
 ## 本体信息
 
+- 对外公共本体ID：`dtmi.ontology.560d88f7.1`
 - 对象名：`ship_info`
-- ontologyId：`dtmi.ontology.560d88f7.1`
-- schemaRef：`dtmi.ontology.560d88f7.1`
 - OQL 初始版本：`1.0`
+
+说明：业务 Skill 对外只传公共本体ID。Planning 层和平台层在下层调用中分别将该 ID 用于本体子图检索和本体访问 `schemaRef` 来源。
 
 ## 字段映射
 
