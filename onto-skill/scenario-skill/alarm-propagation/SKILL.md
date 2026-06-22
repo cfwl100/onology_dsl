@@ -5,6 +5,7 @@ allowed_tools:
 metadata:
   mode: customized_planning
   contract: ../../docs/business-customization-input-contract.md
+  injection: natural-language-first
 ---
 
 # 故障传播分析 Skill
@@ -17,9 +18,8 @@ metadata:
 
 1. 识别唯一主意图。
 2. 读取当前意图对应的业务知识文件。
-3. 抽取实体、变量和执行约束。
-4. 按业务定制输入契约生成给 `Ontology-based-planning-skill` 的定制输入。
-5. 委托本体规划层基于默认本体子图流程执行。
+3. 保留用户原始问题和知识文件原文中的关键规则。
+4. 以自然语言定制说明的方式委托 `Ontology-based-planning-skill`。
 
 你不直接调用原始 Tool，不直接生成最终查询语言，不直接执行平台函数。
 
@@ -27,29 +27,24 @@ metadata:
 
 `Ontology-based-planning-skill` 自带默认流程。你只负责注入业务定制内容，不重写完整流程。
 
-定制输入必须遵守：`onto-skill/docs/business-customization-input-contract.md`。
+定制输入遵守：`onto-skill/docs/business-customization-input-contract.md`。
 
-必须注入以下内容：
+本场景采用**自然语言优先**注入方式，不要求把业务知识拆成复杂结构化字段。
 
-| 字段 | 要求 |
-|---|---|
-| `mode` | 固定为 `customized_planning`。 |
-| `scenario` | 固定为 `alarm-propagation`。 |
-| `originalQuestion` | 保留用户原始问题，不得只传改写后的 goal。 |
-| `intent` | 当前唯一主意图。 |
-| `goal` | 当前业务目标。 |
-| `ontologyId` | 默认 `network@1.0`，除非用户或上下文明确覆盖。 |
-| `schemaRef` | 默认 `network@1.0`，除非用户或上下文明确覆盖。 |
-| `knowledgeRefs` | 实际读取的 knowledge 文件路径。 |
-| `knowledge.rules` | 业务规则、SOP、判断依据。 |
-| `knowledge.constraints` | 硬约束、禁止项、串行/并行要求、不可重试要求。 |
-| `knowledge.oagHints` | 子图检索自然语言提示或固定模板。 |
-| `knowledge.oacHints` | 查询对象、字段、过滤条件、返回格式要求。 |
-| `entities` | 网元、告警、告警唯一标识等实体。 |
-| `variables` | 时间范围、方向列表、每个方向的网元和告警列表。 |
-| `stepOverrides` | 仅在需要改写默认 S2/S4 输入时提供。 |
+注入给 planning 层时，至少说明：
 
-无损注入要求：不得只传 `knowledge.summary`。必须保留知识来源、关键规则、硬约束、固定模板、返回字段和禁止项。
+```text
+场景：alarm-propagation
+用户原始问题：<用户输入原文>
+本体子图检索本体ID：network@1.0
+本体访问schemaRef：network@1.0
+业务意图：<当前唯一主意图>
+已读取知识：<knowledge 文件路径>
+业务知识与规则：完整保留当前 knowledge 文件中的目标、核心经验知识、调用规则、执行建议、禁止项、返回要求和空结果策略。
+执行定制要求：按当前 knowledge 文件中的自然语言规则改写默认 S2 子图检索问题和 S4 本体访问要求；未明确的对象、字段、关系和函数仍由本体子图或平台返回结果确认。
+```
+
+不要只传一句 `knowledge.summary`，也不要为了填字段而丢失原始 knowledge 中的固定模板、禁止项、返回字段和执行顺序。
 
 ## 3. 意图路由
 
@@ -61,72 +56,73 @@ metadata:
 
 在读取 knowledge 前必须先识别唯一主意图。只读取当前意图对应的一个 knowledge 文件。
 
-## 4. 通用实体与变量抽取
+## 4. 通用抽取要求
 
-从用户输入和知识文件中抽取：
+从用户输入中尽量识别以下信息，但识别不到时不要编造，交给本体规划层返回缺失项：
 
-- `entities.neName`：网元名称。
-- `entities.neId`：网元 ID。
-- `entities.alarmName`：告警类型。
-- `entities.identifier`：告警唯一标识符。
-- `variables.timeRange`：时间范围。
-- `variables.directions`：证据验证方向列表，按用户输入顺序保留。
-- `variables.directionConfigs`：每个方向独立的网元名称和告警类型列表。
-- `constraints.scope`：工单范围、证据范围或查询范围。
+- 网元名称或网元 ID。
+- 告警类型或告警唯一标识符。
+- 时间范围。
+- 证据验证方向，例如同站点、对端网元、业务路径。
+- 每个方向对应的网元名称和告警类型列表。
+- 工单范围、证据范围或查询范围。
 
-不能从用户输入或 knowledge 得到的字段不要编造，交给本体规划层返回缺失项。
+这些信息可以自然语言形式写入定制说明，不要求填入固定字段。
 
-## 5. 各意图的定制注入规则
+## 5. 各意图的自然语言注入规则
 
 ### 5.1 查询网元告警
 
 读取：`knowledge/nealarm.md`。
 
-注入规则：
+注入时必须保留：
 
-- `knowledgeRefs` 包含 `knowledge/nealarm.md`。
-- `knowledge.rules` 必须包含：告警和异常事件不同；不要查询 AbnormalStatus；`alarmName` 是告警类型；特定告警应使用 `identifier`。
-- `knowledge.oacHints` 必须包含：直接使用 `ne.name` 过滤；返回告警字段 ownerVid、severity、alarmName、identifier、firstOccurrence、lastOccurrence、node。
-- `knowledge.functionHints` 可以包含：如果子图存在合适函数，可优先发现函数。
+- 告警和异常事件不同，不要查找 AbnormalStatus。
+- `alarmName` 是告警类型；查询特定告警时应使用 `identifier`。
+- 查询网元告警时直接使用 `ne.name` 作为过滤条件，不需要先查网元 ID。
+- 返回字段必须保留 knowledge 文件要求的告警字段。
+- 如果子图中存在合适函数，可以让 planning 层优先发现函数。
 
 ### 5.2 传播关系分析
 
 读取：`knowledge/propagation.md`。
 
-注入规则：
+注入时必须保留：
 
-- `knowledgeRefs` 包含 `knowledge/propagation.md`。
-- `knowledge.rules` 必须包含：PathNE、RingNE、SingleNE、CrossNE 的传播规则；传播知识子图或函数结果不等于传播链已成立。
-- `knowledge.constraints` 必须包含：不要查询 AbnormalStatus；同一函数只能调用一次；函数获取到传播知识后，不再执行本体访问备选方案。
-- `knowledge.oagHints` 必须包含该文件给出的固定自然语言检索模板。
-- 如需覆盖默认 S2，仅通过 `stepOverrides` 改写 S2 的 `input.query` 和 `notes`。
+- PathNE、RingNE、SingleNE、CrossNE 的传播规则。
+- 不要查找 AbnormalStatus。
+- Function 只能调用一次，禁止重复调用。
+- OAG 固定自然语言检索模板。
+- 如果 Function 已获取传播知识，不再执行 OAC 备选方案。
+- 传播知识子图或函数结果不等于传播链已成立，必须经过实例验证。
 
 ### 5.3 传播证据验证
 
 读取：`knowledge/evidence.md`。
 
-注入规则：
+注入时必须保留：
 
-- `knowledgeRefs` 包含 `knowledge/evidence.md`。
-- `variables.directions` 必须按用户输入顺序保留。
-- `variables.directionConfigs` 必须为每个方向独立保存网元名称和告警类型列表。
-- `knowledge.rules` 必须包含：规划方向完全由用户输入决定；不同方向可能有不同网元和告警列表；关系名从子图边的实际名称获取。
-- `knowledge.constraints` 必须包含：每个方向独立调用一次子图检索；禁止合并调用；禁止重复调用；必须串行；禁止使用函数；禁止使用 Port；禁止关系中包含 Port、Link；空结果不重试。
-- `knowledge.oagHints` 必须按方向保留同站点、对端网元、业务路径的自然语言模板。
-- `knowledge.oacHints` 必须保留返回字段、过滤条件、message_type 和关系路径要求。
+- 规划哪些方向完全由用户输入决定。
+- 用户输入几个方向，就规划几个方向；未指定方向时结束并说明缺失。
+- 每个方向必须独立调用一次本体子图检索，禁止合并调用，禁止重复调用。
+- 多方向必须按用户输入顺序串行执行。
+- 不同方向的网元名称和告警列表可能不同，必须独立处理。
+- 固定 OAG 自然语言模板必须按 knowledge 原文使用。
+- 禁止使用 Function、Port；禁止关系中包含 Port、Link。
+- 返回字段、过滤条件、message_type、空结果不重试等规则必须保留。
 
 ## 6. 委托规则
 
-将定制输入委托给 `Ontology-based-planning-skill`。
+将自然语言定制说明委托给 `Ontology-based-planning-skill`。
 
-本体规划层会完成：
+本体规划层负责：
 
-1. 输入整理与规划上下文构造。
-2. 本体子图检索。
-3. 对象、属性、关系和函数候选识别。
-4. 数据访问步骤生成。
-5. 函数发现或调用。
-6. 结果汇总。
+1. 整理自然语言定制内容。
+2. 生成或改写默认步骤。
+3. 调用本体子图检索。
+4. 基于子图确认对象、属性、关系和函数候选。
+5. 生成本体访问步骤或函数步骤。
+6. 汇总结果、缺失项和空结果说明。
 
 ## 7. 术语替换约束
 
