@@ -1,0 +1,510 @@
+{
+  "seedNodes": null,
+  "nodes": [
+    {
+      "id": "dtmi:com:huawei:ict:function:PlanYards:c00608f8-92fa-4a1e-9ff0-1a2ffeae0a85",
+      "label": "function",
+      "properties": {
+        "projectInfo": "{\"model\":\"src/operation.py\",\"projectPath\":\"dtmi.com.huawei.ict.ontology0206\"}",
+        "qualifiedName": "src/operation.py.class.PlanYards",
+        "display": "{\"en\":\"PlanYards\"}",
+        "name": "PlanYards",
+        "ontologyId": "dtmi.com.huawei.ict.ontology0206",
+        "description": "{\"zh\":\"根据泊位计划，设备、堆场信息规划今天的堆场安排。 步骤： 1、解析输入数据，读取XXX本体对象，根据XXX约束、业务规则，下一步思维链到集港流程； 2、读取泊位计划本体对象，找到运输方式属性，根据XXX约束、业务规则，下一步思维链到水运； 3、读取泊位计划本体对象，找到泊位属性，根据XXX约束、业务规则，下一步思维链到具体泊位； 4、读取泊位计划本体对象，找到泊位与设备关联关系，根据XXX约束、业务规则，下一步思维链到具体泊位作业设备； 5、读取XXX本体对象，根据起始作业设备，找到皮带具体对应流程，根据XXX约束、业务规则，下一步思维链到具体堆场作业设备； 6、读取XXX本体对象，根据堆场作业设备，找到堆场，根据XXX约束、业务规则，下一步思维链到货位； 7、根据货位开始进行货垛分配计算； return 堆场安排计划对象：含船号，货垛对象。\"}",
+        "language": "Python",
+        "id": "dtmi:com:huawei:ict:function:PlanYards:c00608f8-92fa-4a1e-9ff0-1a2ffeae0a85",
+        "repositoryName": "dtmi.com.huawei.ict.ontology0206",
+        "projectName": "dtmi.com.huawei.ict.ontology0206",
+        "version": "3",
+        "status": "active"
+      }
+    },
+    {
+      "id": "dtmi:com:huawei:ict:function:getCongestedAlarms:be32818b-74f7-4fe7-99d0-6808424dd2b1",
+      "label": "function",
+      "properties": {
+        "projectInfo": "{\"model\":\"src/main.py\",\"projectPath\":\"dtmi.com.huawei.ict.ontology0206\"}",
+        "qualifiedName": "src/main.py.class.getCongestedAlarms",
+        "display": "{\"en\":\"getCongestedAlarms\"}",
+        "name": "getCongestedAlarms",
+        "description": "{\"zh\":\"查询指定时间范围内的收发流量下降告警信息，根据告警信息中的measure字段过滤出拥塞告警，并返回拥塞告警。\"}",
+        "ontologyId": "dtmi.com.huawei.ict.ontology0206",
+        "language": "Python",
+        "id": "dtmi:com:huawei:ict:function:getCongestedAlarms:be32818b-74f7-4fe7-99d0-6808424dd2b1",
+        "repositoryName": "dtmi.com.huawei.ict.ontology0206",
+        "projectName": "dtmi.com.huawei.ict.ontology0206",
+        "version": "3",
+        "status": "active"
+      }
+    },
+    {
+      "id": "dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:cecebf76-05e1-48cd-8a68-1d794a48b4a9",
+      "label": "function",
+      "properties": {
+        "projectInfo": "{\"model\":\"src/main.py\",\"projectPath\":\"dtmi.com.huawei.ict.ontology0206\"}",
+        "qualifiedName": "src/main.py.class.getAlarmRelationKnowledge",
+        "display": "{\"en\":\"getAlarmRelationKnowledge\"}",
+        "name": "getAlarmRelationKnowledge",
+        "ontologyId": "dtmi.com.huawei.ict.ontology0206",
+        "description": "{\"zh\":\"根据告警查询异常故障特征信息（查询一跳）\"}",
+        "language": "Python",
+        "id": "dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:cecebf76-05e1-48cd-8a68-1d794a48b4a9",
+        "projectName": "dtmi.com.huawei.ict.ontology0206",
+        "repositoryName": "dtmi.com.huawei.ict.ontology0206",
+        "version": "3",
+        "status": "active"
+      }
+    },
+    {
+      "id": "dtmi:com:huawei:ict:Alarm:1.0:alarmname",
+      "label": "property",
+      "properties": {
+        "createdAt": "1776326175988",
+        "lastModifiedAt": "1776326175988",
+        "createdBy": "admain",
+        "defaultValue": "NULL",
+        "valueType": "NULL",
+        "display": "{\"zh\":\"告警名称\"}",
+        "dataType": "string",
+        "name": "alarmName",
+        "description": "{\"zh\":\"拥塞：Ethernet Physical (ETPI) Send bandwidth usage rate threshold crossedEthernet Physical (ETPI) Receive bandwidth usage rate threshold crossed；LinkDown告警：Fiber Break, Ethernet Physical (ETPI) LOS、Ethernet Physical (ETPI) Port down、Ethernet Physical (ETPI) Interface down；  网元脱管： BN EMS Alarm NE Communication Failure\"}",
+        "modifiedBy": "admain",
+        "id": "dtmi:com:huawei:ict:Alarm:1.0:alarmname",
+        "status": "active"
+      }
+    },
+    {
+      "id": "dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:b6d0dacb-4ac9-4ee9-9e6b-408dfb55c7ae",
+      "label": "function",
+      "properties": {
+        "projectInfo": "{\"model\":\"src/main.py\",\"projectPath\":\"dtmi.com.huawei.ict.ontology0206\"}",
+        "qualifiedName": "src/main.py.class.getAlarmRelationKnowledge",
+        "display": "{\"en\":\"getAlarmRelationKnowledge\"}",
+        "name": "getAlarmRelationKnowledge",
+        "description": "{\"zh\":\"根据告警查询异常故障特征信息（查询一跳）\"}",
+        "ontologyId": "dtmi.com.huawei.ict.ontology0206",
+        "language": "Python",
+        "id": "dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:b6d0dacb-4ac9-4ee9-9e6b-408dfb55c7ae",
+        "projectName": "dtmi.com.huawei.ict.ontology0206",
+        "repositoryName": "dtmi.com.huawei.ict.ontology0206",
+        "version": "3",
+        "status": "active"
+      }
+    },
+    {
+      "id": "dtmi:com:huawei:ict:Alarm:1.0",
+      "label": "objectType",
+      "properties": {
+        "extendObjectTypeIds": "[]",
+        "lastModifiedAt": "1776326176225",
+        "display": "{\"zh\":\"告警\"}",
+        "icon": "NULL",
+        "description": "{\"zh\":\"\"}",
+        "type": "objectType",
+        "createdAt": "NULL",
+        "extensions": "color:#1890ff;icon:svgPath1",
+        "primaryKeys": "NULL",
+        "createdBy": "NULL",
+        "name": "Alarm",
+        "modifiedBy": "admain",
+        "id": "dtmi:com:huawei:ict:Alarm:1.0",
+        "status": "active"
+      }
+    },
+    {
+      "id": "dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:53b06f2e-6721-40b2-86dc-a5574027e6de",
+      "label": "function",
+      "properties": {
+        "projectInfo": "{\"model\":\"src/main.py\",\"projectPath\":\"dtmi.com.huawei.ict.ontology0206\"}",
+        "qualifiedName": "src/main.py.class.getAlarmRelationKnowledge",
+        "display": "{\"en\":\"getAlarmRelationKnowledge\"}",
+        "name": "getAlarmRelationKnowledge",
+        "description": "{\"zh\":\"根据告警查询异常故障特征信息（查询一跳）\"}",
+        "ontologyId": "dtmi.com.huawei.ict.ontology0206",
+        "language": "Python",
+        "id": "dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:53b06f2e-6721-40b2-86dc-a5574027e6de",
+        "projectName": "dtmi.com.huawei.ict.ontology0206",
+        "repositoryName": "dtmi.com.huawei.ict.ontology0206",
+        "version": "3",
+        "status": "active"
+      }
+    },
+    {
+      "id": "dtmi:com:huawei:ict:function:getCongestedAlarms:35de29d2-9101-4a88-8ce2-338417a3b000",
+      "label": "function",
+      "properties": {
+        "projectInfo": "{\"model\":\"src/main.py\",\"projectPath\":\"dtmi.com.huawei.ict.ontology0206\"}",
+        "qualifiedName": "src/main.py.class.getCongestedAlarms",
+        "display": "{\"en\":\"getCongestedAlarms\"}",
+        "name": "getCongestedAlarms",
+        "ontologyId": "dtmi.com.huawei.ict.ontology0206",
+        "description": "{\"zh\":\"查询指定时间范围内的收发流量下降告警信息，根据告警信息中的measure字段过滤出拥塞告警，并返回拥塞告警。\"}",
+        "language": "Python",
+        "id": "dtmi:com:huawei:ict:function:getCongestedAlarms:35de29d2-9101-4a88-8ce2-338417a3b000",
+        "projectName": "dtmi.com.huawei.ict.ontology0206",
+        "repositoryName": "dtmi.com.huawei.ict.ontology0206",
+        "version": "3",
+        "status": "active"
+      }
+    },
+    {
+      "id": "dtmi:com:huawei:ict:AbnormalStatuPatten:1.0",
+      "label": "objectType",
+      "properties": {
+        "extendObjectTypeIds": "[]",
+        "lastModifiedAt": "1776931045449",
+        "display": "{\"zh\":\"异常状态特征\"}",
+        "icon": "NULL",
+        "description": "{\"zh\":\"1、PathNE的传播，路径上的网元编号由无线从0开始编号，路径上如果存在多个网元故障，则根因在编号最大故障网元和次大的故障网元中基于传播关系判定；\n2、RingNE的传播，环的编号由核心侧逆时钟或顺时钟从0开始编号，多点开环上的根因，为编号最小和最大的故障网元及相邻网元中判定；\n3、如果存在网元掉电或者站点动环故障，导致了本网元的网元脱管，则直接判定为根因，不受1和2的影响。\"}",
+        "type": "objectType",
+        "createdAt": "NULL",
+        "extensions": "color:#1890ff;icon:svgPath1",
+        "primaryKeys": "NULL",
+        "createdBy": "NULL",
+        "name": "AbnormalStatuPatten",
+        "modifiedBy": "admain",
+        "id": "dtmi:com:huawei:ict:AbnormalStatuPatten:1.0",
+        "status": "active"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "has_function:dtmi:com:huawei:ict:Alarm:1.0->dtmi:com:huawei:ict:function:getCongestedAlarms:be32818b-74f7-4fe7-99d0-6808424dd2b1@0",
+      "sourceId": "dtmi:com:huawei:ict:Alarm:1.0",
+      "targetId": "dtmi:com:huawei:ict:function:getCongestedAlarms:be32818b-74f7-4fe7-99d0-6808424dd2b1",
+      "edgeType": "has_function",
+      "properties": {},
+      "propertyMap": {
+      },
+      "eid": "has_function:dtmi:com:huawei:ict:Alarm:1.0->dtmi:com:huawei:ict:function:getCongestedAlarms:be32818b-74f7-4fe7-99d0-6808424dd2b1@0"
+    },
+    {
+      "id": "has_function:dtmi:com:huawei:ict:Alarm:1.0->dtmi:com:huawei:ict:function:PlanYards:c00608f8-92fa-4a1e-9ff0-1a2ffeae0a85@0",
+      "sourceId": "dtmi:com:huawei:ict:Alarm:1.0",
+      "targetId": "dtmi:com:huawei:ict:function:PlanYards:c00608f8-92fa-4a1e-9ff0-1a2ffeae0a85",
+      "edgeType": "has_function",
+      "properties": {
+      },
+      "propertyMap": {
+      },
+      "eid": "has_function:dtmi:com:huawei:ict:Alarm:1.0->dtmi:com:huawei:ict:function:PlanYards:c00608f8-92fa-4a1e-9ff0-1a2ffeae0a85@0"
+    },
+    {
+      "id": "has_function:dtmi:com:huawei:ict:Alarm:1.0->dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:b6d0dacb-4ac9-4ee9-9e6b-408dfb55c7ae@0",
+      "sourceId": "dtmi:com:huawei:ict:Alarm:1.0",
+      "targetId": "dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:b6d0dacb-4ac9-4ee9-9e6b-408dfb55c7ae",
+      "edgeType": "has_function",
+      "properties": {
+      },
+      "propertyMap": {
+      },
+      "eid": "has_function:dtmi:com:huawei:ict:Alarm:1.0->dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:b6d0dacb-4ac9-4ee9-9e6b-408dfb55c7ae@0"
+    },
+    {
+      "id": "has_property:dtmi:com:huawei:ict:Alarm:1.0->dtmi:com:huawei:ict:Alarm:1.0:alarmname@0",
+      "sourceId": "dtmi:com:huawei:ict:Alarm:1.0",
+      "targetId": "dtmi:com:huawei:ict:Alarm:1.0:alarmname",
+      "edgeType": "has_property",
+      "properties": {
+      },
+      "propertyMap": {},
+      "eid": "has_property:dtmi:com:huawei:ict:Alarm:1.0->dtmi:com:huawei:ict:Alarm:1.0:alarmname@0"
+    },
+    {
+      "id": "has_function:dtmi:com:huawei:ict:Alarm:1.0->dtmi:com:huawei:ict:function:getCongestedAlarms:35de29d2-9101-4a88-8ce2-338417a3b000@0",
+      "sourceId": "dtmi:com:huawei:ict:Alarm:1.0",
+      "targetId": "dtmi:com:huawei:ict:function:getCongestedAlarms:35de29d2-9101-4a88-8ce2-338417a3b000",
+      "edgeType": "has_function",
+      "properties": {
+      },
+      "propertyMap": {},
+      "eid": "has_function:dtmi:com:huawei:ict:Alarm:1.0->dtmi:com:huawei:ict:function:getCongestedAlarms:35de29d2-9101-4a88-8ce2-338417a3b000@0"
+    },
+    {
+      "id": "defines_relation:dtmi:com:huawei:ict:Alarm:1.0->dtmi:com:huawei:ict:AbnormalStatuPatten:1.0@-5880396750608787566",
+      "sourceId": "dtmi:com:huawei:ict:Alarm:1.0",
+      "targetId": "dtmi:com:huawei:ict:AbnormalStatuPatten:1.0",
+      "edgeType": "defines_relation",
+      "properties": {
+        "lastModifiedAt": null,
+        "businessSemanticType": "告警归属于某类异常状态特征",
+        "sourceObjectTypeId": null,
+        "sourcePropertyId": null,
+        "display": "{\"en\":\"displayNameEn\",\"zh\":\"displayNameCn\"}",
+        "connectionType": null,
+        "cardinality": "many-to-one",
+        "relation": null,
+        "targetPropertyId": null,
+        "structureRelationDescription": "",
+        "createdAt": null,
+        "targetObjectTypeId": null,
+        "createdBy": null,
+        "structureRelationType": "aggregation",
+        "name": "classify",
+        "modifiedBy": null,
+        "id": "dtmi.952859ec.structureRelationType-type.4e077db4-b569cc45.1",
+        "businessSemanticDescription": "",
+        "keyMappings": null,
+        "status": null
+      },
+      "propertyMap": {
+        "lastModifiedAt": null,
+        "businessSemanticType": "告警归属于某类异常状态特征",
+        "sourceObjectTypeId": null,
+        "sourcePropertyId": null,
+        "display": "{\"en\":\"displayNameEn\",\"zh\":\"displayNameCn\"}",
+        "connectionType": null,
+        "cardinality": "many-to-one",
+        "relation": null,
+        "targetPropertyId": null,
+        "structureRelationDescription": "",
+        "createdAt": null,
+        "targetObjectTypeId": null,
+        "createdBy": null,
+        "structureRelationType": "aggregation",
+        "name": "classify",
+        "modifiedBy": null,
+        "id": "dtmi.952859ec.structureRelationType-type.4e077db4-b569cc45.1",
+        "businessSemanticDescription": "",
+        "keyMappings": null,
+        "status": null
+      },
+      "eid": "defines_relation:dtmi:com:huawei:ict:Alarm:1.0->dtmi:com:huawei:ict:AbnormalStatuPatten:1.0@-5880396750608787566"
+    },
+    {
+      "id": "has_function:dtmi:com:huawei:ict:Alarm:1.0->dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:53b06f2e-6721-40b2-86dc-a5574027e6de@0",
+      "sourceId": "dtmi:com:huawei:ict:Alarm:1.0",
+      "targetId": "dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:53b06f2e-6721-40b2-86dc-a5574027e6de",
+      "edgeType": "has_function",
+      "properties": {},
+      "propertyMap": {
+      },
+      "eid": "has_function:dtmi:com:huawei:ict:Alarm:1.0->dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:53b06f2e-6721-40b2-86dc-a5574027e6de@0"
+    },
+    {
+      "id": "has_function:dtmi:com:huawei:ict:Alarm:1.0->dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:cecebf76-05e1-48cd-8a68-1d794a48b4a9@0",
+      "sourceId": "dtmi:com:huawei:ict:Alarm:1.0",
+      "targetId": "dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:cecebf76-05e1-48cd-8a68-1d794a48b4a9",
+      "edgeType": "has_function",
+      "properties": {
+      },
+      "propertyMap": {
+      },
+      "eid": "has_function:dtmi:com:huawei:ict:Alarm:1.0->dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:cecebf76-05e1-48cd-8a68-1d794a48b4a9@0"
+    },
+    {
+      "id": "defines_relation:dtmi:com:huawei:ict:AbnormalStatuPatten:1.0->dtmi:com:huawei:ict:AbnormalStatuPatten:1.0@-2735240081254405895",
+      "sourceId": "dtmi:com:huawei:ict:AbnormalStatuPatten:1.0",
+      "targetId": "dtmi:com:huawei:ict:AbnormalStatuPatten:1.0",
+      "edgeType": "defines_relation",
+      "properties": {
+        "lastModifiedAt": null,
+        "businessSemanticType": "异常状态特征导致其他异常状态特征",
+        "sourceObjectTypeId": null,
+        "display": "{\"en\":\"displayNameEn\",\"zh\":\"displayNameCn\"}",
+        "sourcePropertyId": null,
+        "connectionType": null,
+        "cardinality": "one-to-many",
+        "relation": null,
+        "targetPropertyId": null,
+        "structureRelationDescription": "",
+        "createdAt": null,
+        "targetObjectTypeId": null,
+        "createdBy": null,
+        "structureRelationType": "dependency",
+        "name": "trigger",
+        "modifiedBy": null,
+        "id": "nulldtmi:com:huawei:ict:AbnormalStatuPatten:1.0dtmi:com:huawei:ict:AbnormalStatuPatten:1.0",
+        "keyMappings": null,
+        "businessSemanticDescription": "",
+        "status": null
+      },
+      "propertyMap": {
+        "lastModifiedAt": null,
+        "businessSemanticType": "异常状态特征导致其他异常状态特征",
+        "sourceObjectTypeId": null,
+        "display": "{\"en\":\"displayNameEn\",\"zh\":\"displayNameCn\"}",
+        "sourcePropertyId": null,
+        "connectionType": null,
+        "cardinality": "one-to-many",
+        "relation": null,
+        "targetPropertyId": null,
+        "structureRelationDescription": "",
+        "createdAt": null,
+        "targetObjectTypeId": null,
+        "createdBy": null,
+        "structureRelationType": "dependency",
+        "name": "trigger",
+        "modifiedBy": null,
+        "id": "nulldtmi:com:huawei:ict:AbnormalStatuPatten:1.0dtmi:com:huawei:ict:AbnormalStatuPatten:1.0",
+        "keyMappings": null,
+        "businessSemanticDescription": "",
+        "status": null
+      },
+      "eid": "defines_relation:dtmi:com:huawei:ict:AbnormalStatuPatten:1.0->dtmi:com:huawei:ict:AbnormalStatuPatten:1.0@-2735240081254405895"
+    },
+    {
+      "id": "defines_relation:dtmi:com:huawei:ict:Alarm:1.0->dtmi:com:huawei:ict:Alarm:1.0@-3060461543551423340",
+      "sourceId": "dtmi:com:huawei:ict:Alarm:1.0",
+      "targetId": "dtmi:com:huawei:ict:Alarm:1.0",
+      "edgeType": "defines_relation",
+      "properties": {
+        "lastModifiedAt": null,
+        "businessSemanticType": "告警会导致其他告警",
+        "sourceObjectTypeId": null,
+        "sourcePropertyId": null,
+        "display": "{\"en\":\"displayNameEn\",\"zh\":\"displayNameCn\"}",
+        "connectionType": null,
+        "cardinality": "one-to-many",
+        "targetPropertyId": null,
+        "relation": null,
+        "structureRelationDescription": "",
+        "createdAt": null,
+        "targetObjectTypeId": null,
+        "createdBy": null,
+        "structureRelationType": "dependency",
+        "name": "trigger",
+        "modifiedBy": null,
+        "id": "nulldtmi:com:huawei:ict:Alarm:1.0dtmi:com:huawei:ict:Alarm:1.0",
+        "keyMappings": null,
+        "businessSemanticDescription": "",
+        "status": null
+      },
+      "propertyMap": {
+        "lastModifiedAt": null,
+        "businessSemanticType": "告警会导致其他告警",
+        "sourceObjectTypeId": null,
+        "sourcePropertyId": null,
+        "display": "{\"en\":\"displayNameEn\",\"zh\":\"displayNameCn\"}",
+        "connectionType": null,
+        "cardinality": "one-to-many",
+        "targetPropertyId": null,
+        "relation": null,
+        "structureRelationDescription": "",
+        "createdAt": null,
+        "targetObjectTypeId": null,
+        "createdBy": null,
+        "structureRelationType": "dependency",
+        "name": "trigger",
+        "modifiedBy": null,
+        "id": "nulldtmi:com:huawei:ict:Alarm:1.0dtmi:com:huawei:ict:Alarm:1.0",
+        "keyMappings": null,
+        "businessSemanticDescription": "",
+        "status": null
+      },
+      "eid": "defines_relation:dtmi:com:huawei:ict:Alarm:1.0->dtmi:com:huawei:ict:Alarm:1.0@-3060461543551423340"
+    }
+  ],
+  "functions": [
+    {
+      "id": "dtmi:com:huawei:ict:function:PlanYards:c00608f8-92fa-4a1e-9ff0-1a2ffeae0a85",
+      "label": "function",
+      "properties": {
+        "projectInfo": "{\"model\":\"src/operation.py\",\"projectPath\":\"dtmi.com.huawei.ict.ontology0206\"}",
+        "qualifiedName": "src/operation.py.class.PlanYards",
+        "display": "{\"en\":\"PlanYards\"}",
+        "name": "PlanYards",
+        "ontologyId": "dtmi.com.huawei.ict.ontology0206",
+        "description": "{\"zh\":\"根据泊位计划，设备、堆场信息规划今天的堆场安排。 步骤： 1、解析输入数据，读取XXX本体对象，根据XXX约束、业务规则，下一步思维链到集港流程； 2、读取泊位计划本体对象，找到运输方式属性，根据XXX约束、业务规则，下一步思维链到水运； 3、读取泊位计划本体对象，找到泊位属性，根据XXX约束、业务规则，下一步思维链到具体泊位； 4、读取泊位计划本体对象，找到泊位与设备关联关系，根据XXX约束、业务规则，下一步思维链到具体泊位作业设备； 5、读取XXX本体对象，根据起始作业设备，找到皮带具体对应流程，根据XXX约束、业务规则，下一步思维链到具体堆场作业设备； 6、读取XXX本体对象，根据堆场作业设备，找到堆场，根据XXX约束、业务规则，下一步思维链到货位； 7、根据货位开始进行货垛分配计算； return 堆场安排计划对象：含船号，货垛对象。\"}",
+        "language": "Python",
+        "id": "dtmi:com:huawei:ict:function:PlanYards:c00608f8-92fa-4a1e-9ff0-1a2ffeae0a85",
+        "repositoryName": "dtmi.com.huawei.ict.ontology0206",
+        "projectName": "dtmi.com.huawei.ict.ontology0206",
+        "version": "3",
+        "status": "active"
+      }
+    },
+    {
+      "id": "dtmi:com:huawei:ict:function:getCongestedAlarms:be32818b-74f7-4fe7-99d0-6808424dd2b1",
+      "label": "function",
+      "properties": {
+        "projectInfo": "{\"model\":\"src/main.py\",\"projectPath\":\"dtmi.com.huawei.ict.ontology0206\"}",
+        "qualifiedName": "src/main.py.class.getCongestedAlarms",
+        "display": "{\"en\":\"getCongestedAlarms\"}",
+        "name": "getCongestedAlarms",
+        "description": "{\"zh\":\"查询指定时间范围内的收发流量下降告警信息，根据告警信息中的measure字段过滤出拥塞告警，并返回拥塞告警。\"}",
+        "ontologyId": "dtmi.com.huawei.ict.ontology0206",
+        "language": "Python",
+        "id": "dtmi:com:huawei:ict:function:getCongestedAlarms:be32818b-74f7-4fe7-99d0-6808424dd2b1",
+        "repositoryName": "dtmi.com.huawei.ict.ontology0206",
+        "projectName": "dtmi.com.huawei.ict.ontology0206",
+        "version": "3",
+        "status": "active"
+      }
+    },
+    {
+      "id": "dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:cecebf76-05e1-48cd-8a68-1d794a48b4a9",
+      "label": "function",
+      "properties": {
+        "projectInfo": "{\"model\":\"src/main.py\",\"projectPath\":\"dtmi.com.huawei.ict.ontology0206\"}",
+        "qualifiedName": "src/main.py.class.getAlarmRelationKnowledge",
+        "display": "{\"en\":\"getAlarmRelationKnowledge\"}",
+        "name": "getAlarmRelationKnowledge",
+        "ontologyId": "dtmi.com.huawei.ict.ontology0206",
+        "description": "{\"zh\":\"根据告警查询异常故障特征信息（查询一跳）\"}",
+        "language": "Python",
+        "id": "dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:cecebf76-05e1-48cd-8a68-1d794a48b4a9",
+        "projectName": "dtmi.com.huawei.ict.ontology0206",
+        "repositoryName": "dtmi.com.huawei.ict.ontology0206",
+        "version": "3",
+        "status": "active"
+      }
+    },
+    {
+      "id": "dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:b6d0dacb-4ac9-4ee9-9e6b-408dfb55c7ae",
+      "label": "function",
+      "properties": {
+        "projectInfo": "{\"model\":\"src/main.py\",\"projectPath\":\"dtmi.com.huawei.ict.ontology0206\"}",
+        "qualifiedName": "src/main.py.class.getAlarmRelationKnowledge",
+        "display": "{\"en\":\"getAlarmRelationKnowledge\"}",
+        "name": "getAlarmRelationKnowledge",
+        "description": "{\"zh\":\"根据告警查询异常故障特征信息（查询一跳）\"}",
+        "ontologyId": "dtmi.com.huawei.ict.ontology0206",
+        "language": "Python",
+        "id": "dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:b6d0dacb-4ac9-4ee9-9e6b-408dfb55c7ae",
+        "projectName": "dtmi.com.huawei.ict.ontology0206",
+        "repositoryName": "dtmi.com.huawei.ict.ontology0206",
+        "version": "3",
+        "status": "active"
+      }
+    },
+    {
+      "id": "dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:53b06f2e-6721-40b2-86dc-a5574027e6de",
+      "label": "function",
+      "properties": {
+        "projectInfo": "{\"model\":\"src/main.py\",\"projectPath\":\"dtmi.com.huawei.ict.ontology0206\"}",
+        "qualifiedName": "src/main.py.class.getAlarmRelationKnowledge",
+        "display": "{\"en\":\"getAlarmRelationKnowledge\"}",
+        "name": "getAlarmRelationKnowledge",
+        "description": "{\"zh\":\"根据告警查询异常故障特征信息（查询一跳）\"}",
+        "ontologyId": "dtmi.com.huawei.ict.ontology0206",
+        "language": "Python",
+        "id": "dtmi:com:huawei:ict:function:getAlarmRelationKnowledge:53b06f2e-6721-40b2-86dc-a5574027e6de",
+        "projectName": "dtmi.com.huawei.ict.ontology0206",
+        "repositoryName": "dtmi.com.huawei.ict.ontology0206",
+        "version": "3",
+        "status": "active"
+      }
+    },
+    {
+      "id": "dtmi:com:huawei:ict:function:getCongestedAlarms:35de29d2-9101-4a88-8ce2-338417a3b000",
+      "label": "function",
+      "properties": {
+        "projectInfo": "{\"model\":\"src/main.py\",\"projectPath\":\"dtmi.com.huawei.ict.ontology0206\"}",
+        "qualifiedName": "src/main.py.class.getCongestedAlarms",
+        "display": "{\"en\":\"getCongestedAlarms\"}",
+        "name": "getCongestedAlarms",
+        "ontologyId": "dtmi.com.huawei.ict.ontology0206",
+        "description": "{\"zh\":\"查询指定时间范围内的收发流量下降告警信息，根据告警信息中的measure字段过滤出拥塞告警，并返回拥塞告警。\"}",
+        "language": "Python",
+        "id": "dtmi:com:huawei:ict:function:getCongestedAlarms:35de29d2-9101-4a88-8ce2-338417a3b000",
+        "projectName": "dtmi.com.huawei.ict.ontology0206",
+        "repositoryName": "dtmi.com.huawei.ict.ontology0206",
+        "version": "3",
+        "status": "active"
+      }
+    }
+  ],
+  "actions": []
+}

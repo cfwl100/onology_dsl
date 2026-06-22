@@ -1,0 +1,34 @@
+{
+  "version": "1.0",
+  "schemaRef":"alarm@1.0",
+  "strict": true,
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    { "objectType": "ne", "alias": "ne" },
+    { "objectType": "alarm", "alias": "alarm" }
+
+  ],
+  "relationships": [
+    {
+      "relationshipType": "happen",
+      "alias": "r1",
+      "from": "ne",
+      "to": "alarm"
+    }
+  ],
+  "conditions": {
+    "kind": "PREDICATE",
+    "ref": "ne",
+    "field": "name",
+    "operator": "EQ",
+    "values": ["替换为具体的值"]
+  },
+  "returns": [
+    {
+      "kind": "FIELDS",
+      "ref": "r1",
+      "fields": ["*"]
+    }
+  ],
+  "maxResults": 1000
+}
