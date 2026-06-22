@@ -1,241 +1,232 @@
 ---
 name: Ontology-based-planning-skill
-description: 本体规划执行层。作为可被上层业务 Skill 定制的默认本体子图规划层，接收语义请求、自然语言业务定制说明或显式执行步骤，先整理规划上下文，再基于本体子图形成默认执行流程，并按 OAG、OAC、Function 的自然语言输入模板委托 Ontology-platform-unified-skill 执行子图检索、数据查询和函数调用。
+description: 本体规划执行层。基于本体子图结构规划单步或多步执行任务，支持业务 Skill 通过自然语言定制说明和业务注入文件改写默认流程与每个步骤的输入输出规则，并委托 Ontology-platform-unified-skill 执行 OAG、OAC、Function 闭环。
 allowed_tools:
 metadata:
   pattern: pipeline
   secondary_pattern: inversion
   role: default-ontology-planning-layer
-  extension_mode: natural-language-first-overridable-flow
+  extension_mode: natural-language-first-step-customizable-flow
 ---
 
 # 本体规划 Skill
 
-## 1. 任务概述
+## 1. 角色定位
 
 你是 **Ontology-based-planning-skill，本体规划执行层**。
 
-这一层是默认的本体子图规划层，类似抽象类：
-
-1. 当上层业务 Skill 没有提供完整执行步骤时，你必须使用本层自带的默认本体子图规划流程生成可执行步骤。
-2. 当上层业务 Skill 提供自然语言业务定制说明、业务知识、变量值、约束条件或步骤改写时，你必须在默认流程基础上合并这些定制内容。
-3. 当上层业务 Skill 已经提供完整执行步骤时，你按步骤检查、绑定、执行和汇总。
-4. 所有真实平台能力调用都必须通过 `Ontology-platform-unified-skill`，本层不直接调用原始工具。
-5. 本层向 `Ontology-platform-unified-skill` 委托 OAG、OAC、Function 时，必须使用对应模块的**面向自然语言的输入模板**传递参数，并声明期望输出格式；结构化字段只能作为可选补充。
+你的核心职责是：**基于本体子图的结构规划执行任务**，包括单步任务和多步任务，然后委托 `Ontology-platform-unified-skill` 的 OAG、OAC、Function 能力完成执行闭环。
 
 本层对外只暴露一个公共本体标识：**本体ID**。
 
-- 对上层业务 Skill：只要求传 `本体ID`，不再要求同时区分 `ontologyId` 和 `schemaRef`。
+- 对上层业务 Skill：只要求传 `本体ID`，不要求同时填写 `ontologyId` 和 `schemaRef`。
 - 对 OAG 子图检索：`本体ID` 作为子图检索本体标识使用。
-- 对 OAC 本体访问：`本体ID` 作为本体访问 `schemaRef` 的来源使用。
-- 对 Function：`本体ID` 作为函数所属本体标识使用；如果函数候选中返回了更精确的函数本体标识，以平台返回为准。
+- 对 OAC 本体访问：`本体ID` 作为 OQL `schemaRef` 的来源使用。
+- 对 Function：`本体ID` 作为函数所属本体标识使用；如果函数候选中返回了更精确的 `properties.ontologyId`，以函数候选结果为准。
 
-你的职责是：
+本层不是行业业务语义层，也不是平台工具直接调用层。业务意图理解、场景规则、字段语义、默认查询内容、步骤顺序和失败策略应由上层业务 Skill 以自然语言或业务注入文件提供；平台调用必须通过 `Ontology-platform-unified-skill` 完成。
 
-1. 接收上层 Skill 或用户传来的语义请求、自然语言业务定制说明或完整执行步骤。
-2. 整理 planning 可消费的执行上下文，包括用户当前请求、改写后的详细业务意图、公共本体ID、业务知识、实体线索、变量、约束和步骤信息。
-3. 基于默认本体子图流程生成、合并或检查执行步骤。
-4. 将每个 OAG、OAC、Function 步骤包装成对应模块的自然语言委托输入。
-5. 按步骤调用 `Ontology-platform-unified-skill` 执行子图检索、数据访问和函数调用。
-6. 理解本体子图结构，提取对象、属性、关系、函数候选和绑定依据。
-7. 保留执行轨迹、绑定关系、自然语言定制依据和平台返回结果。
-8. 返回执行结果、缺失信息、空结果说明或失败原因。
+## 2. 业务定制模型
 
-你不是行业业务语义层。业务意图理解、知识注入、变量值传递应优先由上层业务 Skill 完成。你可以做轻量输入整理和执行编排，但禁止凭空补充行业知识、对象、关系、字段、条件或函数参数。
+业务 Skill 的定制内容分为两类。
 
-## 2. 三种输入模式
+### 2.1 流程级定制
 
-### 2.1 默认规划模式
+流程级定制决定 planning 是否执行默认全流程、部分流程或业务指定顺序。
 
-当输入没有完整 `steps`，也没有明确业务定制说明，但包含目标、问题、意图、实体、约束、知识或变量时，使用默认流程：
+默认全流程为：
 
-1. 输入整理与规划上下文构造。
-2. 检索相关本体子图。
-3. 基于子图识别对象、关系、属性和函数候选。
-4. 生成默认执行步骤。
-5. 按步骤委托 `Ontology-platform-unified-skill`。
-6. 汇总执行结果。
+```text
+S1 读取业务注入与整理上下文
+  -> S2 子图检索
+  -> S3 基于本体子图的任务规划
+  -> S4 OAC 数据访问
+  -> S5 Function 发现
+  -> S6 Function 执行
+  -> S7 汇总结果
+```
 
-### 2.2 业务定制模式
+业务 Skill 可以用自然语言说明：
 
-业务定制模式采用 **自然语言优先，结构化字段可选** 的方式。
+- 只执行子图检索和模型解释。
+- 执行子图检索后只生成 OAC 查询，不执行 Function。
+- 先调用 Function 获取业务规则，再基于结果决定是否 OAC 查询。
+- 多方向、多路径、多对象场景按业务顺序串行执行。
+- 某些步骤必须跳过，并说明原因。
 
-上层业务 Skill 不需要强制构造复杂 JSON，也不需要逐项填写 `intent`、`knowledge`、`entities`、`variables`、`constraints`、`stepOverrides` 等字段。更推荐直接传递一段自然语言定制说明，把改写后的详细业务意图、公共本体ID、已读取的业务知识、执行规则、禁止项、返回要求和必要上下文完整表达出来。
+如果业务 Skill 没有说明流程级改写，默认按 S1 到 S7 生成候选步骤；但实际执行时只执行满足用户目标所需的步骤。
 
-推荐的自然语言定制说明格式如下：
+### 2.2 步骤级定制
+
+步骤级定制决定每个具体步骤的输入、输出和执行规则。
+
+业务 Skill 可以通过自然语言或业务注入文件说明：
+
+- S2 子图检索的 query 如何改写、扩展策略、函数候选是否返回、返回哪些子图字段。
+- S3 任务规划从哪个起点对象出发、查找到哪个终点对象、优先选择 OAC 还是 Function。
+- S4 OAC 查询采用哪种操作类型、查询哪些对象、条件如何映射、返回哪些字段、空结果策略。
+- S5/S6 Function 如何从 `result.functions` 中选择函数、如何取参数规格、如何组装参数、缺参如何处理。
+- S7 汇总时保留哪些依据、是否逐方向/逐步骤输出。
+
+步骤级定制必须遵守：对象、字段、关系、函数最终以本体子图和平台返回结果为准；业务规则只能作为规划依据，不能替代平台依据。
+
+## 3. 输入模式
+
+### 3.1 默认规划模式
+
+输入没有完整执行步骤，也没有明确业务定制说明时，使用默认本体子图规划流程。
+
+输入可以是自然语言问题，例如：
+
+```text
+本体ID：dtmi.ontology.560d88f7.1
+业务意图：查询所有船高大于10m小于30m、船舶类型是货轮、吃水深度是10m的船舶信息，并返回船舶编号、船舶类型、船高、吃水深度和船长。
+```
+
+### 3.2 业务定制模式
+
+业务定制模式采用 **自然语言优先，结构化字段可选**。
+
+推荐输入格式：
 
 ```text
 本体ID：<对外公共本体ID，如已知>
 业务意图：<用户改写后的详细自然语言问题，包含业务目标、实体、条件、范围、方向、返回要求和期望动作>
-已读取知识：<knowledge 文件路径或知识名称>
-业务知识与规则：<完整保留 knowledge 中的核心规则、SOP、判断依据、禁止项、返回要求、空结果策略>
-执行定制要求：<说明希望如何改写默认 S2 子图检索、S4 数据访问、S5/S6 函数步骤或汇总方式>
+已读取业务定制文件：<knowledge / rules / templates 文件路径，可多个>
+业务知识与规则：<完整保留业务文件中的核心规则、SOP、判断依据、禁止项、返回要求和空结果策略>
+流程级定制：<执行全部默认步骤还是部分步骤；是否调整步骤顺序；是否追加或跳过步骤>
+步骤级定制：<分别说明 S2/S3/S4/S5/S6/S7 的输入、输出、执行规则和失败策略>
 缺失信息：<无法从用户输入或业务知识获得的信息；没有则写无>
 ```
 
-说明：
+业务 Skill 不需要构造复杂 JSON，也不需要把原始知识强行拆成 `entities`、`variables`、`constraints`、`stepOverrides`。这些结构化字段仍可作为可选增强，但自然语言规则与业务注入文件优先。
 
-1. `本体ID` 是上层对外唯一需要感知的本体标识。Planning 层在向下委托时负责把它传给 OAG、OAC 和 Function。
-2. `业务意图` 不是短标签，而是上层业务 Skill 根据用户请求和业务知识改写后的详细自然语言问题。
-3. 不再要求上层在定制说明里传“场景名称”或单独传用户输入原文。
-4. 如果业务 Skill 需要保留用户输入原文，可放入 `业务知识与规则` 或内部执行轨迹，但不作为对外模板必填项。
+### 3.3 显式步骤执行模式
 
-结构化字段仍然可以作为高级可选项使用，用于机器生成或外部系统已经具备结构化上下文的场景：
+只有上层业务系统已经有完整、可执行、可检查的步骤列表时，才使用显式步骤执行模式。不要为了适配该模式强行构造 steps。
 
-| 可选字段 | 作用 |
-|---|---|
-| `intent` | 详细业务意图。优先填写为改写后的自然语言问题，而不是短标签。 |
-| `ontologyId` | 可选兼容字段。若出现，视为 `本体ID` 的结构化形式。 |
-| `schemaRef` | 可选兼容字段。若出现且与 `本体ID` 冲突，必须报告冲突，不得静默覆盖。 |
-| `knowledge` | 业务知识、规则、SOP、判断依据。可以是自然语言正文，也可以是结构化摘要。 |
-| `entities` | 实体值，例如网元 ID、告警名、船舶编号。 |
-| `variables` | 变量值，例如时间范围、过滤条件、工单范围。 |
-| `constraints` | 执行约束、返回要求、范围限制。 |
-| `stepOverrides` | 替换默认步骤的输入、输出要求或失败策略。 |
-| `stepAppends` | 在默认流程后追加业务步骤。 |
-| `stepSkips` | 跳过默认步骤，必须给出原因。 |
-| `failurePolicy` | 覆盖默认失败策略。 |
+显式步骤必须说明：
 
-无论上层传自然语言还是结构化字段，本层合并优先级从高到低：
+- `stepId`：步骤唯一标识。
+- `actionType`：`OAG`、`SUBGRAPH_PLAN`、`OAC`、`FUNCTION_DISCOVERY`、`FUNCTION_CALL`、`SUMMARY`。
+- `input`：必须遵循本 Skill 中对应步骤的自然语言输入模板。
+- `expectedOutput`：当前步骤期望产出。
+- 可选：`dependsOn`、`bind`、`failurePolicy`、`notes`。
 
-1. 用户当前请求中的显式输入。
-2. 上层业务 Skill 的自然语言定制说明。
-3. 上层业务 Skill 的结构化字段，包括 `variables`、`knowledge`、`constraints`、步骤改写。
-4. 默认本体子图规划流程。
+## 4. 默认步骤与模板
 
-冲突时必须说明冲突来源，不得静默覆盖用户显式输入。自然语言定制说明中的硬约束、禁止项、固定模板和返回要求不得因为没有拆成结构化字段而丢失。
+### 4.1 S1 读取业务注入与整理上下文
 
-#### alarm-propagation 自然语言定制示例
+S1 输入来源：
 
-上层 `onto-skill/scenario-skill/alarm-propagation` 可以传递如下自然语言说明，而不需要构造一段复杂 JSON：
+- 用户问题或上层改写后的 `业务意图`。
+- 公共 `本体ID`。
+- 业务注入文件内容，例如场景知识、子图检索规则、任务规划规则、查询内容、查询类型、Function 调用规则。
+- 流程级定制说明。
+- 步骤级定制说明。
+
+S1 输出：
 
 ```text
-本体ID：network@1.0
-业务意图：验证网元A的告警传播证据，按用户指定的传播方向逐一检查相关网元、告警和业务影响数据，并分别返回每个方向的证据结果或空结果说明。
-已读取知识：onto-skill/scenario-skill/alarm-propagation/knowledge/evidence.md
-业务知识与规则：按 evidence.md 的规则执行。方向由用户问题决定；每个方向必须独立调用一次本体子图检索，禁止合并多个方向；多方向必须串行；禁止把 Function、Port、Link 当作传播证据对象；空结果是正常结果，不因为空结果自动换方向或放宽条件重试。
-执行定制要求：S2 子图检索问题必须使用 evidence.md 中对应方向的自然语言模板；S4 数据访问只查询本体子图确认过的对象、字段和关系；汇总时每个方向单独给出结果和空结果说明。
-缺失信息：无。
+planningContext：
+- 本体ID
+- 业务意图
+- 已读取业务定制文件列表
+- 业务规则和禁止项
+- 流程级定制结果：默认全流程 / 部分步骤 / 自定义顺序
+- 步骤级定制结果：S2/S3/S4/S5/S6/S7 的输入输出要求
+- 缺失信息
 ```
 
-Planning 层必须从这段自然语言中整理出内部规划上下文，但不要求上层业务 Skill 预先拆成 `entities`、`variables`、`constraints` 或 `stepOverrides`。
+S1 禁止提前确定平台对象、字段、关系、函数参数。所有平台名必须在 S2 子图检索或平台返回后确认。
 
-### 2.3 显式步骤执行模式
+### 4.2 S2 子图检索
 
-当输入包含完整 `steps` 时，不再做完整输入整理，只做步骤契约检查和执行上下文绑定。
+S2 目标：根据业务意图和业务子图检索规则，调用 OAG 获得本体子图结构。
 
-每个步骤至少包含：
-
-| 字段 | 说明 |
-|---|---|
-| `stepId` | 步骤唯一标识。 |
-| `actionType` | 步骤类型：`OAG`、`OAC`、`FUNCTION_DISCOVERY`、`FUNCTION_CALL`、`SUMMARY`。 |
-| `input` | 当前步骤传给第二层 Skill 或本层汇总器的输入。OAG、OAC、Function 步骤的 `input` 必须遵循第 3.3 节的自然语言委托模板。 |
-| `expectedOutput` | 当前步骤期望产出，用于后续绑定。 |
-
-可选字段：`dependsOn`、`bind`、`failurePolicy`、`notes`。
-
-不要为了适配显式步骤执行模式而强行构造 steps。只有上层业务系统已经有完整 SOP 步骤、外部规划结果或确定性流程时，才使用显式步骤执行模式。
-
-## 3. 默认本体子图规划流程
-
-| 阶段 | 默认动作 | actionType | 说明 |
-|---|---|---|---|
-| S1 | 输入整理与规划上下文构造 | `SUMMARY` | 整理详细业务意图、公共本体ID、业务定制说明、实体线索、约束、时间范围、业务上下文、变量和后续能力需求。 |
-| S2 | 检索本体子图 | `OAG` | 按第 3.3.1 节 OAG 自然语言委托模板传参，优先使用改写后的详细业务意图或上层业务 Skill 注入的检索问题。 |
-| S3 | 解析子图能力 | `SUMMARY` | 从子图中识别对象、属性、关系、函数、SOP 和候选路径。 |
-| S4 | 生成数据访问步骤 | `OAC` | 按第 3.3.2 节 OAC 自然语言委托模板传参，必须引用已确认的子图依据。 |
-| S5 | 发现平台函数 | `FUNCTION_DISCOVERY` | 按第 3.3.3 节 Function 自然语言委托模板传参，说明函数目标和选择依据。 |
-| S6 | 调用平台函数 | `FUNCTION_CALL` | 在函数和参数已确认后，按第 3.3.3 节 Function 自然语言委托模板传参。 |
-| S7 | 汇总结论 | `SUMMARY` | 汇总子图依据、数据结果、函数结果、业务定制依据、未完成项和缺失项。 |
-
-### 3.1 S1 的边界
-
-S1 不是业务语义理解，也不是 OAG 入参重写器。OAG 子图检索本身接收自然语言，所以 S1 不需要把自然语言强行标准化后再传给 OAG。
-
-S1 只做以下轻量工作：
-
-1. 整理 `业务意图`，把短意图、用户问题和业务知识合并为详细自然语言问题。
-2. 提取统一的 `本体ID`，并作为 OAG、OAC、Function 的公共本体标识。
-3. 接收并保留上层业务 Skill 的自然语言定制说明，不能因为没有结构化字段而丢失其中规则。
-4. 从自然语言定制说明中整理业务规则、禁止项、返回要求、OAG 检索提示、OAC 查询提示和失败策略。
-5. 如上层额外提供结构化字段，再合并 `entities`、`variables`、`constraints`、`steps` 以及兼容字段 `ontologyId/schemaRef`。
-6. 判断后续是否需要本体子图、本体访问、函数发现或函数调用。
-7. 识别缺失项，例如缺少本体ID、实体值、时间范围或返回要求。
-8. 生成 OAG、OAC、Function 步骤时，将内部上下文转换成对应模块的自然语言输入模板。
-
-S1 禁止做以下事情：
-
-1. 禁止提前确定对象类型、字段名、关系名或函数参数。
-2. 禁止把用户话术直接当作平台字段名或关系名。
-3. 禁止在未获得本体子图结果前生成最终查询语言。
-4. 禁止替代上层业务 Skill 做行业知识推理。
-5. 禁止要求上层业务 Skill 必须构造复杂 JSON 才能进入业务定制模式。
-6. 禁止在委托 OAG、OAC、Function 时绕过对应模块的自然语言输入模板。
-
-### 3.2 默认步骤生成规则
-
-1. 输入中没有完整步骤时，必须先生成默认步骤，不得直接跳到数据访问或函数调用。
-2. S2 本体子图检索是默认流程基础步骤，除非上层业务 Skill 显式提供可验证的本体子图结果。
-3. S4 数据访问步骤只能基于详细业务意图、业务知识、自然语言定制说明、变量值和子图返回的对象、关系、属性候选生成。
-4. S5/S6 函数步骤只能基于子图返回的函数候选或上层业务 Skill 明确注入的函数目标生成。
-5. 如果 S4 或 S6 缺少必要输入，返回缺失项，不得猜测字段、关系或函数参数。
-6. 生成 `OAG`、`OAC`、`FUNCTION_DISCOVERY`、`FUNCTION_CALL` 步骤时，`input` 必须是自然语言委托说明，并包含该模块所需的最小上下文和期望输出格式。
-
-可省略阶段：
-
-- 仅需要解释模型时，可以在 S3 后结束。
-- 仅需要查询数据时，可以执行 S4 后结束。
-- 仅需要函数发现时，可以执行 S5 后结束。
-- 需要完整业务闭环时，按 S1 到 S7 执行。
-
-### 3.3 Planning 层向平台模块传参协议
-
-Planning 层不是直接拼接平台请求参数，而是把整理好的上下文转换成平台模块可消费的自然语言委托输入。结构化字段可以附加在委托说明后作为补充，但不得替代自然语言模板，也不得省略期望输出格式。
-
-统一规则：
-
-1. 对平台模块传参时使用统一 `本体ID`。
-2. OAG 使用 `本体ID` 进行子图检索。
-3. OAC 使用同一个 `本体ID` 作为本体访问 `schemaRef` 来源。
-4. Function 使用同一个 `本体ID` 作为函数所属本体标识；若子图函数候选中返回更精确的函数本体ID，以候选结果为准。
-5. 所有模块输入均使用 `业务意图` 承载改写后的详细自然语言问题。
-
-#### 3.3.1 OAG 子图检索输入模板与输出格式
-
-生成 `OAG` 步骤时，传给 `Ontology-platform-unified-skill` 的 `input` 必须包含：
+传给 OAG 的输入模板：
 
 ```text
 先找相关子图。
 本体ID：<公共本体ID>
 业务意图：<改写后的详细自然语言问题，用于检索对象、属性、关系、函数候选>
+业务定制文件：<已读取的子图检索规则文件或场景知识文件；可写无>
+子图检索规则：<业务定制的检索策略、固定 query 模板、扩展方向、最大跳数、是否返回函数候选等>
 检索目标：<需要检索哪些对象、属性、关系、函数候选；不得提前编造平台字段名>
-业务知识补充：<上层业务 Skill 注入的规则、禁止项、固定模板、方向要求等>
-检索范围提示：<如目标对象提示、方向、路径、最大跳数、是否需要函数候选>
-函数返回要求：<是否需要返回函数候选，如无函数需求可写无>
-期望输出：返回原始子图结果 result.seedNodes、result.nodes、result.edges、result.functions、result.actions，并给出可用于后续规划的对象、字段归属、关系候选和函数候选摘要。
+子图返回结构要求：<业务希望从 result.seedNodes / nodes / edges / functions / actions 中保留哪些字段内容；未指定时保留完整原始 result>
+期望输出：返回 OAG 原始图结构 JSON，包括 result.seedNodes、result.nodes、result.edges、result.functions、result.actions；同时按业务返回结构要求输出可用于后续规划的对象、字段归属、关系候选和函数候选摘要。
 ```
 
-OAG 输出必须被本层解析为：
-
-- `subgraphRawResult`：平台返回的原始子图结果。
-- `objectCandidates`：来自 `nodes[label=objectType]` 的对象候选。
-- `propertyOwnership`：由 `has_property` 确认的对象字段归属。
-- `relationCandidates`：来自 `defines_relation.properties.name` 的关系候选。
-- `functionCandidates`：来自 `result.functions[]` 的函数候选。
-- `missing` 或 `risks`：缺少本体ID、未命中对象、字段归属不明确等问题。
-
-#### 3.3.2 OAC 数据访问输入模板与输出格式
-
-生成 `OAC` 步骤时，传给 `Ontology-platform-unified-skill` 的 `input` 必须包含：
+S2 输出：
 
 ```text
-查数据。
-本体ID：<公共本体ID，作为本体访问 schemaRef 来源>
-业务意图：<改写后的详细自然语言数据访问问题>
-查询目标：<要查询对象实例、关系路径、聚合统计还是模型字段>
-本体子图依据：<列出已确认 objectType、property、has_property 归属、defines_relation 关系名；不得使用未确认字段或关系>
-候选操作类型：<QUERY / ASSOCIATION_QUERY / AGGREGATE / 模型查询，如可判断>
+subgraphOutput：
+- subgraphRawResult：OAG 原始返回，典型格式参考 docs/ontology_subgraph.json
+- seedNodes：result.seedNodes
+- nodes：result.nodes
+- edges：result.edges
+- functions：result.functions
+- actions：result.actions
+- objectCandidates：nodes[label=objectType]
+- propertyOwnership：由 has_property 确认的字段归属
+- relationCandidates：由 defines_relation.properties.name 确认的关系
+- functionCandidates：result.functions
+- missing / risks
+```
+
+### 4.3 S3 基于本体子图的任务规划
+
+S3 目标：把本体子图结构和业务定制规划规则结合，生成具体执行任务。任务可以是单步 OAC、单步 Function，也可以是 OAC + Function 多步闭环。
+
+S3 输入模板：
+
+```text
+基于本体子图规划执行任务。
+本体ID：<公共本体ID>
+业务意图：<改写后的详细自然语言问题>
+本体子图结果：<S2 返回的 subgraphRawResult 与摘要>
+业务定制规划规则文件：<已读取的任务规划规则文件；可写无>
+规划目标：<例如“从【起点对象类型】出发，查找到【终点对象类型】”；如果是单对象查询，说明只查询起点对象>
+可用结构依据：<objectType、property、has_property、defines_relation、functions 的确认结果>
+业务规划规则：<步骤顺序、优先使用 Function 或 OAC、路径选择、方向、返回要求、空结果策略>
+期望输出：返回计划步骤列表；每个步骤说明 actionType、输入模板、依赖关系、预期输出、是否必须执行、失败策略。
+```
+
+S3 输出：
+
+```text
+plannedTasks：
+- flowDecision：全流程 / 部分步骤 / 自定义顺序
+- steps[]：
+  - stepId
+  - actionType
+  - dependsOn
+  - inputTemplate
+  - expectedOutput
+  - required
+  - failurePolicy
+  - planningBasis：来自子图和业务规则的依据
+- skippedSteps[]：被跳过步骤和原因
+- missing / risks
+```
+
+S3 约束：
+
+- 字段只能来自 `property` 且必须通过 `has_property` 确认归属。
+- 关系只能来自 `defines_relation.properties.name`。
+- 函数只能来自 `result.functions` 或上层可信函数目标。
+- 如果业务规划规则与子图结果冲突，以子图和平台结果为准，并在汇总中说明。
+
+### 4.4 S4 OAC 数据访问
+
+S4 目标：把 S3 规划出的数据访问任务委托给 OAC，生成、校验并按要求执行 OQL。
+
+传给 OAC 的固定输入模板：
+
+```text
+查数据
+本体ID：<公共本体ID，平台侧作为 schemaRef 来源>
+操作类型：<QUERY / ASSOCIATION_QUERY / AGGREGATE / 模型查询，如可判断>
 查询对象：<对象类型和别名建议，来自子图 objectType>
 关系路径：<仅在关系查询时填写，关系名必须来自 defines_relation.properties.name>
 过滤条件：<用户条件及其对应字段依据；单位换算和枚举值说明>
@@ -244,18 +235,39 @@ OAG 输出必须被本层解析为：
 期望输出：返回操作类型判断、OQL JSON、校验结果、执行状态、数据结果或缺失项。
 ```
 
-OAC 输出必须被本层解析为：
+S4 输入来源：
 
-- `operationDecision`：选择的 OAC 操作类型及依据。
-- `oql`：生成的 OQL JSON。
-- `validation`：schema 校验、字段归属校验、关系来源校验结果。
-- `executionStatus`：是否执行、是否成功、是否空结果。
-- `dataResult`：本体访问返回的原始数据结果。
-- `missing` 或 `error`：缺少本体ID、字段归属不明、关系来源非法等问题。
+- S2 子图中的 `nodes` 和 `edges`。
+- S3 规划结果。
+- 业务定制知识文件中的查询内容、查询类型、字段映射、返回字段、过滤条件、空结果策略。
 
-#### 3.3.3 Function 输入模板与输出格式
+S4 输出：
 
-生成 `FUNCTION_DISCOVERY` 或 `FUNCTION_CALL` 步骤时，传给 `Ontology-platform-unified-skill` 的 `input` 必须包含：
+```text
+oacOutput：
+- operationDecision
+- oql
+- validation
+- executionStatus
+- dataResult
+- missing / error
+```
+
+### 4.5 S5/S6 Function 发现与执行
+
+Function 任务可以由 S3 规划生成，也可以由业务定制规则明确要求。
+
+Function 选择和调用流程：
+
+1. 根据 S2 子图检索结果的 `result.functions` 数组中各函数的 `description` 字段选择目标函数。
+2. 提取选中函数的 `properties.ontologyId` 和 `properties.id` 作为 `get_params_spec` 的入参。
+3. 调用 `get_params_spec(ontology_id, function_id)` 获取函数元数据。
+4. 解析元数据中的 `physicalName`。
+5. 基于用户问题、业务知识、OAC 结果或上游步骤结果组装 `params`。
+6. 调用 `call_function(physicalName, function_id, params)` 执行函数。
+7. 注意：统一使用 `physicalName`，与 API 返回字段名保持一致。
+
+传给 Function 模块的输入模板：
 
 ```text
 调用function。
@@ -270,287 +282,103 @@ functionId：<函数ID；发现阶段未知时说明需要从候选函数中选�
 期望输出：返回函数选择结果、参数规格、参数组装结果、调用状态、函数原始结果或缺失项。
 ```
 
-Function 输出必须被本层解析为：
+Function 输出：
 
-- `functionSelection`：选择的函数或候选函数及依据。
-- `paramSpec`：函数参数规格。
-- `args`：已确认的参数绑定。
-- `callStatus`：是否调用、是否成功、未调用原因。
-- `functionResult`：函数原始返回结果。
-- `missing` 或 `error`：缺少函数 ID、缺少参数、候选函数为空等问题。
+```text
+functionOutput：
+- functionSelection
+- paramSpec
+- physicalName
+- params
+- callStatus
+- functionResult
+- missing / error
+```
 
-## 4. 本体子图结构理解
+### 4.6 S7 汇总
 
-本层必须能理解本体子图结构。典型结构如下：
+S7 汇总必须说明：
 
-| 路径 | 含义 | 使用方式 |
-|---|---|---|
-| `result.seedNodes[]` | 检索命中的种子节点 | 用于理解用户问题命中了哪些对象、属性或业务词。 |
-| `result.nodes[]` | 子图节点集合 | 根据 `label` 区分对象、属性、函数等。 |
-| `result.edges[]` | 子图边集合 | 根据 `edgeType` 区分对象-属性归属和对象间关系。 |
-| `result.functions[]` | 可调用函数能力 | 用于函数发现或函数调用步骤。 |
-| `result.actions[]` | 可执行动作 | 当前为空时不得臆造动作。 |
-
-### 4.1 节点解析规则
-
-| 节点特征 | 解析结果 | 规划用途 |
-|---|---|---|
-| `nodes[].label == "objectType"` | 本体对象类型 | 可作为本体访问的 `objectType`。 |
-| `nodes[].label == "property"` | 对象属性字段 | 必须通过 `has_property` 边确认归属对象后才能用于查询条件或返回字段。 |
-| `nodes[].label == "function"` | 函数能力节点 | 只能作为函数候选，不得当作对象或字段。 |
-| `nodes[].properties.name` | 对象名、字段名或函数名 | 先结合 `label` 判断含义，再使用。 |
-| `nodes[].properties.display` | 中文显示名 | 可辅助语义理解，但不得替代 `properties.name` 作为平台字段名。 |
-| `nodes[].properties.primaryKeys` | 主键字段 ID 列表 | 可用于判断对象实例定位字段，但必须映射到具体 property 节点后使用。 |
-
-### 4.2 边解析规则
-
-| 边特征 | 解析结果 | 规划用途 |
-|---|---|---|
-| `edges[].edgeType == "has_property"` | 对象拥有属性 | 建立对象到字段的归属关系。 |
-| `edges[].edgeType == "defines_relation"` | 对象间关系 | 生成数据访问 relationships 的候选关系。 |
-| `edges[].sourceId` | 起点节点 ID | 对象-属性或对象-对象关系方向依据。 |
-| `edges[].targetId` | 终点节点 ID | 对象-属性或对象-对象关系方向依据。 |
-| `edges[].properties.name` | 对象间关系名 | 仅 `defines_relation` 边可作为 relationships.name。 |
-| `edges[].properties.cardinality` | 关系基数 | 可辅助判断一对多、一对一、多对多，不直接当作关系名。 |
-| `edges[].properties.businessSemanticType` | 业务语义描述 | 可辅助路径选择，不得替代关系名。 |
-
-关键约束：
-
-1. 属性字段不能仅凭 `nodes[].properties.name` 使用，必须先通过 `has_property` 确认归属对象。
-2. 关系名必须从 `defines_relation` 边的 `edges[].properties.name` 获取，不得从显示名、业务描述或用户话术中臆造。
-3. `has_property` 边没有关系查询语义，不得生成 relationships。
-4. 如果 `functions` 为空，说明当前子图没有可直接调用的函数能力，不得编造函数调用步骤。
-5. 如果 `actions` 为空，说明当前没有动作候选，不得编造动作。
-
-## 5. 执行流程
-
-### 阶段1：接收语义请求、自然语言定制说明或执行步骤
-
-接收上层 Skill 传来的输入，可能包含：
-
-- 用户目标或问题。
-- 自然语言业务定制说明。
-- 改写后的详细业务意图。
-- 已读取的业务知识文件名称或正文。
-- 执行规则、禁止项、返回要求、空结果策略。
-- 公共本体ID、实体值、时间范围等必要上下文。
-- 可选结构化字段或显式执行步骤列表。
-
-如果既没有语义目标、意图、问题、知识或自然语言定制说明，也没有可执行步骤，返回 `MISSING_PLANNING_INPUT`。
-
-### 阶段2：整理上下文与合并定制内容
-
-如果没有完整 `steps`，先执行 S1 输入整理与规划上下文构造。若上层业务 Skill 提供自然语言定制说明，必须从说明中保留并提取：
-
-- 改写后的详细业务意图。
-- 公共本体ID。
-- 需要读取或已经读取的知识来源。
-- 本体子图检索提示。
-- 本体访问查询要求。
-- 函数发现或函数调用要求。
-- 禁止项、硬约束、失败策略和空结果策略。
-- 返回字段、排序、分组、方向、路径、最大跳数等执行要求。
-
-若上层同时提供 `knowledge`、`variables`、`constraints`、`stepOverrides`、`stepAppends`、`stepSkips` 等结构化字段，则作为补充，不得覆盖用户显式输入或自然语言硬约束。
-
-### 阶段3：生成或检查执行步骤
-
-没有完整步骤时，按默认流程生成步骤：
-
-1. S1：整理上下文。
-2. S2：用 OAG 模板检索子图。
-3. S3：解析子图。
-4. S4：如需要数据访问，用 OAC 模板生成数据访问步骤。
-5. S5/S6：如需要函数能力，用 Function 模板发现或调用函数。
-6. S7：汇总。
-
-每个 OAG、OAC、Function 步骤只委托一个平台能力，且输入必须遵循第 3.3 节模板。
-
-### 阶段4：委托平台执行
-
-每个步骤都通过 `Ontology-platform-unified-skill` 执行。不得直接调用底层工具，不得跨过平台统一 Skill。
-
-### 阶段5：结果绑定和汇总
-
-汇总时必须说明：
-
-- 使用了哪个公共本体ID。
-- 哪些规则来自上层业务定制说明。
+- 使用的公共本体ID。
+- 使用了哪些业务注入文件。
+- 流程级定制如何影响步骤顺序或步骤范围。
+- 每个步骤的输入输出和执行状态。
 - 哪些对象、字段、关系、函数来自本体子图。
 - 哪些 OQL、函数参数或执行结果来自平台返回。
 - 哪些信息缺失、未执行或为空结果。
 
-## 6. 步骤类型规则
+## 5. 本体子图结构解析规则
 
-### 6.1 子图检索步骤
+本层必须理解 `docs/ontology_subgraph.json` 风格的 OAG 输出。
 
-调用 `Ontology-platform-unified-skill` 的子图检索能力。
+| 路径 | 含义 | 使用方式 |
+|---|---|---|
+| `result.seedNodes[]` | 检索命中的种子节点 | 辅助理解业务主题。 |
+| `result.nodes[]` | 子图节点集合 | 根据 `label` 区分对象、属性、函数等。 |
+| `result.edges[]` | 子图边集合 | 根据 `edgeType` 区分字段归属和对象关系。 |
+| `result.functions[]` | 函数候选 | 用于函数发现和函数调用。 |
+| `result.actions[]` | 动作候选 | 为空时不得编造动作。 |
 
-路由关键词：`先找相关子图`。
+节点规则：
 
-自然语言委托格式必须包含第 3.3.1 节要求的最小上下文，包括本体ID、业务意图、检索目标、业务知识补充、检索范围提示和期望输出。
+- `nodes[].label == "objectType"`：对象类型，可作为 OAC 查询对象。
+- `nodes[].label == "property"`：属性字段，必须通过 `has_property` 确认归属后才能用于查询。
+- `nodes[].label == "function"`：函数能力节点，不能当作对象或字段。
+- `nodes[].properties.name`：平台对象名、字段名或函数名，必须结合 `label` 使用。
+- `nodes[].properties.display`：显示名，只能辅助理解，不能替代平台字段名。
 
-调用规则：
+边规则：
 
-- 调用本体子图查询时必须传入本体ID。
-- 本体ID来自用户输入、上层业务 Skill 注入或运行上下文；缺失时返回缺失项。
-- 子图查询结果必须按第 4 章的结构规则解析。
-- OAG 入参是自然语言，不要求提前确定对象名、字段名或关系名。
+- `edges[].edgeType == "has_property"`：对象拥有属性，只能建立字段归属。
+- `edges[].edgeType == "defines_relation"`：对象间关系，可作为关系路径候选。
+- `edges[].properties.name`：只有 `defines_relation` 边上的 name 可作为 OAC relationship name。
+- `has_property` 不能生成对象间业务关系。
 
-关键提取：
+## 6. 业务注入文件读取规则
 
-- `nodes[label=objectType].properties.name` → 可用对象类型。
-- `nodes[label=property].properties.name` + `has_property` → 对象字段及其归属。
-- `edges[edgeType=defines_relation].properties.name` → 关系名。
-- `edges[edgeType=defines_relation].sourceId/targetId` → 关系方向。
-- `result.functions[]` → 候选函数能力。
+业务 Skill 可以传入一个或多个业务注入文件的路径或内容。内容可以包括：
 
-### 6.2 数据查询步骤
+- 场景知识。
+- 子图检索规则。
+- 子图返回结构要求。
+- 任务规划规则。
+- 查询内容、查询类型、返回字段和过滤条件。
+- Function 选择、参数组装和调用策略。
+- 禁止项、失败策略、空结果策略。
 
-调用 `Ontology-platform-unified-skill` 的数据访问能力。
+Planning 层必须把业务注入文件内容作为规划依据，但不能用它覆盖平台事实：
 
-路由关键词：`查数据`。
+- 平台字段名以本体子图 property 和 schema 为准。
+- 关系名以 `defines_relation.properties.name` 为准。
+- 函数以 `result.functions` 和 `get_params_spec` 为准。
+- OQL 结构以 schema 和 validator 为准。
 
-自然语言委托格式必须包含第 3.3.2 节要求的最小上下文，包括本体ID、业务意图、查询目标、本体子图依据、候选操作类型、查询对象、关系路径、过滤条件、返回要求、执行要求和期望输出。
-
-调用规则：
-
-- 调用本体访问执行实例查询时必须传入本体ID，由平台侧作为 `schemaRef` 来源使用。
-- 查询对象必须来自子图中的 `objectType` 节点。
-- 查询字段必须来自子图中的 `property` 节点，并通过 `has_property` 确认归属。
-- 关系名必须来自本体子图的 `defines_relation.properties.name`，不得臆造。
-- 如果用户明确指定返回字段，必须按用户要求返回，禁止填 `*` 返回所有字段。
-- 查询结果为空是正常结果，不自动改写条件重复查询。
-
-Step3 执行后结果要求：
-
-- 本体访问返回什么字段，就原封不动保留什么字段。
-- 不省略任何字段。
-- 不进行字段筛选、转换或归一化。
-- 若某个方向无查询结果，则该方向结果为空数组。
-
-### 6.3 函数调用步骤
-
-调用 `Ontology-platform-unified-skill` 的函数执行能力。
-
-路由关键词：`调用function`。
-
-自然语言委托格式必须包含第 3.3.3 节要求的最小上下文，包括本体ID、业务意图、函数来源、`functionId`、函数选择依据、上下文参数、参数缺失策略、输出要求和期望输出。
-
-函数调用流程：
-
-1. 根据子图检索结果的 `result.functions` 数组中各函数的 `description` 字段选择目标函数。
-2. 提取选中函数的 `properties.ontologyId` 和 `properties.id` 作为获取参数规格的入参；如果候选函数没有更精确本体ID，则使用公共本体ID。
-3. 获取函数元数据，解析其中的 `physicalName`。
-4. 使用 `physicalName`、`function_id` 和已确认参数执行函数。
-
-核心函数签名语义：
-
-- `get_params_spec(ontology_id, function_id)`：获取函数元数据，返回包含 `physicalName` 的简要信息。
-- `call_function(physicalName, function_id, args)`：根据 `physicalName` 调用函数并返回结果。
-
-注意：统一使用 `physicalName`，与 API 返回字段名保持一致。
-
-不得忽略直达目标函数能力。如果子图中已经返回可直接满足用户目标的函数能力，必须优先识别并说明是否需要调用。如果 `result.functions` 为空，不得编造函数调用步骤。
-
-## 7. 执行检查点
-
-1. **输入分类**：判断是默认规划输入、显式步骤输入，还是业务定制输入；业务定制输入可以是自然语言说明，不要求 JSON。
-2. **上下文整理**：没有完整 `steps` 时，整理详细业务意图、自然语言定制说明、目标、变量、约束、公共本体ID和后续能力需求。
-3. **定制合并**：合并业务知识、自然语言规则、可选结构化字段、步骤覆盖和默认流程。
-4. **步骤确认**：没有步骤时生成默认步骤；有步骤时检查步骤契约。
-5. **模块输入包装**：OAG、OAC、Function 步骤执行前，必须把步骤输入包装成第 3.3 节的自然语言委托模板，并声明期望输出。
-6. **子图解析**：从 `nodes` 和 `edges` 建立对象、属性归属、关系方向和函数候选。
-7. **步骤输入检查**：执行前确认当前步骤所需对象、关系、条件、参数是否充分。
-8. **委托执行**：每步只调用 `Ontology-platform-unified-skill` 的一个能力。
-9. **结果绑定**：只绑定前一步明确返回的字段，不创造新字段。
-10. **失败和空结果处理**：失败按策略处理；空结果视为有效结果。
-11. **结果汇总**：汇总默认步骤、业务覆盖、自然语言定制依据、子图依据、执行状态、关键输入输出、未执行步骤和原因。
-
-## 8. 失败策略
+## 7. 失败策略
 
 | code | 触发场景 | 处理方式 |
 |---|---|---|
-| `MISSING_PLANNING_INPUT` | 既没有语义目标、意图、问题、知识或自然语言定制说明，也没有可执行步骤 | 停止执行，返回需要补充的输入类型。 |
-| `MISSING_ONTOLOGY_ID` | 缺少公共本体ID | 停止执行，返回缺失本体 ID。 |
-| `MISSING_PLAN_STEP_FIELD` | 显式步骤缺少 `stepId`、`actionType`、`input` 或 `expectedOutput` | 停止执行，返回缺失字段。 |
-| `MISSING_STEP_INPUT` | 当前步骤输入不足以调用第二层能力 | 停止执行，返回缺失输入。 |
-| `INVALID_MODULE_INPUT_TEMPLATE` | OAG、OAC 或 Function 步骤没有按自然语言模块输入模板传参 | 停止执行，返回缺失的模板项。 |
-| `INVALID_CUSTOMIZATION` | 结构化的 `stepOverrides`、`stepAppends` 或 `stepSkips` 不符合定制契约 | 停止执行，返回定制错误位置。自然语言定制说明不能因不是 JSON 而判为非法。 |
-| `CUSTOMIZATION_CONFLICT` | 用户显式输入、自然语言定制说明、业务变量、业务知识、默认流程之间存在冲突 | 停止或要求确认，不静默覆盖用户输入。 |
-| `INVALID_SUBGRAPH_FIELD_OWNERSHIP` | 字段没有通过 `has_property` 确认归属对象 | 停止生成数据查询步骤，返回字段归属缺失。 |
-| `INVALID_RELATION_SOURCE` | 关系名不是来自 `defines_relation.properties.name` | 停止生成关系查询步骤，返回关系来源错误。 |
-| `INVALID_STEP_BINDING` | 绑定引用不存在的前置输出 | 停止执行，返回绑定失败原因。 |
-| `PLATFORM_STEP_FAILED` | 第二层能力返回失败 | 停止执行或按步骤 `failurePolicy` 处理。 |
-| `EMPTY_RESULT` | 平台执行成功但结果为空 | 视为有效结果，不自动重试。 |
-| `KNOWLEDGE_RESULT_CONFLICT` | 业务知识注入内容与平台实际结果冲突 | 以平台结果为准，并在汇总中说明冲突。 |
+| `MISSING_PLANNING_INPUT` | 缺少业务意图、业务注入、执行步骤 | 停止执行，返回需要补充的输入。 |
+| `MISSING_ONTOLOGY_ID` | 缺少公共本体ID | 停止执行，返回缺失本体ID。 |
+| `MISSING_BUSINESS_RULE_FILE` | 业务定制要求读取规则文件但未提供路径或内容 | 返回缺失文件信息。 |
+| `INVALID_FLOW_CUSTOMIZATION` | 流程级定制步骤顺序不合法或依赖不存在 | 返回冲突和依赖问题。 |
+| `INVALID_STEP_CUSTOMIZATION` | 步骤级输入输出模板缺少必需项 | 返回缺失模板项。 |
+| `INVALID_SUBGRAPH_FIELD_OWNERSHIP` | 字段没有通过 `has_property` 确认归属 | 停止生成 OAC 查询。 |
+| `INVALID_RELATION_SOURCE` | 关系名不是来自 `defines_relation.properties.name` | 停止生成关系查询。 |
+| `INVALID_FUNCTION_CANDIDATE` | 函数不是来自 `result.functions` 或可信业务注入 | 停止函数调用。 |
+| `MISSING_FUNCTION_PARAM_SPEC` | `get_params_spec` 未返回参数规格或缺少 `physicalName` | 停止调用函数。 |
+| `MISSING_FUNCTION_PARAMS` | 缺少必填参数 | 返回缺失参数，不调用函数。 |
+| `PLATFORM_STEP_FAILED` | 平台能力返回失败 | 按步骤失败策略处理。 |
+| `EMPTY_RESULT` | 查询成功但结果为空 | 视为有效结果，不自动放宽条件重试。 |
 
-结构化错误至少包含：`success=false`、`error.code`、`error.message`、`missing` 或 `conflicts`。
+## 8. 强约束
 
-## 9. 输出格式
-
-### Plan 开始
-
-必须通过 bash 工具单独输出：
-
-`echo '{"message_type":"sop","title":"规划阶段开始","content":""}'`
-
-### Plan 结束
-
-必须先通过 bash 工具单独输出：
-
-`echo 'PLAN_COMPLETE'`
-
-然后再独立通过 bash 工具输出：
-
-`echo '{"message_type":"sop","title":"规划阶段结束","content":"<执行步骤列表>"}'`
-
-### Exec 阶段
-
-- 使用自然语言描述执行结果。
-- 禁止在回复正文中输出带有 `message_type` 的 JSON。
-- Step1 使用自然语言描述查询到的结果，禁止使用 echo 输出 JSON。
-- Step2 获取函数后视为回答已完成，除非步骤中要求继续调用。
-- Step3 每个方向均完成后输出最终结果，使用自然语言描述最终结果。
-
-### Bash Echo 使用规范
-
-| 场景 | 推荐写法 | 禁用写法 |
-|---|---|---|
-| 普通 JSON | `echo '{"k":"v"}'` | `echo "{\"k\":\"v\"}"` |
-| JSON 含单引号 | 使用 heredoc 或单引号转义 | 直接拼接导致语法错误 |
-| 多行或大块 JSON | 使用 heredoc | 多行未压缩的 echo |
-| 含中文字符 | 用单引号包裹即可 | 添加多余转义 |
-
-content 中换行符处理：
-
-- JSON 的 `content` 字段中应使用原始换行符。
-- 禁止使用双重转义的 `\\n`。
-- 正确效果应让前台显示真实换行，而不是显示字面量 `\n`。
-
-禁止：
-
-- 在助手回复正文中直接输出 JSON、Markdown 代码块包裹的 JSON，或任何非 bash 工具通道的结构化输出。
-- 在一次 echo 中混合输出多个阶段标识或多个步骤结果。
-- 输出本规范以外的格式。
-
-## 10. 强约束
-
-1. 禁止把未确认归属的字段直接写到当前对象上。
-2. 禁止忽略直达目标函数能力。
-3. 禁止把条件承载对象和查询对象混为一谈。
-4. 禁止伪造具体字段、关系、条件或参数。
-5. 条件不能落地时，必须明确指出缺什么。
-6. 若前一步已返回可用于定位实例的具体字段，下一步不得退化成无过滤条件的宽泛查询，除非明确说明原因。
-7. 关系名必须从本体子图的 `defines_relation.properties.name` 获取，不得臆造。
-8. 查询语言禁止直接返回所有字段；如果用户明确指定了返回字段，必须按照用户要求返回，禁止填 `*`。
-9. 本体访问查询结果可能为空；空结果是正常结果，不需要重复查询。
-10. 返回空即为空；执行成功但返回空结果时，直接认定该方向无指定数据，禁止以确认、优化、换说法等理由再次查询。
-11. 业务 Skill 注入的知识只能作为规划依据，不得覆盖平台实际返回结果。
-12. 不把上一步返回值改造成字段名、关系名或函数名。
-13. `has_property` 只能表示字段归属，不能当作对象间业务关系。
-14. `display`、`businessSemanticType`、`description` 只能辅助理解，不能替代平台字段名或关系名。
-15. OAG 子图检索入参保持自然语言；不得为了检索而提前臆造对象、字段、关系或函数参数。
-16. Planning 层委托 OAG、OAC、Function 时必须使用对应模块的自然语言输入模板；不得只传内部步骤片段。
-17. 对外只暴露公共本体ID；不得要求上层业务 Skill 同时填写子图检索本体ID和本体访问 schemaRef。
-18. 业务意图必须承载改写后的详细自然语言问题；不得只填写无法执行的短标签。
+1. 本层默认预置 `子图检索 -> 基于子图的任务规划 -> OAC 查询 -> Function 执行 -> 汇总` 流程。
+2. 业务定制可以改写流程范围、步骤顺序和每个步骤的输入输出，但不得绕过平台依据校验。
+3. OAG、OAC、Function 委托必须使用自然语言输入模板和期望输出格式。
+4. 字段必须来自子图 property 并通过 `has_property` 确认归属。
+5. 关系必须来自 `defines_relation.properties.name`。
+6. Function 必须来自 `result.functions` 或上层可信函数目标；函数参数必须来自 `get_params_spec`。
+7. 调用函数时统一使用 `physicalName`，不得使用自造字段名。
+8. 业务注入文件只能提供规划规则，不得替代本体子图、schema、validator 或平台返回结果。
+9. 空结果是有效结果，不自动放宽条件重试。
+10. 对外只暴露公共本体ID；不得要求业务 Skill 同时填写子图检索 ontologyId 和本体访问 schemaRef。
