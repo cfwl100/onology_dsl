@@ -1,210 +1,193 @@
 ---
 name: berth-plan-ontology
-description: 集装箱泊位计划本体模型数据查询技能。当用户提到查询本体对象、查询模型数据、获取本体信息、查询dtmi、查询对象类型、查询objectType时使用此技能。支持查询8个本体对象：船舶(ship_info)、岸线-泊位-揽桩-桥吊坐标(berth_bollard_coords)、缆桩(bollard_info)、泊位显示顺序(berth_display_order)、泊位(berth_info)、桥吊(equipment_infos)、船舶计划(ship_plan)、潮汐(tide_info)。支持 MOCK 模式，跳过真实 OAG 接口调用。
+description: 集装箱泊位计划本体数据查询业务定制 Skill。作为业务入口，负责识别泊位计划场景下的对象、字段、过滤条件和返回要求，注入业务知识与变量，然后委托 Ontology-based-planning-skill 执行默认本体子图规划和平台访问。
 allowed_tools:
+metadata:
+  pattern: inversion
+  delegates_to: Ontology-based-planning-skill
+  scenario: container-berth-plan-ontology
 ---
 
-# 集装箱泊位计划本体模型数据查询 Skill
+# 集装箱泊位计划本体业务定制 Skill
 
-## 任务概述
+## 1. 任务概述
 
-你是集装箱泊位计划本体模型数据查询的**业务语义层**。你的职责是：
-1. 识别用户查询意图（8个本体对象类型）
-2. 读取对应业务知识
-3. 通过扩展点管理层加载和发现扩展实现
-4. 生成语义请求，委托 ontology-planning 执行
+你是集装箱泊位计划本体数据查询的**业务语义层**。
 
-**你只做业务语义判断，不做执行规划。**
+职责：
 
----
+1. 识别用户属于泊位计划本体数据查询场景。
+2. 根据用户问题定位 8 个本体对象之一或多个对象。
+3. 只读取匹配对象的业务知识文件。
+4. 抽取业务字段、过滤条件、返回字段、`ontologyId`、`schemaRef` 和测试模式信息。
+5. 将业务定制输入委托给 `Ontology-based-planning-skill`。
 
-## 八个本体对象与对应知识
+你不直接生成最终平台请求，不直接调用原始工具，不绕过 planning 层和 platform 层。
 
-| 对象名 | 对象ID | 说明 | 对应 knowledge |
-|--------|--------|------|----------------|
-| ship_info | dtmi.560d88f7.object-type.c34b06da4da98133.1 | 船舶 | ship.md |
-| berth_bollard_coords | dtmi.560d88f7.object-type.37064170af561116.1 | 岸线-泊位-揽桩-桥吊坐标 | berth-bollard-coords.md |
-| bollard_info | dtmi.560d88f7.object-type.796f1582595bbc6d.1 | 缆桩 | bollard-info.md |
-| berth_display_order | dtmi.560d88f7.object-type.8bfeef9d48919dd2.1 | 泊位显示顺序 | berth-display-order.md |
-| berth_info | dtmi.560d88f7.object-type.99fd288c0f2bb909.1 | 泊位 | berth-info.md |
-| equipment_infos | dtmi.560d88f7.object-type.bcd8cb5256e0a38a.1 | 桥吊 | equipment-infos.md |
-| ship_plan | dtmi.560d88f7.object-type.cab60fa8698b3b56.1 | 船舶计划 | ship-plan.md |
-| tide_info | dtmi.560d88f7.object-type.d528c8b1c4e78b41.1 | 潮汐 | tide-info.md |
+## 2. 固定上下文
 
----
+| 字段 | 值 |
+|---|---|
+| `ontologyId` | `dtmi.ontology.560d88f7.1` |
+| `schemaRef` | `dtmi.ontology.560d88f7.1` |
+| 默认规划层 | `Ontology-based-planning-skill` |
+| 平台能力层 | `Ontology-platform-unified-skill` |
 
-## 业务知识文件（位于 knowledge/ 目录）
+说明：
 
-- `ship.md`：船舶对象查询
-- `ship.json`：船舶 Mock 子图数据（OAG 响应格式）
-- `berth-bollard-coords.md`：岸线-泊位-揽桩-桥吊坐标对象查询
-- `bollard-info.md`：缆桩对象查询
-- `berth-display-order.md`：泊位显示顺序对象查询
-- `berth-info.md`：泊位对象查询
-- `equipment-infos.md`：桥吊对象查询
-- `ship-plan.md`：船舶计划对象查询
-- `tide-info.md`：潮汐对象查询
+- 本体子图检索必须传 `ontologyId`。
+- 本体访问必须传 `schemaRef`。
+- 不得用 `ontologyId` 替代 `schemaRef`，也不得省略 `schemaRef`。
 
----
+## 3. 支持的本体对象
 
-## 查询约束（强制要求）
+| 对象名 | 对象ID | 说明 | knowledge |
+|---|---|---|---|
+| `ship_info` | `dtmi.560d88f7.object-type.c34b06da4da98133.1` | 船舶 | `ship.md` |
+| `berth_bollard_coords` | `dtmi.560d88f7.object-type.37064170af561116.1` | 岸线-泊位-揽桩-桥吊坐标 | `berth-bollard-coords.md` |
+| `bollard_info` | `dtmi.560d88f7.object-type.796f1582595bbc6d.1` | 缆桩 | `bollard-info.md` |
+| `berth_display_order` | `dtmi.560d88f7.object-type.8bfeef9d48919dd2.1` | 泊位显示顺序 | `berth-display-order.md` |
+| `berth_info` | `dtmi.560d88f7.object-type.99fd288c0f2bb909.1` | 泊位 | `berth-info.md` |
+| `equipment_infos` | `dtmi.560d88f7.object-type.bcd8cb5256e0a38a.1` | 桥吊 | `equipment-infos.md` |
+| `ship_plan` | `dtmi.560d88f7.object-type.cab60fa8698b3b56.1` | 船舶计划 | `ship-plan.md` |
+| `tide_info` | `dtmi.560d88f7.object-type.d528c8b1c4e78b41.1` | 潮汐 | `tide-info.md` |
 
-** Ontology-ID **：必须传入 `Ontology-ID = "dtmi.ontology.560d88f7.1"`
+## 4. 读取规则
 
-所有调用 ontology-platform 的查询请求（包括模型查询、子图检索、数据访问、函数执行）**必须**在请求中包含此 Ontology-ID 作为必填参数。
+1. 识别到用户查询对象后，只读取对应 knowledge 文件。
+2. 用户问题只涉及船舶信息时，只读取 `knowledge/ship.md`。
+3. Mock 测试模式下，船舶对象可额外读取 `knowledge/ship.json` 作为本体子图返回样例。
+4. 禁止为单对象查询读取全部 knowledge 文件。
 
-**约束说明**：
-- 模型查询时：必须携带 Ontology-ID 参数
-- 子图检索时：必须携带 Ontology-ID 参数
-- 数据访问时：必须携带 Ontology-ID 参数
-- 函数执行时：必须携带 Ontology-ID 参数
+## 5. Mock 模式
 
----
+当 `ontologyId` 为 `dtmi.ontology.560d88f7.1` 且用户要求开发测试或端到端验证时，可使用 `knowledge/ship.json` 作为 mock 本体子图。
 
-## Mock 模式（开发测试用）
+Mock 子图传给 planning 层时，应包装为：
 
-本技能支持 **Mock 模式**，跳过真实的 OAG 接口调用，使用本地 mock 数据进行测试。
-
-### Mock 模式触发条件
-
-当 `ontology-id` 为 `dtmi.ontology.560d88f7.1` 时，使用 `knowledge/ship.json` 作为 mock 子图数据。
-
-### Mock 数据结构（knowledge/ship.json）
-
-```json
-{
-  "seedNodes": [...],
-  "nodes": [
-    {
-      "id": "dtmi.560d88f7.object-type.c34b06da4da98133.1",
-      "label": "objectType",
-      "properties": {
-        "name": "ship_info",
-        "display": "{\"zh\":\"船舶\"}",
-        ...
-      }
-    },
-    ...
-  ],
-  "edges": [
-    {
-      "id": "has_property:...->...",
-      "sourceId": "...",
-      "targetId": "...",
-      "edgeType": "has_property",
-      "properties": {
-        "name": "ship_type",
-        ...
-      }
-    },
-    ...
-  ],
-  "functions": [...]
-}
+```text
+mockSubgraph.result = knowledge/ship.json
 ```
 
-### Mock 数据关键字段说明
+这样与平台返回的 `result.nodes`、`result.edges`、`result.functions`、`result.actions` 结构保持一致。
 
-| 字段 | 说明 |
-|------|------|
-| `seedNodes` | 种子节点列表 |
-| `nodes` | 对象类型和属性定义 |
-| `nodes[].properties.name` | 对象/属性名称（如 ship_info, ship_type） |
-| `edges` | 对象间关系 |
-| `edges[].properties.name` | 关系名称（如 单个船舶包含多个船舶计划） |
-| `edges[].sourceId` | 关系源对象 ID |
-| `edges[].targetId` | 关系目标对象 ID |
-| `functions` | 可调用的函数能力 |
+## 6. 本体子图解析提醒
 
-### 使用方式
+`knowledge/ship.json` 中：
 
-1. **子图检索**：使用 `knowledge/ship.json` 作为 OAG 返回的子图结果
-2. **数据访问**：基于子图中的 nodes 和 edges 构建 OQL 查询
-3. **函数调用**：使用子图中的 `functions` 数组
+| 结构 | 含义 | 规则 |
+|---|---|---|
+| `nodes[label=objectType]` | 对象类型 | 可作为查询对象 |
+| `nodes[label=property]` | 属性字段 | 必须通过 `has_property` 确认归属 |
+| `edges[edgeType=has_property]` | 对象到属性的归属 | 只能用于字段归属，不能生成对象关系 |
+| `edges[edgeType=defines_relation]` | 对象间关系 | 只有这类边才能生成关系路径 |
+| `functions` | 函数候选 | 为空时不得编造函数调用 |
+| `actions` | 动作候选 | 为空时不得编造动作 |
 
-### 本体数据访问调用方式
+## 7. 船舶信息查询字段映射
 
-每次委托 本体数据访问 时，应遵循平台 `oac-data-access.md` 中的自然语言委托模板和自检清单。需要在委托中按照如下模板说清楚：
-1. `schemaRef`：必须填写。
-2. 操作类型：使用中文自然语言动作，例如“查询小区指标明细”“按栅格到小区关系查询”“按小区分组统计平均 PRB”，不要强制填写 `QUERY`、`ASSOCIATION_QUERY`、`AGGREGATE` 英文枚举。
-3. 操作选择依据：说明为什么是明细查询、关联路径查询或聚合统计。
-4. 查询对象：对象类型、别名、用途。
-5. 关系路径：仅关联路径查询必填；普通明细查询写“无关系路径”。
-6. 过滤条件：字段归属对象、字段名、操作符、取值；时间范围必须进入过滤条件。
-7. 返回字段：返回哪个对象或关系的哪些字段；用户指定字段时不要使用 `*`。
+船舶对象查询必须以 `knowledge/ship.md` 为业务字段映射来源，并以本体子图 `has_property` 结果确认字段归属。
 
----
+| 用户表达 | 平台字段 | 对象 |
+|---|---|---|
+| 船舶编号、船号、船舶代码 | `ship_no` | `ship_info` |
+| 船舶类型、船的类型 | `ship_type` | `ship_info` |
+| 船高 | `ship_height` | `ship_info` |
+| 吃水深度、船的吃水深度 | `draft` | `ship_info` |
+| 船长、总长、LOA | `loa` | `ship_info` |
 
-## 执行流程
+当用户询问“船舶信息”且未指定返回字段时，默认返回：
 
-### 步骤1：意图识别
+```text
+ship_no, ship_type, ship_height, draft, loa
+```
 
-根据用户输入识别8个本体对象类型中的一个。
+## 8. 本次端到端验证样例
 
-### 步骤2：读取匹配的 knowledge
+用户输入：
 
-识别到意图后，**只读取对应的那个 knowledge 文件**，禁止读取其他 knowledge 文件。
+```text
+集装箱泊位计划本体数据查询场景，查询所有船高大于10m小于30m 且 船舶类型是货轮，船的吃水深度是10m的船舶信息？
+```
 
-如果是 Mock 模式，同时读取对应的 `knowledge/ship.json` 获取子图结构。
+识别结果：
 
-### 步骤3：生成语义请求并委托执行
+```text
+intent: ship_info_query
+objectType: ship_info
+operationKind: 单对象明细查询
+route: QUERY
+```
 
-从用户输入和 knowledge 中提取：
-- **意图类型**
-- **实体**（船舶等）
-- **范围**（时间范围）
-- **目标**（要分析什么）
-- **约束**（过滤条件）
+抽取条件：
 
-然后将完整语义请求委托给 `ontology-planning` Skill 执行。
-如果是 Mock 模式，跳过真实 OAG 调用，直接使用 `knowledge/ship.json` 中的子图数据。
+| 用户条件 | 字段 | 操作符 | 值 |
+|---|---|---|---|
+| 船高大于 10m | `ship_height` | `GT` | `10` |
+| 船高小于 30m | `ship_height` | `LT` | `30` |
+| 船舶类型是货轮 | `ship_type` | `EQ` | `货轮` |
+| 船的吃水深度是 10m | `draft` | `EQ` | `10` |
 
----
+返回字段：
 
-## 术语替换约束（面向用户输出时禁止出现技术术语）
+```text
+ship_no, ship_type, ship_height, draft, loa
+```
+
+委托给 planning 层的业务定制输入应包含：
+
+```text
+originalQuestion: 用户原始问题
+goal: 查询符合条件的船舶信息
+intent: ship_info_query
+ontologyId: dtmi.ontology.560d88f7.1
+schemaRef: dtmi.ontology.560d88f7.1
+knowledge: ship.md 摘要和字段映射
+variables.filters: ship_height GT 10, ship_height LT 30, ship_type EQ 货轮, draft EQ 10
+constraints.returnFields: ship_no, ship_type, ship_height, draft, loa
+constraints.maxResults: 1000
+mockSubgraph: 如果处于 Mock 模式，使用 knowledge/ship.json 包装为 result
+```
+
+期望最终由 platform 层生成并通过 schema/validator 校验的 OQL 应使用 `version: "2.0"`，不得生成 `version: "1.0"`。
+
+## 9. 委托 planning 的模板
+
+向 `Ontology-based-planning-skill` 发送：
+
+```text
+场景：集装箱泊位计划本体数据查询
+原始问题：{用户原始问题}
+intent：{识别出的业务意图}
+ontologyId：dtmi.ontology.560d88f7.1
+schemaRef：dtmi.ontology.560d88f7.1
+knowledge：{对应 knowledge 文件摘要}
+variables：{字段、操作符、取值}
+constraints：{返回字段、maxResults、是否 mock}
+stepOverrides：可选；只覆盖默认步骤输入，不重写平台能力
+```
+
+## 10. 强约束
+
+1. 业务层只做意图识别、知识读取、变量和约束注入。
+2. 最终 OQL 由 `Ontology-platform-unified-skill` 按 schema 生成和校验。
+3. 船舶字段必须来自 `ship.md` 字段映射，并由本体子图 `has_property` 确认归属。
+4. `has_property` 不得当作对象间业务关系。
+5. `defines_relation` 才能作为对象关系来源。
+6. 用户指定或默认返回字段必须显式列出，不使用 `*`。
+7. `version` 必须遵循平台 schema；当前 QUERY schema 要求 `2.0`。
+8. 本体访问返回空结果时，不自动放宽条件、不重复查询。
+
+## 11. 用户输出术语约束
+
+面向用户输出时替换技术术语：
 
 | 技术术语 | 替换为 |
-|---------|--------|
+|---|---|
 | OAG | 本体子图 |
 | OAC | 本体访问 |
 | FUNCTION / Function | 函数能力 |
 | OQL | 查询语言 |
 | 知识本体 | 事件本体 |
 
-**严格禁止出现**：OAG、OAC、FUNCTION、Function、OQL、subgraph、query、调用xxx工具/能力
-
----
-
-## Skill 调用协议
-
-你不能直接调用任何原始 Tool。
-所有执行请求必须委托给 `ontology-planning` Skill。
-
-调用 `ontology-planning` 时传入：
-- 当前意图
-- 用户输入的完整语义
-- 对应 knowledge 文件的内容摘要
-- Mock 模式标识（当 ontology-id 为 dtmi.ontology.560d88f7.1 时）
-
----
-
-## 输入格式
-
-支持以下输入格式：
-
-```
-查询所有船舶信息
-查询泊位信息
-查询缆桩信息
-查询桥吊信息
-查询潮汐信息
-查询船舶计划信息
-查询泊位显示顺序
-查询岸线-泊位-缆桩-桥吊坐标
-```
-
-或指定条件查询：
-```
-船舶代码: 001
-泊位代码: 101
-```
+禁止在用户可见回答中出现“调用 xxx 工具/能力”等内部实现表达。
