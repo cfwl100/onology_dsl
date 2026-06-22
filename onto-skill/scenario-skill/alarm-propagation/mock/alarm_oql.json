@@ -1,17 +1,22 @@
 {
   "version": "1.0",
-  "schemaRef":"alarm@1.0",
+  "schemaRef": "network@1.0",
   "strict": true,
   "operation": "ASSOCIATION_QUERY",
   "objects": [
-    { "objectType": "ne", "alias": "ne" },
-    { "objectType": "alarm", "alias": "alarm" }
-
+    {
+      "objectType": "Ne",
+      "alias": "ne"
+    },
+    {
+      "objectType": "Alarm",
+      "alias": "alarm"
+    }
   ],
   "relationships": [
     {
-      "relationshipType": "happen",
-      "alias": "r1",
+      "relationshipType": "generate",
+      "alias": "rel",
       "from": "ne",
       "to": "alarm"
     }
@@ -21,14 +26,13 @@
     "ref": "ne",
     "field": "name",
     "operator": "EQ",
-    "values": ["替换为具体的值"]
+    "values": ["DLE_AIRHITAM_GEBANG_MT"]
   },
   "returns": [
     {
       "kind": "FIELDS",
-      "ref": "r1",
-      "fields": ["*"]
+      "ref": "alarm",
+      "fields": ["ownerVid", "severity", "alarmName", "identifier", "firstOccurrence", "lastOccurrence", "node"]
     }
   ],
-  "maxResults": 1000
-}
+  "maxResults": 1000,

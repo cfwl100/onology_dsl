@@ -13,7 +13,7 @@
   ],
   "properties": {
     "version": {
-      "const": "2.0"
+      "const": "1.0"
     },
     "schemaRef": {
       "type": "string",
