@@ -21,15 +21,16 @@ allowed_tools:
 即使使用显式步骤，仍必须遵守：
 
 - 对外只使用公共 `本体ID`，不要求同时填写 `ontologyId` 和 `schemaRef`。
-- 每个 OAG、OAC、Function 步骤的 `input` 必须是对应模块的自然语言输入模板。
+- 每个 OAG、OAC、Function 步骤的 `input` 必须是对应模块的自然语言输入模板，或被业务定制文件明确覆盖。
 - OAC 步骤仍必须依赖 OAG 子图结果确认对象、字段、关系。
+- OAC 最终只返回 `{objects, relationships}` 对象结构。
 - Function 步骤仍必须基于 `result.functions` 或可信函数目标。
 
 ## 传给规划层的显式步骤输入示例
 
 ```json
 {
-  "intent": "按固定步骤查询船舶及船舶计划信息",
+  "businessIntent": "按固定步骤查询船舶及船舶计划信息",
   "ontologyId": "dtmi.ontology.560d88f7.1",
   "steps": [
     {
@@ -49,14 +50,14 @@ allowed_tools:
       "stepId": "step3_query_data",
       "actionType": "OAC",
       "dependsOn": ["step2_plan_from_subgraph"],
-      "input": "查数据\n本体ID：dtmi.ontology.560d88f7.1\n操作类型：ASSOCIATION_QUERY\n查询对象：来自子图的 ship_info 和 ship_plan。\n关系路径：使用 step2 规划出的 defines_relation.properties.name。\n过滤条件：如用户提供船舶类型或船舶编号，使用子图确认字段。\n返回要求：返回船舶和船舶计划相关字段，maxResults 为1000，空结果视为有效结果。\n执行要求：先生成并校验 OQL；通过后再执行；结果为空视为有效结果，不自动放宽条件重试。\n期望输出：返回操作类型判断、OQL JSON、校验结果、执行状态、数据结果或缺失项。",
-      "expectedOutput": "返回船舶和船舶计划数据"
+      "input": "查数据\n本体ID：dtmi.ontology.560d88f7.1\n操作类型：ASSOCIATION_QUERY\n查询对象：来自子图的 ship_info 和 ship_plan。\n关系路径：使用 step2 规划出的 defines_relation.properties.name。\n过滤条件：如用户提供船舶类型或船舶编号，使用子图确认字段。\n返回要求：返回船舶和船舶计划相关字段，maxResults 为1000，空结果视为有效结果。\n执行要求：先生成并校验 OQL；通过后再执行；结果为空视为有效结果，不自动放宽条件重试。\n期望输出：只返回对象结构结果，包含 objects 和 relationships；不输出 operationDecision、oql、validation。",
+      "expectedOutput": "返回 {objects, relationships} 对象结构"
     },
     {
       "stepId": "step4_summary",
       "actionType": "SUMMARY",
       "dependsOn": ["step3_query_data"],
-      "input": "汇总查询结果，保留平台返回字段，说明使用的本体ID、子图依据、OQL 执行状态和空结果情况。",
+      "input": "汇总查询结果，保留平台返回对象结构，说明使用的本体ID、子图依据和空结果情况。",
       "expectedOutput": "自然语言汇总结果"
     }
   ]
@@ -71,7 +72,7 @@ allowed_tools:
 2. 检查 OAG、OAC、Function 步骤是否使用自然语言输入模板。
 3. 执行子图检索后解析子图。
 4. 执行 OAC 前确认字段归属和关系来源。
-5. 汇总时保留平台返回字段，不做字段归一化。
+5. 汇总时保留平台返回对象结构，不做字段归一化。
 
 ## 约束
 
