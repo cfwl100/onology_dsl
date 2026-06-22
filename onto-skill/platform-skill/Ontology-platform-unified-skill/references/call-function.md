@@ -8,10 +8,10 @@ Function 模块负责根据本体子图返回的函数候选，获取函数参�
 
 ## 前置条件
 
-`functionId` 和 `ontologyId` 是函数调用的必需输入，必须来自本体子图检索结果的 `result.functions`，或由上层业务 Skill 明确给出可信来源。
+`functionId` 和函数所属本体标识是函数调用的必需输入，必须来自本体子图检索结果的 `result.functions`，或由上层业务 Skill 明确给出可信来源。
 
 - 如果没有 `functionId`，直接返回缺失项：`缺少必需的 functionId，请先通过子图检索或业务上下文确认要调用的函数。`
-- 如果没有 `ontologyId`，直接返回缺失项：`缺少必需的 ontologyId，请从子图检索结果或业务上下文中获取。`
+- 如果没有公共 `本体ID` 且函数候选中也没有 `ontologyId`，直接返回缺失项：`缺少必需的本体ID，请从子图检索结果或业务上下文中获取。`
 - 不得自行编造 `functionId`、`ontologyId`、参数名、参数类型或默认值。
 
 ## 面向自然语言的输入模板
@@ -21,11 +21,9 @@ Function 模块负责根据本体子图返回的函数候选，获取函数参�
 ```text
 请执行本体函数调用。
 
-业务目标：<为什么要调用函数，要解决什么问题>
-用户原始问题：<用户输入原文>
-业务场景：<可选，例如 alarm-propagation>
+本体ID：<对外公共本体ID；函数候选返回更精确本体ID时以候选为准>
+业务意图：<为什么要调用函数，要解决什么问题>
 函数来源：<来自 OAG 子图 result.functions，或上层业务 Skill 明确给出的函数候选>
-ontologyId：<函数所属本体ID>
 functionId：<函数ID；如果未知，先返回缺失项>
 函数选择依据：<为什么选择这个函数，基于 description/name/业务规则>
 上下文参数：<用户问题、数据查询结果、业务变量中可用于组装函数参数的信息>
@@ -36,8 +34,8 @@ functionId：<函数ID；如果未知，先返回缺失项>
 最小输入应包含：
 
 ```text
-业务目标：<调用函数的目标>
-ontologyId：<ontologyId>
+本体ID：<对外公共本体ID或函数候选本体ID>
+业务意图：<调用函数的目标>
 functionId：<functionId>
 上下文参数：<可用于组装函数参数的信息>
 ```
@@ -69,7 +67,8 @@ functionId：<functionId>
 3. 选择后必须从选中函数的 `properties` 中提取：
    - `properties.ontologyId` → `ontology_id`
    - `properties.id` → `function_id`
-4. 如果候选函数不足或描述不匹配，返回“未发现可用函数”，不得编造。
+4. 如果候选函数没有更精确的 `properties.ontologyId`，可使用自然语言输入中的公共 `本体ID`。
+5. 如果候选函数不足或描述不匹配，返回“未发现可用函数”，不得编造。
 
 ## 输出格式
 
@@ -128,7 +127,7 @@ Function 模块输出必须区分“函数选择、参数规格、参数组装�
 
 ## 脚本顺序
 
-1. 从子图检索返回的 `result.functions` 中选择目标函数，提取 `ontologyId` 和 `functionId`。
+1. 从子图检索返回的 `result.functions` 中选择目标函数，提取 `ontologyId` 和 `functionId`；如函数候选无 `ontologyId`，使用公共 `本体ID`。
 2. 运行：
 
 ```bash
