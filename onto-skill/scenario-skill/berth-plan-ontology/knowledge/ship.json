@@ -1,8 +1,8 @@
 {
   "seedNodes": [
     {
-      "id": "[dtmi.560d88f7.object-type.c34b06da4da98133.1, dtmi.560d88f7.property-type.1faa3c38-3151b09a.1, dtmi.560d88f7.property-type.1faa3c38-a730d290.1, dtmi.560d88f7.property-type.4511aef1-e09f308a.1, dtmi.560d88f7.object-type.cab60fa8698b3b56.1]",
-      "name": "[ship_info, ship_height, vessel_type, ship_plan, ship_type]",
+      "id": "[dtmi.560d88f7.object-type.c34b06da4da98133.1, dtmi.560d88f7.property-type.1faa3c38-34c94820.1, dtmi.560d88f7.property-type.1faa3c38-3151b09a.1, dtmi.560d88f7.property-type.1faa3c38-a730d290.1, dtmi.560d88f7.property-type.1faa3c38-draft000.1, dtmi.560d88f7.property-type.1faa3c38-loa00000.1, dtmi.560d88f7.object-type.cab60fa8698b3b56.1]",
+      "name": "[ship_info, ship_no, ship_type, ship_height, draft, loa, ship_plan]",
       "score": 0.0,
       "llmDrawEntityName": "船舶"
     }
@@ -30,20 +30,25 @@
       }
     },
     {
+      "id": "dtmi.560d88f7.property-type.1faa3c38-34c94820.1",
+      "label": "property",
+      "properties": {
+        "display": "{\"zh\":\"船舶编号\"}",
+        "dataType": "string",
+        "description": "{\"zh\":\"船舶唯一标识\"}",
+        "name": "ship_no",
+        "id": "dtmi.560d88f7.property-type.1faa3c38-34c94820.1",
+        "status": "active"
+      }
+    },
+    {
       "id": "dtmi.560d88f7.property-type.1faa3c38-3151b09a.1",
       "label": "property",
       "properties": {
-        "lastModifiedAt": "1781604933537",
-        "defaultValue": "NULL",
-        "refSharedIds": "NULL",
         "display": "{\"zh\":\"船舶类型\"}",
         "dataType": "string",
         "description": "{\"zh\":\"\"}",
-        "createdAt": "1781604933537",
-        "createdBy": "admain",
-        "valueType": "NULL",
         "name": "ship_type",
-        "modifiedBy": "admain",
         "id": "dtmi.560d88f7.property-type.1faa3c38-3151b09a.1",
         "status": "active"
       }
@@ -52,37 +57,35 @@
       "id": "dtmi.560d88f7.property-type.1faa3c38-a730d290.1",
       "label": "property",
       "properties": {
-        "lastModifiedAt": "1781604929339",
-        "refSharedIds": "NULL",
-        "defaultValue": "NULL",
-        "dataType": "string",
         "display": "{\"zh\":\"船高\"}",
+        "dataType": "string",
         "description": "{\"zh\":\"\"}",
-        "createdAt": "1781604929339",
-        "createdBy": "admain",
-        "valueType": "NULL",
         "name": "ship_height",
-        "modifiedBy": "admain",
         "id": "dtmi.560d88f7.property-type.1faa3c38-a730d290.1",
         "status": "active"
       }
     },
     {
-      "id": "dtmi.560d88f7.property-type.4511aef1-e09f308a.1",
+      "id": "dtmi.560d88f7.property-type.1faa3c38-draft000.1",
       "label": "property",
       "properties": {
-        "lastModifiedAt": "1781170006418",
-        "refSharedIds": "NULL",
-        "defaultValue": "NULL",
-        "display": "{\"zh\":\"船舶类型\"}",
+        "display": "{\"zh\":\"吃水深度\"}",
         "dataType": "string",
-        "description": "{\"zh\":\"\"}",
-        "createdAt": "1781170006418",
-        "createdBy": "admain",
-        "valueType": "NULL",
-        "name": "vessel_type",
-        "modifiedBy": "admain",
-        "id": "dtmi.560d88f7.property-type.4511aef1-e09f308a.1",
+        "description": "{\"zh\":\"船舶吃水深度\"}",
+        "name": "draft",
+        "id": "dtmi.560d88f7.property-type.1faa3c38-draft000.1",
+        "status": "active"
+      }
+    },
+    {
+      "id": "dtmi.560d88f7.property-type.1faa3c38-loa00000.1",
+      "label": "property",
+      "properties": {
+        "display": "{\"zh\":\"船长\"}",
+        "dataType": "string",
+        "description": "{\"zh\":\"船舶总长 LOA\"}",
+        "name": "loa",
+        "id": "dtmi.560d88f7.property-type.1faa3c38-loa00000.1",
         "status": "active"
       }
     },
@@ -94,46 +97,62 @@
         "lastModifiedAt": "1781170006356",
         "visibility": "NULL",
         "display": "{\"zh\":\"船舶计划\"}",
-        "icon": "NULL",
         "description": "{\"zh\":\"\"}",
         "type": "objectType",
-        "createdAt": "NULL",
-        "extensions": "{\"color\":\"#2971ea\",\"icon\":\"network.svg\"}",
         "primaryKeys": "[\"dtmi.560d88f7.property-type.4511aef1-ef7c876f.1\"]",
-        "createdBy": "NULL",
         "name": "ship_plan",
-        "modifiedBy": "admain",
         "id": "dtmi.560d88f7.object-type.cab60fa8698b3b56.1",
+        "status": "active"
+      }
+    },
+    {
+      "id": "dtmi.560d88f7.property-type.4511aef1-e09f308a.1",
+      "label": "property",
+      "properties": {
+        "display": "{\"zh\":\"船舶计划类型\"}",
+        "dataType": "string",
+        "description": "{\"zh\":\"\"}",
+        "name": "vessel_type",
+        "id": "dtmi.560d88f7.property-type.4511aef1-e09f308a.1",
         "status": "active"
       }
     }
   ],
   "edges": [
     {
+      "id": "has_property:dtmi.560d88f7.object-type.c34b06da4da98133.1->dtmi.560d88f7.property-type.1faa3c38-34c94820.1@0",
+      "sourceId": "dtmi.560d88f7.object-type.c34b06da4da98133.1",
+      "targetId": "dtmi.560d88f7.property-type.1faa3c38-34c94820.1",
+      "edgeType": "has_property",
+      "properties": { "creatorByOntology": "dtmi.ontology.560d88f7.1" }
+    },
+    {
       "id": "has_property:dtmi.560d88f7.object-type.c34b06da4da98133.1->dtmi.560d88f7.property-type.1faa3c38-3151b09a.1@0",
       "sourceId": "dtmi.560d88f7.object-type.c34b06da4da98133.1",
       "targetId": "dtmi.560d88f7.property-type.1faa3c38-3151b09a.1",
       "edgeType": "has_property",
-      "properties": {
-        "creatorByOntology": "dtmi.ontology.560d88f7.1"
-      },
-      "propertyMap": {
-        "creatorByOntology": "dtmi.ontology.560d88f7.1"
-      },
-      "eid": "has_property:dtmi.560d88f7.object-type.c34b06da4da98133.1->dtmi.560d88f7.property-type.1faa3c38-3151b09a.1@0"
+      "properties": { "creatorByOntology": "dtmi.ontology.560d88f7.1" }
     },
     {
       "id": "has_property:dtmi.560d88f7.object-type.c34b06da4da98133.1->dtmi.560d88f7.property-type.1faa3c38-a730d290.1@0",
       "sourceId": "dtmi.560d88f7.object-type.c34b06da4da98133.1",
       "targetId": "dtmi.560d88f7.property-type.1faa3c38-a730d290.1",
       "edgeType": "has_property",
-      "properties": {
-        "creatorByOntology": "dtmi.ontology.560d88f7.1"
-      },
-      "propertyMap": {
-        "creatorByOntology": "dtmi.ontology.560d88f7.1"
-      },
-      "eid": "has_property:dtmi.560d88f7.object-type.c34b06da4da98133.1->dtmi.560d88f7.property-type.1faa3c38-a730d290.1@0"
+      "properties": { "creatorByOntology": "dtmi.ontology.560d88f7.1" }
+    },
+    {
+      "id": "has_property:dtmi.560d88f7.object-type.c34b06da4da98133.1->dtmi.560d88f7.property-type.1faa3c38-draft000.1@0",
+      "sourceId": "dtmi.560d88f7.object-type.c34b06da4da98133.1",
+      "targetId": "dtmi.560d88f7.property-type.1faa3c38-draft000.1",
+      "edgeType": "has_property",
+      "properties": { "creatorByOntology": "dtmi.ontology.560d88f7.1" }
+    },
+    {
+      "id": "has_property:dtmi.560d88f7.object-type.c34b06da4da98133.1->dtmi.560d88f7.property-type.1faa3c38-loa00000.1@0",
+      "sourceId": "dtmi.560d88f7.object-type.c34b06da4da98133.1",
+      "targetId": "dtmi.560d88f7.property-type.1faa3c38-loa00000.1",
+      "edgeType": "has_property",
+      "properties": { "creatorByOntology": "dtmi.ontology.560d88f7.1" }
     },
     {
       "id": "defines_relation:dtmi.560d88f7.object-type.c34b06da4da98133.1->dtmi.560d88f7.object-type.cab60fa8698b3b56.1@8417111961426661983",
@@ -141,75 +160,21 @@
       "targetId": "dtmi.560d88f7.object-type.cab60fa8698b3b56.1",
       "edgeType": "defines_relation",
       "properties": {
-        "backingObjectTypeId": null,
-        "lastModifiedAt": null,
         "connectionType": "object-to-object",
-        "relation": null,
-        "targetPropertyId": null,
-        "createdAt": null,
         "structureRelationType": "association",
-        "modifiedBy": null,
         "id": "dtmi.560d88f7.relation-type.64c5a7cb-c55816b9.1",
-        "businessSemanticDescription": "",
-        "relationProperties": "[]",
-        "creatorByOntology": "dtmi.ontology.560d88f7.1",
-        "junctionDatasetId": null,
         "businessSemanticType": "单个船舶包含多个船舶计划",
-        "sourceObjectTypeId": null,
-        "sourcePropertyId": null,
-        "display": "{\"en\":\"displayNameEn\",\"zh\":\"displayNameCn\"}",
         "cardinality": "one-to-many",
-        "structureRelationDescription": "",
-        "targetObjectTypeId": null,
-        "createdBy": null,
         "name": "单个船舶包含多个船舶计划",
-        "linkType": null,
-        "junctionConfig": "null",
-        "keyMappings": null,
-        "status": null
-      },
-      "propertyMap": {
-        "backingObjectTypeId": null,
-        "lastModifiedAt": null,
-        "connectionType": "object-to-object",
-        "relation": null,
-        "targetPropertyId": null,
-        "createdAt": null,
-        "structureRelationType": "association",
-        "modifiedBy": null,
-        "id": "dtmi.560d88f7.relation-type.64c5a7cb-c55816b9.1",
-        "businessSemanticDescription": "",
-        "relationProperties": "[]",
-        "creatorByOntology": "dtmi.ontology.560d88f7.1",
-        "junctionDatasetId": null,
-        "businessSemanticType": "单个船舶包含多个船舶计划",
-        "sourceObjectTypeId": null,
-        "sourcePropertyId": null,
-        "display": "{\"en\":\"displayNameEn\",\"zh\":\"displayNameCn\"}",
-        "cardinality": "one-to-many",
-        "structureRelationDescription": "",
-        "targetObjectTypeId": null,
-        "createdBy": null,
-        "name": "单个船舶包含多个船舶计划",
-        "linkType": null,
-        "junctionConfig": "null",
-        "keyMappings": null,
-        "status": null
-      },
-      "eid": "defines_relation:dtmi.560d88f7.object-type.c34b06da4da98133.1->dtmi.560d88f7.object-type.cab60fa8698b3b56.1@8417111961426661983"
+        "creatorByOntology": "dtmi.ontology.560d88f7.1"
+      }
     },
     {
       "id": "has_property:dtmi.560d88f7.object-type.cab60fa8698b3b56.1->dtmi.560d88f7.property-type.4511aef1-e09f308a.1@0",
       "sourceId": "dtmi.560d88f7.object-type.cab60fa8698b3b56.1",
       "targetId": "dtmi.560d88f7.property-type.4511aef1-e09f308a.1",
       "edgeType": "has_property",
-      "properties": {
-        "creatorByOntology": "dtmi.ontology.560d88f7.1"
-      },
-      "propertyMap": {
-        "creatorByOntology": "dtmi.ontology.560d88f7.1"
-      },
-      "eid": "has_property:dtmi.560d88f7.object-type.cab60fa8698b3b56.1->dtmi.560d88f7.property-type.4511aef1-e09f308a.1@0"
+      "properties": { "creatorByOntology": "dtmi.ontology.560d88f7.1" }
     }
   ],
   "functions": [],
