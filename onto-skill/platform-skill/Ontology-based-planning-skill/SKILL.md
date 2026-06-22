@@ -161,7 +161,7 @@ S2 输出：
 
 ```text
 subgraphOutput：
-- subgraphRawResult：OAG 原始返回，典型格式参考 docs/ontology_subgraph.json
+- subgraphRawResult：OAG 原始返回
 - seedNodes：result.seedNodes
 - nodes：result.nodes
 - edges：result.edges
