@@ -26,6 +26,7 @@
 
 结构契约以 schema 为准。本手册只补充 Agent 生成时必须理解的语义规则。
 
+- `version` 使用本体 Skill 初始版本 `1.0`，并以 schema 为准。
 - `operation` 固定为 `QUERY`。
 - 必须声明 `objects` 和 `returns`。
 - 不使用 `relationships`、`aggregateFilter`、`mutation`。
@@ -65,12 +66,13 @@
 - 把统计需求误写成 `QUERY`。
 - `returns` 结构不符合 schema。
 - `maxResults` 使用旧对象格式。
+- `version` 未使用 schema 声明的初始版本。
 
 ## 最小示例
 
 ```json
 {
-  "version": "2.0",
+  "version": "1.0",
   "schemaRef": "demo@1.0",
   "strict": true,
   "operation": "QUERY",
