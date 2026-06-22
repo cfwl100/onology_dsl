@@ -20,13 +20,12 @@ metadata:
 
 | 字段 | 值 |
 |---|---|
-| `ontologyId` | `dtmi.ontology.560d88f7.1` |
-| `schemaRef` | `dtmi.ontology.560d88f7.1` |
+| 对外公共 `本体ID` | `dtmi.ontology.560d88f7.1` |
 | OQL 初始版本 | `1.0` |
 | 默认规划层 | `Ontology-based-planning-skill` |
 | 平台能力层 | `Ontology-platform-unified-skill` |
 
-本体子图检索使用 `ontologyId`，本体访问使用 `schemaRef`，最终 OQL 使用 `version: "1.0"`。
+对外只传递公共 `本体ID`。Planning 层会把该 ID 传给下层本体子图检索，并在生成本体访问步骤时将其作为 OQL `schemaRef` 来源。
 
 ## 3. 对象路由
 
@@ -68,17 +67,15 @@ ship_no, ship_type, ship_height, draft, loa
 
 ## 6. 委托模板
 
-向 planning 层发送：
+向 planning 层发送自然语言定制说明：
 
 ```text
-场景：集装箱泊位计划本体数据查询
-原始问题：{用户原始问题}
-intent：{识别出的业务意图}
-ontologyId：dtmi.ontology.560d88f7.1
-schemaRef：dtmi.ontology.560d88f7.1
-knowledge：{对应 knowledge 文件摘要}
-variables：{字段、操作符、取值}
-constraints：{返回字段、maxResults、是否 mock、version=1.0}
+本体ID：dtmi.ontology.560d88f7.1
+业务意图：<基于用户输入改写后的详细自然语言查询问题，需包含查询船舶信息、船高范围、船舶类型、吃水深度、返回字段和 maxResults 要求>
+已读取知识：knowledge/ship.md
+业务知识与规则：船舶字段映射以 ship.md 为准；字段必须由本体子图 has_property 确认归属；关系只来自 defines_relation；最终 OQL 使用 version=1.0。
+执行定制要求：先检索船舶信息相关本体子图，再基于子图确认 ship_info、ship_height、ship_type、draft、ship_no、loa 等对象和字段，最后生成 QUERY 类型本体访问语句。
+缺失信息：没有则写无。
 ```
 
 ## 7. 强约束
