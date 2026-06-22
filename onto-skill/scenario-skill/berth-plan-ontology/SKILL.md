@@ -12,7 +12,7 @@ metadata:
 
 ## 1. 任务概述
 
-本 Skill 是业务语义层，只负责识别场景、读取对应业务知识、抽取业务条件和返回要求，然后委托 `Ontology-based-planning-skill`。
+本 Skill 是业务语义层，只负责识别场景、读取对应业务定制文件、抽取业务条件和返回要求，然后委托 `Ontology-based-planning-skill`。
 
 不得直接生成最终平台请求，不得绕过 planning 层和 platform 层。
 
@@ -74,9 +74,9 @@ ship_no, ship_type, ship_height, draft, loa
 本体ID：dtmi.ontology.560d88f7.1
 业务意图：<基于用户输入改写后的详细自然语言查询问题，需包含查询船舶信息、船高范围、船舶类型、吃水深度、返回字段和 maxResults 要求>
 已读取业务定制文件：knowledge/ship.md
-业务知识与规则：船舶字段映射以 ship.md 为准；字段必须由本体子图 has_property 确认归属；关系只来自 defines_relation；最终 OQL 使用 version=1.0。
-流程级定制：执行 S1/S2/S3/S4/S7，不需要 Function；S2 先检索船舶信息相关本体子图，S3 基于子图规划单对象 QUERY 查询任务，S4 生成并校验 OQL。
-步骤级定制：S2 需要返回 ship_info 及 ship_no、ship_type、ship_height、draft、loa 等字段归属；S3 规划对象为 ship_info、alias 建议为 s；S4 操作类型为 QUERY，过滤条件和返回字段按 ship.md 及用户问题生成；空结果不重试。
+业务定制文件内容：船舶字段映射以 ship.md 为准；字段必须由本体子图 has_property 确认归属；关系只来自 defines_relation；最终 OQL 使用 version=1.0；S4 最终只返回 objects/relationships 对象结构。
+流程级定制：执行 S1/S2/S3/S4/S7，不需要 Function；S2 先检索船舶信息相关本体子图，S3 基于子图规划单对象 QUERY 查询任务，S4 生成、校验并执行 OQL。
+步骤级定制：S2 需要返回 ship_info 及 ship_no、ship_type、ship_height、draft、loa 等字段归属；S3 规划对象为 ship_info、alias 建议为 s；S4 操作类型为 QUERY，过滤条件和返回字段按 ship.md 及用户问题生成；空结果不重试；最终输出 objects/relationships。
 缺失信息：没有则写无。
 ```
 
@@ -107,13 +107,15 @@ ship_no, ship_type, ship_height, draft, loa
 - 操作类型：船舶信息明细查询为 `QUERY`。
 - 过滤条件：船高范围、船舶类型、吃水深度等，单位 m/米 去掉后保留数值字符串。
 - 返回要求：用户指定字段优先；典型返回 `ship_no, ship_type, ship_height, draft, loa`。
+- 输出要求：最终只返回 `{objects, relationships}` 对象结构；不把 operationDecision、oql、validation 作为最终输出字段。
 - 空结果视为有效结果，不自动放宽条件重试。
 
 ## 9. 强约束
 
-1. 字段必须来自业务知识映射，并由本体子图 `has_property` 确认归属。
-2. `has_property` 不得当作对象间业务关系。
-3. `defines_relation` 才能作为对象关系来源。
-4. 用户指定或默认返回字段必须显式列出，不使用 `*`。
-5. 最终 OQL 必须使用 `version: "1.0"`。
-6. 本体访问返回空结果时，不自动放宽条件、不重复查询。
+1. 业务定制文件 `knowledge/ship.md` 是业务定制模式必填输入。
+2. 字段必须来自业务知识映射，并由本体子图 `has_property` 确认归属。
+3. `has_property` 不得当作对象间业务关系。
+4. `defines_relation` 才能作为对象关系来源。
+5. 用户指定或默认返回字段必须显式列出，不使用 `*`。
+6. 最终 OQL 必须使用 `version: "1.0"`。
+7. 本体访问返回空结果时，不自动放宽条件、不重复查询。
