@@ -1,137 +1,127 @@
 # OAG 本体子图检索
 
-## 本层职责
+## 1. 本层职责
 
-OAG 是本体子图检索能力，负责根据自然语言业务意图和公共 `本体ID` 检索相关对象、属性、关系与函数候选，为后续 Planning、OAC、Function 调用提供可信来源。
+OAG 是本体子图检索能力，负责根据自然语言业务意图和公共 `本体ID` 检索对象、属性、关系、函数候选，为 Planning、OAC、Function 提供可信结构依据。
 
-OAG 只负责“找本体能力和结构依据”，不负责生成 OQL、不负责执行数据查询、不负责直接调用函数。
+OAG 只负责“找本体能力和结构依据”，不负责生成 OQL、不负责执行数据查询、不直接调用函数。
 
-## 面向自然语言的输入模板
+## 2. 输入来源
 
-上层业务 Skill 或 Planning 层可以直接用自然语言委托 OAG，不需要构造复杂 JSON。推荐模板如下：
+OAG 输入可以来自：
+
+- 用户问题或 Planning 层整理后的详细 `业务意图`。
+- 公共 `本体ID`。
+- 业务定制的子图检索规则文件。
+- 业务定制的子图返回结构要求。
+- Planning 层基于默认流程或业务规则生成的检索目标。
+
+业务定制文件可以自然语言描述，不要求拆成 JSON。常见内容包括：固定 query 模板、语义扩展策略、优先对象、方向、最大跳数、是否返回函数候选、返回哪些子图字段等。
+
+## 3. 面向自然语言的输入模板
+
+Planning 层委托 OAG 时必须使用以下模板：
 
 ```text
-请执行本体子图检索。
-
-本体ID：<对外公共本体ID>
+先找相关子图。
+本体ID：<公共本体ID>
 业务意图：<改写后的详细自然语言问题，用于检索对象、属性、关系、函数候选>
-检索目标：<希望找到哪些对象、属性、关系、函数候选>
-业务知识补充：<可选，来自业务 Skill 的自然语言规则、SOP、禁止项、固定模板>
-检索范围提示：<可选，例如优先关注告警、网元、链路、业务影响对象>
-函数返回要求：<可选，是否需要返回 functions，默认按场景决定>
+业务定制文件：<已读取的子图检索规则文件或场景知识文件；可写无>
+子图检索规则：<业务定制的检索策略、固定 query 模板、扩展方向、最大跳数、是否返回函数候选等>
+检索目标：<需要检索哪些对象、属性、关系、函数候选；不得提前编造平台字段名>
+子图返回结构要求：<业务希望从 result.seedNodes / nodes / edges / functions / actions 中保留哪些字段内容；未指定时保留完整原始 result>
+期望输出：返回 OAG 原始图结构 JSON，包括 result.seedNodes、result.nodes、result.edges、result.functions、result.actions；同时按业务返回结构要求输出可用于后续规划的对象、字段归属、关系候选和函数候选摘要。
 ```
 
-最小输入只需要：
+最小输入为：
 
 ```text
-本体ID：<对外公共本体ID>
-业务意图：<改写后的详细自然语言问题或业务主题>
+本体ID：<公共本体ID>
+业务意图：<改写后的详细自然语言问题>
 ```
 
-脚本调用时将 `业务意图`、检索目标和业务知识补充整理为 `--query`，并传入 `--ontologyId`：
+脚本调用时，将 `业务意图`、`子图检索规则`、`检索目标` 和 `业务知识补充` 整理为自然语言 query，并传入 `--ontologyId`：
 
 ```bash
 python scripts/semantic_subgraph_search.py --query "<自然语言检索问题>" --ontologyId "<本体ID>"
 ```
 
-## 参数契约
+## 4. 参数契约
 
-**必填参数：**
+必填参数：
 
-- `query`：由业务意图、检索目标和业务知识补充整理后的自然语言检索问题。
+- `query`：由业务意图、检索规则、检索目标和业务知识补充整理后的自然语言检索问题。
 - `ontologyId`：公共本体ID。
 
-**可选参数：**
+可选参数：
 
 - `similarityThreshold`：相似度阈值，默认 `0.6`。
-- `includeFunctions`：是否返回 Function，默认 `0`。
+- `includeFunctions`：是否返回 Function，默认由业务意图和检索规则决定。
 - `includeActions`：是否返回 Action，默认 `0`。
 - `seedRetrievalMode`：种子节点检索模式，默认 `vector`。
 - `topK`：种子节点语义检索 topK，默认 `3`。
 - `graphExpansionStrategy`：子图扩展策略，默认 `minimal`。
 - `hopLimit`：`khop` 策略下的扩散深度，默认 `3`。
 
-## 输出格式
+## 5. 输出格式
 
-OAG 输出应同时保留“原始子图结果”和“面向后续规划的摘要”。推荐输出结构：
+OAG 输出必须保留原始图结构，并按业务定制返回结构要求生成规划摘要。
+
+推荐输出：
 
 ```text
 ## OAG 输出
 
-### 1. 检索摘要
+### 1. 原始图结构
+- result.seedNodes：<原始 seedNodes>
+- result.nodes：<原始 nodes>
+- result.edges：<原始 edges>
+- result.functions：<原始 functions>
+- result.actions：<原始 actions>
+
+### 2. 检索摘要
 - 命中的业务主题：...
 - 相关对象：...
 - 相关属性：...
 - 相关关系：...
 - 相关函数候选：...
 
-### 2. 原始子图结果
-- 保留脚本返回的 result，包括 objects / properties / relationships / functions 等原始结构。
-- 不改写原始 id、name、qualifiedName、properties。
-
 ### 3. 规划可用依据
-- 可用于 OAC 的对象类型：...
-- 可用于 OAC 的字段及归属对象：...
-- 可用于 ASSOCIATION_QUERY 的关系名：...
-- 可用于 Function 调用的 functionId / ontologyId：...
+- 可用于 OAC 的对象类型：来自 nodes[label=objectType]
+- 可用于 OAC 的字段及归属对象：来自 nodes[label=property] + has_property
+- 可用于 ASSOCIATION_QUERY 的关系名：来自 edges[edgeType=defines_relation].properties.name
+- 可用于 Function 调用的函数候选：来自 result.functions
 
-### 4. 下一步建议
-- 是否需要 OAC：是/否，原因：...
+### 4. 按业务返回结构要求输出
+- <业务指定需要额外保留或摘要的 seedNodes/nodes/edges/functions/actions 字段>
+
+### 5. 下一步建议
+- 是否需要基于子图规划 OAC：是/否，原因：...
 - 是否需要 Function：是/否，原因：...
 - 缺失信息：...
-
-### 5. 风险与边界
-- 子图为空、噪声大或字段归属不明确时，明确说明不足，不得虚构。
+- 风险说明：...
 ```
 
-## 子图解析规则
+## 6. 子图解析规则
 
-- 对象类型必须来自子图中的对象节点或等价对象定义。
-- 字段必须通过对象到属性的 `has_property` 边确认归属。
-- 关系必须来自 `defines_relation.properties.name` 或等价关系定义。
-- Function 必须来自子图返回的 `functions` 候选，不得编造。
+- 对象类型必须来自 `result.nodes` 中的 `label=objectType` 节点或等价对象定义。
+- 字段必须来自 `label=property` 节点，并通过 `has_property` 边确认归属。
+- 关系必须来自 `edgeType=defines_relation`，关系名必须使用 `edges[].properties.name`。
+- Function 必须来自 `result.functions` 候选，不得编造。
 - `has_property` 只能证明字段归属，不能生成 OAC 的 `relationships`。
 
-## 本层边界
+## 7. 本层边界
 
 - 不把子图检索替代成数据查询。
 - 不在未获得子图结果时直接给出确定性路径结论。
 - 不直接执行函数或写入数据。
 - 不编造对象、字段、关系或函数。
+- 不删改原始子图结果中的 id、name、qualifiedName、properties。
 
-## 校验规则
+## 8. 校验规则
 
 1. 先检索，再规划；不能反过来。
-2. 子图结果只能作为“本体结构依据”，不能说成完整事实库。
+2. 子图结果只能作为本体结构依据，不能说成完整事实库。
 3. 子图为空时，不输出确定性路径或对象关系结论。
-4. 后续任务规划必须显式基于“检索结果 + 业务规则/SOP”。
-
-## 样例
-
-### 样例 1：围绕业务意图检索子图
-
-输入：
-
-```text
-请执行本体子图检索。
-本体ID：network@1.0
-业务意图：查询网元A上的告警及其可能影响的业务，识别告警、网元、业务影响相关对象、属性、关系和可能的函数候选。
-检索目标：查找告警、网元、业务影响相关对象、属性、关系和可能的函数候选。
-```
-
-处理：
-
-- 先用自然语言业务意图检索子图。
-- 再输出子图摘要、原始结果和下一步 OAC / Function 建议。
-
-### 边界样例：问题太泛
-
-输入：
-
-```text
-请执行本体子图检索。
-本体ID：network@1.0
-业务意图：帮我检索一下本体。
-```
-
-应返回：业务意图范围过大，需要补充业务主题、目标对象或任务范围。
+4. 后续任务规划必须显式基于“子图结果 + 业务规则/SOP”。
+5. 业务要求返回特定子图字段时，优先在摘要中保留，但不得改写原始 result。
