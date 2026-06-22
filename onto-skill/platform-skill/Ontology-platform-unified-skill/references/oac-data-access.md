@@ -55,56 +55,12 @@ Planning 层委托 OAC 时默认使用以下模板；如果业务定制文件提
 
 ## 5. 最终输出格式
 
-OAC 最终输出必须是对象结构。`operationDecision`、`oql`、`validation` 属于中间过程日志或调试信息，不作为最终输出字段。
+OAC 最终输出必须是对象结构。
 
 ```json
 {
-  "objects": [
-    {
-      "id": "Board-2",
-      "type": "board",
-      "props": {
-        "name": "Board-002",
-        "status": "active"
-      }
-    },
-    {
-      "id": "Board-1",
-      "type": "board",
-      "props": {
-        "name": "Board-001",
-        "status": "active"
-      }
-    },
-    {
-      "id": "Port-2",
-      "type": "port",
-      "props": {
-        "name": "Port-2",
-        "status": "active"
-      }
-    },
-    {
-      "id": "cgei-0/3/0/5",
-      "type": "interface",
-      "props": {
-        "name": "cgei-0/3/0/5",
-        "status": "active"
-      }
-    }
-  ],
-  "relationships": [
-    {
-      "from": "Board-2",
-      "to": "Port-2",
-      "type": "hasPort"
-    },
-    {
-      "from": "Board-2",
-      "to": "cgei-0/3/0/5",
-      "type": "hasPort"
-    }
-  ]
+  "objects": [],
+  "relationships": []
 }
 ```
 

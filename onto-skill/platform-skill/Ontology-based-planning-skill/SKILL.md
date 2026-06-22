@@ -297,7 +297,7 @@ S4 目标：把 S3 规划出的数据访问任务委托给 OAC，生成、校验
 过滤条件：<用户条件及其对应字段依据；单位换算和枚举值说明>
 返回要求：<返回字段、排序、分组、maxResults、空结果策略；可由业务定制文件覆盖>
 执行要求：先生成并校验 OQL；通过后再执行；结果为空视为有效结果，不自动放宽条件重试。
-期望输出：只返回对象结构结果，包含 objects 和 relationships；不输出 operationDecision、oql、validation。
+期望输出：只返回对象结构结果，包含 objects 和 relationships。
 ```
 
 S4 输入来源：
@@ -310,56 +310,12 @@ S4 输出是对象结构：
 
 ```json
 {
-  "objects": [
-    {
-      "id": "Board-2",
-      "type": "board",
-      "props": {
-        "name": "Board-002",
-        "status": "active"
-      }
-    },
-    {
-      "id": "Board-1",
-      "type": "board",
-      "props": {
-        "name": "Board-001",
-        "status": "active"
-      }
-    },
-    {
-      "id": "Port-2",
-      "type": "port",
-      "props": {
-        "name": "Port-2",
-        "status": "active"
-      }
-    },
-    {
-      "id": "cgei-0/3/0/5",
-      "type": "interface",
-      "props": {
-        "name": "cgei-0/3/0/5",
-        "status": "active"
-      }
-    }
-  ],
-  "relationships": [
-    {
-      "from": "Board-2",
-      "to": "Port-2",
-      "type": "hasPort"
-    },
-    {
-      "from": "Board-2",
-      "to": "cgei-0/3/0/5",
-      "type": "hasPort"
-    }
-  ]
+  "objects": [],
+  "relationships": []
 }
 ```
 
-如果没有关系，`relationships` 返回空数组。查询为空时返回 `{ "objects": [], "relationships": [] }`，并在 S7 汇总中说明空结果含义。`operationDecision`、`oql`、`validation` 属于中间过程日志，不作为 S4 最终输出字段。
+如果没有关系，`relationships` 返回空数组。查询为空时返回 `{ "objects": [], "relationships": [] }`，并在 S7 汇总中说明空结果含义。
 
 ### 4.5 S5/S6 Function 发现与执行
 
