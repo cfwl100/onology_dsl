@@ -26,6 +26,7 @@
 
 结构契约以 schema 为准。本手册只补充 Agent 生成时必须理解的语义规则。
 
+- `version` 使用本体 Skill 初始版本 `1.0`，并以 schema 为准。
 - `operation` 固定为 `AGGREGATE`。
 - 必须声明 `objects` 和 `returns`。
 - `returns` 至少包含一个 `METRIC`，可包含 `GROUP_BY`。
@@ -80,38 +81,10 @@
 - 聚合函数绑定字段不合法。
 - 把明细查询误写成聚合。
 - `maxResults` 使用旧对象格式。
+- `version` 未使用 schema 声明的初始版本。
 
 ## 最小示例
 
 ```json
-{
-  "version": "2.0",
-  "schemaRef": "demo@1.0",
-  "strict": true,
-  "operation": "AGGREGATE",
-  "objects": [
-    { "objectType": "cell_kpi", "alias": "k" }
-  ],
-  "conditions": {
-    "kind": "PREDICATE",
-    "ref": "k",
-    "field": "collect_date",
-    "operator": "EQ",
-    "values": ["2026-06-18"]
-  },
-  "returns": [
-    { "kind": "GROUP_BY", "ref": "k", "field": "city", "alias": "city" },
-    { "kind": "METRIC", "function": "AVG", "ref": "k", "field": "prb_usage", "alias": "avg_prb_usage" }
-  ],
-  "aggregateFilter": {
-    "kind": "METRIC_PREDICATE",
-    "metricAlias": "avg_prb_usage",
-    "operator": "GT",
-    "values": [80]
-  },
-  "orders": [
-    { "field": "avg_prb_usage", "direction": "DESC" }
-  ],
-  "maxResults": 1000
-}
+{"version":"1.0","schemaRef":"demo@1.0","strict":true,"operation":"AGGREGATE","objects":[{"objectType":"cell_kpi","alias":"k"}],"returns":[{"kind":"METRIC","function":"COUNT","ref":"k","field":"id","alias":"cnt"}],"maxResults":1000}
 ```
