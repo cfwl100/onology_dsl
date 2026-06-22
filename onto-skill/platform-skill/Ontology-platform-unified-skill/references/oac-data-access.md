@@ -28,7 +28,7 @@ OAC 是本体平台的数据访问总控入口，负责把数据访问请求路�
 
 OQL 顶层结构、`version`、`returns` 类型、字段语法、`maxResults` 格式等以对应 schema 为准。
 
-生成 OQL 时必须先读取 schema，不得从历史样例沿用旧版本号。例如当前 `QUERY` schema 要求 `version` 为 `2.0`，因此不得生成 `version: "1.0"`。
+当前本体 Skill 的 OQL 初始版本统一为 `version: "1.0"`。生成 OQL 时必须使用 schema 中声明的版本，不得从历史样例沿用其他版本号。
 
 ## 自然语言委托模板
 
