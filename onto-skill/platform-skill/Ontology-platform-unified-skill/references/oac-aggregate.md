@@ -86,5 +86,26 @@
 ## 最小示例
 
 ```json
-{"version":"1.0","schemaRef":"demo@1.0","strict":true,"operation":"AGGREGATE","objects":[{"objectType":"cell_kpi","alias":"k"}],"returns":[{"kind":"METRIC","function":"COUNT","ref":"k","field":"id","alias":"cnt"}],"maxResults":1000}
+{
+  "version": "1.0",
+  "schemaRef": "demo@1.0",
+  "strict": true,
+  "operation": "AGGREGATE",
+  "objects": [
+    {
+      "objectType": "cell_kpi",
+      "alias": "k"
+    }
+  ],
+  "returns": [
+    {
+      "kind": "METRIC",
+      "function": "COUNT",
+      "ref": "k",
+      "field": "id",
+      "alias": "cnt"
+    }
+  ],
+  "maxResults": 1000
+}
 ```
