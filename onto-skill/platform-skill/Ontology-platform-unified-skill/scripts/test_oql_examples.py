@@ -19,6 +19,64 @@ def query_sample() -> dict:
     }
 
 
+def berth_plan_ship_info_query_sample() -> dict:
+    """End-to-end expected OQL for berth-plan-ontology ship_info query."""
+    return {
+        "version": "2.0",
+        "schemaRef": "dtmi.ontology.560d88f7.1",
+        "strict": True,
+        "operation": "QUERY",
+        "objects": [
+            {
+                "objectType": "ship_info",
+                "alias": "s",
+            }
+        ],
+        "conditions": {
+            "kind": "GROUP",
+            "relation": "AND",
+            "children": [
+                {
+                    "kind": "PREDICATE",
+                    "ref": "s",
+                    "field": "ship_height",
+                    "operator": "GT",
+                    "values": ["10"],
+                },
+                {
+                    "kind": "PREDICATE",
+                    "ref": "s",
+                    "field": "ship_height",
+                    "operator": "LT",
+                    "values": ["30"],
+                },
+                {
+                    "kind": "PREDICATE",
+                    "ref": "s",
+                    "field": "ship_type",
+                    "operator": "EQ",
+                    "values": ["货轮"],
+                },
+                {
+                    "kind": "PREDICATE",
+                    "ref": "s",
+                    "field": "draft",
+                    "operator": "EQ",
+                    "values": ["10"],
+                },
+            ],
+        },
+        "returns": [
+            {
+                "kind": "FIELDS",
+                "ref": "s",
+                "fields": ["ship_no", "ship_type", "ship_height", "draft", "loa"],
+            }
+        ],
+        "maxResults": 1000,
+    }
+
+
 def association_sample() -> dict:
     return {
         "version": "2.0",
@@ -65,16 +123,22 @@ def assert_invalid(name: str, oql: dict) -> None:
 
 def main() -> int:
     query = query_sample()
+    berth_query = berth_plan_ship_info_query_sample()
     association = association_sample()
     aggregate = aggregate_sample()
 
     assert_valid("QUERY sample", query)
+    assert_valid("berth-plan ship_info QUERY sample", berth_query)
     assert_valid("ASSOCIATION_QUERY sample", association)
     assert_valid("AGGREGATE sample", aggregate)
 
     invalid_max_results = copy.deepcopy(query)
     invalid_max_results["maxResults"] = {"limit": 10, "offset": 0}
     assert_invalid("maxResults object format", invalid_max_results)
+
+    invalid_query_version = copy.deepcopy(berth_query)
+    invalid_query_version["version"] = "1.0"
+    assert_invalid("legacy OQL version 1.0", invalid_query_version)
 
     invalid_id_name_field = copy.deepcopy(query)
     invalid_id_name_field["returns"] = [{"kind": "FIELDS", "ref": "o", "fields": ["NAME(id)"]}]
