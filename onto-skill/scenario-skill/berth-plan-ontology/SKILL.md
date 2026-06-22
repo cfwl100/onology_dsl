@@ -1,6 +1,6 @@
 ---
 name: berth-plan-ontology
-description: 集装箱泊位计划本体数据查询业务定制 Skill。作为业务入口，识别泊位计划场景的对象、字段、条件和返回要求，并委托 Ontology-based-planning-skill。
+description: 集装箱泊位计划本体数据查询业务定制 Skill。作为业务入口，识别泊位计划场景的对象、字段、条件和返回要求，并以流程级定制和步骤级定制方式委托 Ontology-based-planning-skill。
 allowed_tools:
 metadata:
   pattern: inversion
@@ -12,7 +12,7 @@ metadata:
 
 ## 1. 任务概述
 
-本 Skill 是业务语义层，只负责识别场景、读取对应业务知识、抽取变量和约束，然后委托 `Ontology-based-planning-skill`。
+本 Skill 是业务语义层，只负责识别场景、读取对应业务知识、抽取业务条件和返回要求，然后委托 `Ontology-based-planning-skill`。
 
 不得直接生成最终平台请求，不得绕过 planning 层和 platform 层。
 
@@ -29,20 +29,21 @@ metadata:
 
 ## 3. 对象路由
 
-用户查询船舶信息时，只读取 `knowledge/ship.md`；Mock 测试可额外读取 `knowledge/ship.json` 作为本体子图返回样例。
+用户查询船舶信息时，只读取 `knowledge/ship.md`；Mock 测试可额外读取 `knowledge/ship.json` 或 `docs/ontology_subgraph.json` 作为本体子图返回样例。
 
 支持对象包括：`ship_info`、`ship_plan`、`berth_info`、`bollard_info`、`berth_bollard_coords`、`berth_display_order`、`equipment_infos`、`tide_info`。
 
-## 4. 子图解析提醒
+## 4. 子图结构约束
 
 本体子图结构遵循 `docs/ontology_subgraph.json`：
 
-- `nodes[label=objectType]` 表示对象类型。
-- `nodes[label=property]` 表示属性字段。
-- `edges[edgeType=has_property]` 只能确认对象字段归属。
-- `edges[edgeType=defines_relation]` 才能生成对象关系路径。
-- `functions` 为空时不得编造函数调用。
-- `actions` 为空时不得编造动作。
+- `result.seedNodes[]` 表示命中的种子节点。
+- `result.nodes[label=objectType]` 表示对象类型。
+- `result.nodes[label=property]` 表示属性字段。
+- `result.edges[edgeType=has_property]` 只能确认对象字段归属。
+- `result.edges[edgeType=defines_relation]` 才能生成对象关系路径。
+- `result.functions[]` 为空时不得编造函数调用。
+- `result.actions[]` 为空时不得编造动作。
 
 ## 5. 船舶信息查询基线
 
@@ -72,13 +73,43 @@ ship_no, ship_type, ship_height, draft, loa
 ```text
 本体ID：dtmi.ontology.560d88f7.1
 业务意图：<基于用户输入改写后的详细自然语言查询问题，需包含查询船舶信息、船高范围、船舶类型、吃水深度、返回字段和 maxResults 要求>
-已读取知识：knowledge/ship.md
+已读取业务定制文件：knowledge/ship.md
 业务知识与规则：船舶字段映射以 ship.md 为准；字段必须由本体子图 has_property 确认归属；关系只来自 defines_relation；最终 OQL 使用 version=1.0。
-执行定制要求：先检索船舶信息相关本体子图，再基于子图确认 ship_info、ship_height、ship_type、draft、ship_no、loa 等对象和字段，最后生成 QUERY 类型本体访问语句。
+流程级定制：执行 S1/S2/S3/S4/S7，不需要 Function；S2 先检索船舶信息相关本体子图，S3 基于子图规划单对象 QUERY 查询任务，S4 生成并校验 OQL。
+步骤级定制：S2 需要返回 ship_info 及 ship_no、ship_type、ship_height、draft、loa 等字段归属；S3 规划对象为 ship_info、alias 建议为 s；S4 操作类型为 QUERY，过滤条件和返回字段按 ship.md 及用户问题生成；空结果不重试。
 缺失信息：没有则写无。
 ```
 
-## 7. 强约束
+## 7. 流程级定制规则
+
+- 船舶明细查询默认执行 S1/S2/S3/S4/S7。
+- 不规划 S5/S6 Function，除非用户明确要求调用业务算法。
+- 如果用户只问模型字段或对象定义，可以在 S3 后结束。
+- 如果用户要求关联泊位、缆桩、设备等对象，则 S3 应规划 ASSOCIATION_QUERY 路径任务。
+
+## 8. 步骤级定制规则
+
+### S2 子图检索
+
+- 检索目标：船舶信息对象、船舶字段、必要时检索船舶计划和泊位关系。
+- 返回结构要求：保留完整 `result.nodes`、`result.edges`，并摘要输出字段归属和关系候选。
+- 不得提前编造字段；字段最终以子图 `has_property` 确认为准。
+
+### S3 基于子图规划
+
+- 单对象船舶信息查询规划为 `QUERY`。
+- 关联泊位、计划、设备时才规划 `ASSOCIATION_QUERY`。
+- 规划时必须说明对象、字段、关系分别来自哪个子图节点或边。
+
+### S4 OAC 查询
+
+- 查询对象：`ship_info`，alias 建议 `s`。
+- 操作类型：船舶信息明细查询为 `QUERY`。
+- 过滤条件：船高范围、船舶类型、吃水深度等，单位 m/米 去掉后保留数值字符串。
+- 返回要求：用户指定字段优先；典型返回 `ship_no, ship_type, ship_height, draft, loa`。
+- 空结果视为有效结果，不自动放宽条件重试。
+
+## 9. 强约束
 
 1. 字段必须来自业务知识映射，并由本体子图 `has_property` 确认归属。
 2. `has_property` 不得当作对象间业务关系。
