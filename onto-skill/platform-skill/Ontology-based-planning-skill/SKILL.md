@@ -29,8 +29,8 @@ metadata:
 ```text
 本体ID：<公共本体ID>
 业务意图：<详细自然语言问题>
-已读取业务定制文件：<knowledge / rules / templates 文件路径；必填>
-业务定制文件内容：<本次执行所需的业务规则原文或完整摘录>
+业务定制文件路径：<knowledge / rules / templates 文件路径；没有则写无>
+业务定制文件内容：<本次执行所需的业务规则原文或完整摘录；没有则写无>
 流程级定制：<只填写相对默认 S1-S7 的流程覆盖；无覆盖写“使用默认流程”>
 步骤级定制：<只填写相对默认步骤模板的业务增量规则；无增量写“使用默认步骤模板”>
 缺失信息：<没有则写无>
@@ -40,9 +40,9 @@ metadata:
 
 - `本体ID`：只填写一个对外公共本体 ID。不得同时传入 `ontologyId` 和 `schemaRef` 两套字段。本层内部会把该公共 ID 作为 OAG、OAC 和 Function 相关步骤的统一本体上下文。
 - `业务意图`：填写已经由业务 Skill 改写后的详细自然语言问题，不填写短标签，不要求再附带用户原始问题。
-- `已读取业务定制文件`：必须列出上层业务 Skill 已读取的业务文件路径。路径只用于说明业务知识来源，本层不再读取该文件。
-- `业务定制文件内容`：必须包含本次执行所需的业务规则原文或完整摘录，例如场景知识、子图检索规则、任务规划规则、查询内容、查询类型、返回要求、Function 规则和失败策略。本层只使用该内容，不再自行寻找业务文件。
-- `流程级定制`：只填写相对默认流程的覆盖项，避免重复描述默认步骤。默认流程为 `S1 -> S2 -> S3 -> S4 -> S7`，默认不执行 S5/S6 Function。如果没有覆盖，写 `使用默认流程 S1 -> S2 -> S3 -> S4 -> S7；不执行 S5/S6 Function。`；如果需要覆盖，按 `执行 ...；不执行 ...；追加 ...；每个方向 ...；失败策略 ...` 的格式说明。
+- `业务定制文件路径`：填写业务 Skill 识别或准备使用的业务定制文件路径，例如 knowledge、rules 或 templates 文件。该路径只用于说明业务知识来源和审计追溯，不表示 Planning 层已经读取该文件，也不要求本层再次读取该文件；如果业务 Skill 未使用独立文件，写 `无`。
+- `业务定制文件内容`：填写业务 Skill 已经注入到本次请求中的业务规则原文或完整摘录，例如场景知识、子图检索规则、任务规划规则、查询内容、查询类型、返回要求、Function 规则和失败策略。本层只使用该内容进行解析和执行；如果内容为 `无`，本层只能使用默认流程和默认步骤模板，不得根据路径自行读取或猜测业务规则。
+- `流程级定制`：只填写相对默认流程的覆盖项，避免重复描述默认步骤。默认流程为 `S1 -> S2 -> S3 -> S4 -> S7`，默认不执行 S5/S6 Function。如果没有覆盖，写 `使用默认流程` 或 `使用默认流程 S1 -> S2 -> S3 -> S4 -> S7；不执行 S5/S6 Function。`；如果需要覆盖，按 `执行 ...；不执行 ...；追加 ...；每个方向 ...；失败策略 ...` 的格式说明。
 - `步骤级定制`：只填写相对默认步骤模板的业务增量规则，避免重复描述每个步骤的标准输入、标准输出和通用执行规则。默认步骤模板由本 Skill 内置。如果某一步没有业务增量，写 `Sx 使用默认步骤模板` 或整体写 `使用默认步骤模板；业务增量规则见业务定制文件内容`。如果需要覆盖，按 `S2：业务检索范围/返回结构/失败策略；S3：业务规划规则/路径选择/失败策略；S4：操作类型/查询字段/过滤条件/空结果策略；S5/S6：函数选择/参数映射/失败策略；S7：展示和解释规则` 的格式简明说明。
 - `缺失信息`：没有缺失信息时写 `无`。如果有缺失信息，本层只能按失败策略处理，不得猜测补齐。
 
@@ -50,6 +50,7 @@ metadata:
 
 - 不要求业务 Skill 在 `流程级定制` 中重复填写默认 S1-S7 的完整解释。
 - 不要求业务 Skill 在 `步骤级定制` 中重复填写 S2/S3/S4/S5/S6/S7 的标准输入和标准输出。
+- `业务定制文件路径` 只保留路径，不承载业务规则；业务规则必须放在 `业务定制文件内容` 或步骤级定制中。
 - 如果 `业务定制文件内容` 中已经完整包含某一步的业务规则，`步骤级定制` 可以只写 `Sx：使用业务定制文件内容中的 <规则标题>`。
 - 如果同一规则在 `业务定制文件内容` 和 `步骤级定制` 中重复出现，以 `步骤级定制` 中更靠近本次执行的描述为准；不得把两份内容都重复展开到后续上下文。
 - 长列表、字段列表、告警列表、对象列表只能进入变量区一次，后续步骤只引用变量。
@@ -88,17 +89,18 @@ S1 -> S2 -> S3 -> S5 -> S6 -> S4 -> S7
 planningContext：
 - ontologyId：来自“本体ID”
 - businessIntent：来自“业务意图”
-- customizationFiles：来自“已读取业务定制文件”
-- customizationContent：来自“业务定制文件内容”
+- customizationFilePath：来自“业务定制文件路径”；只作知识来源说明，不作为读取动作
+- customizationContent：来自“业务定制文件内容”；这是本层执行业务定制的唯一规则内容来源
 - flowCustomization：来自“流程级定制”；只记录流程差异
 - stepCustomization：来自“步骤级定制”；只记录业务增量规则
-- variables：从业务意图和业务定制内容中抽取的变量区，长列表只进入一次
+- variables：从业务意图、业务定制文件内容和步骤级定制中抽取的变量区，长列表只进入一次
 - missingInfo：来自“缺失信息”
 ```
 
 执行规则：
 
-- 只整理一次业务定制文件内容，不反复压缩同一份文件。
+- 只整理一次业务定制文件内容，不反复压缩同一份内容。
+- 不根据 `业务定制文件路径` 自行读取文件；路径只作来源说明。
 - 如果流程级定制写“使用默认流程”，直接使用默认 `S1 -> S2 -> S3 -> S4 -> S7`。
 - 如果步骤级定制写“使用默认步骤模板”，各步骤使用本 Skill 内置标准模板，只读取业务定制文件内容中的业务增量规则。
 - 解析流程级定制得到待执行步骤序列。
@@ -108,7 +110,8 @@ planningContext：
 失败策略：
 
 - 缺少本体ID，返回 `MISSING_ONTOLOGY_ID`。
-- 缺少业务定制文件路径或内容，返回 `MISSING_BUSINESS_CUSTOMIZATION_FILE`。
+- `业务定制文件路径` 缺失但 `业务定制文件内容` 已提供时，不失败，只记录来源为 `无`。
+- 业务意图依赖业务规则但 `业务定制文件内容` 为 `无` 时，返回 `MISSING_BUSINESS_CUSTOMIZATION_CONTENT`。
 - 缺少必要业务变量，返回 `MISSING_REQUIRED_BUSINESS_INPUT`。
 
 ### S2 子图检索
@@ -179,36 +182,35 @@ subgraphOutput：
 
 ```text
 plannedTasks：
-- taskId：任务标识
-- actionType：OAC | FUNCTION_DISCOVERY | FUNCTION_CALL | SUMMARY
-- operationType：QUERY | ASSOCIATION_QUERY | AGGREGATE | WRITE | FUNCTION
-- objectPlan：参与对象、别名、主对象、返回对象
-- relationPathPlan：关系路径、方向、起点、终点、中间对象
-- filterPlan：过滤条件、变量引用、时间条件、业务约束
-- returnPlan：返回字段、返回对象结构、聚合字段
-- functionPlan：需要发现或执行的函数、参数来源
-- dependsOn：依赖步骤
-- expectedOutput：下游期望输出
-- failurePolicy：失败处理策略
+- taskId：任务编号
+- taskType：OAC_QUERY | ASSOCIATION_QUERY | AGGREGATE_QUERY | FUNCTION_CALL | MIXED
+- operationType：QUERY | ASSOCIATION_QUERY | AGGREGATE | FUNCTION
+- objectPlan：对象、别名、字段归属
+- relationPathPlan：关系路径、方向、起点、终点
+- filterPlan：过滤条件、变量引用、业务规则来源
+- returnPlan：返回字段、对象结构、关系结构
+- functionPlan：候选函数、输入参数、输出承接方式
+- dependsOn：依赖的上游步骤或任务
+- failurePolicy：失败策略
 ```
 
 执行规则：
 
-- 规划必须同时依据 `subgraphOutput` 和业务规划规则。
-- 可以规划单步任务，也可以规划多步任务。
-- 示例：从 `{起点对象类型}` 出发，沿子图关系路径查找到 `{终点对象类型}`，再基于终点对象查询指标或告警。
-- 如果子图已经确定对象、字段、关系路径和过滤条件，下游 S4/S5/S6 不得重新推理。
-- 如果需要先通过 Function 补齐上下文，再执行 OAC，S3 必须规划 S5/S6 与 S4 的依赖关系。
+- 规划必须基于 S2 子图事实，不得编造对象、字段、关系和函数。
+- 业务规划规则可以覆盖路径选择、查询动作、过滤条件、返回要求和 Function 是否参与。
+- 如果任务能用 OAC 单步完成，优先规划单步 OAC。
+- 如果需要先 Function 后查询，或者先查询后 Function，必须规划多步任务并标注依赖。
+- S3 输出是 S4/S5/S6 的唯一规划依据；下游步骤不得重新解释业务文件全文。
 
 失败策略：
 
-- 无法规划合法对象路径时返回 `MISSING_RELATION_PATH`。
-- 无法确定字段归属时返回 `MISSING_PROPERTY_OWNERSHIP`。
-- 规划存在多个等价路径且业务规则未指定优先级时返回 `AMBIGUOUS_PLAN`，不得随意选择。
+- 无法形成合法对象/关系路径时，返回 `PLANNING_PATH_NOT_FOUND`。
+- 无法决定查询类型时，返回 `PLANNING_OPERATION_UNKNOWN`。
+- Function 规则缺失但流程要求 Function 时，返回 `FUNCTION_RULE_MISSING`。
 
 ### S4 OAC 数据访问
 
-职责：基于 S3 的 `plannedTasks` 调用 OAC，完成本体对象数据访问。
+职责：根据 S3 的 OAC 查询任务，调用 OAC 数据访问能力，返回对象结构数据。
 
 标准输入模板：
 
@@ -216,18 +218,17 @@ plannedTasks：
 查数据
 本体ID：<planningContext.ontologyId>
 业务意图：<planningContext.businessIntent>
-操作类型：<来自 S3.plannedTasks.operationType，例如 QUERY / ASSOCIATION_QUERY / AGGREGATE>
-查询对象：<来自 S3.objectPlan>
-关系路径：<来自 S3.relationPathPlan；没有则写无>
-过滤条件：<来自 S3.filterPlan；变量只引用不重复展开长列表>
-返回要求：<来自 S3.returnPlan 和业务返回规则>
-数据访问业务规则：<S4 相关的业务查询规则摘录；没有则写无>
-输出要求：返回对象结构 {objects, relationships}
+操作类型：<QUERY / ASSOCIATION_QUERY / AGGREGATE>
+查询对象：<来自 S3.plannedTasks.objectPlan>
+关系路径：<来自 S3.plannedTasks.relationPathPlan；没有则写无>
+过滤条件：<来自 S3.plannedTasks.filterPlan，变量引用在最终生成 OAC 请求时展开>
+返回要求：<来自 S3.plannedTasks.returnPlan>
+执行约束：<是否禁止临时文件、是否允许空结果、是否允许重试>
 ```
 
 标准输出模板：
 
-```json
+```text
 {
   "objects": [],
   "relationships": []
@@ -236,199 +237,198 @@ plannedTasks：
 
 执行规则：
 
-- S4 不重新解释用户原始问题或业务定制文件全文。
-- S4 不重新推理 S3 已确定的对象、关系路径和过滤条件。
-- S4 只把 S3 的计划转成 OAC Skill 可执行的自然语言查询请求或 OQL 请求。
-- OAC 最终业务输出只保留 `{objects, relationships}`，不把 `operationDecision`、`oql`、`validation` 作为最终业务输出。
-- 默认不写临时 OQL 文件，优先使用内存参数或 stdin。
-- 空结果是有效结果，除非业务定制明确要求重试，否则不得自动放宽条件。
+- S4 只消费 S3.plannedTasks，不重新推理对象、关系路径和查询动作。
+- OAC 最终输出只返回对象结构，不输出 operationDecision、oql、validation 等中间字段。
+- 默认不写临时 OQL 文件；优先使用紧凑 JSON 参数或 stdin 传递。
+- 空结果是否有效由步骤级定制决定；默认空结果是有效执行结果，不自动放宽条件重试。
 
 失败策略：
 
-- OAC 校验失败，返回 `OAC_VALIDATION_FAILED`，只在 debug 或失败定位时展开 OQL 和校验详情。
+- OAC schema 校验失败，返回 `OAC_SCHEMA_VALIDATION_FAILED`。
 - OAC 执行环境缺失，返回 `OAC_RUNTIME_NOT_READY`。
-- OAC 返回空结果，按业务失败策略处理；默认进入 S7 汇总为空结果结论。
+- OAC 执行失败，返回 `OAC_EXECUTION_FAILED`，不得猜测结果。
 
 ### S5 Function 发现
 
-职责：在流程级定制明确需要 Function 时，基于 OAG 函数候选、业务规则和 S3 计划发现可执行函数。
+职责：当流程级定制或 S3 plannedTasks 需要 Function 时，基于本体子图和业务规则选择候选 Function。
 
 标准输入模板：
 
 ```text
-发现函数
+发现可执行 Function
 本体ID：<planningContext.ontologyId>
 业务意图：<planningContext.businessIntent>
-函数候选：<S2.subgraphOutput.functionCandidates>
-业务函数规则：<S5 相关的业务规则摘录；没有则写无>
-函数目标：<需要补齐、计算、决策或转换的内容>
+本体子图结果：<S2.subgraphOutput.functionCandidates>
+业务 Function 规则：<S5 相关业务规则；没有则写无>
+目标能力：<需要计算、补齐、决策或转换的内容>
 ```
 
 标准输出模板：
 
 ```text
 functionSelection：
-- functionId
-- functionName
-- physicalName
-- purpose
-- inputSpecRef
-- outputSpecRef
-- confidence
-- missingItems
-- conflicts
+- functionName：函数名
+- functionId：函数标识
+- reason：选择原因
+- inputSpec：输入参数规格
+- outputSpec：输出结果规格
+- missingParams：缺失参数
+- confidence：选择置信度
 ```
 
 执行规则：
 
-- Function 候选以 OAG 或平台返回结果为事实来源。
-- 业务规则可指定优先选择、禁用或补充函数选择条件，但不得编造不存在的函数。
-- 如果函数规格未获取，不进入 S6。
+- Function 必须来自 S2 子图或平台返回的函数候选，不得编造函数。
+- 如果多个 Function 均可用，按业务规则排序；业务规则缺失时选择最小必要 Function。
+- 不满足 inputSpec 时不得进入 S6。
 
 失败策略：
 
-- 未发现函数返回 `MISSING_FUNCTION_CANDIDATE`。
-- 多个函数歧义返回 `AMBIGUOUS_FUNCTION`。
+- 无可用函数，返回 `FUNCTION_NOT_FOUND`。
+- 函数参数不足，返回 `FUNCTION_PARAM_MISSING`。
 
 ### S6 Function 执行
 
-职责：基于 S5 的 `functionSelection` 获取参数规格、组装参数并调用 Function。
+职责：根据 S5 functionSelection 和上游数据，调用 Function 执行能力。
 
 标准输入模板：
 
 ```text
-执行函数
-函数选择：<S5.functionSelection>
-参数规格：<平台返回的函数参数规格>
-参数来源：<planningContext.variables、S4 结果或上游步骤输出>
-业务参数规则：<S6 相关的参数映射和默认值规则；没有则写无>
-输出要求：<业务需要的函数输出字段>
+执行 Function
+函数：<S5.functionSelection.functionName/functionId>
+输入参数：<来自 S4 输出、S2 子图、变量区或业务规则>
+参数映射规则：<S6 相关业务规则；没有则使用 Function inputSpec>
+输出承接方式：<结果如何传给 S4 或 S7>
 ```
 
 标准输出模板：
 
 ```text
 functionOutput：
-- functionId
-- inputParams
-- output
-- status
-- missingParams
-- errors
+- functionName：函数名
+- input：实际入参摘要
+- output：函数返回结果
+- outputMapping：输出到后续步骤的映射
+- errors：错误信息
 ```
 
 执行规则：
 
-- 未获取参数规格不得调用函数。
-- 缺少必填参数不得猜测补齐。
-- 参数必须来自变量区、OAC 结果或业务定制明确给定的值。
+- 严格按 Function inputSpec 映射参数。
+- Function 输出只能作为后续步骤输入或最终汇总依据，不得改写 OAG/OAC 事实。
+- Function 执行失败时不得伪造输出。
 
 失败策略：
 
-- 缺少必填参数返回 `MISSING_FUNCTION_PARAM`。
-- 函数执行失败返回 `FUNCTION_EXECUTION_FAILED`。
+- 函数执行失败，返回 `FUNCTION_EXECUTION_FAILED`。
+- 函数输出不符合 outputSpec，返回 `FUNCTION_OUTPUT_INVALID`。
 
 ### S7 汇总
 
-职责：汇总上游步骤输出，生成最终业务结论。
+职责：汇总 S4 OAC 输出、S6 Function 输出和失败/缺失信息，形成最终业务响应。
 
 标准输入模板：
 
 ```text
 汇总结果
 业务意图：<planningContext.businessIntent>
-执行步骤摘要：<StepExecutionRecord 摘要>
-OAC结果：<S4.objects / S4.relationships>
-Function结果：<S6.functionOutput，如有>
-缺失和冲突：<missingItems / conflicts>
-业务展示规则：<S7 相关展示和解释规则；没有则写无>
+OAC结果：<S4.objects / S4.relationships；没有则写无>
+Function结果：<S6.functionOutput；没有则写无>
+缺失和失败信息：<各步骤 missing/error；没有则写无>
+展示规则：<S7 相关业务汇总规则；没有则使用默认>
 ```
 
 标准输出模板：
 
 ```text
-finalSummary：
-- answer
-- evidenceObjects
-- evidenceRelationships
-- emptyResultExplanation
-- missingItems
-- conflicts
-- nextActionSuggestion
+finalAnswer：
+- answer：最终结论
+- evidence：关键证据
+- dataSummary：对象和关系统计
+- missing：缺失信息
+- failedSteps：失败步骤
+- nextAction：建议动作
 ```
 
 执行规则：
 
-- S7 不重新执行上游步骤。
-- S7 不重新展开长列表。
-- S7 不把 OAC 的内部 OQL、operationDecision、validation 混入最终对象结构。
-- 如果 S4 为空结果且业务规则认为空结果有效，必须明确说明未发现匹配证据。
+- 汇总只引用上游步骤结果，不新增事实。
+- 如果 S4 空结果但策略认为有效，应明确说明未查到匹配对象或关系。
+- 如果存在失败步骤，应输出失败原因和缺失信息，而不是给出虚假业务结论。
 
 失败策略：
 
-- 上游关键步骤失败时，S7 输出失败原因、缺失项和可执行的修正建议。
+- 汇总阶段不再重试 S2/S3/S4/S5/S6。
+- 缺少上游结果时，按已知结果生成部分响应，并标记缺失。
 
-## 5. 执行门禁
+## 5. 流程级定制解析规则
 
-必须遵守以下门禁：
+默认流程：
 
 ```text
-S2 未输出 subgraphOutput，不得进入 S3。
-S3 未输出 plannedTasks，不得进入 S4/S5/S6。
-S4 未输出 {objects, relationships}，不得进入基于 OAC 结果的 S7 汇总。
-S5 未输出 functionSelection，不得进入 S6。
-S6 未输出 functionOutput，不得进入基于函数结果的 S7 汇总。
+S1 -> S2 -> S3 -> S4 -> S7
 ```
 
-如果缺少对象、字段、关系、函数、参数规格，必须返回 missing 或 conflict，不得猜测补齐。
+解析流程级定制时只识别覆盖项：
 
-## 6. 步骤执行记录
+- `执行 S1 -> S2 -> S3 -> S4 -> S7`：按指定顺序执行。
+- `不执行 S5/S6 Function`：跳过 Function 发现和执行。
+- `执行 S5/S6 Function`：在 S3 规划后插入 Function 发现和执行。
+- `每个方向独立执行`：为每个方向生成独立 S2/S3/S4/S7 子链路。
+- `追加 ...`：在不破坏默认依赖的前提下追加步骤。
+- `跳过 ...`：仅在被跳过步骤没有被后续步骤依赖时允许。
 
-默认使用 compact 模式，只输出摘要型步骤记录：
+## 6. 步骤级定制解析规则
+
+步骤级定制只表达业务增量规则。本层按以下方式解析：
+
+- `S2` 段落：解析业务检索范围、返回结构要求、召回重点、缺失项判定和失败策略。
+- `S3` 段落：解析路径选择规则、任务拆分规则、查询类型、Function 是否参与和失败策略。
+- `S4` 段落：解析查询对象、查询字段、操作类型、过滤条件、空结果策略、重试策略和 OAC 执行约束。
+- `S5` 段落：解析 Function 选择规则、候选排序规则和参数要求。
+- `S6` 段落：解析 Function 参数映射、输出映射和执行失败策略。
+- `S7` 段落：解析汇总展示规则、证据组织方式和失败说明方式。
+
+如果步骤级定制写 `使用默认步骤模板`，则所有步骤使用第 4 节的标准输入输出模板，仅从 `业务定制文件内容` 中提取业务增量规则。
+
+## 7. 执行记录和门禁
+
+默认使用 compact 执行摘要，不输出完整模板全文。
 
 ```text
 StepExecutionRecord：
 - stepId
-- actionType
 - inputRef
-- actualOutputRef
+- outputRef
 - status
-- validation
 - nextStepAllowed
+- error
 ```
 
-默认禁止输出：
+门禁：
 
-- 完整业务文件全文的重复副本。
-- 完整标准模板全文的重复副本。
-- 完整长列表的重复展开。
-- OAC 的 OQL、operationDecision、validation 作为最终业务输出。
+- S1 缺少必要输入，不进入 S2。
+- S2 没有 `subgraphOutput`，不进入 S3。
+- S3 没有 `plannedTasks`，不进入 S4/S5/S6。
+- S5 没有 `functionSelection`，不进入 S6。
+- S6 没有 `functionOutput`，不把 Function 结果传给 S4/S7。
+- S4 没有 `{objects, relationships}`，不进入正常 S7；进入失败汇总。
 
-只有 debug、失败定位或用户明确要求完整 trace 时，才展开完整输入、输出、执行规则和失败细节。
+## 8. 执行效率规则
 
-## 7. 执行效率规则
+- 不重复读取业务文件。业务文件内容由上层业务 Skill 注入，本层只使用注入内容。
+- 不重复展开长列表。长列表进入 `variables` 一次，后续只引用变量。
+- 不重复展开标准模板。标准模板只在本 Skill 第 4 节定义一次，执行记录只引用步骤编号。
+- S4 不重新推理 S3 已经规划好的对象、关系路径、过滤条件和返回字段。
+- OAC 默认不写临时 OQL 文件，优先使用紧凑 JSON 参数或 stdin。
+- 失败时只展开失败步骤的必要上下文，不展开全部历史步骤。
 
-默认执行必须遵守：
+## 9. 禁止事项
 
-1. 只接收并整理业务定制文件内容一次。
-2. 长列表只进入变量区一次，后续只引用变量。
-3. 流程级定制只记录默认流程的覆盖项，不重复解释默认步骤。
-4. 步骤级定制只记录默认步骤模板的业务增量项，不重复解释标准输入输出。
-5. 如果业务定制文件内容已包含某一步业务规则，步骤级定制可只指向该规则标题或摘录位置。
-6. S4 不重新推理 S3 已规划出的关系路径和过滤条件。
-7. OAC 默认不写临时 OQL 文件，优先使用内存参数或 stdin。
-8. 只在 debug、失败定位或用户明确要求时输出完整 trace。
-
-## 8. 失败处理
-
-- 业务定制文件未读取：返回 `MISSING_BUSINESS_CUSTOMIZATION_FILE`。
-- 本体ID缺失：返回 `MISSING_ONTOLOGY_ID`。
-- 子图缺少必要对象、字段、关系：返回 `MISSING_SUBGRAPH_ELEMENT`。
-- 无法基于子图规划任务：返回 `PLANNING_FAILED`。
-- OAC 查询规划不完整：返回 `OAC_PLAN_INCOMPLETE`。
-- OAC 校验失败：返回 `OAC_VALIDATION_FAILED`。
-- OAC 执行环境缺失：返回 `OAC_RUNTIME_NOT_READY`。
-- Function 候选缺失：返回 `MISSING_FUNCTION_CANDIDATE`。
-- Function 参数缺失：返回 `MISSING_FUNCTION_PARAM`。
-
-失败时必须返回失败阶段、缺失项、冲突项和可修正建议，不得继续猜测执行。
+- 禁止根据 `业务定制文件路径` 自行读取或搜索业务文件。
+- 禁止把 `业务定制文件路径` 当作已经读取的业务内容。
+- 禁止在流程级定制和步骤级定制中要求业务 Skill 重复描述默认 S1-S7 标准流程和标准模板。
+- 禁止编造 OAG 未返回的对象、字段、关系或函数。
+- 禁止 OAC 输出 operationDecision、oql、validation 等中间结构给最终用户。
+- 禁止 Function 执行失败后伪造结果。
+- 禁止为了补齐缺失信息而扩大查询条件，除非步骤级定制明确允许。
