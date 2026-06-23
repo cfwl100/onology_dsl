@@ -1,120 +1,176 @@
-# SEC 多维查询自然语言 Workflow 示例
+# SEC 多维查询流程级与步骤级定制示例
 
-本文只描述 `scenario-skill/sec-multidim` 内部的业务流程规划方式。平台稳态 Skill 不需要感知这些 workflow，也不需要识别 `workflowId`、`stepId`、`dependsOn`、`variableBinding` 等业务编排字段。
+本文提供 `scenario-skill/sec-multidim` 面向 `Ontology-based-planning-skill` 的流程级和步骤级定制示例。
 
-详细决策规则、字段口径、时间语义、正反例见：`knowledge/sec-multidim-guidance.md`。
-OAC 通用自然语言委托模板见平台文档：`../../platform-skill/Ontology-platform-unified-skill/references/oac-data-access.md`。
-
----
-
-## 1. 通用执行规则
-
-1. 本 Skill 自己判断当前业务场景。
-2. 本 Skill 自己决定先做哪一步、后做哪一步。
-3. 每一步都用自然语言委托平台能力。
-4. 每次委托 OAC 前，按平台 `oac-data-access.md` 的自检清单检查：操作类型、查询对象、返回字段为通用必填；关系路径和聚合要求按场景条件必填。
-5. `schemaRef` 可不填写；缺省时由 `ONTOLOGY_SCHEMA_REF` 环境变量提供；若显式传入则覆盖环境变量。
-6. 操作类型使用中文自然语言动作，不强制填写英文枚举。
-7. 如果前一步有结果，本 Skill 自己读取结果，并把结果写入下一步自然语言委托的过滤条件中。
-8. 如果前一步为空，依赖它的后续步骤直接返回空，不重复查询。
-9. 不把步骤依赖、变量绑定、失败降级策略作为平台协议传递。
+这些示例只描述业务 Skill 如何注入 Planning 层，不是平台 OAC 的结构化协议。Planning 层负责基于业务定制文件、OAG 本体子图和平台能力模板生成最终执行步骤。
 
 ---
 
-## 2. Workflow：先 Function 后 OAC 查询
+## 1. 通用委托格式
 
-适用场景：
+业务 Skill 识别场景后，向 Planning 层传递如下内容：
 
 ```text
-在告警查询或对象查询场景中，需要先通过对象 Function 标准化对象上下文、补齐查询参数，再执行对象数据查询。
+本体ID：<公共本体ID>
+业务意图：<改写后的详细自然语言问题>
+业务定制文件内容：<knowledge/sec-multidim-guidance.md 中与当前场景相关的规则>
+流程级定制：<执行哪些步骤、跳过哪些步骤、是否追加步骤、步骤顺序>
+步骤级定制：<S2/S3/S4/S5/S6/S7 的输入、输出和执行规则>
+缺失信息：<没有则写无>
 ```
 
-业务侧自然语言流程：
+所有示例都默认：
 
-```text
-第一步：请调用本体平台函数能力，基于用户输入中的对象名称、对象类型、时间范围和业务上下文，选择对象上可用的标准化函数，输出标准对象标识、标准对象名称、推荐时间范围和可用于查询的过滤字段。
-
-第二步：本业务 Skill 读取第一步函数返回结果。如果第一步返回标准对象标识，则将该标识写入下一次 OAC 自然语言委托的过滤条件；如果第一步未返回可用标识，则停止并说明缺少可查询条件。
-
-第三步：请调用本体平台的数据访问能力，按平台 oac-data-access.md 的自然语言模板生成并执行 OQL。操作类型使用中文自然语言动作，对象、条件、返回字段由当前业务场景决定。
-```
-
-注意：上述步骤只存在于本业务 Skill 内部，不传给平台 Skill 作为结构化 workflow。
+- 业务定制文件 `knowledge/sec-multidim-guidance.md` 已读取。
+- OAC 最终输出只保留 `{objects, relationships}`。
+- 空结果是有效结果，不自动放宽条件。
+- 对外只使用公共 `本体ID`。
 
 ---
 
-## 3. Workflow：单步组合维度明细查询
+## 2. 示例一：单步组合维度明细查询
 
-适用场景：
-
-- 查询栅格 A、小区 B 的 RSRP。
-- 查询栅格 A、小区 B 的 PRB。
-- 查询栅格 A 对应的小区 RSRP，且多维模型支持维度升维。
-
-自然语言委托要点：
+用户问题：
 
 ```text
-请调用本体平台的数据访问能力，按平台 OAC 自然语言委托模板生成并执行 OQL：
-- schemaRef：不填写，使用环境变量 ONTOLOGY_SCHEMA_REF；如果业务明确传入，则以传入值为准。
-- 操作类型：查询栅格和小区组合维度下的指标明细。
-- 操作选择依据：用户已给完整组合维度，或多维模型支持归属过滤升维，因此不需要关系路径。
-- 查询对象：按场景声明 grid g、cell c 等对象。
-- 关系路径：无关系路径，不要生成 relationships。
-- 过滤条件：组合维度场景使用 DIM_GRID、DIM_CELL；归属过滤场景仅使用 DIM_GRID；时间范围必须进入过滤条件。
-- 返回字段：返回用户要求的维度和指标，例如 DIM_CELL、C_RSRP、C_PRB。
-- 聚合要求：无聚合。
-- 时间要求：说明时间字段、时间范围、本地时间或 UTC 时间口径。
-- 扩展说明：说明这是 SEC 多维模型查询，优先按 DAC 多维模型映射处理；如果时间属性描述为本地时间，表达 localtime="true"；如果描述为 UTC 时间，表达 localtime="false"。
-- 结果处理：保留原始字段，结果为空即为空。
+查询栅格 A、小区 B 最近 1 小时的 RSRP。
+```
+
+Planning 输入：
+
+```text
+本体ID：<公共本体ID>
+业务意图：查询 SEC 多维模型中栅格维度 A 和小区维度 B 组合条件下，最近 1 小时的小区 RSRP 指标明细；返回 DIM_GRID、DIM_CELL、C_RSRP；按默认本地时间处理；结果为空即为空。
+业务定制文件内容：读取 knowledge/sec-multidim-guidance.md 中 S2 组合维度查询、字段口径、时间语义和正反例规则。
+流程级定制：执行 S1 -> S2 -> S3 -> S4 -> S7；不执行 S5/S6 Function。
+步骤级定制：
+- S2：检索 grid、cell、DIM_GRID、DIM_CELL、C_RSRP、时间字段 3600。
+- S3：规划组合维度指标明细 QUERY，不走关系路径。
+- S4：过滤 DIM_GRID=A、DIM_CELL=B、3600 在最近 1 小时范围内；返回 DIM_GRID、DIM_CELL、C_RSRP；如支持 extensions，表达 localtime="true"。
+- S7：返回对象结构和业务解释。
+缺失信息：无。
 ```
 
 ---
 
-## 4. Workflow：两步关系主键解析 + 指标明细查询
+## 3. 示例二：归属过滤且支持维度升维
 
-适用场景：
-
-```text
-用户查询“栅格 A 对应/归属的小区 PRB”，但业务知识判断 PRB 不支持通过栅格维度直接升维查询。
-```
-
-执行规则：
+用户问题：
 
 ```text
-第一步：自然语言委托平台执行“按栅格到小区关系路径查询小区主键”。通过 grid g 的 GRID_ID=A 沿 locateIn 关系查询 cell c 的 CELL_ID。
-
-第二步：本业务 Skill 读取第一步返回的 CELL_ID。
-- 如果返回为空，停止并返回空结果。
-- 如果返回一个 CELL_ID，将该值填入下一次 OAC 查询条件。
-- 如果返回多个 CELL_ID，优先使用 IN 条件；如果平台不支持 IN，则本业务 Skill 拆成多次查询。
-
-第三步：自然语言委托平台执行“按小区主键查询 PRB 指标明细”。查询 cell c，过滤条件为 c.CELL_ID 等于或属于第一步返回的 CELL_ID，返回 c.CELL_ID 和 c.C_PRB。
+查询栅格 A 对应的小区 RSRP。
 ```
 
-注意：第一步和第三步是两次独立的平台能力调用。平台 Skill 不需要理解这两个步骤之间的变量绑定关系，变量读取和填充由本业务 Skill 自己完成。
+Planning 输入：
+
+```text
+本体ID：<公共本体ID>
+业务意图：查询栅格 A 归属或对应小区的 RSRP 指标；业务规则判断 RSRP 支持通过 DIM_GRID 过滤并返回 DIM_CELL，因此优先按多维模型维度升维查询，不走关系路径。
+业务定制文件内容：读取 knowledge/sec-multidim-guidance.md 中 S3 归属过滤多维查询、维度升维、字段口径和反例规则。
+流程级定制：执行 S1 -> S2 -> S3 -> S4 -> S7；不执行 S5/S6。
+步骤级定制：
+- S2：检索 grid、cell、DIM_GRID、DIM_CELL、C_RSRP，并同时检索 grid 到 cell 的关系候选作为备选结构依据。
+- S3：虽然用户表达“对应/归属”，但因业务规则支持维度升维，规划 OAC 明细 QUERY，而不是 ASSOCIATION_QUERY。
+- S4：过滤 DIM_GRID=A，返回 DIM_CELL、C_RSRP；扩展说明 dimensionLift=true。
+- S7：说明本次使用多维模型升维过滤，不走关系路径。
+缺失信息：如缺少时间范围，按 SEC 默认时间策略处理。
+```
 
 ---
 
-## 5. Workflow：聚合统计查询
+## 4. 示例三：两步关系主键解析 + 指标查询
 
-适用场景：
-
-```text
-用户要求统计、分组、计数、平均值、最大值、最小值、TopN，例如“统计最近一天每个小区的平均 PRB，并返回大于 80% 的小区”。
-```
-
-自然语言委托要点：
+用户问题：
 
 ```text
-请调用本体平台的数据访问能力，按平台 OAC 自然语言委托模板生成并执行 OQL：
-- schemaRef：不填写，使用环境变量 ONTOLOGY_SCHEMA_REF；如果业务明确传入，则以传入值为准。
-- 操作类型：按小区分组统计平均 PRB。
-- 操作选择依据：用户要求按维度分组统计指标，属于聚合统计。
-- 查询对象：按场景声明对象，例如 cell c。
-- 关系路径：无关系路径，除非用户明确要求按关系路径聚合。
-- 过滤条件：包含用户指定维度条件和时间条件。
-- 返回字段/聚合要求：明确 groupBy、metric、指标别名、聚合后过滤和排序限制。
-- 时间要求：明确本地时间/UTC/默认时间，并将时间范围写入过滤条件。
-- 扩展说明：说明这是 SEC 多维聚合查询，优先按 DAC 多维模型映射处理；如有本地时间或 UTC 时间属性描述，按平台 localtime 规则表达。
-- 结果处理：保留聚合维度和指标别名，结果为空即为空。
+查询栅格 A 对应的小区 PRB。
 ```
+
+业务前提：
+
+```text
+业务定制文件判断 PRB 不支持通过栅格维度直接升维查询，需要先通过关系路径解析 CELL_ID。
+```
+
+Planning 输入：
+
+```text
+本体ID：<公共本体ID>
+业务意图：查询栅格 A 归属小区的 PRB 指标；由于 PRB 不支持通过 DIM_GRID 维度升维直接查询，需要先沿 grid 到 cell 的关系路径查询 CELL_ID，再用 CELL_ID 查询 C_PRB。
+业务定制文件内容：读取 knowledge/sec-multidim-guidance.md 中 S5 两步查询、字段口径、关系主键解析和空结果策略。
+流程级定制：执行 S1 -> S2 -> S3 -> S4a -> S4b -> S7；不执行 Function。
+步骤级定制：
+- S2：检索 grid、cell、GRID_ID、CELL_ID、C_PRB、grid 到 cell 的关系候选。
+- S3：规划两个 OAC 任务：S4a 关系路径查询 CELL_ID；S4b 按 CELL_ID 查询 C_PRB。
+- S4a：按栅格到小区关系路径查询小区主键，通过 grid.GRID_ID=A 沿子图确认的关系查询 cell.CELL_ID。
+- S4b：读取 S4a 返回的 CELL_ID；如果一个值则使用等值条件，如果多个值则优先使用 IN 条件；返回 CELL_ID、C_PRB。
+- S7：合并两个 OAC 结果；如果 S4a 为空，S4b 不执行，返回空对象结构并说明原因。
+缺失信息：如子图未返回 grid 到 cell 的关系，返回缺失关系说明。
+```
+
+---
+
+## 5. 示例四：聚合统计查询
+
+用户问题：
+
+```text
+统计最近一天每个小区的平均 PRB，并返回大于 80% 的小区。
+```
+
+Planning 输入：
+
+```text
+本体ID：<公共本体ID>
+业务意图：统计最近一天每个小区的平均 PRB，过滤平均 PRB 大于 80% 的小区，返回小区维度、平均 PRB 和排序结果。
+业务定制文件内容：读取 knowledge/sec-multidim-guidance.md 中 S6 聚合统计、字段口径、时间语义和聚合规则。
+流程级定制：执行 S1 -> S2 -> S3 -> S4 -> S7；不执行 Function。
+步骤级定制：
+- S2：检索 cell、DIM_CELL、C_PRB、时间字段 3600。
+- S3：规划 AGGREGATE，分组字段为 DIM_CELL，聚合函数为 AVG(C_PRB)，聚合后过滤 avg_prb > 80。
+- S4：生成并执行聚合查询；时间范围为最近一天；如本地时间口径，表达 localtime="true"。
+- S7：返回对象结构或聚合对象结构，并解释聚合口径。
+缺失信息：无。
+```
+
+---
+
+## 6. 示例五：Function 前置补齐上下文
+
+用户问题：
+
+```text
+查询网元 X 最近 5 分钟的关键指标，先按平台规则标准化网元名称。
+```
+
+Planning 输入：
+
+```text
+本体ID：<公共本体ID>
+业务意图：先通过本体函数能力标准化网元 X 的对象上下文，获得标准对象标识和可查询字段，再查询最近 5 分钟关键指标。
+业务定制文件内容：读取 knowledge/sec-multidim-guidance.md 中 S7 Function 前置查询、时间语义和函数调用规则。
+流程级定制：执行 S1 -> S2 -> S3 -> S5 -> S6 -> S4 -> S7。
+步骤级定制：
+- S2：检索网元对象、关键指标字段、可用函数候选 result.functions。
+- S3：规划 Function 前置任务和后续 OAC 查询任务。
+- S5：从 result.functions 中按 description 选择标准化函数。
+- S6：调用 get_params_spec，解析 physicalName，组装 params，调用 call_function(physicalName, function_id, params)。
+- S4：将函数返回的标准对象标识写入过滤条件，查询最近 5 分钟关键指标。
+- S7：输出函数结果、查询结果和缺失项。
+缺失信息：如果函数参数规格缺少必填参数，停止并返回缺失项。
+```
+
+---
+
+## 7. 禁止写法
+
+禁止把如下内容直接传给平台能力层：
+
+```text
+workflowId: xxx
+stepId: S4a
+dependsOn: S4a
+variableBinding: ${S4a.CELL_ID}
+```
+
+这些内容只能存在于业务 Skill 和 Planning 层的自然语言规则中。平台 OAG/OAC/Function 只接收当前步骤的自然语言输入模板。
