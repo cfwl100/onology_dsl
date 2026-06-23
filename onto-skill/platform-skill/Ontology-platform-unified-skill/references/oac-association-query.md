@@ -64,8 +64,8 @@
 3. 按路径顺序声明 `relationships`。
 4. 生成对象或关系上的 `conditions`。
 5. 生成对象或关系返回项。
-6. 生成给执行脚本的 OQL JSON 时使用紧凑单行格式。
-7. 调用 `validate_oql.py` 校验。
+6. 生成紧凑单行 OQL JSON，用于内存传递。
+7. 调用 `validate_oql.py` 校验；默认使用 `--oac-json '<compact-json>'` 或 `--input -`，禁止写 `temp_oql*.json` 临时文件。
 
 ## 校验与修复
 
@@ -78,6 +78,20 @@
 - `returns` 结构不符合 schema。
 - `maxResults` 使用旧对象格式。
 - `version` 未使用 schema 声明的初始版本。
+
+默认校验命令：
+
+```powershell
+python scripts/validate_oql.py --oac-json '<compact-single-line-oql-json>'
+```
+
+OQL 过长或 shell 转义风险较高时使用 stdin，而不是临时文件：
+
+```powershell
+'<compact-single-line-oql-json>' | python scripts/validate_oql.py --input -
+```
+
+只有 debug、失败复现或用户明确要求保存时才允许写文件；写文件时使用 `--input <file>`，不得使用旧参数 `--oql_file`。
 
 ## 最小示例
 
