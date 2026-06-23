@@ -5,7 +5,7 @@ allowed_tools:
 metadata:
   mode: customized_planning
   injection: simplified-natural-language-planning-input
-  optimization: compact-business-customization-template
+  optimization: compact-business-domain-knowledge-template
 ---
 
 # 故障传播分析 Skill
@@ -20,7 +20,7 @@ metadata:
 2. 定位并读取当前意图对应的业务定制文件。
 3. 将用户问题改写成详细自然语言业务意图。
 4. 抽取必要变量，例如网元名、方向、告警列表、返回字段、message_type。
-5. 按 `Ontology-based-planning-skill` 的 7 行顶层输入模板输出业务定制内容。
+5. 按 `Ontology-based-planning-skill` 的顶层输入模板输出业务领域知识、流程级定制和步骤级定制。
 
 你不直接调用原始 Tool，不直接生成最终查询语言，不直接执行平台函数。
 
@@ -41,13 +41,12 @@ metadata:
 `Ontology-based-planning-skill` 负责解析和执行以下流程：
 
 ```text
-S1 读取业务注入与整理上下文
-S2 子图检索
-S3 基于本体子图的任务规划
-S4 OAC 查询
-S5 Function 发现
-S6 Function 执行
-S7 汇总
+S1 子图检索
+S2 基于本体子图的任务规划
+S3 OAC 查询
+S4 Function 发现
+S5 Function 执行
+S6 汇总
 ```
 
 本业务 Skill 只注入两类业务定制：
@@ -59,13 +58,12 @@ S7 汇总
 
 ## 4. 输出给 Planning 层的顶层模板
 
-必须按如下 7 行输出给 `Ontology-based-planning-skill`：
+必须按如下 6 行输出给 `Ontology-based-planning-skill`：
 
 ```text
 本体ID：<公共本体ID>
 业务意图：<详细自然语言问题>
-业务定制文件路径：<knowledge / rules / templates 文件路径；没有则写无>
-业务定制文件内容：<业务文件原文或完整摘录；没有则写无>
+业务领域知识：<场景知识、规则来源、子图检索规则、任务规划规则、查询规则、返回要求、Function 规则和失败策略；没有则写无>
 流程级定制：<只填写相对默认流程的覆盖；无覆盖写“使用默认流程”>
 步骤级定制：<只填写相对默认步骤模板的业务增量规则；无增量写“使用默认步骤模板”>
 缺失信息：<没有则写无>
@@ -95,45 +93,39 @@ S7 汇总
 业务意图：验证起始网元 ${neName_same_site} 的同站点范围内，是否存在名称属于 ${alarmNames_same_site} 的活动告警，并返回相关网元和告警对象结构。
 ```
 
-### 5.3 业务定制文件路径
+### 5.3 业务领域知识
 
-填写当前主意图对应的业务定制文件路径。该路径只是知识来源说明，不表示 Planning 层已经读取该文件。
+填写本次执行需要的业务全局上下文。可以包含：业务文件路径、规则来源、业务文件原文或摘录、场景知识、子图检索规则、任务规划规则、查询内容、查询类型、字段返回要求、Function 规则和失败策略。
 
 示例：
 
 ```text
-业务定制文件路径：knowledge/evidence.md
+业务领域知识：规则来源 knowledge/evidence.md；同站点传播证据验证使用 happenOn 关系从起始网元定位同站点网元，再查询同站点网元上的活动告警；告警名称来自 ${alarmNames_same_site}；返回网元和告警 objects/relationships；空结果是有效证据结果。
 ```
 
-如果没有使用独立业务文件，写 `业务定制文件路径：无`。如果业务文件无法读取，必须在缺失信息中写明，并且 `业务定制文件内容` 写 `无` 或填写已知可用摘录。
+如果没有业务增量知识，写 `业务领域知识：无`。
 
-### 5.4 业务定制文件内容
-
-填写业务文件原文或与当前意图相关的完整摘录。为了提高执行效率，只摘录当前主意图相关章节，不复制无关规则。
-
-Planning 层只使用本字段中的内容作为业务规则来源，不会根据 `业务定制文件路径` 再次读取文件。
-
-### 5.5 流程级定制
+### 5.4 流程级定制
 
 只填写相对 Planning 默认流程的覆盖项。没有覆盖时推荐写：
 
 ```text
-流程级定制：使用默认流程 S1 -> S2 -> S3 -> S4 -> S7；不执行 S5/S6 Function。
+流程级定制：使用默认流程 S1 -> S2 -> S3 -> S6；不执行 S4/S5 Function。
 ```
 
 传播证据验证多方向场景可以写：
 
 ```text
-流程级定制：使用默认流程 S1 -> S2 -> S3 -> S4 -> S7；不执行 S5/S6 Function；每个方向独立执行；S4 空结果视为有效结果，不自动放宽条件重试。
+流程级定制：使用默认流程 S1 -> S2 -> S3 -> S6；不执行 S4/S5 Function；每个方向独立执行；S3 空结果视为有效结果，不自动放宽条件重试。
 ```
 
 如果业务确实需要函数：
 
 ```text
-流程级定制：执行 S1 -> S2 -> S3 -> S5 -> S6 -> S4 -> S7；Function 用于前置补齐查询参数。
+流程级定制：执行 S1 -> S2 -> S4 -> S5 -> S3 -> S6；Function 用于前置补齐查询参数。
 ```
 
-### 5.6 步骤级定制
+### 5.5 步骤级定制
 
 只填写业务增量规则，不重复描述 Planning 已内置的标准输入、标准输出和通用执行规则。
 
@@ -141,19 +133,19 @@ Planning 层只使用本字段中的内容作为业务规则来源，不会根�
 
 ```text
 步骤级定制：
-S2：使用业务定制文件内容中的 ${directionKey} 子图检索规则；变量使用 neName_${directionKey}、alarmNames_${directionKey}、returnFields_ne、returnFields_alarm、messageType_${directionKey}；子图为空则停止后续步骤。
-S3：使用业务定制文件内容中的 ${directionKey} 路径规划规则；输入使用 S2.subgraphOutput、变量区和 ${directionKey} 方向计划；不能规划合法路径则停止 S4。
-S4：使用业务定制文件内容中的 ${directionKey} 告警查询规则；输出 objects 与 relationships；空结果是有效结果，不自动重试。
-S7：使用业务定制文件内容中的证据汇总规则；输入使用上游结果摘要；输出最终业务结论。
+S1：使用业务领域知识中的 ${directionKey} 子图检索规则；变量使用 neName_${directionKey}、alarmNames_${directionKey}、returnFields_ne、returnFields_alarm、messageType_${directionKey}；子图为空则停止后续步骤。
+S2：使用业务领域知识中的 ${directionKey} 路径规划规则；输入使用 S1.subgraphOutput、变量区和 ${directionKey} 方向计划；不能规划合法路径则停止 S3。
+S3：使用业务领域知识中的 ${directionKey} 告警查询规则；输出 objects 与 relationships；空结果是有效结果，不自动重试。
+S6：使用业务领域知识中的证据汇总规则；输入使用上游结果摘要；输出最终业务结论。
 ```
 
 如果没有任何步骤级业务增量，可以写：
 
 ```text
-步骤级定制：使用默认步骤模板；业务增量规则见业务定制文件内容。
+步骤级定制：使用默认步骤模板；业务增量规则见业务领域知识。
 ```
 
-### 5.7 缺失信息
+### 5.6 缺失信息
 
 没有缺失时固定写：
 
@@ -161,7 +153,7 @@ S7：使用业务定制文件内容中的证据汇总规则；输入使用上游
 缺失信息：无
 ```
 
-如果缺少本体ID、业务文件内容、变量、方向、告警列表或用户必要条件，必须明确列出。
+如果缺少本体ID、业务领域知识、变量、方向、告警列表或用户必要条件，必须明确列出。
 
 ## 6. 变量抽取规则
 
@@ -176,7 +168,7 @@ alarmNames_peer_ne = [完整告警类型列表]
 alarmNames_service_path = [完整告警类型列表]
 ```
 
-在 `业务意图`、`流程级定制` 和 `步骤级定制` 中只引用变量名，例如：
+在 `业务意图`、`业务领域知识`、`流程级定制` 和 `步骤级定制` 中只引用变量名，例如：
 
 ```text
 alarm.alarmName ∈ ${alarmNames_same_site}
@@ -207,7 +199,7 @@ directionKey = service_path
 directionName = 业务路径
 ```
 
-多方向查询时，每个方向独立执行 S2 -> S3 -> S4 -> S7，不共享中间结果，除非业务文件明确允许。
+多方向查询时，每个方向独立执行 S1 -> S2 -> S3 -> S6，不共享中间结果，除非业务领域知识明确允许。
 
 ## 7. OQL 无临时文件规则
 
@@ -233,9 +225,9 @@ printf '%s' '<compact-json>' | python scripts/execute_oac_operation.py --input -
 
 - 输出复杂嵌套 `planningDelegationPackage` 或 `stepContracts` JSON。
 - 在步骤级定制中复制标准步骤模板全文。
-- 在业务意图、流程级定制、步骤级定制中重复粘贴长告警列表。
+- 在业务意图、业务领域知识、流程级定制、步骤级定制中重复粘贴长告警列表。
 - 同一任务重复读取和压缩同一份业务文件。
-- 把 `业务定制文件路径` 当成 Planning 层已读取的文件内容。
-- S4 重新解释用户原始问题或业务文件全文。
+- 将业务文件路径作为 Planning 层可二次读取的文件。
+- S3 重新解释用户原始问题或业务文件全文。
 - 默认写临时 OQL 文件。
 - 编造 OAG/OAC/Function 未返回的对象、字段、关系、函数或参数规格。
