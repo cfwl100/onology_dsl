@@ -6,7 +6,7 @@
 
 ## 核心经验性知识
 
-- 业务路径在本体中名称为businesspath。
+- 业务路径在本体中名称为 `businesspath`。
 
 ### 告警唯一标识符
 
@@ -31,9 +31,9 @@
 - 用户输入为0步，或未指定，直接结束当前会话并输出 `未指定规划方向`，禁止臆测执行。
 - 必须按照用户输入顺序，按顺序执行不同方向的规划。
 
-## 运行效率优化：一次性委托包与变量绑定
+## 运行效率优化：一次性委托包、变量绑定与步骤契约
 
-为了减少 opencode 运行中的重复解释、重复压缩和长上下文展开，传播证据验证必须使用一次性 `planningDelegationPackage`。
+为了减少 opencode 运行中的重复解释、重复压缩和长上下文展开，传播证据验证必须使用一次性 `planningDelegationPackage`，并且必须包含 `stepContracts`。
 
 ### 变量绑定规则
 
@@ -46,7 +46,7 @@ variables:
   alarmNames_service_path: [业务路径方向完整告警类型列表]
 ```
 
-后续所有流程级定制、步骤级定制、S3 plannedTask 和 S4 查询模板只能引用变量名：
+后续所有流程级定制、步骤级定制、stepContracts、S3 plannedTask 和 S4 查询模板只能引用变量名：
 
 ```text
 终点 alarm.alarmName ∈ ${alarmNames_same_site}
@@ -68,16 +68,76 @@ planningDelegationPackage:
   directionPlans：<每个方向一条，包含 directionKey、neNameRef、alarmNamesRef、messageType、requiredFlow>
   流程级定制：按 directionPlans 串行执行；每方向执行 S2/S3/S4/S7；本意图不调用 Function。
   步骤级定制：S2 使用固定 query 模板；S3 基于子图规划；S4 使用变量引用作为过滤条件；S7 分方向汇总。
+  stepContracts：<每个方向必须生成 S2/S3/S4/S7 契约，见下文>
+```
+
+### stepContracts 必填规则
+
+每个用户指定方向必须生成独立的四个步骤契约，禁止只写摘要。
+
+```text
+stepContracts:
+  - stepId：S2_<directionKey>_subgraph
+    actionType：OAG
+    input：
+      先找相关子图。
+      本体ID：network@1.0
+      业务意图：验证 <directionName> 方向传播证据。
+      业务定制文件：knowledge/evidence.md
+      子图检索规则：每个方向独立检索一次；使用本文件固定 query；禁止合并多个方向；禁止重复检索。
+      检索目标：从网元出发，查找 <directionName> 方向可到达的其他网元及其告警；返回对象、属性、关系和函数候选。
+      子图返回结构要求：保留 result.seedNodes、nodes、edges、functions、actions；摘要必须包含对象候选、字段归属、关系候选。
+    expectedOutput：subgraphOutput，包括 subgraphRawResult、nodes、edges、functions、objectCandidates、propertyOwnership、relationCandidates、missing/risks
+    dependsOn：[]
+    failurePolicy：子图为空时停止该方向，输出空结果说明，不自动换方向，不重复检索
+
+  - stepId：S3_<directionKey>_plan
+    actionType：SUBGRAPH_PLAN
+    input：
+      基于本体子图规划执行任务。
+      本体ID：network@1.0
+      业务意图：验证 <directionName> 方向传播证据。
+      本体子图结果：${S2_<directionKey>_subgraph.actualOutput.subgraphOutput}
+      变量区：neNameRef=${neName_<directionKey>}，alarmNamesRef=${alarmNames_<directionKey>}，returnFields_ne=${returnFields_ne}，returnFields_alarm=${returnFields_alarm}
+      方向计划：${directionPlans.<directionKey>}
+      业务规划规则：禁止 Function；禁止 Port/Link；关系名必须来自 defines_relation.properties.name；字段必须通过 has_property 确认归属；过滤条件引用 alarmNamesRef，不展开长列表。
+    expectedOutput：plannedTasks，包括 flowDecision、variablesRef、steps、skippedSteps、overriddenDefaults、missing/risks；必须生成一个 S4_<directionKey>_oac 步骤
+    dependsOn：[S2_<directionKey>_subgraph]
+    failurePolicy：无法基于子图规划时停止该方向，不重新解释本文件全文
+
+  - stepId：S4_<directionKey>_oac
+    actionType：OAC
+    input：
+      查数据
+      本体ID：network@1.0
+      操作类型：ASSOCIATION_QUERY
+      查询对象：来自 S3_<directionKey>_plan.plannedTasks，不得重新推断
+      关系路径：来自 S3_<directionKey>_plan.plannedTasks，关系名必须来自 defines_relation.properties.name
+      过滤条件：起点 ne.name = ${neName_<directionKey>}；终点 alarm.alarmName ∈ ${alarmNames_<directionKey>}；对端网元方向需要增加 peer ne.name != ${neName_<directionKey>}；业务路径方向需要增加 businesspath.aDeviceName = ${neName_<directionKey>}
+      返回要求：返回 returnFields_ne 和 returnFields_alarm；message_type=${messageType_<directionKey>}；空结果是有效结果
+      执行要求：先生成并校验查询语言；通过后再执行；结果为空不重试、不换路径、不放宽条件。
+      期望输出：只返回对象结构 {objects, relationships}；不输出 operationDecision、oql、validation。
+    expectedOutput：{objects, relationships}
+    dependsOn：[S3_<directionKey>_plan]
+    failurePolicy：空结果有效；禁止放宽条件；禁止重复查询
+
+  - stepId：S7_<directionKey>_summary
+    actionType：SUMMARY
+    input：汇总 S2/S3/S4 的 StepExecutionRecord 和 S4 对象结构结果。
+    expectedOutput：该方向证据结果、空结果说明、缺失项、使用变量引用和执行状态。
+    dependsOn：[S4_<directionKey>_oac]
+    failurePolicy：按上游结果汇总，不重新执行上游步骤
 ```
 
 ### 禁止重复展开
 
 严格禁止：
 
-- 在业务意图、流程级定制、步骤级定制中重复粘贴完整告警列表。
+- 在业务意图、流程级定制、步骤级定制、stepContracts 中重复粘贴完整告警列表。
 - 在同一次会话中重复读取并压缩本文件。
 - 已生成 `planningDelegationPackage` 后，再重新组织一份相同含义的委托说明。
 - 为了“确认、优化、换一种说法”重复生成委托包。
+- 有 stepContracts 时，再让 Planning 层自由重写 S2/S3/S4 模板。
 
 ## 验证传播证据查询逻辑
 
@@ -106,6 +166,7 @@ planningDelegationPackage:
 - 规划时需要为每个方向生成独立的执行计划。
 - `alarmName` 是告警类别（类型），不是唯一标识符。
 - 长告警列表只在 `variables` 中保存一次，后续通过变量引用传递。
+- 每个方向的 S2/S3/S4/S7 输入输出必须体现在 stepContracts 和 StepExecutionRecord 中。
 
 ### 关系名动态获取
 
@@ -219,7 +280,8 @@ python scripts/semantic_subgraph_search.py --ontology-id 'network@1.0' --query '
 
 1. **规划阶段**：根据用户输入的每个方向，动态生成对应的查询。
 2. **变量阶段**：先绑定该方向网元名和告警列表变量，后续步骤只引用变量名。
-3. **执行阶段**：每个方向独立调用。
+3. **步骤契约阶段**：为每个方向生成 S2/S3/S4/S7 的 stepContracts。
+4. **执行阶段**：按 stepContracts 串行执行，每个步骤产生 StepExecutionRecord。
 
 **重要**：
 
