@@ -1,11 +1,11 @@
 ---
 name: alarm-propagation
-description: 故障传播分析业务定制 Skill。当用户提到查询网元告警、获取网元告警、查询告警分类传播关系、验证同站点/对端网元/业务路径传播证据时使用。
+description: 故障传播分析业务定制 Skill。当用户提到查询网元告警、查询告警传播关系、验证同站点/对端网元/业务路径传播证据时使用。
 allowed_tools:
 metadata:
   mode: customized_planning
-  injection: simplified-natural-language-planning-input
-  optimization: compact-business-domain-knowledge-template
+  planning_protocol: six-line-business-domain-knowledge
+  planning_steps: S1-S6
 ---
 
 # 故障传播分析 Skill
@@ -17,18 +17,18 @@ metadata:
 你的职责是：
 
 1. 识别唯一主意图。
-2. 定位并读取当前意图对应的业务定制文件。
+2. 读取当前主意图所需的业务知识文件，并把必要内容注入 `业务领域知识`。
 3. 将用户问题改写成详细自然语言业务意图。
 4. 抽取必要变量，例如网元名、方向、告警列表、返回字段、message_type。
-5. 按 `Ontology-based-planning-skill` 的顶层输入模板输出业务领域知识、流程级定制和步骤级定制。
+5. 按 `Ontology-based-planning-skill` 当前 6 行顶层输入协议输出给 Planning 层。
 
-你不直接调用原始 Tool，不直接生成最终查询语言，不直接执行平台函数。
+你不直接调用平台工具，不直接生成最终 OQL，不直接执行 OAC 或 Function。
 
 ## 2. 主意图识别
 
 只允许识别一个主意图。
 
-| 主意图 | 触发表达 | 业务定制文件 |
+| 主意图 | 触发表达 | 业务知识来源 |
 |---|---|---|
 | `nealarm_query` | 查询某网元上的当前/活动告警 | `knowledge/nealarm.md` |
 | `propagation_relation_query` | 查询某告警分类的传播关系、影响关系、依赖关系 | `knowledge/propagation_relation.md` |
@@ -36,9 +36,9 @@ metadata:
 
 如果多个意图同时出现，优先选择用户最核心的问题；禁止同时执行多个主意图，除非用户明确要求多任务。
 
-## 3. 与 Planning 层的关系
+## 3. Planning 层步骤编号
 
-`Ontology-based-planning-skill` 负责解析和执行以下流程：
+`Ontology-based-planning-skill` 当前步骤编号固定如下：
 
 ```text
 S1 子图检索
@@ -49,14 +49,15 @@ S5 Function 执行
 S6 汇总
 ```
 
-本业务 Skill 只注入两类业务定制：
+故障传播分析默认不需要 Function，推荐流程为：
 
-1. **流程级定制**：只表达相对 Planning 默认流程的覆盖，例如跳过 Function、追加 Function、每个方向独立执行。
-2. **步骤级定制**：只表达每个步骤的业务增量规则，例如检索范围、返回结构、路径规划规则、查询字段、空结果策略、汇总规则。
+```text
+S1 -> S2 -> S3 -> S6
+```
 
-步骤的标准输入输出由 `Ontology-based-planning-skill` 主 Skill 内置。本业务 Skill 不展开标准步骤模板全文，不引用 Planning 的 `references` 目录。
+只有业务领域知识明确要求调用 Function 补齐参数、路径或上下文时，才追加 S4/S5。
 
-## 4. 输出给 Planning 层的顶层模板
+## 4. 输出给 Planning 层的 6 行模板
 
 必须按如下 6 行输出给 `Ontology-based-planning-skill`：
 
@@ -69,23 +70,17 @@ S6 汇总
 缺失信息：<没有则写无>
 ```
 
-不要输出复杂 JSON，不要输出嵌套 `planningDelegationPackage` 或 `stepContracts`，不要把标准步骤模板全文粘贴到业务定制内容中。
+不要输出 `planningDelegationPackage`、`stepContracts`、复杂 JSON 或旧字段 `业务定制文件路径` / `业务定制文件内容`。
 
 ## 5. 字段填写规则
 
 ### 5.1 本体ID
 
-格式：
-
-```text
-本体ID：network@1.0
-```
-
-如果无法确认本体ID，写入缺失信息，不要猜测。
+只填写一个公共本体 ID，不得同时传 `ontologyId` 和 `schemaRef`。无法确认时写入缺失信息，不要猜测。
 
 ### 5.2 业务意图
 
-必须是详细自然语言任务。长告警列表必须使用变量引用，不要反复粘贴完整列表。
+必须是业务 Skill 改写后的详细自然语言任务。长告警列表必须使用变量引用，不要反复粘贴完整列表。
 
 示例：
 
@@ -95,7 +90,7 @@ S6 汇总
 
 ### 5.3 业务领域知识
 
-填写本次执行需要的业务全局上下文。可以包含：业务文件路径、规则来源、业务文件原文或摘录、场景知识、子图检索规则、任务规划规则、查询内容、查询类型、字段返回要求、Function 规则和失败策略。
+填写本次执行需要的业务全局上下文。可以包含业务文件路径、规则来源、业务文件原文或摘录、场景知识、子图检索规则、任务规划规则、查询内容、查询类型、字段返回要求、Function 规则和失败策略。
 
 示例：
 
@@ -103,23 +98,15 @@ S6 汇总
 业务领域知识：规则来源 knowledge/evidence.md；同站点传播证据验证使用 happenOn 关系从起始网元定位同站点网元，再查询同站点网元上的活动告警；告警名称来自 ${alarmNames_same_site}；返回网元和告警 objects/relationships；空结果是有效证据结果。
 ```
 
-如果没有业务增量知识，写 `业务领域知识：无`。
-
 ### 5.4 流程级定制
 
-只填写相对 Planning 默认流程的覆盖项。没有覆盖时推荐写：
-
-```text
-流程级定制：使用默认流程 S1 -> S2 -> S3 -> S6；不执行 S4/S5 Function。
-```
-
-传播证据验证多方向场景可以写：
+只填写相对默认流程的覆盖项。故障传播证据验证推荐写法：
 
 ```text
 流程级定制：使用默认流程 S1 -> S2 -> S3 -> S6；不执行 S4/S5 Function；每个方向独立执行；S3 空结果视为有效结果，不自动放宽条件重试。
 ```
 
-如果业务确实需要函数：
+需要 Function 时才写：
 
 ```text
 流程级定制：执行 S1 -> S2 -> S4 -> S5 -> S3 -> S6；Function 用于前置补齐查询参数。
@@ -134,15 +121,9 @@ S6 汇总
 ```text
 步骤级定制：
 S1：使用业务领域知识中的 ${directionKey} 子图检索规则；变量使用 neName_${directionKey}、alarmNames_${directionKey}、returnFields_ne、returnFields_alarm、messageType_${directionKey}；子图为空则停止后续步骤。
-S2：使用业务领域知识中的 ${directionKey} 路径规划规则；输入使用 S1.subgraphOutput、变量区和 ${directionKey} 方向计划；不能规划合法路径则停止 S3。
+S2：使用业务领域知识中的 ${directionKey} 路径规划规则；输入使用 S1 子图输出、变量区和 ${directionKey} 方向计划；不能规划合法路径则停止 S3。
 S3：使用业务领域知识中的 ${directionKey} 告警查询规则；输出 objects 与 relationships；空结果是有效结果，不自动重试。
 S6：使用业务领域知识中的证据汇总规则；输入使用上游结果摘要；输出最终业务结论。
-```
-
-如果没有任何步骤级业务增量，可以写：
-
-```text
-步骤级定制：使用默认步骤模板；业务增量规则见业务领域知识。
 ```
 
 ### 5.6 缺失信息
@@ -203,7 +184,7 @@ directionName = 业务路径
 
 ## 7. OQL 无临时文件规则
 
-OAC 查询步骤只允许在内存参数或 stdin 中传递 OQL。默认使用通用 shell 表达，不绑定 PowerShell：
+S3 OAC 查询步骤只允许在内存参数或 stdin 中传递 OQL。默认使用通用 shell 表达，不绑定 PowerShell：
 
 ```sh
 python scripts/validate_oql.py --oac-json '<compact-json>'
