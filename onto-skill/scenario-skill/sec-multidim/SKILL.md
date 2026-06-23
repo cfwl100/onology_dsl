@@ -35,8 +35,6 @@ description: SEC 多维查询业务定制 Skill。按照最新本体 Skill 规�
 
 1. `knowledge/sec-multidim-guidance.md`：SEC 多维查询业务定制主规则文件，包含场景知识、流程级定制、子图检索规则、基于子图的任务规划规则、OAC 查询规则、Function 调用规则、汇总规则、字段口径、时间语义、ID/NAME 规则、正反例和两步查询规则。
 2. `workflows/sec-multidim-workflows.md`：SEC 典型流程示例，仅在需要解释或复用示例流程时读取。
-3. `../../platform-skill/Ontology-based-planning-skill/SKILL.md`：Planning 层入口，读取其默认步骤、业务定制输入格式和 S2/S3/S4/S5/S6/S7 模板。
-4. `../../docs/agent-skill-design-patterns.md`：整体设计思想和约束说明，仅在需要确认分层边界时读取。
 
 如果 `knowledge/sec-multidim-guidance.md` 未读取或不可用，必须停止并返回：
 
@@ -120,7 +118,7 @@ S4 必须由 Planning 层按平台 OAC 模板生成自然语言委托。SEC 业�
 过滤条件：<DIM_GRID、GRID_ID、DIM_CELL、CELL_ID、时间字段、指标条件、ID/NAME 口径等；时间范围必须进入过滤条件>
 返回要求：<返回维度字段、指标字段、排序、分组、maxResults、空结果策略>
 执行要求：先生成并校验 OQL；通过后再执行；结果为空视为有效结果，不自动放宽条件重试。
-期望输出：只返回对象结构结果，包含 objects 和 relationships；不输出 operationDecision、oql、validation。
+期望输出：只返回对象结构结果，包含 objects 和 relationships。
 ```
 
 ### 5.4 S5/S6 Function 定制

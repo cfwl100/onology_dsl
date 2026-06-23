@@ -1,35 +1,16 @@
 {
   "version": "1.0",
-  "schemaRef": "alarm@1.0",
+  "schemaRef": "network@1.0",
   "strict": true,
   "operation": "ASSOCIATION_QUERY",
   "objects": [
-    {
-      "objectType": "ne",
-      "alias": "ne"
-    },
-    {
-      "objectType": "site",
-      "alias": "site"
-    },
-    {
-      "objectType": "alarm",
-      "alias": "alarm"
-    }
+    { "objectType": "Ne", "alias": "c1" },
+    { "objectType": "Site", "alias": "s" },
+    { "objectType": "Alarm", "alias": "a" }
   ],
   "relationships": [
-    {
-      "relationshipType": "level",
-      "alias": "r1",
-      "from": "ne",
-      "to": "site"
-    },
-    {
-      "relationshipType": "happen",
-      "alias": "r2",
-      "from": "site",
-      "to": "alarm"
-    }
+    { "relationshipType": "containsBy", "alias": "r1", "from": "c1", "to": "s" },
+    { "relationshipType": "happenOn", "alias": "r2", "from": "a", "to": "s" }
   ],
   "conditions": {
     "kind": "GROUP",
@@ -37,33 +18,24 @@
     "children": [
       {
         "kind": "PREDICATE",
-        "ref": "ne",
+        "ref": "c1",
         "field": "name",
         "operator": "EQ",
-        "values": [
-          "替换为具体的值"
-        ]
+        "values": ["DLE_AIRHITAM_GEBANG_MT"]
       },
       {
         "kind": "PREDICATE",
-        "ref": "alarm",
+        "ref": "a",
         "field": "alarmName",
         "operator": "IN",
-        "values": [
-          "替换为具体的值"
-        ]
+        "values": ["BTS O&M LINK FAILURE", "NE3SWS AGENT NOT RESPONDING TO REQUESTS", "CXU External Power Supply Insufficient", "Mains Failure", "BASE STATION SERVICE PROBLEM-Cells shutdown due to mains power break", "POWER_ABNORMAL", "The main power supply abnormal", "Base Station DC Power Supply Abnormal", "Power Failure", "The voltage of The power supply is abnormal", "BASE STATION I NFORMATION-Unit power reset", "ShutDownNotify", "PLUG-IN UNIT POWER FAILURE", "BASE STATION INFORMATION-Power on FSMF RF3 line switched off at the front panel", "Low Input Voltage", "CXU AC Power Input Failure", "Power Invalid", "POWER UNIT FAILURE", "BASE STATION INFORMATION-ALD Port power failure", "Power Disturbance", "RHUB PSE Power Supply Failure", "Input voltage is out of The configured range", "SERVER POWER RESET", "Input Power Failure", "Power Supply", "Board Powered Off", "Genset Running", "OVERVOLTAGE IN POWER SUPPLY BRANCH UB1 OF THE SYSTEM", "Power Supply DC Output Out of Range", "BASE STATION INFORMATION-Power on FSMF RF2 line switched off at the front panel", "Detected low voltage from on-board power supply", "BASE STATION INFORMATION-Power on FSMF RF4 line switched off at the front panel", "RPU powered off", "UNDERVOLTAGE IN POWER SUPPLY BRANCH UB1 OF THE SYSTEM", "Battery off or power filter off", "POWER SUPPLY FAILURE", "UNDERVOLTAGE IN POWER SUPPLY BRANCH UB2 OF THE SYSTEM", "BASE STATION INFORMATION-Power on FSMF RF3 line switched off remotely by user", "RHUB Unit AC Input Power Failure", "Dyn gGasp|Genset Fail", "Input Power Insufficient Performance Degraded", "OVERVOLTAGE IN POWER SUPPLY BRANCH UB2 OF THE SYSTEM", "Power Supply Failure", "Rectifier Failed", "CXU DC Power Input Failure", "Card power off|DC Low Voltage", "POWER_ALM"]
       }
     ]
   },
   "returns": [
-    {
-      "kind": "FIELDS",
-      "ref": "alarm",
-      "fields": [
-        "*"
-      ]
-    }
+    { "kind": "FIELDS", "ref": "c1", "fields": ["srcSpaceVid", "name", "className", "domain", "networkType"] },
+    { "kind": "FIELDS", "ref": "s", "fields": ["srcSpaceVid", "name", "className", "domain", "networkType"] },
+    { "kind": "FIELDS", "ref": "a", "fields": ["node", "ownerVid", "severity", "alarmName", "identifier", "firstOccurrence", "lastOccurrence", "clearTime"] }
   ],
   "maxResults": 1000
 }
-
