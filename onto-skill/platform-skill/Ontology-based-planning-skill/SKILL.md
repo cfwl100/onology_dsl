@@ -1,12 +1,13 @@
 ---
 name: Ontology-based-planning-skill
-description: 本体规划执行层。基于本体子图结构规划单步或多步执行任务，支持业务 Skill 通过必填业务定制文件改写默认流程、步骤输入输出模板和执行规则，并委托 Ontology-platform-unified-skill 执行 OAG、OAC、Function 闭环。
+description: 本体规划执行层。基于本体子图结构规划单步或多步执行任务，支持业务 Skill 通过必填业务定制文件或 planningDelegationPackage 改写默认流程、步骤输入输出模板和执行规则，并委托 Ontology-platform-unified-skill 执行 OAG、OAC、Function 闭环。
 allowed_tools:
 metadata:
   pattern: pipeline
   secondary_pattern: inversion
   role: default-ontology-planning-layer
   extension_mode: natural-language-first-flow-and-step-customizable
+  optimization: reuse-compact-planning-delegation-package
 ---
 
 # 本体规划 Skill
@@ -24,15 +25,15 @@ metadata:
 - 对 OAC 本体访问：`本体ID` 作为 OQL `schemaRef` 的来源使用。
 - 对 Function：`本体ID` 作为函数所属本体标识使用；如果函数候选中返回了更精确的 `properties.ontologyId`，以函数候选结果为准。
 
-本层不是行业业务语义层，也不是平台工具直接调用层。业务意图理解、场景规则、字段语义、默认查询内容、步骤顺序和失败策略应由上层业务 Skill 通过**业务定制文件**提供；平台调用必须通过 `Ontology-platform-unified-skill` 完成。
+本层不是行业业务语义层，也不是平台工具直接调用层。业务意图理解、场景规则、字段语义、默认查询内容、步骤顺序和失败策略应由上层业务 Skill 通过**业务定制文件**或一次性 `planningDelegationPackage` 提供；平台调用必须通过 `Ontology-platform-unified-skill` 完成。
 
 ## 2. 业务定制模型
 
 ### 2.1 业务定制文件必填
 
-进入业务定制模式时，上层业务 Skill 必须提供至少一个业务定制文件的路径或原文内容。业务定制文件可以是自然语言 Markdown，不要求 JSON 化。
+进入业务定制模式时，上层业务 Skill 必须提供至少一个业务定制文件的路径、原文内容，或提供已经从业务定制文件生成的一次性 `planningDelegationPackage`。
 
-业务定制文件必须至少说明以下内容中的一部分：
+业务定制文件或委托包必须至少说明以下内容中的一部分：
 
 - 场景知识和业务语义。
 - 子图检索规则和子图返回结构要求。
@@ -41,7 +42,7 @@ metadata:
 - Function 选择、参数组装和调用策略。
 - 汇总输出规则。
 
-如果使用业务定制模式但未提供业务定制文件，必须返回 `MISSING_BUSINESS_CUSTOMIZATION_FILE`，不要退化成猜测式规划。
+如果使用业务定制模式但未提供业务定制文件路径、业务定制文件内容或 `planningDelegationPackage`，必须返回 `MISSING_BUSINESS_CUSTOMIZATION_FILE`，不要退化成猜测式规划。
 
 ### 2.2 流程级定制
 
@@ -71,7 +72,7 @@ S1 读取业务注入与整理上下文
 
 步骤级定制决定每个具体步骤的输入、输出和执行规则。
 
-业务 Skill 可以通过业务定制文件说明：
+业务 Skill 可以通过业务定制文件或 `planningDelegationPackage` 说明：
 
 - S2 子图检索的 query 如何改写、扩展策略、函数候选是否返回、采用何种图检索算法、返回哪些子图字段。
 - S3 任务规划从哪个起点对象出发、查找到哪个终点对象、优先选择 OAC 还是 Function、是否拆成多步任务。
@@ -87,6 +88,7 @@ S1 读取业务注入与整理上下文
 
 ```text
 用户当前明确要求
+> planningDelegationPackage 中的变量区、方向计划、流程级定制、步骤级定制
 > 业务定制文件中的流程级定制
 > 业务定制文件中的步骤级定制
 > 业务定制文件中的场景知识、SOP、禁止项、返回要求
@@ -94,9 +96,9 @@ S1 读取业务注入与整理上下文
 > Ontology-platform-unified-skill 各模块默认模板
 ```
 
-因此，业务定制文件可以覆盖本 Skill 中预置的默认流程、步骤顺序、步骤输入模板、步骤输出模板、执行规则和失败策略，也可以覆盖平台统一 Skill 中 OAG/OAC/Function 模块的默认输入输出说明。
+因此，业务定制文件和 `planningDelegationPackage` 可以覆盖本 Skill 中预置的默认流程、步骤顺序、步骤输入模板、步骤输出模板、执行规则和失败策略，也可以覆盖平台统一 Skill 中 OAG/OAC/Function 模块的默认输入输出说明。
 
-注意：业务定制文件可以覆盖**Skill 规则和模板**，但不能凭空制造平台事实。对象、字段、关系、函数的最终可用性仍需要由 OAG 子图、OAC schema/validator、Function `get_params_spec` 或平台执行结果确认。如果业务规则要求的字段、关系或函数在平台结果中不存在，应在结果中说明缺失或冲突，而不是编造。
+注意：业务定制可以覆盖**Skill 规则和模板**，但不能凭空制造平台事实。对象、字段、关系、函数的最终可用性仍需要由 OAG 子图、OAC schema/validator、Function `get_params_spec` 或平台执行结果确认。如果业务规则要求的字段、关系或函数在平台结果中不存在，应在结果中说明缺失或冲突，而不是编造。
 
 ## 3. 输入模式
 
@@ -113,9 +115,9 @@ S1 读取业务注入与整理上下文
 
 ### 3.2 业务定制模式
 
-业务定制模式采用 **自然语言业务定制文件必填** 的方式。
+业务定制模式采用 **自然语言业务定制文件必填** 或 **一次性 planningDelegationPackage 必填** 的方式。
 
-推荐输入格式：
+#### 普通业务定制输入
 
 ```text
 本体ID：<对外公共本体ID，如已知>
@@ -125,6 +127,23 @@ S1 读取业务注入与整理上下文
 流程级定制：<执行全部默认步骤还是部分步骤；是否调整步骤顺序；是否追加或跳过步骤；可由业务定制文件给出>
 步骤级定制：<分别说明 S2/S3/S4/S5/S6/S7 的输入、输出、执行规则和失败策略；可由业务定制文件给出>
 缺失信息：<无法从用户输入或业务知识获得的信息；没有则写无>
+```
+
+#### 高效业务定制输入：planningDelegationPackage
+
+当上层业务 Skill 已经读取并整理业务定制文件时，优先传递紧凑委托包，避免 Planning 层重复解释和重复压缩同一份业务规则。
+
+```text
+planningDelegationPackage:
+  本体ID：<公共本体ID>
+  业务意图：<压缩后的详细自然语言任务；长列表使用变量引用>
+  已读取业务定制文件：<knowledge / rules / templates 文件路径>
+  业务定制摘要：<核心规则摘要和规则编号，不粘贴全文>
+  variables：<长列表、对象名、方向标识、返回字段、message_type 等变量区；长列表只出现一次>
+  directionPlans：<每个方向一条计划，包含 directionKey、directionName、neNameRef、alarmNamesRef、messageType、requiredFlow>
+  流程级定制：<引用 directionPlans 和规则编号；不重复展开 direction 内容>
+  步骤级定制：<按 S2/S3/S4/S5/S6/S7 写规则摘要和变量引用；不重复展开长列表>
+  缺失信息：<无法确认的信息；没有则写无>
 ```
 
 ### 3.3 显式步骤执行模式
@@ -173,8 +192,30 @@ S1 输入来源：
 - 用户问题或上层改写后的 `业务意图`。
 - 公共 `本体ID`。
 - 必填业务定制文件：场景知识、子图检索规则、任务规划规则、查询内容、查询类型、Function 调用规则。
+- 一次性 `planningDelegationPackage`，如果上层业务 Skill 已经生成。
 - 流程级定制说明。
 - 步骤级定制说明。
+
+#### 4.1.1 planningDelegationPackage 复用规则
+
+如果输入中存在 `planningDelegationPackage`，S1 必须优先复用它，不再二次展开相同业务文件全文。
+
+S1 处理规则：
+
+1. 直接读取 `planningDelegationPackage.业务意图` 作为主任务目标。
+2. 直接使用 `planningDelegationPackage.variables` 作为变量区。
+3. 直接使用 `planningDelegationPackage.directionPlans` 作为多方向、多对象、多路径规划入口。
+4. 直接使用 `planningDelegationPackage.流程级定制` 和 `planningDelegationPackage.步骤级定制` 作为最高优先级覆盖规则。
+5. 不要再次把 `业务定制摘要` 还原成完整业务文件。
+6. 不要重复展开 `variables` 中的长列表；只有在 S4 最终生成 OAC 查询语言时才允许展开。
+7. 如果委托包缺少必要变量、方向计划或规则摘要，只返回缺失项，不重新臆造。
+
+禁止项：
+
+- 禁止重复读取并压缩同一个业务定制文件。
+- 禁止把长告警列表复制到业务意图、流程级定制和步骤级定制多个位置。
+- 禁止为“确认、优化、换一种说法”重新生成等价委托包。
+- 禁止在 S1 现场推断平台对象、字段、关系、函数参数。
 
 S1 输出：
 
@@ -182,8 +223,10 @@ S1 输出：
 planningContext：
 - 本体ID
 - 业务意图
-- 已读取业务定制文件列表和原文摘要
-- 业务规则、禁止项和返回要求
+- 已读取业务定制文件列表
+- 业务定制摘要或规则索引
+- variables：长列表和公共变量只保存一次
+- directionPlans：多方向/多对象/多路径的规划入口
 - 流程级定制结果：默认全流程 / 部分步骤 / 自定义顺序
 - 步骤级定制结果：S2/S3/S4/S5/S6/S7 的输入输出要求
 - 被业务定制覆盖的默认模板和规则
@@ -239,6 +282,8 @@ S3 输入模板：
 业务意图：<改写后的详细自然语言问题>
 本体子图结果：<S2 返回的 subgraphRawResult 与摘要>
 业务定制规划规则文件：<已读取的任务规划规则文件；必填，可覆盖默认规划规则>
+变量区：<来自 planningContext.variables；长列表只保留变量名，不重复展开>
+方向计划：<来自 planningContext.directionPlans；无则写无>
 规划目标：<例如“从【起点对象类型】出发，查找到【终点对象类型】”；如果是单对象查询，说明只查询起点对象>
 可用结构依据：<objectType、property、has_property、defines_relation、functions 的确认结果>
 业务规划规则：<步骤顺序、优先使用 Function 或 OAC、路径选择、方向、返回要求、空结果策略>
@@ -259,15 +304,18 @@ S3 输入模板：
    - `result.functions[].properties.description` 能直接满足业务目标，或业务定制文件明确要求函数：规划 S5/S6 Function。
    - 需要先查数据再计算：规划 S4 -> S5/S6。
    - 需要先获取函数规则再决定查询：规划 S5/S6 -> S4。
-5. **生成依赖关系**：每个后续步骤必须依赖其所需输入的上游步骤，例如 OAC 查询依赖子图结构，Function 参数依赖参数规格和必要上下文。
-6. **应用业务覆盖**：如果业务定制文件指定步骤顺序、跳过步骤、返回格式、失败策略，则覆盖以上默认规则。
-7. **输出计划步骤**：每个步骤必须说明 actionType、输入模板、expectedOutput、required、failurePolicy 和 planningBasis。
+5. **变量引用优先**：如果 S1 已生成 `variables`，S3 plannedTask 中的长列表必须使用变量引用，例如 `${alarmNames_same_site}`，不得重复展开。
+6. **生成依赖关系**：每个后续步骤必须依赖其所需输入的上游步骤。
+7. **应用业务覆盖**：如果业务定制文件指定步骤顺序、跳过步骤、返回格式、失败策略，则覆盖以上默认规则。
+8. **输出计划步骤**：每个步骤必须说明 actionType、输入模板、expectedOutput、required、failurePolicy 和 planningBasis。
 
 S3 输出：
 
 ```text
 plannedTasks：
 - flowDecision：全流程 / 部分步骤 / 自定义顺序
+- variablesRef：使用到的变量引用，不展开变量值
+- directionPlansRef：使用到的方向计划引用
 - steps[]：
   - stepId
   - actionType
@@ -294,7 +342,7 @@ S4 目标：把 S3 规划出的数据访问任务委托给 OAC，生成、校验
 操作类型：<QUERY / ASSOCIATION_QUERY / AGGREGATE / 模型查询，如可判断>
 查询对象：<对象类型和别名建议，来自子图 objectType>
 关系路径：<仅在关系查询时填写，关系名必须来自 defines_relation.properties.name>
-过滤条件：<用户条件及其对应字段依据；单位换算和枚举值说明>
+过滤条件：<用户条件及其对应字段依据；单位换算和枚举值说明；长列表可引用 variablesRef>
 返回要求：<返回字段、排序、分组、maxResults、空结果策略；可由业务定制文件覆盖>
 执行要求：先生成并校验 OQL；通过后再执行；结果为空视为有效结果，不自动放宽条件重试。
 期望输出：只返回对象结构结果，包含 objects 和 relationships。
@@ -304,6 +352,7 @@ S4 输入来源：
 
 - S2 子图中的 `nodes` 和 `edges`。
 - S3 规划结果。
+- S1 的 `variables`，最终生成 OAC 查询语言时才展开变量。
 - 业务定制知识文件中的查询内容、查询类型、字段映射、返回字段、过滤条件、空结果策略。
 
 S4 输出是对象结构：
@@ -365,6 +414,8 @@ S7 汇总必须说明：
 
 - 使用的公共本体ID。
 - 使用了哪些业务定制文件。
+- 是否复用了 `planningDelegationPackage`。
+- 变量区中哪些变量被使用，长列表无需重复展开。
 - 流程级定制如何覆盖默认步骤。
 - 步骤级定制如何覆盖默认模板和执行规则。
 - 每个步骤的输入输出和执行状态。
@@ -402,6 +453,8 @@ S7 汇总必须说明：
 
 业务 Skill 可以传入一个或多个业务定制文件的路径或内容。业务定制模式下该内容必填。
 
+如果业务 Skill 已经生成 `planningDelegationPackage`，Planning 层必须把该委托包作为最高优先级规划依据，并避免再次展开同一业务文件全文。
+
 Planning 层必须把业务定制文件内容作为最高优先级规划依据：
 
 - 业务文件中的流程级定制可覆盖本 Skill 默认流程。
@@ -417,7 +470,8 @@ Planning 层必须把业务定制文件内容作为最高优先级规划依据�
 |---|---|---|
 | `MISSING_PLANNING_INPUT` | 缺少业务意图、业务注入、执行步骤 | 停止执行，返回需要补充的输入。 |
 | `MISSING_ONTOLOGY_ID` | 缺少公共本体ID | 停止执行，返回缺失本体ID。 |
-| `MISSING_BUSINESS_CUSTOMIZATION_FILE` | 业务定制模式未提供业务定制文件路径或内容 | 返回缺失文件信息。 |
+| `MISSING_BUSINESS_CUSTOMIZATION_FILE` | 业务定制模式未提供业务定制文件路径、内容或 planningDelegationPackage | 返回缺失文件信息。 |
+| `INVALID_DELEGATION_PACKAGE` | planningDelegationPackage 缺少本体ID、业务意图、变量区、流程级定制或步骤级定制 | 返回缺失项，不重新臆造。 |
 | `INVALID_FLOW_CUSTOMIZATION` | 流程级定制步骤顺序不合法或依赖不存在 | 返回冲突和依赖问题。 |
 | `INVALID_STEP_CUSTOMIZATION` | 步骤级输入输出模板缺少必需项 | 返回缺失模板项。 |
 | `INVALID_SUBGRAPH_FIELD_OWNERSHIP` | 字段没有通过 `has_property` 确认归属 | 停止生成 OAC 查询。 |
@@ -431,13 +485,14 @@ Planning 层必须把业务定制文件内容作为最高优先级规划依据�
 ## 8. 强约束
 
 1. 本层默认预置 `子图检索 -> 基于子图的任务规划 -> OAC 查询 -> Function 执行 -> 汇总` 流程。
-2. 业务定制模式必须提供业务定制文件路径或内容。
-3. 业务定制文件中的流程级定制和步骤级定制优先级最高，可覆盖本 Skill 和平台统一 Skill 的默认模板与规则。
-4. OAG、OAC、Function 委托必须使用自然语言输入模板和期望输出格式；业务定制文件可覆盖模板内容。
-5. S4 OAC 最终输出是对象结构 `{objects, relationships}`；`operationDecision`、`oql`、`validation` 不作为最终输出字段。
-6. 字段必须来自子图 property 并通过 `has_property` 确认归属。
-7. 关系必须来自 `defines_relation.properties.name`。
-8. Function 必须来自 `result.functions` 或上层可信函数目标；函数参数必须来自 `get_params_spec`。
-9. 调用函数时统一使用 `physicalName`，不得使用自造字段名。
-10. 空结果是有效结果，不自动放宽条件重试。
-11. 对外只暴露公共本体ID；不得要求业务 Skill 同时填写子图检索 ontologyId 和本体访问 schemaRef。
+2. 业务定制模式必须提供业务定制文件路径、内容或 `planningDelegationPackage`。
+3. 如果输入包含 `planningDelegationPackage`，必须优先复用变量区和方向计划，禁止重复展开长列表和业务文件全文。
+4. 业务定制文件中的流程级定制和步骤级定制优先级最高，可覆盖本 Skill 和平台统一 Skill 的默认模板与规则。
+5. OAG、OAC、Function 委托必须使用自然语言输入模板和期望输出格式；业务定制文件可覆盖模板内容。
+6. S4 OAC 最终输出是对象结构 `{objects, relationships}`；`operationDecision`、`oql`、`validation` 不作为最终输出字段。
+7. 字段必须来自子图 property 并通过 `has_property` 确认归属。
+8. 关系必须来自 `defines_relation.properties.name`。
+9. Function 必须来自 `result.functions` 或上层可信函数目标；函数参数必须来自 `get_params_spec`。
+10. 调用函数时统一使用 `physicalName`，不得使用自造字段名。
+11. 空结果是有效结果，不自动放宽条件重试。
+12. 对外只暴露公共本体ID；不得要求业务 Skill 同时填写子图检索 ontologyId 和本体访问 schemaRef。
