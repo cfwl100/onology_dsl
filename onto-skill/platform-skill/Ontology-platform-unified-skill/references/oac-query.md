@@ -68,19 +68,19 @@
 - `maxResults` 使用旧对象格式。
 - `version` 未使用 schema 声明的初始版本。
 
-默认校验命令：
+默认校验命令使用通用 shell 表达，不绑定 PowerShell、Bash 或具体终端：
 
-```powershell
+```sh
 python scripts/validate_oql.py --oac-json '<compact-single-line-oql-json>'
 ```
 
-OQL 过长或 shell 转义风险较高时使用 stdin，而不是临时文件：
+OQL 过长、命令行长度受限或 shell 转义风险较高时，使用标准输入，而不是临时文件：
 
-```powershell
-'<compact-single-line-oql-json>' | python scripts/validate_oql.py --input -
+```sh
+printf '%s' '<compact-single-line-oql-json>' | python scripts/validate_oql.py --input -
 ```
 
-只有 debug、失败复现或用户明确要求保存时才允许写文件；写文件时使用 `--input <file>`，不得使用旧参数 `--oql_file`。
+如果运行环境不是 POSIX shell，使用等价的“向标准输入写入完整 OQL JSON，再调用 `--input -`”方式。只有 debug、失败复现或用户明确要求保存时才允许写文件；写文件时使用 `--input <file>`，不得使用旧参数 `--oql_file`。
 
 ## 最小示例
 
