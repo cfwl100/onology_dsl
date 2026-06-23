@@ -51,10 +51,28 @@ metadata:
 1. 读取 `references/oac-data-access.md`。
 2. 进入唯一 OAC 子操作文档。
 3. 读取对应 schema；operation 文档内已包含最小示例，不再读取独立 examples 目录。
-4. 生成 OQL JSON。
-5. 使用 `scripts/validate_oql.py` 做结构和语义校验。
+4. 生成 OQL JSON，并保持紧凑单行格式。
+5. 使用 `scripts/validate_oql.py` 做结构和语义校验。默认使用 `--oac-json '<compact-json>'` 或 `--input -`，禁止写 `temp_oql*.json` 临时文件。
 6. 校验失败时根据错误修复，不得直接执行。
-7. 用户明确要求执行时，才调用 `scripts/execute_oac_operation.py`。
+7. 用户明确要求执行时，才调用 `scripts/execute_oac_operation.py`。默认使用 `--oac-json '<compact-json>'` 或 `--input -`，禁止先写临时 OQL 文件再执行。
+
+## OQL 无文件传递规则
+
+默认执行态必须在内存中传递 OQL：
+
+```powershell
+python scripts/validate_oql.py --oac-json '<compact-single-line-oql-json>'
+python scripts/execute_oac_operation.py --oac-json '<compact-single-line-oql-json>' --message-type '<message_type>'
+```
+
+当 OQL 过长或 shell 转义风险较高时，使用 stdin，而不是临时文件：
+
+```powershell
+'<compact-single-line-oql-json>' | python scripts/validate_oql.py --input -
+'<compact-single-line-oql-json>' | python scripts/execute_oac_operation.py --input - --message-type '<message_type>'
+```
+
+禁止默认写入 `temp_oql*.json`、`oql_same_site.json`、`oql_*.json`。只有用户明确要求保存、`traceMode=debug`、失败复现或 stdin 不可用时，才允许使用文件；使用文件时必须通过 `--input <file>`，不得使用旧参数 `--oql_file`。
 
 ## 缺失信息识别
 
@@ -71,6 +89,7 @@ metadata:
 - 不在未校验 OQL 的情况下执行数据访问。
 - 不在未知函数参数规格时直接调用函数。
 - 用户明确指定完整多跳路径时，不拆成多个单跳查询。
+- 默认执行态不写 OQL 临时文件；OQL 中间过程只作为内存变量或 stdin 内容传递。
 
 ## 内部目录说明
 
