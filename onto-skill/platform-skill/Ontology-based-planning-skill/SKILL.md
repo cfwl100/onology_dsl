@@ -99,13 +99,6 @@ S2 子图检索 -> S3 基于子图的任务规划 -> S5 Function 发现 -> S6 Fu
 ```text
 subgraphOutput：
 - rawSubgraph：OAG 返回的原始图结构
-- objectCandidates：对象候选
-- propertyOwnership：字段归属
-- relationCandidates：关系候选
-- functionCandidates：函数候选
-- returnStructure：按业务返回结构要求裁剪后的子图摘要
-- missingItems：缺失对象、字段、关系或函数
-- conflicts：冲突项
 ```
 
 规则：OAG 返回结构是对象、字段、关系、函数的事实来源。业务规则只能影响检索范围、召回重点、返回字段裁剪和缺失项判定，不能替代 OAG 事实。
@@ -120,7 +113,7 @@ subgraphOutput：
 基于本体子图规划执行任务
 本体ID：<本体ID>
 业务意图：<业务意图>
-本体子图：<S2.subgraphOutput.returnStructure；必要时引用 rawSubgraph>
+本体子图：<S2.subgraphOutput.rawSubgraph>
 业务规划规则：<业务定制文件内容和步骤级定制中与 S3 相关的规则；没有则写无>
 规划目标：<起点对象、终点对象、是否需要 Function、是否多步执行>
 ```
