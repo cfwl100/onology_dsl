@@ -1,81 +1,57 @@
 ---
 name: explicit-steps-mode-demo
-description: 显式步骤执行模式 Skill 示例。上层业务已经给出完整执行步骤，Ontology-based-planning-skill 只负责检查、绑定、委托执行和汇总；每个 OAG/OAC/Function 步骤仍必须使用自然语言输入模板。
+description: 显式流程定制模式 Skill 示例。业务侧明确流程级和步骤级定制，仍按当前 6 行 Planning 输入协议委托 Ontology-based-planning-skill。
 allowed_tools:
+metadata:
+  mode: explicit_flow_demo
+  planning_protocol: six-line-business-domain-knowledge
+  planning_steps: S1-S6
 ---
 
-# 显式步骤执行模式 Skill 示例
+# 显式流程定制模式 Skill 示例
 
-## 定位
+## 1. 定位
 
-你是上层业务 Skill 示例。当业务侧已经明确执行步骤时，可以直接构造 `steps` 传给 `Ontology-based-planning-skill`。
+你是上层业务 Skill 示例。业务侧已经明确流程和每步业务规则时，仍然使用 6 行自然语言顶层模板交给 `Ontology-based-planning-skill`。
 
-此模式适合：
+不要构造 JSON steps。
 
-- 业务 SOP 已经固定。
-- 查询路径和返回目标已经明确。
-- 希望规划层只做步骤检查、执行委托、结果绑定和汇总。
+## 2. 当前 Planning 输入
 
-## 显式步骤规则
-
-即使使用显式步骤，仍必须遵守：
-
-- 对外只使用公共 `本体ID`，不要求同时填写 `ontologyId` 和 `schemaRef`。
-- 每个 OAG、OAC、Function 步骤的 `input` 必须是对应模块的自然语言输入模板，或被业务定制文件明确覆盖。
-- OAC 步骤仍必须依赖 OAG 子图结果确认对象、字段、关系。
-- OAC 最终只返回 `{objects, relationships}` 对象结构。
-- Function 步骤仍必须基于 `result.functions` 或可信函数目标。
-
-## 传给规划层的显式步骤输入示例
-
-```json
-{
-  "businessIntent": "按固定步骤查询船舶及船舶计划信息",
-  "ontologyId": "dtmi.ontology.560d88f7.1",
-  "steps": [
-    {
-      "stepId": "step1_search_subgraph",
-      "actionType": "OAG",
-      "input": "先找相关子图。\n本体ID：dtmi.ontology.560d88f7.1\n业务意图：查询船舶及其船舶计划信息，需要从船舶对象出发查找到船舶计划对象。\n业务定制文件：无。\n子图检索规则：检索 ship_info、ship_plan、对象属性和对象关系相关本体子图。\n检索目标：查找船舶对象、船舶计划对象、字段归属和对象间关系。\n子图返回结构要求：保留 result.seedNodes、result.nodes、result.edges、result.functions、result.actions 完整结构。\n期望输出：返回原始图结构 JSON，并摘要对象、字段归属和关系候选。",
-      "expectedOutput": "返回 ship_info、ship_plan、属性字段和关系边"
-    },
-    {
-      "stepId": "step2_plan_from_subgraph",
-      "actionType": "SUBGRAPH_PLAN",
-      "dependsOn": ["step1_search_subgraph"],
-      "input": "基于本体子图规划执行任务。\n本体ID：dtmi.ontology.560d88f7.1\n业务意图：基于船舶到船舶计划的子图结构规划关联查询任务。\n本体子图结果：绑定 step1_search_subgraph 输出。\n业务定制规划规则文件：无。\n规划目标：从【ship_info】出发，查找到【ship_plan】。\n可用结构依据：使用子图确认的 objectType、property、has_property、defines_relation。\n业务规划规则：如果存在对象间关系，规划 ASSOCIATION_QUERY；否则返回缺失关系。\n期望输出：返回 OAC 计划步骤和所需查询依据。",
-      "expectedOutput": "返回基于子图的关联查询任务规划"
-    },
-    {
-      "stepId": "step3_query_data",
-      "actionType": "OAC",
-      "dependsOn": ["step2_plan_from_subgraph"],
-      "input": "查数据\n本体ID：dtmi.ontology.560d88f7.1\n操作类型：ASSOCIATION_QUERY\n查询对象：来自子图的 ship_info 和 ship_plan。\n关系路径：使用 step2 规划出的 defines_relation.properties.name。\n过滤条件：如用户提供船舶类型或船舶编号，使用子图确认字段。\n返回要求：返回船舶和船舶计划相关字段，maxResults 为1000，空结果视为有效结果。\n执行要求：先生成并校验 OQL；通过后再执行；结果为空视为有效结果，不自动放宽条件重试。\n期望输出：只返回对象结构结果，包含 objects 和 relationships；不输出 operationDecision、oql、validation。",
-      "expectedOutput": "返回 {objects, relationships} 对象结构"
-    },
-    {
-      "stepId": "step4_summary",
-      "actionType": "SUMMARY",
-      "dependsOn": ["step3_query_data"],
-      "input": "汇总查询结果，保留平台返回对象结构，说明使用的本体ID、子图依据和空结果情况。",
-      "expectedOutput": "自然语言汇总结果"
-    }
-  ]
-}
+```text
+本体ID：<公共本体ID>
+业务意图：<详细自然语言问题>
+业务领域知识：<场景知识、规则来源、子图检索规则、任务规划规则、查询规则、返回要求、Function 规则和失败策略；没有则写无>
+流程级定制：<明确步骤顺序、跳过和追加；无覆盖写“使用默认流程”>
+步骤级定制：<逐步说明相对默认步骤模板的业务增量规则；无增量写“使用默认步骤模板”>
+缺失信息：<没有则写无>
 ```
 
-## 规划层职责
+## 3. 当前步骤编号
 
-`Ontology-based-planning-skill` 收到上述输入后：
+```text
+S1 子图检索
+S2 基于本体子图的任务规划
+S3 OAC 查询
+S4 Function 发现
+S5 Function 执行
+S6 汇总
+```
 
-1. 检查每个 step 是否包含 `stepId`、`actionType`、`input`、`expectedOutput`。
-2. 检查 OAG、OAC、Function 步骤是否使用自然语言输入模板。
-3. 执行子图检索后解析子图。
-4. 执行 OAC 前确认字段归属和关系来源。
-5. 汇总时保留平台返回对象结构，不做字段归一化。
+## 4. 示例
 
-## 约束
+```text
+本体ID：dtmi.ontology.560d88f7.1
+业务意图：查询船舶及其船舶计划信息；从船舶对象出发，基于本体子图确认船舶到船舶计划的关系路径，并返回船舶与计划相关字段。
+业务领域知识：ship_info 是船舶对象，ship_plan 是船舶计划对象；字段必须由 has_property 确认归属；对象间关系必须由 defines_relation.properties.name 确认；空结果视为有效结果。
+流程级定制：使用流程 S1 -> S2 -> S3 -> S6；不使用 S4/S5 Function。
+步骤级定制：S1 检索 ship_info、ship_plan、字段归属和对象关系子图；S2 规划从 ship_info 到 ship_plan 的关联查询任务；S3 使用 ASSOCIATION_QUERY，关系名来自 defines_relation.properties.name，返回 objects/relationships；S6 汇总子图依据、查询依据和结果。
+缺失信息：无
+```
 
-- 显式 steps 不代表可以绕过子图校验。
-- `OAC` 步骤仍必须使用子图中的对象、字段和关系。
-- 查询结果为空时，不自动重复查询。
+## 5. 约束
+
+- 显式流程定制不能绕过子图校验。
+- S3 使用 S1/S2 确认的对象、字段和关系。
+- Function 只在业务领域知识或流程级定制明确要求时进入 S4/S5。
+- 结果为空时，不自动放宽条件。
