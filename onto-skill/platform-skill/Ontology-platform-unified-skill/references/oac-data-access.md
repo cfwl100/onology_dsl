@@ -80,9 +80,9 @@ OAC 最终输出必须是对象结构。
 2. 读取对应 operation 手册。
 3. 读取对应 schema。operation 手册内已包含最小示例，不再读取独立 examples 目录。
 4. 基于业务意图、业务规则和 OAG 子图依据生成 OQL JSON。
-5. 使用 `scripts/validate_oql.py` 校验。
+5. 使用 `scripts/validate_oql.py` 校验。默认必须通过 `--oac-json` 或 `--input -` 传入 OQL，不写 `temp_oql*.json` 临时文件。
 6. 校验失败时修复，不得执行。
-7. 用户或 planning 明确要求执行时，调用 `scripts/execute_oac_operation.py`。
+7. 用户或 planning 明确要求执行时，调用 `scripts/execute_oac_operation.py`。默认必须通过 `--oac-json` 或 `--input -` 传入 OQL，不写临时输入文件。
 8. 将执行结果转换为 `{objects, relationships}` 对象结构返回。
 
 ## 7. Schema 权威规则
@@ -106,11 +106,36 @@ OQL 顶层结构、`version`、`schemaRef`、`returns` 类型、字段语法、`
 - 自然语言中的单位、同义词、业务别名可以由业务 Skill 说明，但最终 OQL 字段名必须是平台字段。
 - 业务定制知识中的查询类型和返回字段可覆盖默认模板，但不能越过 schema、validator 和子图确认结果。
 
-## 10. 校验与执行
+## 10. 校验与执行：无临时文件优先
 
-| 脚本 | 作用 |
-|---|---|
-| `scripts/validate_oql.py` | 对 OQL JSON 做结构和语义校验。 |
-| `scripts/execute_oac_operation.py` | 在用户或 planning 明确要求执行时调用 OAC 服务。 |
+| 脚本 | 作用 | 默认推荐调用 |
+|---|---|---|
+| `scripts/validate_oql.py` | 对 OQL JSON 做结构和语义校验。 | `python scripts/validate_oql.py --oac-json '<compact-json>'` |
+| `scripts/execute_oac_operation.py` | 在用户或 planning 明确要求执行时调用 OAC 服务。 | `python scripts/execute_oac_operation.py --oac-json '<compact-json>' --message-type '<type>'` |
 
 执行前必须先完成 `validate_oql.py` 校验。校验失败时只修复 OQL，不直接执行。
+
+默认运行禁止写 `temp_oql*.json`、`oql_same_site.json`、`oql_*.json` 等临时 OQL 文件。原因是写文件会增加一次文件 I/O、一次路径/编码/清理成本，并容易诱发错误参数，例如旧的 `--oql_file`。校验和执行应优先在内存中传递紧凑 OQL JSON。
+
+推荐方式：
+
+```powershell
+python scripts/validate_oql.py --oac-json '<compact-single-line-oql-json>'
+python scripts/execute_oac_operation.py --oac-json '<compact-single-line-oql-json>' --message-type '<message_type>'
+```
+
+当 OQL JSON 过长、命令行转义风险较高，或 Windows 命令长度可能超限时，仍然不要落文件，改用 stdin：
+
+```powershell
+'<compact-single-line-oql-json>' | python scripts/validate_oql.py --input -
+'<compact-single-line-oql-json>' | python scripts/execute_oac_operation.py --input - --message-type '<message_type>'
+```
+
+只有以下情况允许写文件：
+
+- 用户明确要求保存 OQL 文件。
+- `traceMode=debug` 且需要归档完整 OQL。
+- 校验或执行失败后，为复现问题而保存一次 debug 文件。
+- OQL 内容超过当前 shell 可安全传递长度，且 stdin 不可用。
+
+即使允许写文件，也必须使用脚本支持的参数：`--input <file>`，不得使用不存在或旧式参数 `--oql_file`。
