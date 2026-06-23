@@ -117,19 +117,21 @@ OQL 顶层结构、`version`、`schemaRef`、`returns` 类型、字段语法、`
 
 默认运行禁止写 `temp_oql*.json`、`oql_same_site.json`、`oql_*.json` 等临时 OQL 文件。原因是写文件会增加一次文件 I/O、一次路径/编码/清理成本，并容易诱发错误参数，例如旧的 `--oql_file`。校验和执行应优先在内存中传递紧凑 OQL JSON。
 
-推荐方式：
+推荐方式使用通用 shell 表达，不绑定 PowerShell、Bash 或具体终端：
 
-```powershell
+```sh
 python scripts/validate_oql.py --oac-json '<compact-single-line-oql-json>'
 python scripts/execute_oac_operation.py --oac-json '<compact-single-line-oql-json>' --message-type '<message_type>'
 ```
 
-当 OQL JSON 过长、命令行转义风险较高，或 Windows 命令长度可能超限时，仍然不要落文件，改用 stdin：
+当 OQL JSON 过长、命令行长度受限或 shell 转义风险较高时，仍然不要落文件，改用 stdin：
 
-```powershell
-'<compact-single-line-oql-json>' | python scripts/validate_oql.py --input -
-'<compact-single-line-oql-json>' | python scripts/execute_oac_operation.py --input - --message-type '<message_type>'
+```sh
+printf '%s' '<compact-single-line-oql-json>' | python scripts/validate_oql.py --input -
+printf '%s' '<compact-single-line-oql-json>' | python scripts/execute_oac_operation.py --input - --message-type '<message_type>'
 ```
+
+如果运行环境不是 POSIX shell，使用等价的“向标准输入写入完整 OQL JSON，再调用 `--input -`”方式。不要为了适配不同 shell 默认落临时文件。
 
 只有以下情况允许写文件：
 
