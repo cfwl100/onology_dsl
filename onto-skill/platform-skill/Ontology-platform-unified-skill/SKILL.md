@@ -58,19 +58,11 @@ metadata:
 
 ## OQL 无文件传递规则
 
-默认执行态必须在内存中传递 OQL：
+默认执行态必须在内存中传递 OQL。命令示例只使用通用 shell 语义，不绑定 PowerShell、Bash 或具体终端；具体命令以 `references/oac-data-access.md` 和三个 OAC operation 手册为准。
 
-```powershell
-python scripts/validate_oql.py --oac-json '<compact-single-line-oql-json>'
-python scripts/execute_oac_operation.py --oac-json '<compact-single-line-oql-json>' --message-type '<message_type>'
-```
-
-当 OQL 过长或 shell 转义风险较高时，使用 stdin，而不是临时文件：
-
-```powershell
-'<compact-single-line-oql-json>' | python scripts/validate_oql.py --input -
-'<compact-single-line-oql-json>' | python scripts/execute_oac_operation.py --input - --message-type '<message_type>'
-```
+- 短 OQL：优先使用脚本参数 `--oac-json <compact-single-line-oql-json>`。
+- 长 OQL 或转义风险较高：优先把完整 OQL JSON 写入标准输入，并使用 `--input -`。
+- 非 POSIX shell：使用等价的标准输入传递能力，不因为 shell 差异默认落临时文件。
 
 禁止默认写入 `temp_oql*.json`、`oql_same_site.json`、`oql_*.json`。只有用户明确要求保存、`traceMode=debug`、失败复现或 stdin 不可用时，才允许使用文件；使用文件时必须通过 `--input <file>`，不得使用旧参数 `--oql_file`。
 
