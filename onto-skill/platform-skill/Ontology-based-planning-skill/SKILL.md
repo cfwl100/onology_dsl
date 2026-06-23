@@ -26,13 +26,6 @@ metadata:
 4. 根据步骤级定制调用 OAG、OAC、Function 能力。
 5. 维护 compact 步骤执行摘要，避免重复展开业务文件、标准模板和长列表。
 
-本 Skill 不承载对外接口详解、标准步骤模板全文或业务定制模板说明。相关说明统一沉淀在：
-
-```text
-onto-skill/docs/planning-input-interface.md
-onto-skill/docs/standard-step-templates.md
-```
-
 ## 2. 对外输入
 
 业务定制 Skill 调用本层时，使用如下 7 行自然语言格式：
@@ -46,8 +39,6 @@ onto-skill/docs/standard-step-templates.md
 步骤级定制：<S2/S3/S4/S5/S6/S7 的 stepTemplateRef、contractRef、变量引用、业务增量规则和失败策略>
 缺失信息：<没有则写无>
 ```
-
-填写规范见 `onto-skill/docs/planning-input-interface.md`。本层只解析该输入，不要求业务 Skill 构造复杂 JSON 或嵌套 stepContracts。
 
 ## 3. 默认 S1-S7 执行步骤
 
