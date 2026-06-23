@@ -4,8 +4,8 @@ description: 故障传播分析业务定制 Skill。当用户提到查询网元�
 allowed_tools:
 metadata:
   mode: customized_planning
-  injection: natural-language-first-flow-and-step-customization
-  optimization: compact-planning-delegation-package-with-step-template-ref
+  injection: simplified-natural-language-planning-input
+  optimization: compact-business-customization-template
 ---
 
 # 故障传播分析 Skill
@@ -19,145 +19,197 @@ metadata:
 1. 识别唯一主意图。
 2. 读取当前意图对应的业务定制文件。
 3. 将用户问题改写成详细自然语言业务意图。
-4. 抽取变量、方向、长告警列表和返回要求。
-5. 生成一次性的 `planningDelegationPackage`，以“流程级定制 + 步骤级定制 + 变量区 + 引用型 stepContracts”的紧凑形式交给 `Ontology-based-planning-skill`。
+4. 抽取必要变量，例如网元名、方向、告警列表、返回字段、message_type。
+5. 按 `Ontology-based-planning-skill` 的 7 行顶层输入模板输出业务定制内容。
 
 你不直接调用原始 Tool，不直接生成最终查询语言，不直接执行平台函数。
 
-## 2. 与本体规划层的关系
+## 2. 主意图识别
 
-`Ontology-based-planning-skill` 自带默认流程：
+只允许识别一个主意图。
+
+| 主意图 | 触发表达 | 业务定制文件 |
+|---|---|---|
+| `nealarm_query` | 查询某网元上的当前/活动告警 | `knowledge/nealarm.md` |
+| `propagation_relation_query` | 查询某告警分类的传播关系、影响关系、依赖关系 | `knowledge/propagation_relation.md` |
+| `propagation_evidence_check` | 验证同站点、同机房、对端网元、业务路径上是否存在活动告警 | `knowledge/evidence.md` |
+
+如果多个意图同时出现，优先选择用户最核心的问题；禁止同时执行多个主意图，除非用户明确要求多任务。
+
+## 3. 与 Planning 层的关系
+
+`Ontology-based-planning-skill` 负责解析和执行以下流程：
 
 ```text
 S1 读取业务注入与整理上下文
-  -> S2 子图检索
-  -> S3 基于本体子图的任务规划
-  -> S4 OAC 查询
-  -> S5 Function 发现
-  -> S6 Function 执行
-  -> S7 汇总
+S2 子图检索
+S3 基于本体子图的任务规划
+S4 OAC 查询
+S5 Function 发现
+S6 Function 执行
+S7 汇总
 ```
 
-本业务 Skill 只负责注入两类定制内容：
+本业务 Skill 只注入两类业务定制：
 
-1. **流程级定制**：哪些步骤执行、是否跳过 Function、是否每个方向串行执行、步骤顺序是什么。
-2. **步骤级定制**：每个步骤使用哪个标准步骤模板、哪个业务契约、哪些变量、哪些依赖、哪些失败策略。
+1. **流程级定制**：执行哪些步骤、顺序是什么、跳过哪些步骤、是否多方向独立执行。
+2. **步骤级定制**：每个步骤使用哪个标准模板、哪条业务规则、哪些变量、输入输出是什么、失败策略是什么。
 
-业务定制文件内容必填。流程级定制和步骤级定制优先级最高，可以覆盖 `Ontology-based-planning-skill` 和 `Ontology-platform-unified-skill` 中默认的流程、模板、输出格式和执行规则。
-
-覆盖的是 Skill 默认规则和模板；如果平台返回缺少业务要求的对象、字段、关系、函数或参数规格，必须输出缺失或冲突说明，不得编造平台事实。
-
-## 3. 一次性委托包与引用型步骤契约
-
-为减少 opencode 运行中的重复解释、重复压缩和长上下文展开，本 Skill 必须使用一次性委托包 `planningDelegationPackage`。
-
-### 3.1 生成原则
-
-1. 当前意图只读取一次对应业务定制文件。
-2. 只生成一次 `planningDelegationPackage`，后续禁止再次完整展开相同的业务意图、流程级定制和步骤级定制。
-3. 长告警列表只在 `variables` 中完整保存一次，其他位置只通过变量名引用。
-4. `业务意图` 必须是压缩后的详细自然语言任务，不能反复粘贴完整告警列表。
-5. `流程级定制` 和 `步骤级定制` 只写规则摘要、规则编号、标准模板编号、业务契约编号和变量引用，禁止重复粘贴 evidence.md 全文。
-6. `stepContracts` 默认必须使用**标准模板 + 业务增量契约**的引用模式，只列出 `stepTemplateRef / contractRef / variablesRef / inputRefs / dependsOn / expectedOutputRef / failurePolicyRef`。
-7. S2/S3/S4/S5/S6/S7 的标准输入、标准输出、标准执行规则和标准失败策略来自 Planning 标准模板库 `references/standard-step-templates.md`，默认运行不展开全文。
-8. evidence 场景的方向、对象、字段、路径、过滤条件、返回要求等业务差异来自 `knowledge/evidence.md` 中的 `contractRef`，默认运行只引用编号。
-9. Planning 层收到 `planningDelegationPackage` 后，应直接复用变量区、方向计划、引用型 stepContracts 和规则摘要；除非缺失或冲突，不要求二次整理同一业务文件全文。
-10. S4 OAC 默认不得写 `temp_oql*.json`、`oql_same_site.json`、`oql_*.json` 临时文件；必须通过 `--oac-json` 或 `--input -` 在内存或 stdin 中传递 OQL。
-
-### 3.2 长列表变量化
-
-当用户输入包含长告警列表时，必须按方向绑定变量：
+步骤的标准输入输出不在本业务 Skill 中展开，统一由 Planning 标准模板库提供：
 
 ```text
-variables:
-  alarmNames_same_site: [完整告警类型列表]
-  alarmNames_peer_ne: [完整告警类型列表]
-  alarmNames_service_path: [完整告警类型列表]
+Ontology-based-planning-skill/references/standard-step-templates.md
 ```
 
-后续业务意图、流程级定制、步骤级定制、stepContracts、S3 plannedTask 和 S4 OAC 模板中只引用：
+## 4. 输出给 Planning 层的顶层模板
+
+必须按如下 7 行输出给 `Ontology-based-planning-skill`：
 
 ```text
-终点 alarm.alarmName ∈ ${alarmNames_same_site}
+本体ID：<公共本体ID>
+业务意图：<详细自然语言问题>
+已读取业务定制文件：<knowledge / rules / templates 文件路径；必填>
+业务定制文件内容：<业务文件原文或完整摘录>
+流程级定制：<执行步骤、顺序、跳过、追加>
+步骤级定制：<S2/S3/S4/S5/S6/S7 的 stepTemplateRef、contractRef、变量引用、业务增量规则和失败策略>
+缺失信息：<没有则写无>
 ```
 
-只有在最终生成 OAC 查询语言时，才允许把变量展开为完整 `values`。
+不要输出复杂 JSON，不要输出嵌套 `stepContracts`，不要把标准步骤模板全文粘贴到业务定制内容中。
 
-### 3.3 委托包模板
+## 5. 字段填写规则
 
-向 planning 层发送如下紧凑委托包：
+### 5.1 本体ID
+
+格式：
 
 ```text
-planningDelegationPackage:
-  本体ID：network@1.0
-  traceMode：compact
-  业务意图：<不重复展开长告警列表的详细自然语言任务>
-  已读取业务定制文件：<knowledge 文件路径；必填>
-  业务定制摘要：<只保留核心规则摘要和规则编号，不粘贴全文>
-  variables：<长列表、网元名、方向标识、返回字段、message_type 等变量区；长列表只出现一次>
-  directionPlans：<每个方向一条计划，包含 directionKey、directionName、neNameRef、alarmNamesRef、messageType、requiredFlow>
-  流程级定制：<引用 directionPlans 和规则编号；不重复展开 direction 内容>
-  步骤级定制：<按 S2/S3/S4/S7 写 stepTemplateRef、contractRef 和变量引用；不重复展开长列表>
-  stepContracts：<按方向生成引用型 S2/S3/S4/S7 契约；禁止默认展开模板全文>
-  缺失信息：<无法确认的信息；没有则写无>
+本体ID：network@1.0
 ```
 
-### 3.4 引用型 stepContracts 默认格式
+如果无法确认本体ID，写入缺失信息，不要猜测。
 
-`stepContracts` 是让 Planning 层真正体现 S2/S3/S4 输入输出模板的强制交付物。默认采用标准模板 + 业务契约双引用，避免重复输出模板全文。
+### 5.2 业务意图
 
-每个待执行方向必须独立生成一组 stepContracts：
+必须是详细自然语言任务。长告警列表必须使用变量引用，不要反复粘贴完整列表。
+
+示例：
 
 ```text
-stepContracts:
-  - stepId：S2_<directionKey>_subgraph
-    actionType：OAG
-    stepTemplateRef：standard.S2.oag
-    contractRef：evidence.<directionKey>.S2.subgraph
-    variablesRef：[neName_<directionKey>, alarmNames_<directionKey>, returnFields_ne, returnFields_alarm, messageType_<directionKey>]
-    expectedOutputRef：subgraphOutput
-    dependsOn：[]
-    failurePolicyRef：evidence.common.fail.stop_on_empty_subgraph
-
-  - stepId：S3_<directionKey>_plan
-    actionType：SUBGRAPH_PLAN
-    stepTemplateRef：standard.S3.subgraphPlan
-    contractRef：evidence.<directionKey>.S3.plan
-    inputRefs：[S2_<directionKey>_subgraph.subgraphOutput, variables, directionPlans.<directionKey>]
-    expectedOutputRef：plannedTasks
-    dependsOn：[S2_<directionKey>_subgraph]
-    failurePolicyRef：evidence.common.fail.stop_on_unplannable_subgraph
-
-  - stepId：S4_<directionKey>_oac
-    actionType：OAC
-    stepTemplateRef：standard.S4.oac
-    contractRef：evidence.<directionKey>.S4.oac
-    inputRefs：[variables, S2_<directionKey>_subgraph.subgraphOutput, S3_<directionKey>_plan.plannedTasks]
-    variablesRef：[neName_<directionKey>, alarmNames_<directionKey>, returnFields_ne, returnFields_alarm, messageType_<directionKey>]
-    expectedOutputRef：objectStructure
-    dependsOn：[S3_<directionKey>_plan]
-    failurePolicyRef：evidence.common.fail.valid_empty_result_no_retry
-
-  - stepId：S7_<directionKey>_summary
-    actionType：SUMMARY
-    stepTemplateRef：standard.S7.summary
-    contractRef：evidence.<directionKey>.S7.summary
-    inputRefs：[S2_<directionKey>_subgraph.record, S3_<directionKey>_plan.record, S4_<directionKey>_oac.record]
-    expectedOutputRef：directionEvidenceSummary
-    dependsOn：[S4_<directionKey>_oac]
-    failurePolicyRef：evidence.common.fail.summary_only_no_rerun
+业务意图：验证起始网元 ${neName_same_site} 的同站点范围内，是否存在名称属于 ${alarmNames_same_site} 的活动告警，并返回相关网元和告警对象结构。
 ```
 
-默认运行严禁在 `stepContracts` 中展开完整 `input` 和 `expectedOutput` 模板。完整模板只在以下情况展开：
+### 5.3 已读取业务定制文件
 
-- 用户明确要求 `debug`、`full trace`、`展示完整步骤输入输出`。
-- stepTemplateRef 或 contractRef 校验失败。
-- S2/S3/S4 任一步骤缺少必要变量、关系、字段、函数或参数规格。
-- 平台执行失败并需要定位失败原因。
+必须写当前意图对应的文件路径。
 
-### 3.5 OQL 无临时文件规则
+示例：
 
-OAC 查询步骤只允许在内存或 stdin 中传递 OQL。默认调用方式使用通用 shell 形式描述，不绑定 PowerShell：
+```text
+已读取业务定制文件：knowledge/evidence.md
+```
+
+如果业务文件读取失败，返回 `MISSING_BUSINESS_CUSTOMIZATION_FILE`。
+
+### 5.4 业务定制文件内容
+
+可以填写业务文件原文，也可以填写与当前意图相关的完整摘录。为了提高执行效率，只摘录当前主意图相关章节，不复制无关规则。
+
+### 5.5 流程级定制
+
+必须用自然语言说明执行顺序。推荐格式：
+
+```text
+流程级定制：执行 S1 -> S2 -> S3 -> S4 -> S7；不执行 S5/S6 Function；每个方向独立执行；S4 空结果视为有效结果，不自动放宽条件重试。
+```
+
+如果只查询网元告警，也使用：
+
+```text
+流程级定制：执行 S1 -> S2 -> S3 -> S4 -> S7；不执行 S5/S6 Function。
+```
+
+如果业务确实需要函数：
+
+```text
+流程级定制：执行 S1 -> S2 -> S3 -> S5 -> S6 -> S4 -> S7；Function 用于前置补齐查询参数。
+```
+
+### 5.6 步骤级定制
+
+必须使用“标准模板 + 业务规则 + 变量引用 + 输出 + 失败策略”的自然语言格式。
+
+传播证据验证推荐格式：
+
+```text
+步骤级定制：
+S2 子图检索：使用标准模板 standard.S2.oag，业务规则使用 evidence.${directionKey}.S2.subgraph，变量使用 neName_${directionKey}、alarmNames_${directionKey}、returnFields_ne、returnFields_alarm、messageType_${directionKey}；输出 subgraphOutput；子图为空则停止后续步骤。
+S3 基于子图规划：使用标准模板 standard.S3.subgraphPlan，业务规则使用 evidence.${directionKey}.S3.plan，输入使用 S2.subgraphOutput、变量区和 ${directionKey} 方向计划；输出 plannedTasks；不能规划合法路径则停止 S4。
+S4 OAC查询：使用标准模板 standard.S4.oac，业务规则使用 evidence.${directionKey}.S4.oac，输入使用变量区、S2.subgraphOutput 和 S3.plannedTasks；输出 objects 与 relationships；空结果是有效结果，不自动重试。
+S7 汇总：使用标准模板 standard.S7.summary，业务规则使用 evidence.${directionKey}.S7.summary，输入使用上游结果摘要；输出最终业务结论。
+```
+
+不要在步骤级定制中展开 S2/S3/S4/S7 的标准输入输出模板全文。
+
+### 5.7 缺失信息
+
+没有缺失时固定写：
+
+```text
+缺失信息：无
+```
+
+如果缺少本体ID、业务文件、变量、方向、告警列表或用户必要条件，必须明确列出。
+
+## 6. 变量抽取规则
+
+### 6.1 长告警列表变量化
+
+当用户输入包含长告警列表时，必须绑定变量：
+
+```text
+variables：
+alarmNames_same_site = [完整告警类型列表]
+alarmNames_peer_ne = [完整告警类型列表]
+alarmNames_service_path = [完整告警类型列表]
+```
+
+在 `业务意图`、`流程级定制` 和 `步骤级定制` 中只引用变量名，例如：
+
+```text
+alarm.alarmName ∈ ${alarmNames_same_site}
+```
+
+只有最终生成 OAC 查询语言时，才允许展开完整 `values`。
+
+### 6.2 方向变量
+
+用户指定“同站点/同机房”时：
+
+```text
+directionKey = same_site
+directionName = 同站点/同机房
+```
+
+用户指定“对端网元”时：
+
+```text
+directionKey = peer_ne
+directionName = 对端网元
+```
+
+用户指定“业务路径”时：
+
+```text
+directionKey = service_path
+directionName = 业务路径
+```
+
+多方向查询时，每个方向独立执行 S2 -> S3 -> S4 -> S7，不共享中间结果，除非业务文件明确允许。
+
+## 7. OQL 无临时文件规则
+
+OAC 查询步骤只允许在内存参数或 stdin 中传递 OQL。默认使用通用 shell 表达，不绑定 PowerShell：
 
 ```sh
 python scripts/validate_oql.py --oac-json '<compact-json>'
@@ -171,15 +223,16 @@ printf '%s' '<compact-json>' | python scripts/validate_oql.py --input -
 printf '%s' '<compact-json>' | python scripts/execute_oac_operation.py --input - --message-type '<message_type>'
 ```
 
-禁止默认写 `temp_oql*.json`、`oql_same_site.json`、`oql_*.json`。只有用户明确要求保存、`traceMode=debug`、失败复现或 stdin 不可用时，才允许写文件；写文件时必须使用 `--input <file>`，不得使用旧参数 `--oql_file`。
+如果运行环境不是 POSIX shell，应使用等价的标准输入方式。禁止因为 shell 差异默认写 `temp_oql*.json`。只有用户明确要求保存、debug、失败复现或 stdin 不可用时，才允许写文件；写文件时必须使用 `--input <file>`。
 
-### 3.6 重复上下文禁止项
+## 8. 禁止项
 
 严格禁止：
 
-- 在 `业务意图`、`流程级定制`、`步骤级定制`、`stepContracts` 中重复粘贴同一份长告警列表。
-- 在 `stepContracts` 中默认展开 S2/S3/S4/S7 的完整标准模板或业务模板。
-- 同时传 `业务定制文件全文` 和 `业务定制摘要` 的大段重复内容。
-- 在多个方向共享同一个告警列表变量，除非用户明确说明相同。
-- 已生成 `planningDelegationPackage` 后，再次重新组织相同 evidence.md 规则。
-- 为“确认、优化、换一种说法”重复生成新的委托包。
+- 输出复杂嵌套 `planningDelegationPackage` 或 `stepContracts` JSON。
+- 在步骤级定制中复制标准步骤模板全文。
+- 在业务意图、流程级定制、步骤级定制中重复粘贴长告警列表。
+- 同一任务重复读取和压缩同一份业务文件。
+- S4 重新解释用户原始问题或业务文件全文。
+- 默认写临时 OQL 文件。
+- 编造 OAG/OAC/Function 未返回的对象、字段、关系、函数或参数规格。
