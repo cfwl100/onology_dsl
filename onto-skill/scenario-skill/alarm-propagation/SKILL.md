@@ -61,6 +61,7 @@ S1 读取业务注入与整理上下文
 6. `stepContracts` 默认必须使用**引用型契约**，只列出 `contractRef / variablesRef / dependsOn / expectedOutputRef / failurePolicyRef`。
 7. 完整的 S2/S3/S4/S7 模板保留在业务定制文件的契约目录中，默认运行不展开；只有 debug、校验失败或用户明确要求完整 trace 时才展开全文。
 8. Planning 层收到 `planningDelegationPackage` 后，应直接复用变量区、方向计划、引用型 stepContracts 和规则摘要；除非缺失或冲突，不要求二次整理同一业务文件全文。
+9. S4 OAC 默认不得写 `temp_oql*.json`、`oql_same_site.json`、`oql_*.json` 临时文件；必须通过 `--oac-json` 或 `--input -` 在内存或 stdin 中传递 OQL。
 
 ### 3.2 长列表变量化
 
@@ -149,7 +150,25 @@ stepContracts:
 - S2/S3/S4 任一步骤缺少必要变量、关系、字段、函数或参数规格。
 - 平台执行失败并需要定位失败原因。
 
-### 3.5 重复上下文禁止项
+### 3.5 OQL 无临时文件规则
+
+OAC 查询步骤只允许在内存或 stdin 中传递 OQL。默认调用方式：
+
+```text
+python scripts/validate_oql.py --oac-json '<compact-json>'
+python scripts/execute_oac_operation.py --oac-json '<compact-json>' --message-type '<message_type>'
+```
+
+当 JSON 过长或 shell 转义风险较高时，使用 stdin：
+
+```text
+'<compact-json>' | python scripts/validate_oql.py --input -
+'<compact-json>' | python scripts/execute_oac_operation.py --input - --message-type '<message_type>'
+```
+
+禁止默认写 `temp_oql*.json`、`oql_same_site.json`、`oql_*.json`。只有用户明确要求保存、`traceMode=debug`、失败复现或 stdin 不可用时，才允许写文件；写文件时必须使用 `--input <file>`，不得使用旧参数 `--oql_file`。
+
+### 3.6 重复上下文禁止项
 
 严格禁止：
 
@@ -160,6 +179,7 @@ stepContracts:
 - 已生成 `planningDelegationPackage` 后，再次重新组织相同 evidence.md 规则。
 - 为“确认、优化、换一种说法”重复生成新的委托包。
 - 已有引用型 stepContracts 时，再让 Planning 层自由重写 S2/S3/S4 模板。
+- 在默认运行中写 OQL 临时文件或输出 OQL 文件路径。
 
 ## 4. 意图路由
 
@@ -217,7 +237,7 @@ planningDelegationPackage:
   variables：neName、identifier、alarmNameListRef、returnFields_alarm
   directionPlans：无
   流程级定制：默认执行 S1/S2/S3/S4/S7；如子图发现可直接满足查询目标的函数候选，可规划 S5/S6；不执行传播路径或证据验证步骤。
-  步骤级定制：S2 检索 Ne/Alarm 及关系；S3 规划 QUERY 或 ASSOCIATION_QUERY；S4 最终返回 {objects, relationships}。
+  步骤级定制：S2 检索 Ne/Alarm 及关系；S3 规划 QUERY 或 ASSOCIATION_QUERY；S4 最终返回 {objects, relationships}，且默认不写 OQL 临时文件。
   stepContracts：使用 alarm_query.S2/S3/S4/S7 的 contractRef；默认不展开模板全文。
 ```
 
@@ -262,6 +282,7 @@ planningDelegationPackage:
 - 空结果是有效结果，不换方向、不放宽条件、不重试。
 - 长告警列表只进入 `variables` 一次。
 - `stepContracts` 默认使用引用型 contract，不展开完整 S2/S3/S4/S7 模板。
+- S4 OAC 默认通过 `--oac-json` 或 `--input -` 传递 OQL，禁止写临时 OQL 文件。
 
 推荐委托包摘要：
 
@@ -271,11 +292,11 @@ planningDelegationPackage:
   traceMode：compact
   业务意图：验证用户指定方向上的告警传播证据；每个方向独立检索本体子图、独立规划证据查询任务、独立执行 OAC 查询，最终分别返回证据结果或空结果说明。长告警列表见 variables。
   已读取业务定制文件：knowledge/evidence.md
-  业务定制摘要：保留方向决定、串行、每方向独立子图检索、禁止合并、禁止 Function/Port/Link、返回字段、message_type、空结果不重试规则。
+  业务定制摘要：保留方向决定、串行、每方向独立子图检索、禁止合并、禁止 Function/Port/Link、返回字段、message_type、空结果不重试、OQL 不落临时文件规则。
   variables：neName_<directionKey>、alarmNames_<directionKey>、returnFields_ne、returnFields_alarm、messageType_<directionKey>
   directionPlans：每个方向一条计划，包含 directionKey、directionName、neNameRef、alarmNamesRef、messageType、requiredFlow=S2/S3/S4/S7
   流程级定制：按 directionPlans 串行执行；每方向执行 S2/S3/S4/S7；本意图跳过 S5/S6。
-  步骤级定制：S2 使用 contractRef 检索子图；S3 使用 contractRef 基于子图规划；S4 使用 contractRef 查数据；S7 使用 contractRef 汇总。
+  步骤级定制：S2 使用 contractRef 检索子图；S3 使用 contractRef 基于子图规划；S4 使用 contractRef 查数据且默认不写 OQL 临时文件；S7 使用 contractRef 汇总。
   stepContracts：每个方向生成引用型 S2/S3/S4/S7 contractRef，不展开模板全文。
   缺失信息：无
 ```
@@ -301,6 +322,7 @@ planningDelegationPackage:
 - 是否只传 contractRef、variablesRef、dependsOn、expectedOutputRef、failurePolicyRef，不默认展开完整模板。
 - 是否明确 Function 是否跳过。
 - 是否保留空结果策略。
+- 是否保留 S4 OQL 不写临时文件规则。
 - 是否有缺失信息。
 
 如果无法满足上述任一项，必须先返回缺失项或冲突项，不继续执行规划。
