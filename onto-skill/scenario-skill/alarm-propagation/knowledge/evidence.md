@@ -7,33 +7,30 @@
 ## 核心经验性知识
 
 - 业务路径在本体中名称为 `businesspath`。
-
-### 告警唯一标识符
-
 - 告警的 `alarmName` 实际上是告警类型。
 - 告警的唯一标识符是 `identifier`。
 
-### 证据检查方向
+## 证据检查方向
 
 验证传播证据时，检查哪些方向由**用户输入**决定。
 
-**每个方向的目的**：
+每个方向的目的：
 
 1. **同站点**：找到网元，与它同站点的其他网元的告警。
 2. **对端网元**：找到网元，与它通过对端链路相连的其他网元的告警。
 3. **业务路径**：找到网元，与它同属一个业务路径的其他网元的告警。
 
-**动态规划原则**：
+动态规划原则：
 
-- 用户输入"三步[同站点、对端网元、业务路径]" → 规划并执行3个方向。
-- 用户输入"两步[同站点、对端网元]" → 规划并执行2个方向。
-- 用户输入"同站点" → 只规划并执行1个方向。
-- 用户输入为0步，或未指定，直接结束当前会话并输出 `未指定规划方向`，禁止臆测执行。
+- 用户输入“三步[同站点、对端网元、业务路径]” → 规划并执行 3 个方向。
+- 用户输入“两步[同站点、对端网元]” → 规划并执行 2 个方向。
+- 用户输入“同站点” → 只规划并执行 1 个方向。
+- 用户输入为 0 步，或未指定，直接结束当前会话并输出 `未指定规划方向`，禁止臆测执行。
 - 必须按照用户输入顺序，按顺序执行不同方向的规划。
 
-## 运行效率优化：一次性委托包、变量绑定与步骤契约
+## 运行效率优化：一次性委托包、变量绑定与引用型步骤契约
 
-为了减少 opencode 运行中的重复解释、重复压缩和长上下文展开，传播证据验证必须使用一次性 `planningDelegationPackage`，并且必须包含 `stepContracts`。
+传播证据验证必须使用一次性 `planningDelegationPackage`。默认运行采用 `traceMode=compact`。
 
 ### 变量绑定规则
 
@@ -61,72 +58,144 @@ variables:
 ```text
 planningDelegationPackage:
   本体ID：network@1.0
+  traceMode：compact
   业务意图：验证用户指定方向上的告警传播证据；每个方向独立检索子图、独立规划、独立查询；长告警列表见 variables。
   已读取业务定制文件：knowledge/evidence.md
   业务定制摘要：保留方向决定、串行、每方向独立子图检索、禁止合并、禁止 Function/Port/Link、返回字段、message_type、空结果不重试规则。
   variables：<各方向网元名、完整告警列表、返回字段、message_type>
   directionPlans：<每个方向一条，包含 directionKey、neNameRef、alarmNamesRef、messageType、requiredFlow>
   流程级定制：按 directionPlans 串行执行；每方向执行 S2/S3/S4/S7；本意图不调用 Function。
-  步骤级定制：S2 使用固定 query 模板；S3 基于子图规划；S4 使用变量引用作为过滤条件；S7 分方向汇总。
-  stepContracts：<每个方向必须生成 S2/S3/S4/S7 契约，见下文>
+  步骤级定制：S2/S3/S4/S7 只引用 contractRef；完整模板保留在本文件的契约目录中。
+  stepContracts：<每个方向生成引用型契约，禁止默认展开完整 input 模板>
 ```
 
-### stepContracts 必填规则
+### 引用型 stepContracts 默认规则
 
-每个用户指定方向必须生成独立的四个步骤契约，禁止只写摘要。
+每个用户指定方向必须生成独立的四个步骤契约，但默认只传引用，不展开完整模板。
 
 ```text
 stepContracts:
   - stepId：S2_<directionKey>_subgraph
     actionType：OAG
-    input：
-      先找相关子图。
-      本体ID：network@1.0
-      业务意图：验证 <directionName> 方向传播证据。
-      业务定制文件：knowledge/evidence.md
-      子图检索规则：每个方向独立检索一次；使用本文件固定 query；禁止合并多个方向；禁止重复检索。
-      检索目标：从网元出发，查找 <directionName> 方向可到达的其他网元及其告警；返回对象、属性、关系和函数候选。
-      子图返回结构要求：保留 result.seedNodes、nodes、edges、functions、actions；摘要必须包含对象候选、字段归属、关系候选。
-    expectedOutput：subgraphOutput，包括 subgraphRawResult、nodes、edges、functions、objectCandidates、propertyOwnership、relationCandidates、missing/risks
+    contractRef：evidence.<directionKey>.S2.subgraph
+    variablesRef：[neName_<directionKey>, alarmNames_<directionKey>, returnFields_ne, returnFields_alarm, messageType_<directionKey>]
+    expectedOutputRef：subgraphOutput
     dependsOn：[]
-    failurePolicy：子图为空时停止该方向，输出空结果说明，不自动换方向，不重复检索
+    failurePolicyRef：evidence.common.fail.stop_on_empty_subgraph
 
   - stepId：S3_<directionKey>_plan
     actionType：SUBGRAPH_PLAN
-    input：
-      基于本体子图规划执行任务。
-      本体ID：network@1.0
-      业务意图：验证 <directionName> 方向传播证据。
-      本体子图结果：${S2_<directionKey>_subgraph.actualOutput.subgraphOutput}
-      变量区：neNameRef=${neName_<directionKey>}，alarmNamesRef=${alarmNames_<directionKey>}，returnFields_ne=${returnFields_ne}，returnFields_alarm=${returnFields_alarm}
-      方向计划：${directionPlans.<directionKey>}
-      业务规划规则：禁止 Function；禁止 Port/Link；关系名必须来自 defines_relation.properties.name；字段必须通过 has_property 确认归属；过滤条件引用 alarmNamesRef，不展开长列表。
-    expectedOutput：plannedTasks，包括 flowDecision、variablesRef、steps、skippedSteps、overriddenDefaults、missing/risks；必须生成一个 S4_<directionKey>_oac 步骤
+    contractRef：evidence.<directionKey>.S3.plan
+    inputRefs：[S2_<directionKey>_subgraph.subgraphOutput, variables, directionPlans.<directionKey>]
+    expectedOutputRef：plannedTasks
     dependsOn：[S2_<directionKey>_subgraph]
-    failurePolicy：无法基于子图规划时停止该方向，不重新解释本文件全文
+    failurePolicyRef：evidence.common.fail.stop_on_unplannable_subgraph
 
   - stepId：S4_<directionKey>_oac
     actionType：OAC
-    input：
-      查数据
-      本体ID：network@1.0
-      操作类型：ASSOCIATION_QUERY
-      查询对象：来自 S3_<directionKey>_plan.plannedTasks，不得重新推断
-      关系路径：来自 S3_<directionKey>_plan.plannedTasks，关系名必须来自 defines_relation.properties.name
-      过滤条件：起点 ne.name = ${neName_<directionKey>}；终点 alarm.alarmName ∈ ${alarmNames_<directionKey>}；对端网元方向需要增加 peer ne.name != ${neName_<directionKey>}；业务路径方向需要增加 businesspath.aDeviceName = ${neName_<directionKey>}
-      返回要求：返回 returnFields_ne 和 returnFields_alarm；message_type=${messageType_<directionKey>}；空结果是有效结果
-      执行要求：先生成并校验查询语言；通过后再执行；结果为空不重试、不换路径、不放宽条件。
-      期望输出：只返回对象结构 {objects, relationships}；不输出 operationDecision、oql、validation。
-    expectedOutput：{objects, relationships}
+    contractRef：evidence.<directionKey>.S4.oac
+    inputRefs：[variables, S2_<directionKey>_subgraph.subgraphOutput, S3_<directionKey>_plan.plannedTasks]
+    variablesRef：[neName_<directionKey>, alarmNames_<directionKey>, returnFields_ne, returnFields_alarm, messageType_<directionKey>]
+    expectedOutputRef：objectStructure
     dependsOn：[S3_<directionKey>_plan]
-    failurePolicy：空结果有效；禁止放宽条件；禁止重复查询
+    failurePolicyRef：evidence.common.fail.valid_empty_result_no_retry
 
   - stepId：S7_<directionKey>_summary
     actionType：SUMMARY
-    input：汇总 S2/S3/S4 的 StepExecutionRecord 和 S4 对象结构结果。
-    expectedOutput：该方向证据结果、空结果说明、缺失项、使用变量引用和执行状态。
+    contractRef：evidence.<directionKey>.S7.summary
+    inputRefs：[S2_<directionKey>_subgraph.record, S3_<directionKey>_plan.record, S4_<directionKey>_oac.record]
+    expectedOutputRef：directionEvidenceSummary
     dependsOn：[S4_<directionKey>_oac]
-    failurePolicy：按上游结果汇总，不重新执行上游步骤
+    failurePolicyRef：evidence.common.fail.summary_only_no_rerun
+```
+
+默认运行禁止在 `stepContracts` 中展开完整 `input` 与 `expectedOutput`。完整模板仅在 debug、失败定位或用户明确要求完整 trace 时展开。
+
+### 契约目录：contractRef 对应的完整模板
+
+以下模板是 Planning 层和步骤执行时的依据。默认运行只引用 `contractRef`，不要复制全文到 stepContracts。
+
+#### evidence.common.fail.stop_on_empty_subgraph
+
+子图为空时停止该方向，输出空结果说明，不自动换方向，不重复检索。
+
+#### evidence.common.fail.stop_on_unplannable_subgraph
+
+无法基于子图规划时停止该方向，输出缺失对象、字段、关系或函数信息，不重新解释本文件全文。
+
+#### evidence.common.fail.valid_empty_result_no_retry
+
+OAC 返回空对象结构是有效结果，不自动放宽条件，不换路径，不重复查询。
+
+#### evidence.common.fail.summary_only_no_rerun
+
+汇总只使用上游 StepExecutionRecord 和结果引用，不重新执行上游步骤。
+
+#### evidence.<directionKey>.S2.subgraph
+
+S2 子图检索模板：
+
+```text
+先找相关子图。
+本体ID：network@1.0
+业务意图：验证 <directionName> 方向传播证据。
+业务定制文件：knowledge/evidence.md
+子图检索规则：每个方向独立检索一次；使用本文件固定 query；禁止合并多个方向；禁止重复检索。
+检索目标：从网元出发，查找 <directionName> 方向可到达的其他网元及其告警；返回对象、属性、关系和函数候选。
+子图返回结构要求：保留 result.seedNodes、nodes、edges、functions、actions；摘要必须包含对象候选、字段归属、关系候选。
+```
+
+S2 输出必须为 `subgraphOutput`，包含：`subgraphRawResult`、`nodes`、`edges`、`functions`、`objectCandidates`、`propertyOwnership`、`relationCandidates`、`missing/risks`。
+
+#### evidence.<directionKey>.S3.plan
+
+S3 任务规划模板：
+
+```text
+基于本体子图规划执行任务。
+本体ID：network@1.0
+业务意图：验证 <directionName> 方向传播证据。
+本体子图结果：${S2_<directionKey>_subgraph.actualOutput.subgraphOutput}
+变量区：neNameRef=${neName_<directionKey>}，alarmNamesRef=${alarmNames_<directionKey>}，returnFields_ne=${returnFields_ne}，returnFields_alarm=${returnFields_alarm}
+方向计划：${directionPlans.<directionKey>}
+业务规划规则：禁止 Function；禁止 Port/Link；关系名必须来自 defines_relation.properties.name；字段必须通过 has_property 确认归属；过滤条件引用 alarmNamesRef，不展开长列表。
+```
+
+S3 输出必须为 `plannedTasks`，包含：`flowDecision`、`variablesRef`、`steps`、`skippedSteps`、`overriddenDefaults`、`missing/risks`，并必须生成一个 `S4_<directionKey>_oac` 步骤。
+
+#### evidence.<directionKey>.S4.oac
+
+S4 OAC 数据访问模板：
+
+```text
+查数据
+本体ID：network@1.0
+操作类型：ASSOCIATION_QUERY
+查询对象：来自 S3_<directionKey>_plan.plannedTasks，不得重新推断
+关系路径：来自 S3_<directionKey>_plan.plannedTasks，关系名必须来自 defines_relation.properties.name
+过滤条件：起点 ne.name = ${neName_<directionKey>}；终点 alarm.alarmName ∈ ${alarmNames_<directionKey>}；对端网元方向需要增加 peer ne.name != ${neName_<directionKey>}；业务路径方向需要增加 businesspath.aDeviceName = ${neName_<directionKey>}
+返回要求：返回 returnFields_ne 和 returnFields_alarm；message_type=${messageType_<directionKey>}；空结果是有效结果
+执行要求：先生成并校验查询语言；通过后再执行；结果为空不重试、不换路径、不放宽条件。
+期望输出：只返回对象结构 {objects, relationships}；不输出 operationDecision、oql、validation。
+```
+
+S4 输出必须为：
+
+```json
+{
+  "objects": [],
+  "relationships": []
+}
+```
+
+#### evidence.<directionKey>.S7.summary
+
+S7 汇总模板：
+
+```text
+汇总 S2/S3/S4 的 StepExecutionRecord 和 S4 对象结构结果。
+输出该方向证据结果、空结果说明、缺失项、使用变量引用和执行状态。
+不得重新执行 S2/S3/S4。
 ```
 
 ### 禁止重复展开
@@ -134,156 +203,115 @@ stepContracts:
 严格禁止：
 
 - 在业务意图、流程级定制、步骤级定制、stepContracts 中重复粘贴完整告警列表。
+- 在默认运行中把契约目录中的完整 S2/S3/S4/S7 模板复制到 stepContracts。
 - 在同一次会话中重复读取并压缩本文件。
 - 已生成 `planningDelegationPackage` 后，再重新组织一份相同含义的委托说明。
 - 为了“确认、优化、换一种说法”重复生成委托包。
-- 有 stepContracts 时，再让 Planning 层自由重写 S2/S3/S4 模板。
+- 有引用型 stepContracts 时，再让 Planning 层自由重写 S2/S3/S4 模板。
 
 ## 验证传播证据查询逻辑
 
-**核心逻辑**：从网元出发，查找同站点/对端/业务路径的其他网元的告警。
+核心逻辑：从网元出发，查找同站点/对端/业务路径的其他网元的告警。
 
-**输入**：
+输入：
 
-- 用户输入可能包含**多个方向**，每个方向有独立的配置。
+- 用户输入可能包含多个方向，每个方向有独立配置。
 - 每个方向的配置：
-  - 网元名称 `ne.name`（必填）。
-  - 终点告警类别（必填）：该方向要筛选的告警类型列表。
+  - 网元名称 `ne.name`，必填。
+  - 终点告警类别，必填；该方向要筛选的告警类型列表。
 
-**用户输入格式示例**：
+关键点：
 
-```text
-1）检查同机房/站点是否存在下面告警
-网元名称：DLE_AIRHITAM_GEBANG_MT1，携带对端的异常特征上的告警类型：[告警列表A]
-
-2）检查业务路径上是否存在下面告警
-网元名称：DLE_AIRHITAM_GEBANG_MT2，携带对端的异常特征上的告警类型：[告警列表B]
-```
-
-**关键点**：
-
-- 不同方向的网元名称和告警列表**可能不同**，必须独立处理。
+- 不同方向的网元名称和告警列表可能不同，必须独立处理。
 - 规划时需要为每个方向生成独立的执行计划。
-- `alarmName` 是告警类别（类型），不是唯一标识符。
+- `alarmName` 是告警类别，不是唯一标识符。
 - 长告警列表只在 `variables` 中保存一次，后续通过变量引用传递。
-- 每个方向的 S2/S3/S4/S7 输入输出必须体现在 stepContracts 和 StepExecutionRecord 中。
+- 每个方向的 S2/S3/S4/S7 输入输出必须体现在引用型 stepContracts 和 StepExecutionRecord 摘要中。
 
-### 关系名动态获取
+## 关系名动态获取
 
 关系名从本体子图的 `edges.properties.name` 动态获取，不固定在代码或配置中。
 
-- `businesspath` 是**对象类型**（objectType），不是关系边。
-
-**强制要求**：
-
+- `businesspath` 是对象类型，不是关系边。
 - 关系名 `pathThrough` 必须从本体子图的 `edges.properties.name` 获取。
 - 如果本体子图返回的边名称不是 `pathThrough`，必须使用返回的实际名称。
 
-### 查询约束
+## 查询约束
 
 - 当方向为 `同站点` 时，查询路径禁止 site 经过 ne 连接 alarm，除非本体子图没有直接 site 到 alarm 的关系且业务规则明确允许走可达路径。
 - 当方向为 `对端网元` 以及 `业务路径` 时，查询路径必须经过 ne 再连接 alarm。
 
-### OAG 调用规则（重要约束 - 必须严格遵守）
+## OAG 调用规则
 
-#### 严格约束
+1. 每个方向必须独立调用一次 OAG，禁止在一个 OAG 调用中同时查询多个方向。
+2. 方向唯一键：
+   - 同站点：`same_site`
+   - 对端网元：`peer_ne`
+   - 业务路径：`service_path`
+3. 同一方向只能调用一次，禁止为了“确认、优化、换一种说法”而重复调用。
+4. 获取到某方向的 OAC 结果后，后续必须直接使用，禁止重新查询。
+5. 禁止使用模板以外的自由 query。
 
-1. **强制独立调用**：每个方向**必须独立调用一次OAG**，禁止在一个OAG调用中同时查询多个方向。
-   - **关键点**：3个方向 = 3次OAG调用（每个方向单独1次），禁止合并为1次。
-   - **违规判定**：在同一调用中查询多个方向（如同时查同站点+对端网元），视为**严重违规**。
-2. **方向唯一键**：
-   - 同站点：same_site
-   - 对端网元：peer_ne
-   - 业务路径：service_path
-3. **禁止重复**：同一方向只能调用1次，**禁止为了"确认、优化、换一种说法"而重复调用**。
-4. **必须复用**：获取到某方向的 OAC 结果后，后续必须直接使用，**禁止重新查询**。
-5. **禁止自由查询**：禁止使用模板以外的任何 query，如"网元和业务路径和告警之间的关系"等，**只能使用下面的固定模板**。
-6. **禁止合并调用**：禁止将两个方向的查询合并到一条 OAG 调用中，必须**逐个方向分别调用**。
+## 固定 OAG query 模板
 
-#### 固定 query 模板（必须严格使用，禁止修改）
-
-**OAG 调用次数由用户输入决定**：用户要查几个方向，就只能调用几次 OAG，禁止多调用。
-
-**调用顺序（必须严格遵守）**：
-
-1. **严格按照用户输入的顺序**调用 OAG，用户先提到哪个方向就先查哪个。
-2. 调用成功后，再调用下一个方向。
-3. **禁止并行调用**，必须一个一个串行调用。
-
-**示例**（用户输入"同站点、对端网元"，按此顺序调用）：
-
-```bash
-# 第1步：用户输入的第一个方向是"同站点"，调用1次
-python scripts/semantic_subgraph_search.py --ontology-id 'network@1.0' --query '从网元出发，找到网元所在站点site的告警alarm'
-
-# 第2步：用户输入的第二个方向是"对端网元"，调用1次
-python scripts/semantic_subgraph_search.py --ontology-id 'network@1.0' --query '从网元出发，必须经过网元ne，查找告警alarm'
-```
-
-## 各方向查询规范
-
-**【强制要求】每个方向必须独立调用一次 OAG，禁止合并调用。**
-
-**原因**：不同方向的网元名称和告警列表可能不同，必须为每个方向生成独立的执行计划，分别调用 OAG 获取各方向的子图结果。
-
-**查询语句格式**（每个方向独立）：
+### 同站点
 
 ```text
-查数据：查询{网元名称}{方向}起始网元以及其他网元的告警
-查询目标：通过网元名称查询告警并且返回起始网元以及所有途经网元的srcSpaceVid、name、className、domain、networkType属性和告警的node、ownerVid、severity、alarmName、identifier、firstOccurrence、lastOccurrence、clearTime属性，{方向}的所有字段
-关系路径：例如：xxx - [xxx] - xxx - [xxx] - xxx
-过滤条件：
-- 起点ne.name = "{该方向的网元名称}"
-- 终点alarmName ∈ ${该方向告警列表变量}
-返回要求：
-- 返回消息格式message_type为{方向对应的标识}
-- 返回数据必须return起始网元{网元名称}的srcSpaceVid、name、className、domain、networkType属性
-- 返回数据仅return起始网元以及所有途经网元的srcSpaceVid、name、className、domain、networkType属性和告警的node、ownerVid、severity、alarmName、identifier、firstOccurrence、lastOccurrence、clearTime属性
+查找网元通过站点关联到其他网元及这些网元告警的本体子图。
 ```
 
-**方向对应的标识**：
+### 对端网元
 
-- 同站点 → `same_site_active_alarms`
-- 对端网元 → `peer_ne_active_alarms`
-- 业务路径 → `service_path_active_alarms`
+```text
+查找网元通过对端链路关联到其他网元及这些网元告警的本体子图。
+```
 
-**重要约束**：
+### 业务路径
 
-1. **关系路径必须以 ne 为起点**，经过中间节点（如 site/servicepath 等），再回到 ne，最后到 alarm。
-2. 关系路径从规划阶段获取，禁止在执行阶段重新获取。
-3. 同站点情况，站点可以直接连告警；如果子图没有直接路径，应根据业务允许的可达路径规划，并在规划依据中说明。
-4. 获取 OAG 子图时用对象的中文名称。
+```text
+查找网元通过业务路径关联到其他网元及这些网元告警的本体子图。
+```
 
-**变量替换**：
+## OAC 查询内容
 
-- `{网元名称}` → 该方向用户输入的网元名称。
-- `{方向}` → 同站点 / 对端网元 / 同一业务路径（根据检查方向）。
-- `{中间节点}` → 从本体子图查出的中间节点（如 site/link 等）。
-- `{该方向的网元名称}` → 该方向用户输入的网元名称。
-- `${该方向告警列表变量}` → `${alarmNames_same_site}` / `${alarmNames_peer_ne}` / `${alarmNames_service_path}`。
-- `{方向对应的标识}` → same_site_active_alarms / peer_ne_active_alarms / service_path_active_alarms。
+每个方向最终都应查询：
 
-## 必须遵循
+```text
+起点网元 -> 中间对象/关系 -> 其他网元 -> 告警
+```
 
-- 禁止使用 Function。
-- 禁止使用 Port 对象。
-- 禁止在关系中包含 Port、Link。
-- **每个方向必须单独调用1次 OAG，禁止将多个方向合并为1次调用**。
-- 长告警列表只在变量区保存一次，禁止在多个步骤说明中重复展开。
-- 直接透传查询结果并原样返回，禁止对查询结果裁剪或精简。
-- 当方向为同业务对象时，过滤条件必须增加：业务路径起始网元设备名称 `businesspath.aDeviceName = "起始网元名称ne.name"`。
-- 当方向为对端网元时，过滤条件必须增加：对端网元不能是起始网元，过滤条件为 `ne.name != "网元名称"`（注意：网元名称直接使用用户输入的值，不要加 NE= 等任何前缀）。
-- 所有方向返回数据必须 return 起始网元的 `srcSpaceVid`、`name`、`className`、`domain`、`networkType` 属性。
-- 当执行成功但是返回空结果时，认为该方向没有指定告警，无需再次尝试其他路径。
+过滤条件必须包含：
 
-## 执行建议
+- 起点网元：`ne.name = ${neName_<directionKey>}`。
+- 终点告警类型：`alarm.alarmName IN ${alarmNames_<directionKey>}`。
+- 对端网元方向需要排除自身：`peerNe.name != ${neName_<directionKey>}`。
+- 业务路径方向需要使用业务路径设备名：`businesspath.aDeviceName = ${neName_<directionKey>}`。
 
-1. **规划阶段**：根据用户输入的每个方向，动态生成对应的查询。
-2. **变量阶段**：先绑定该方向网元名和告警列表变量，后续步骤只引用变量名。
-3. **步骤契约阶段**：为每个方向生成 S2/S3/S4/S7 的 stepContracts。
-4. **执行阶段**：按 stepContracts 串行执行，每个步骤产生 StepExecutionRecord。
+## 输出字段
 
-**重要**：
+### 网元返回字段
 
-- 传播知识子图结果，不等于传播链已成立。必须经过实例验证才能确认。
-- 规划哪些方向完全由用户输入决定。
+```text
+srcSpaceVid, name, className, domain, networkType
+```
+
+### 告警返回字段
+
+```text
+node, ownerVid, severity, alarmName, identifier, firstOccurrence, lastOccurrence, clearTime
+```
+
+## message_type
+
+- 同站点：`same_site_active_alarms`
+- 对端网元：`peer_ne_active_alarms`
+- 业务路径：`service_path_active_alarms`
+
+## 禁止项
+
+- 本意图禁止调用 Function。
+- 禁止查询 Port、Link。
+- 禁止合并多个方向到一个 OAG/OAC 步骤。
+- 禁止自动补充用户未指定方向。
+- 禁止空结果后自动放宽条件、换路径或重试。
+- 禁止在默认运行中输出完整 contract 模板；默认只输出引用。
