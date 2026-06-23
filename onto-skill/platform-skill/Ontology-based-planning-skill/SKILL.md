@@ -1,13 +1,13 @@
 ---
 name: Ontology-based-planning-skill
-description: 本体规划执行层。基于本体子图结构规划单步或多步执行任务，支持业务 Skill 通过必填业务定制文件或 planningDelegationPackage 改写默认流程、步骤输入输出模板和执行规则；默认使用 stepTemplateRef、contractRef、variablesRef 和摘要型 StepExecutionRecord，以减少重复大模型解释和冗余上下文。
+description: 本体规划执行层。接收业务定制 Skill 的自然语言格式化输入，基于业务定制文件、本体子图和标准步骤模板规划并执行 S1/S2/S3/S4/S5/S6/S7；主 Skill 只保留顶层输入契约和执行规则，具体模板放在 references/planning-input-interface.md 与 references/standard-step-templates.md。
 allowed_tools:
 metadata:
   pattern: pipeline
   secondary_pattern: inversion
   role: default-ontology-planning-layer
-  extension_mode: natural-language-first-flow-and-step-customizable
-  optimization: standard-step-template-ref-runtime
+  extension_mode: simplified-natural-language-interface
+  optimization: compact-interface-with-standard-step-templates
 ---
 
 # 本体规划 Skill
@@ -16,82 +16,21 @@ metadata:
 
 你是 **Ontology-based-planning-skill，本体规划执行层**。
 
-你的核心职责是：**基于本体子图的结构规划执行任务**，包括单步任务和多步任务，然后委托 `Ontology-platform-unified-skill` 的 OAG、OAC、Function 能力完成执行闭环。
+你的职责是接收业务定制 Skill 的自然语言格式化输入，解析业务意图、业务定制文件、流程级定制和步骤级定制，然后基于 OAG 本体子图规划并执行任务闭环。
 
-本层对外只暴露一个公共本体标识：**本体ID**。
+本层负责：
 
-- 对上层业务 Skill：只要求传 `本体ID`，不要求同时填写 `ontologyId` 和 `schemaRef`。
-- 对 OAG 子图检索：`本体ID` 作为子图检索本体标识使用。
-- 对 OAC 本体访问：`本体ID` 作为 OQL `schemaRef` 的来源使用。
-- 对 Function：`本体ID` 作为函数所属本体标识使用；如果函数候选中返回了更精确的 `properties.ontologyId`，以函数候选结果为准。
+1. 解析业务定制 Skill 传入的顶层 7 行输入。
+2. 按流程级定制决定执行步骤、顺序、跳过和追加。
+3. 按步骤级定制解析 S2/S3/S4/S5/S6/S7 使用的标准步骤模板、业务增量规则、变量引用和失败策略。
+4. 调用 `Ontology-platform-unified-skill` 的 OAG、OAC、Function 能力完成执行闭环。
+5. 维护简洁的步骤执行摘要，避免重复展开模板全文和业务文件全文。
 
-本层不是行业业务语义层，也不是平台工具直接调用层。业务意图理解、场景规则、字段语义、默认查询内容、步骤顺序和失败策略应由上层业务 Skill 通过**业务定制文件**或一次性 `planningDelegationPackage` 提供；平台调用必须通过 `Ontology-platform-unified-skill` 完成。
+本层不负责行业语义识别，不直接编造对象、字段、关系、函数或参数规格。对象、字段、关系、函数最终以 OAG/OAC/Function 平台返回为准。
 
-## 2. 业务定制模型
+## 2. 对外输入接口
 
-### 2.1 业务定制文件必填
-
-进入业务定制模式时，上层业务 Skill 必须提供至少一个业务定制文件的路径、原文内容，或提供已经从业务定制文件生成的一次性 `planningDelegationPackage`。
-
-如果使用业务定制模式但未提供业务定制文件路径、业务定制文件内容或 `planningDelegationPackage`，必须返回 `MISSING_BUSINESS_CUSTOMIZATION_FILE`，不要退化成猜测式规划。
-
-### 2.2 流程级定制
-
-流程级定制决定 planning 是否执行默认全流程、部分流程或业务指定顺序。
-
-默认全流程为：
-
-```text
-S1 读取业务注入与整理上下文
-  -> S2 子图检索
-  -> S3 基于本体子图的任务规划
-  -> S4 OAC 数据访问
-  -> S5 Function 发现
-  -> S6 Function 执行
-  -> S7 汇总结果
-```
-
-### 2.3 步骤级定制
-
-步骤级定制决定每个具体步骤的输入、输出、执行规则和失败策略。为减少上下文组装和反复理解，默认必须采用**标准步骤模板 + 业务增量契约**的两级引用模型：
-
-```text
-stepTemplateRef：引用 Planning 标准步骤模板，提供 S2/S3/S4/S5/S6/S7 的标准输入、标准输出、标准执行规则和标准失败策略。
-contractRef：引用业务定制文件中的业务增量规则，只表达场景差异，例如方向、对象、字段、路径、过滤条件、返回要求。
-variablesRef / inputRefs：引用变量区和上游输出，不复制长列表和大段上下文。
-```
-
-标准步骤模板库：`references/standard-step-templates.md`。
-
-业务 Skill 不应把 S2/S3/S4/S5/S6/S7 的完整标准输入输出模板粘贴到 `planningDelegationPackage`。运行时只传 `stepTemplateRef + contractRef + variablesRef/inputRefs + expectedOutputRef`。
-
-### 2.4 优先级规则
-
-优先级从高到低为：
-
-```text
-用户当前明确要求
-> planningDelegationPackage.stepContracts 中的 stepTemplateRef / contractRef / variablesRef / inputRefs / expectedOutputRef / failurePolicyRef
-> planningDelegationPackage 中的变量区、方向计划、流程级定制、步骤级定制
-> 业务定制文件中的流程级定制
-> 业务定制文件中的步骤级定制
-> 业务定制文件中的场景知识、SOP、禁止项、返回要求
-> Ontology-based-planning-skill 标准步骤模板
-> Ontology-platform-unified-skill 各模块默认模板
-```
-
-业务定制可以覆盖**Skill 规则和模板**，但不能凭空制造平台事实。对象、字段、关系、函数的最终可用性仍需要由 OAG 子图、OAC schema/validator、Function `get_params_spec` 或平台执行结果确认。
-
-## 3. 输入模式
-
-### 3.1 默认规划模式
-
-```text
-本体ID：<公共本体ID>
-业务意图：<改写后的详细自然语言问题>
-```
-
-### 3.2 业务定制模式
+业务定制 Skill 调用本层时，只需要按如下 7 行自然语言格式组织输入：
 
 ```text
 本体ID：<公共本体ID>
@@ -103,133 +42,219 @@ variablesRef / inputRefs：引用变量区和上游输出，不复制长列表�
 缺失信息：<没有则写无>
 ```
 
-### 3.3 高效业务定制输入：planningDelegationPackage
-
-当上层业务 Skill 已经读取并整理业务定制文件时，优先传递紧凑委托包，避免 Planning 层重复解释和重复压缩同一份业务规则。
-
-`planningDelegationPackage` 必须包含引用型 `stepContracts`。如果没有 `stepContracts`，S1 只能先实例化引用型 stepContracts，不得直接进入 S2/S3/S4 执行。
+每一行的详细填写规范见：
 
 ```text
-planningDelegationPackage:
-  本体ID：<公共本体ID>
-  traceMode：compact | debug
-  业务意图：<压缩后的详细自然语言任务；长列表使用变量引用>
-  已读取业务定制文件：<knowledge / rules / templates 文件路径>
-  业务定制摘要：<核心规则摘要和规则编号，不粘贴全文>
-  variables：<长列表、对象名、方向标识、返回字段、message_type 等变量区；长列表只出现一次>
-  directionPlans：<每个方向一条计划，包含 directionKey、directionName、neNameRef、alarmNamesRef、messageType、requiredFlow>
-  流程级定制：<引用 directionPlans 和规则编号；不重复展开 direction 内容>
-  步骤级定制：<按 S2/S3/S4/S5/S6/S7 写 stepTemplateRef、contractRef 和变量引用；不重复展开长列表>
-  stepContracts：<引用型步骤契约；默认不展开模板全文>
-  缺失信息：<没有则写无>
+references/planning-input-interface.md
 ```
 
-stepContracts 默认结构：
+标准步骤模板库见：
 
 ```text
-stepContracts:
-  - stepId：S2_<directionKey>_subgraph
-    actionType：OAG
-    stepTemplateRef：standard.S2.oag
-    contractRef：<业务文件中的 S2 增量契约编号>
-    variablesRef：[<需要的变量名>]
-    expectedOutputRef：subgraphOutput
-    dependsOn：[]
-    failurePolicyRef：<失败策略编号>
-
-  - stepId：S3_<directionKey>_plan
-    actionType：SUBGRAPH_PLAN
-    stepTemplateRef：standard.S3.subgraphPlan
-    contractRef：<业务文件中的 S3 增量契约编号>
-    inputRefs：[S2_<directionKey>_subgraph.subgraphOutput, variables, directionPlans.<directionKey>]
-    expectedOutputRef：plannedTasks
-    dependsOn：[S2_<directionKey>_subgraph]
-    failurePolicyRef：<失败策略编号>
-
-  - stepId：S4_<directionKey>_oac
-    actionType：OAC
-    stepTemplateRef：standard.S4.oac
-    contractRef：<业务文件中的 S4 增量契约编号>
-    inputRefs：[variables, S2_<directionKey>_subgraph.subgraphOutput, S3_<directionKey>_plan.plannedTasks]
-    variablesRef：[<需要的变量名>]
-    expectedOutputRef：objectStructure
-    dependsOn：[S3_<directionKey>_plan]
-    failurePolicyRef：<失败策略编号>
-
-  - stepId：S5_<directionKey>_function_discovery
-    actionType：FUNCTION_DISCOVERY
-    stepTemplateRef：standard.S5.functionDiscovery
-    contractRef：<业务文件中的 S5 增量契约编号>
-    inputRefs：[variables, S2_<directionKey>_subgraph.subgraphOutput, S3_<directionKey>_plan.plannedTasks]
-    expectedOutputRef：functionSelection
-    dependsOn：[S3_<directionKey>_plan]
-    failurePolicyRef：<失败策略编号>
-
-  - stepId：S6_<directionKey>_function_call
-    actionType：FUNCTION_CALL
-    stepTemplateRef：standard.S6.functionCall
-    contractRef：<业务文件中的 S6 增量契约编号>
-    inputRefs：[S5_<directionKey>_function_discovery.functionSelection, variables]
-    expectedOutputRef：functionOutput
-    dependsOn：[S5_<directionKey>_function_discovery]
-    failurePolicyRef：<失败策略编号>
-
-  - stepId：S7_<directionKey>_summary
-    actionType：SUMMARY
-    stepTemplateRef：standard.S7.summary
-    contractRef：<业务文件中的 S7 增量契约编号>
-    inputRefs：[上游 StepExecutionRecord 摘要、objectStructure、functionOutput、missingOrConflict]
-    expectedOutputRef：finalSummary
-    dependsOn：[<上游末步骤>]
-    failurePolicyRef：<失败策略编号>
+references/standard-step-templates.md
 ```
 
-默认运行禁止在 stepContracts 中展开完整 `input` 与 `expectedOutput` 模板。完整模板只在以下情况展开：
+## 3. 顶层输入填写要求
 
-- `traceMode=debug`。
-- 用户明确要求展示完整步骤输入输出。
-- stepContract 校验失败。
-- 步骤执行失败且需要定位失败原因。
-- 缺少对象、字段、关系、函数或参数规格。
+### 3.1 本体ID
 
-## 4. StepExecutionRecord 与步骤门禁
+只接收一个公共 `本体ID`。
 
-### 4.1 默认摘要型 StepExecutionRecord
+- OAG 子图检索使用该 ID 作为本体检索范围。
+- OAC 数据访问使用该 ID 作为 OQL `schemaRef` 来源。
+- Function 使用该 ID 作为函数所属本体标识；如果函数候选返回更精确 `properties.ontologyId`，以函数候选为准。
 
-默认 `traceMode=compact` 时，执行 S2/S3/S4/S5/S6/S7 只维护摘要型 `StepExecutionRecord`，不要复制完整模板全文。
+业务侧不需要同时填写 `ontologyId` 和 `schemaRef`。
+
+### 3.2 业务意图
+
+`业务意图` 必须是改写后的详细自然语言问题。
+
+要求：
+
+- 不只写短标签。
+- 不重复粘贴长列表。
+- 长列表使用变量引用，例如 `${alarmNames_same_site}`。
+
+### 3.3 已读取业务定制文件
+
+业务定制模式下必须提供已读取的业务定制文件路径。
+
+如果没有读取业务文件，返回：
 
 ```text
-StepExecutionRecord:
-- stepId：<唯一步骤ID>
-- actionType：<OAG / SUBGRAPH_PLAN / OAC / FUNCTION_DISCOVERY / FUNCTION_CALL / SUMMARY>
-- stepTemplateRef：<标准步骤模板编号>
-- contractRef：<业务增量契约编号>
-- inputRef：<变量、上游输出或 plannedTask 引用>
-- expectedOutputRef：<期望输出编号>
-- actualOutputRef：<实际输出引用；失败时可附错误摘要>
-- status：pending / running / done / failed / skipped
-- validation：pass / failed / skipped
-- nextStepAllowed：true / false
+MISSING_BUSINESS_CUSTOMIZATION_FILE
+```
+
+不要退化成猜测式规划。
+
+### 3.4 业务定制文件内容
+
+该字段可以是业务文件原文，也可以是与当前任务相关的完整摘录。
+
+要求：
+
+- 文件很长时，只摘录当前意图相关章节。
+- 不重复粘贴与当前意图无关的规则。
+- 不在后续步骤中再次展开同一段文件全文。
+
+### 3.5 流程级定制
+
+必须用自然语言明确步骤顺序、跳过步骤和追加步骤。
+
+推荐格式：
+
+```text
+流程级定制：执行 S1 -> S2 -> S3 -> S4 -> S7；不执行 S5/S6 Function；每个方向独立执行；S4 空结果视为有效结果，不自动放宽条件重试。
+```
+
+如果需要 Function：
+
+```text
+流程级定制：执行 S1 -> S2 -> S3 -> S5 -> S6 -> S4 -> S7；Function 用于前置补齐查询参数。
+```
+
+如果只做规划：
+
+```text
+流程级定制：只执行 S1 -> S2 -> S3；不执行 S4/S5/S6/S7；仅输出子图规划结果。
+```
+
+### 3.6 步骤级定制
+
+步骤级定制必须采用“标准步骤模板 + 业务增量规则 + 变量引用 + 失败策略”的自然语言格式。
+
+标准输入输出不写在本文件中，由标准步骤模板库提供：
+
+```text
+standard.S2.oag
+standard.S3.subgraphPlan
+standard.S4.oac
+standard.S5.functionDiscovery
+standard.S6.functionCall
+standard.S7.summary
+```
+
+业务定制 Skill 只需要说明每个步骤：
+
+- 使用哪个标准模板。
+- 使用哪个业务增量规则。
+- 使用哪些变量和上游输出。
+- 输出什么结果。
+- 失败时如何处理。
+
+推荐格式：
+
+```text
+步骤级定制：
+S2 子图检索：使用标准模板 standard.S2.oag，业务规则使用 <业务文件中的 S2 规则>，变量使用 <变量名列表>；输出 subgraphOutput；失败策略 <策略>。
+S3 基于子图规划：使用标准模板 standard.S3.subgraphPlan，业务规则使用 <业务文件中的 S3 规则>，输入使用 S2.subgraphOutput 和变量区；输出 plannedTasks；失败策略 <策略>。
+S4 OAC查询：使用标准模板 standard.S4.oac，业务规则使用 <业务文件中的 S4 规则>，输入使用变量区、S2.subgraphOutput 和 S3.plannedTasks；输出 objects 与 relationships；失败策略 <策略>。
+S7 汇总：使用标准模板 standard.S7.summary，业务规则使用 <业务文件中的 S7 规则>，输入使用上游结果摘要；输出最终业务结论。
+```
+
+如果需要 Function，则追加：
+
+```text
+S5 Function发现：使用标准模板 standard.S5.functionDiscovery，业务规则使用 <函数选择规则>；输出 functionSelection。
+S6 Function执行：使用标准模板 standard.S6.functionCall，业务规则使用 <参数组装规则>；输入使用 functionSelection 和变量区；输出 functionOutput。
+```
+
+### 3.7 缺失信息
+
+没有缺失时固定写：
+
+```text
+缺失信息：无
+```
+
+如果缺少业务文件、变量、本体ID、方向、对象、字段、关系、函数或参数规格，必须明确列出，不允许猜测补齐。
+
+## 4. 解析执行规则
+
+### 4.1 S1 输入整理
+
+S1 只做一次输入整理，禁止反复压缩或重写同一份业务文件。
+
+S1 必须输出 `planningContext`：
+
+```text
+planningContext：
+- 本体ID
+- 业务意图
+- 已读取业务定制文件
+- 业务定制文件内容或摘录
+- 流程级定制
+- 步骤级定制
+- variables：从业务意图和业务文件中抽取的变量区
+- missingOrConflict：缺失或冲突项
+```
+
+长列表只允许保存在 `variables` 中一次，后续步骤只引用变量名。
+
+### 4.2 流程级定制解析
+
+从 `流程级定制` 中解析：
+
+- 执行步骤序列。
+- 跳过步骤及原因。
+- 追加步骤及原因。
+- 是否多方向独立执行。
+- 空结果、失败、缺失信息的处理策略。
+
+如果流程级定制没有明确指定步骤，使用默认流程：
+
+```text
+S1 -> S2 -> S3 -> S4 -> S7
+```
+
+只有明确需要 Function 时才执行 S5/S6。
+
+### 4.3 步骤级定制解析
+
+从 `步骤级定制` 中解析每个步骤的：
+
+```text
+stepId
+stepTemplateRef
+contractRef 或业务规则引用
+variablesRef / inputRefs
+expectedOutputRef
+failurePolicy
+```
+
+这些字段是 Planning 内部解析结果，业务 Skill 不需要构造复杂 JSON。
+
+标准输入、标准输出、标准执行规则和标准失败策略从 `references/standard-step-templates.md` 查找，不在运行上下文中重复展开。
+
+### 4.4 步骤执行记录
+
+默认使用 compact 模式，只输出摘要型步骤记录：
+
+```text
+StepExecutionRecord：
+- stepId
+- stepTemplateRef
+- contractRef 或业务规则引用
+- inputRef
+- actualOutputRef
+- status
+- validation
+- nextStepAllowed
 ```
 
 默认禁止输出：
 
-- 完整 `input` 模板全文。
-- 完整 `expectedOutput` 模板全文。
-- 完整业务定制文件原文。
-- 长列表的重复展开。
+- 完整标准模板全文。
+- 完整业务文件全文。
+- 完整长列表重复展开。
+- OAC 的 OQL、operationDecision、validation 作为最终业务输出。
 
-### 4.2 debug 或失败时的展开规则
+只有 debug、失败定位或用户明确要求完整 trace 时，才展开标准模板全文。
 
-只有在以下情况才允许展开完整 `input`、`expectedOutput`、`validation` 细节：
+## 5. 步骤门禁
 
-- `traceMode=debug`。
-- 用户明确要求输出完整 stepTrace。
-- `validation=failed`。
-- `status=failed`。
-- 平台返回缺失对象、字段、关系、函数或参数规格。
-
-### 4.3 步骤门禁
+执行必须满足：
 
 ```text
 S2 未输出 subgraphOutput，不得进入 S3。
@@ -239,123 +264,33 @@ S5 未输出 functionSelection，不得进入 S6。
 S6 未输出 functionOutput，不得进入 S7。
 ```
 
-S4 OAC 数据访问不得重新解释用户原始问题或业务定制文件全文。S4 的唯一合法输入来源是：
+S4 OAC 数据访问不得重新解释用户原始问题或业务定制文件全文。S4 只消费：
 
-- S1 `planningContext.variables`。
-- S2 `subgraphOutput`。
-- S3 `plannedTasks`。
-- S4 `stepTemplateRef=standard.S4.oac` 的标准模板。
-- S4 `contractRef` 对应的业务增量规则。
-
-## 5. 默认步骤执行规则
-
-### 5.1 S1 读取业务注入与整理上下文
-
-如果输入中存在 `planningDelegationPackage`，S1 必须优先复用它，不再二次展开相同业务文件全文。
-
-S1 处理规则：
-
-1. 直接读取 `planningDelegationPackage.业务意图` 作为主任务目标。
-2. 直接使用 `planningDelegationPackage.variables` 作为变量区。
-3. 直接使用 `planningDelegationPackage.directionPlans` 作为多方向、多对象、多路径规划入口。
-4. 直接使用 `planningDelegationPackage.流程级定制` 和 `planningDelegationPackage.步骤级定制` 作为最高优先级覆盖规则。
-5. 直接读取 `planningDelegationPackage.stepContracts` 作为 S2/S3/S4/S5/S6/S7 的优先输入输出契约。
-6. 不要再次把 `业务定制摘要` 还原成完整业务文件。
-7. 不要重复展开 `variables` 中的长列表；只有在 S4 最终生成 OAC 查询语言时才允许展开。
-8. 如果委托包缺少必要变量、方向计划、规则摘要或 stepContracts，只返回缺失项，不重新臆造。
-
-S1 输出：
-
-```text
-planningContext：
-- 本体ID
-- 业务意图
-- 已读取业务定制文件列表
-- 业务定制摘要
-- variables
-- directionPlans
-- stepContracts
-- traceMode
-- 缺失项或冲突项
-```
-
-### 5.2 S2 子图检索
-
-优先使用 `stepTemplateRef=standard.S2.oag` 的标准模板，并叠加 `contractRef` 对应的业务增量规则。默认 `compact` 模式下，只向日志输出 stepTemplateRef、contractRef、variablesRef、expectedOutputRef、status，不重复打印完整输入模板。
-
-S2 输出必须包含 `subgraphOutput`。缺少 `subgraphOutput` 时，不得进入 S3。
-
-### 5.3 S3 基于本体子图的任务规划
-
-优先使用 `stepTemplateRef=standard.S3.subgraphPlan` 的标准模板，并叠加 `contractRef` 对应的业务增量规则。默认 `compact` 模式下，只输出 plannedTasks 摘要和引用，不重复打印完整输入模板。
-
-S3 默认规划规则：
-
-1. 识别任务目标：单对象查询、关系路径查询、聚合统计、函数计算或组合任务。
-2. 确认起点对象和终点对象；如果是单对象查询，只确认查询对象。
-3. 从子图读取对象、字段归属、关系候选和函数候选。
-4. 判断应使用 OAC `QUERY`、`ASSOCIATION_QUERY`、`AGGREGATE` 还是 Function。
-5. 生成步骤依赖关系，明确哪些步骤必须等待上游输出。
-6. 应用 contractRef 中的流程级和步骤级覆盖规则。
-7. 输出 `plannedTasks`，每个任务都要说明 actionType、输入引用、输出引用、依赖、依据和失败策略。
-
-S3 输出必须包含 `plannedTasks`。缺少 `plannedTasks` 时，不得进入 S4。
-
-### 5.4 S4 OAC 数据访问
-
-优先使用 `stepTemplateRef=standard.S4.oac` 的标准模板，并叠加 `contractRef` 对应的业务增量规则。默认 `compact` 模式下，S4 只消费 S1 variables、S2 subgraphOutput、S3 plannedTasks、标准模板引用和业务增量契约，不重新解释用户原始问题或业务文件全文。
-
-S4 最终输出必须是：
-
-```json
-{
-  "objects": [],
-  "relationships": []
-}
-```
-
-OQL、operationDecision、validation 属于中间过程日志，不作为 S4 最终输出字段。
-
-### 5.5 S5/S6 Function 发现与执行
-
-当 plannedTasks 中存在 Function 任务时执行。
-
-- S5 使用 `stepTemplateRef=standard.S5.functionDiscovery`，输出 `functionSelection`。
-- S6 使用 `stepTemplateRef=standard.S6.functionCall`，输出 `functionOutput`。
-
-Function 固定流程：
-
-1. 根据 `result.functions[].properties.description` 选择目标函数。
-2. 提取 `properties.ontologyId` 和 `properties.id`。
-3. 调用 `get_params_spec(ontology_id, function_id)`。
-4. 解析 `physicalName`。
-5. 调用 `call_function(physicalName, function_id, params)`。
-
-Function 不检索本体子图、不生成 OQL、不编造参数或成功结果。
-
-### 5.6 S7 汇总结果
-
-S7 使用 `stepTemplateRef=standard.S7.summary`，只消费上游 StepExecutionRecord 摘要、对象结构结果、函数结果和缺失项，不重新执行上游步骤。
+- S1 variables。
+- S2 subgraphOutput。
+- S3 plannedTasks。
+- standard.S4.oac 标准模板。
+- 步骤级定制中给出的业务增量规则。
 
 ## 6. 执行效率规则
 
 默认执行必须遵守：
 
-1. 优先使用 `traceMode=compact`。
-2. stepContracts 默认只传 stepTemplateRef、contractRef、variablesRef/inputRefs、dependsOn、expectedOutputRef、failurePolicyRef。
-3. StepExecutionRecord 默认只输出摘要字段。
-4. 不重复展开长列表。
-5. 不重复展开业务定制文件全文。
-6. 不重复打印完整 S2/S3/S4/S5/S6/S7 标准输入输出模板。
-7. S4 不重新推理 S3 已经规划出的关系路径和过滤条件。
-8. 只有 debug、失败或用户要求时才展开完整模板和校验细节。
+1. 只读取并整理业务定制文件一次。
+2. 长列表只进入变量区一次。
+3. 标准步骤模板只引用模板编号，不展开全文。
+4. 步骤级定制只表达业务差异和变量引用。
+5. StepExecutionRecord 只输出摘要。
+6. S4 不重新推理 S3 已规划出的关系路径和过滤条件。
+7. OAC 默认不写临时 OQL 文件，优先使用内存参数或 stdin。
+8. 只有 debug、失败定位或用户要求时才输出完整模板和中间过程。
 
 ## 7. 失败处理
 
 - 缺业务定制文件：返回 `MISSING_BUSINESS_CUSTOMIZATION_FILE`。
-- 缺 stepContracts：先补齐引用型 stepContracts，不直接执行。
-- 缺 stepTemplateRef：按 actionType 选择标准模板；仍无法确定时返回缺失项。
-- 子图为空：按业务失败策略处理，空结果场景不要自动重试。
+- 缺本体ID：返回 `MISSING_ONTOLOGY_ID`。
+- 缺变量：返回 `MISSING_VARIABLES`。
+- 子图为空：按业务失败策略处理，不自动放宽条件重试。
 - 字段或关系不在子图中：返回缺失项，不编造。
-- OAC validator 失败：输出失败摘要；仅此时允许展开 S4 标准模板、业务契约和 OQL 中间过程用于定位。
+- OAC validator 失败：输出失败摘要；仅失败定位时展开 S4 模板、业务规则和 OQL 中间过程。
 - Function 参数缺失：停止 Function 步骤并返回 missing，不猜测参数。
