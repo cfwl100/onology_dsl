@@ -33,8 +33,8 @@ def load_oql(args):
 def main():
     parser = argparse.ArgumentParser(description="Validate OQL JSON")
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--oac-json")
-    group.add_argument("--input")
+    group.add_argument("--oac-json", "--oql-json", dest="oac_json", help="OAC/OQL JSON 字符串；默认推荐使用，避免临时文件")
+    group.add_argument("--input", "--oql-file", "--oql_file", dest="input", help="从文件或 stdin 读取 JSON，使用 - 表示 stdin；--oql-file/--oql_file 为兼容旧用法")
     args = parser.parse_args()
     try:
         errors = validate_oql_dict(load_oql(args))
