@@ -68,19 +68,33 @@
 - `maxResults` 使用旧对象格式。
 - `version` 未使用 schema 声明的初始版本。
 
-默认校验命令使用通用 shell 表达，不绑定 PowerShell、Bash 或具体终端：
+## Shell 兼容校验命令
 
-```sh
-python scripts/validate_oql.py --oac-json '<compact-single-line-oql-json>'
+先确认当前终端，再生成命令。Windows PowerShell 5.1 不支持 `&&` 和 `||`，不要输出 Bash 风格串联命令。
+
+PowerShell 推荐写法：
+
+```powershell
+Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
+python .\scripts\validate_oql.py --oac-json '<compact-single-line-oql-json>'
 ```
 
-OQL 过长、命令行长度受限或 shell 转义风险较高时，使用标准输入，而不是临时文件：
+PowerShell 中需要失败处理时：
 
-```sh
+```powershell
+Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
+python .\scripts\validate_oql.py --oac-json '<compact-single-line-oql-json>'
+if ($LASTEXITCODE -ne 0) { Write-Output "OQL validation failed" }
+```
+
+Bash 环境才使用管道或 `&&` / `||`：
+
+```bash
+cd "/path/to/Ontology-platform-unified-skill"
 printf '%s' '<compact-single-line-oql-json>' | python scripts/validate_oql.py --input -
 ```
 
-如果运行环境不是 POSIX shell，使用等价的“向标准输入写入完整 OQL JSON，再调用 `--input -`”方式。只有 debug、失败复现或用户明确要求保存时才允许写文件；写文件时使用 `--input <file>`，不得使用旧参数 `--oql_file`。
+如果不确定当前终端类型，优先输出单条 Python 命令，不输出命令连接符。
 
 ## 最小示例
 
