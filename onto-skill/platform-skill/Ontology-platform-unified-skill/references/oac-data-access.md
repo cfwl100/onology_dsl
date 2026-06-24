@@ -74,15 +74,15 @@ OAC 最终输出必须是对象结构。
 - 查询成功但结果为空时返回 `{ "objects": [], "relationships": [] }`。
 - 错误或缺失信息由外层步骤状态或 S7 汇总说明，不混入对象结构字段。
 
-## 6. 总控流程
+## 6. 执行流程
 
-1. 根据自然语言数据访问需求、业务知识和子图依据判断唯一 OAC 操作类型。
-2. 读取对应 operation 手册。
-3. 读取对应 schema。operation 手册内已包含最小示例，不再读取独立 examples 目录。
-4. 基于业务意图、业务规则和 OAG 子图依据生成 OQL JSON。
-5. 使用 `scripts/validate_oql.py` 校验。默认必须通过 `--oac-json` 或 `--input -` 传入 OQL，不写 `temp_oql*.json` 临时文件。
+1. 根据`## 4. 面向自然语言的固定输入模板`中的自然语言数据访问需求判断唯一 OAC 操作类型。
+2. 读取对应 operation 操作手册。
+3. 读取对应 schema。operation 手册内已包含最小示例。
+4. 基于`## 4. 面向自然语言的固定输入模板`中的`本体ID`、`操作类型`、`查询对象`、`关系路径`、`过滤条件`、`返回要求`、`执行要求`、`期望输出`依据生成 OQL JSON。
+5. 使用 `scripts/validate_oql.py` 校验，使用 ; 分隔多条命令。默认必须通过 `--oac-json` 或 `--input -` 传入 OQL，不写 `temp_oql*.json` 临时文件。
 6. 校验失败时修复，不得执行。
-7. 用户或 planning 明确要求执行时，调用 `scripts/execute_oac_operation.py`。默认必须通过 `--oac-json` 或 `--input -` 传入 OQL，不写临时输入文件。
+7. 用户或 planning 明确要求执行时，调用 `scripts/execute_oac_operation.py`，使用 ; 分隔多条命令。默认必须通过 `--oac-json` 或 `--input -` 传入 OQL，不写临时输入文件。
 8. 将执行结果转换为 `{objects, relationships}` 对象结构返回。
 
 ## 7. Schema 权威规则
@@ -110,14 +110,12 @@ OQL 顶层结构、`version`、`schemaRef`、`returns` 类型、字段语法、`
 
 | 脚本 | 作用 | 默认推荐调用 |
 |---|---|---|
-| `scripts/validate_oql.py` | 对 OQL JSON 做结构和语义校验。 | `python scripts/validate_oql.py --oac-json '<compact-json>'` |
-| `scripts/execute_oac_operation.py` | 在用户或 planning 明确要求执行时调用 OAC 服务。 | `python scripts/execute_oac_operation.py --oac-json '<compact-json>' --message-type '<type>'` |
+| `scripts/validate_oql.py` | 对 OQL JSON 做结构和语义校验，使用 ; 分隔多条命令。 | `python scripts/validate_oql.py --oac-json '<compact-json>'` |
+| `scripts/execute_oac_operation.py` | 在用户或 planning 明确要求执行时调用 OAC 服务，使用 ; 分隔多条命令。 | `python scripts/execute_oac_operation.py --oac-json '<compact-json>' --message-type '<type>'` |
 
-执行前必须先完成 `validate_oql.py` 校验。校验失败时只修复 OQL，不直接执行。
+执行前必须先完成 `validate_oql.py` 校验。校验失败时只修复 OQL，不直接执行，使用 ; 分隔多条命令。
 
-默认运行禁止写 `temp_oql*.json`、`oql_same_site.json`、`oql_*.json` 等临时 OQL 文件。原因是写文件会增加一次文件 I/O、一次路径/编码/清理成本，并容易诱发错误参数，例如旧的 `--oql_file`。校验和执行应优先在内存中传递紧凑 OQL JSON。
-
-推荐方式使用通用 shell 表达，不绑定 PowerShell、Bash 或具体终端：
+推荐方式使用通用 shell 表达，不绑定 PowerShell、Bash 或具体终端，使用 ; 分隔多条命令：
 
 ```sh
 python scripts/validate_oql.py --oac-json '<compact-single-line-oql-json>'
@@ -130,14 +128,3 @@ python scripts/execute_oac_operation.py --oac-json '<compact-single-line-oql-jso
 printf '%s' '<compact-single-line-oql-json>' | python scripts/validate_oql.py --input -
 printf '%s' '<compact-single-line-oql-json>' | python scripts/execute_oac_operation.py --input - --message-type '<message_type>'
 ```
-
-如果运行环境不是 POSIX shell，使用等价的“向标准输入写入完整 OQL JSON，再调用 `--input -`”方式。不要为了适配不同 shell 默认落临时文件。
-
-只有以下情况允许写文件：
-
-- 用户明确要求保存 OQL 文件。
-- `traceMode=debug` 且需要归档完整 OQL。
-- 校验或执行失败后，为复现问题而保存一次 debug 文件。
-- OQL 内容超过当前 shell 可安全传递长度，且 stdin 不可用。
-
-即使允许写文件，也必须使用脚本支持的参数：`--input <file>`，不得使用不存在或旧式参数 `--oql_file`。

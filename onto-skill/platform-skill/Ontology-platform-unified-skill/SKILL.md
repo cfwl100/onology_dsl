@@ -44,28 +44,6 @@ metadata:
 
 当用户或上层计划明确要求“先……再……”时，可以按步骤串联 OAG、OAC、Function。串联时每一步仍只进入一个能力目录，并在前一步成功后再进入下一步。
 
-## OAC 生成与执行闭环
-
-数据访问必须遵循 Generator + Reviewer 闭环：
-
-1. 读取 `references/oac-data-access.md`。
-2. 进入唯一 OAC 子操作文档。
-3. 读取对应 schema；operation 文档内已包含最小示例，不再读取独立 examples 目录。
-4. 生成 OQL JSON，并保持紧凑单行格式。
-5. 使用 `scripts/validate_oql.py` 做结构和语义校验。默认使用 `--oac-json '<compact-json>'` 或 `--input -`，禁止写 `temp_oql*.json` 临时文件。
-6. 校验失败时根据错误修复，不得直接执行。
-7. 用户明确要求执行时，才调用 `scripts/execute_oac_operation.py`。默认使用 `--oac-json '<compact-json>'` 或 `--input -`，禁止先写临时 OQL 文件再执行。
-
-## OQL 无文件传递规则
-
-默认执行态必须在内存中传递 OQL。命令示例只使用通用 shell 语义，不绑定 PowerShell、Bash 或具体终端；具体命令以 `references/oac-data-access.md` 和三个 OAC operation 手册为准。
-
-- 短 OQL：优先使用脚本参数 `--oac-json <compact-single-line-oql-json>`。
-- 长 OQL 或转义风险较高：优先把完整 OQL JSON 写入标准输入，并使用 `--input -`。
-- 非 POSIX shell：使用等价的标准输入传递能力，不因为 shell 差异默认落临时文件。
-
-禁止默认写入 `temp_oql*.json`、`oql_same_site.json`、`oql_*.json`。只有用户明确要求保存、`traceMode=debug`、失败复现或 stdin 不可用时，才允许使用文件；使用文件时必须通过 `--input <file>`，不得使用旧参数 `--oql_file`。
-
 ## 缺失信息识别
 
 - 子图检索常缺：检索问题、业务上下文、任务目标、本体范围。

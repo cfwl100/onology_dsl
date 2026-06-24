@@ -1,6 +1,6 @@
 # 传播证据验证知识
 
-本文档用于业务定制开发人员维护“传播证据验证”场景的 Planning 输入内容。外层 `alarm-propagation/SKILL.md` 读取本文件时，不能只摘录摘要；必须把下列分段中的原始业务规则合并到 6 行输入的 `业务领域知识`、`流程级定制`、`步骤级定制` 和 `缺失信息` 中，再传递给 `Ontology-based-planning-skill`。
+本文档用于业务定制开发人员维护“传播证据验证”场景的 Planning 输入内容。外层 `alarm-propagation/SKILL.md` 读取本文件时，不能只摘录摘要；必须把下列分段中的原始业务规则按照**可注入的 6 行片段生成规则**章节合并，再传递给 `Ontology-based-planning-skill`。
 
 ---
 
@@ -21,18 +21,7 @@ network@1.0
 
 ## 业务意图
 
-**填写模板：**
-
-```text
-验证起始网元 ${neName} 在 ${directions} 范围内，是否存在名称属于 ${alarmNames} 的活动告警证据，并返回相关网元和告警对象结构。
-```
-
-**变量说明：**
-
-- `${neName}`：用户指定的起始网元名称。
-- `${directions}`：用户指定的检查方向，例如同站点、同机房、对端网元、业务路径。
-- `${alarmNames}`：用户指定的待验证告警类型列表；长列表在外层 Skill 中保留为变量引用。
-- 多方向时可拆分为 `${neName_same_site}`、`${neName_peer_ne}`、`${neName_service_path}`，以及 `${alarmNames_same_site}`、`${alarmNames_peer_ne}`、`${alarmNames_service_path}`。
+使用用户输入的原始问题信息
 
 ---
 
@@ -170,10 +159,13 @@ message_type：
 
 ## 步骤级定制
 
-**默认填写：**
+**填写：**
 
 ```text
-S1：按用户指定方向检索起始网元、方向相关中间对象、相关网元和告警对象子图，关系名必须从子图 edges.properties.name 获取；S2：为每个方向独立生成查询任务，严格遵守同站点、对端网元、业务路径的查询约束；S3：按方向查询活动告警并返回 {objects, relationships}，使用该方向的网元变量、告警列表变量、返回字段和 message_type；S6：按方向汇总是否存在传播证据，空结果表示未发现该方向证据。
+S1：遵循上述**子图检索规则**章节
+S2：任务规划时，使用上述**业务意图**、**场景知识**、**业务规则**、**关系名动态获取**、**任务规划规则**、**查询约束**，本体访问查询条件增加用户原始问题中的查询条件
+S3：按方向查询活动告警并返回 {objects, relationships}，使用该方向的网元变量、告警列表变量、返回字段和 message_type；
+S6：按方向汇总是否存在传播证据，空结果表示未发现该方向证据。
 ```
 
 **填写说明：**
@@ -201,15 +193,15 @@ S1：按用户指定方向检索起始网元、方向相关中间对象、相关
 
 ---
 
-## 可注入 6 行片段
+## 可注入的 6 行片段生成规则
 
-外层 `SKILL.md` 可以复制本片段，但不能只保留摘要；组装 `业务领域知识` 时必须合并上方“关系名动态获取”“查询约束”“返回要求和 message_type”“失败策略和禁止项”等细粒度规则。
+将上述章节内容按照如下模板进行组装，必须按照章节名称进行对应：
 
 ```text
-本体ID：network@1.0
-业务意图：验证起始网元 ${neName} 在 ${directions} 范围内，是否存在名称属于 ${alarmNames} 的活动告警证据，并返回相关网元和告警对象结构。
-业务领域知识：传播证据验证用于判断指定方向上是否存在实例层活动告警证据；检查方向由用户输入决定，支持同站点/同机房、对端网元、业务路径；多方向必须独立处理；关系名必须从本体子图 edges.properties.name 动态获取，businesspath 是对象类型不是关系边，pathThrough 只能作为候选关系名且必须以子图实际返回名称为准；同站点方向禁止 site -> ne -> alarm 绕行路径，对端网元和业务路径方向必须经过 ne 后再连接 alarm，业务路径方向必须经过 businesspath 对象；起点过滤使用 ne.name，告警过滤使用 alarm.alarmName IN 对应方向告警列表；返回网元字段 srcSpaceVid/name/className/domain/networkType 和告警字段 node/ownerVid/severity/alarmName/identifier/firstOccurrence/lastOccurrence/clearTime；按方向使用 same_site_active_alarms、peer_ne_active_alarms、service_path_active_alarms；S3 空结果是有效结果，不自动放宽条件重试；默认不启用 Function。
-流程级定制：使用默认流程 S1 -> S2 -> S3 -> S6；不执行 S4/S5 Function；每个方向独立处理；S3 空结果视为有效结果。
-步骤级定制：S1：按用户指定方向检索起始网元、方向相关中间对象、相关网元和告警对象子图，关系名必须从子图 edges.properties.name 获取；S2：为每个方向独立生成查询任务，严格遵守同站点、对端网元、业务路径的查询约束；S3：按方向查询活动告警并返回 {objects, relationships}，使用该方向的网元变量、告警列表变量、返回字段和 message_type；S6：按方向汇总是否存在传播证据，空结果表示未发现该方向证据。
-缺失信息：无
+本体ID
+业务意图
+业务领域知识
+流程级定制
+步骤级定制
+缺失信息
 ```
