@@ -89,33 +89,136 @@
 - 不确定当前终端时，只输出逐行命令，不输出 Shell 专属连接符、管道或专属变量。
 - 本文件不重复维护各 Shell 的完整示例，避免不同文档之间出现不一致。
 
-## 最小示例
+###  ASSOCIATION_QUERY完整结构定义模版样例
 
 ```json
 {
   "version": "1.0",
-  "schemaRef": "demo@1.0",
+  "schemaRef": "<本体名称>",
+  "strict": true,
+  "operation": "ASSOCIATION_QUERY",
+  "maxResults": 1000,
+  "objects": [
+    { "objectType": "<对象类型>", "alias": "<对象类型别名，默认和对象名保持一致，如果一条路径有多个同名对象，则添加数字后缀，如对象为ne，别名默认是ne，如果有两个ne, 则取ne1, ne2>" },
+	...
+  ],
+  "relationships": [
+    {
+      "relationshipType": "<逻辑关系类型>",
+      "alias": "<逻辑关系类型别名, 默认从r1开始，多个则r1, r2, r3>",
+      "from": "<该关系开始object,必须在objects中存在>",
+      "to": "<该关系目标object,必须在objects中存在>"
+    },
+	...
+  ],
+  "conditions": {
+    "kind": "<`GROUP`或`PREDICATE`>", 
+    "children": [
+      {
+        "kind": "<`GROUP`或`PREDICATE`>",
+        "ref": "<必须来自于objects或者relationships中的alias>",
+        "field": "<条件字段名>",
+        "operator": "<操作符，详细见操作符定义表格>",
+        "values": ["value1", "value2", ...]
+      },
+      ...
+  },
+  "returns": [
+    { "kind": "FIELDS", "ref": "src", "fields": ["*"] },
+    ...
+  ]
+}
+
+```
+### 操作符定义表格
+| 操作符                                     | `values` 取值规则 | 说明                              |
+|-----------------------------------------| ----------------- | --------------------------------- |
+| `EQ` / `NE`                             | 恰好 1 个值       | 等于 / 不等于                     |
+| `GT` / `GTE` / `LT` / `LTE`             | 恰好 1 个值       | 大于 / 大于等于 / 小于 / 小于等于 |
+| `IN` / `NOT_IN`                         | 至少 1 个值       | 属于 / 不属于                     |
+| `CONTAINS`                              | 恰好 1 个字符串值 | 字符串包含匹配                    |
+| `BETWEEN`                               | 恰好 2 个值       | 范围（包含边界），如 `BETWEEN [10, 100]` |
+| `STARTS_WITH`                           | 恰好 1 个字符串值 | 前缀匹配                          |
+| `ENDS_WITH`                             | 恰好 1 个字符串值 | 后缀匹配                          |
+| `IS_NULL`                               | 不允许            | 空值判断                          |
+| `IS_NOT_NULL`                           | 不允许            | 非空判断                          |
+| `IS_EMPTY`                              | 不允许            | 空字符串判断                      |
+| `IS_NOT_EMPTY`                          | 不允许            | 非空字符串判断                    |
+
+### `conditions` 统一条件表达式注意事项
+1. `conditions` 统一表达查询筛选、更新目标与删除目标。
+   其结构为递归逻辑树，而非自由拼装对象。
+2. `conditions`中的`values`数组，必须结合上下文已知的真实数据进行显式赋值。
+
+## 示例
+### 示例1：设备到数据中心的多跳路径查询
+
+```json
+{
+  "version": "1.0",
+  "schemaRef": "ams_topology@1.0",
   "strict": true,
   "operation": "ASSOCIATION_QUERY",
   "objects": [
-    { "objectType": "cell", "alias": "c" },
-    { "objectType": "grid", "alias": "g" }
+    {
+      "objectType": "device",
+      "alias": "d"
+    },
+    {
+      "objectType": "derver",
+      "alias": "s"
+    },
+    {
+      "objectType": "dataCenter",
+      "alias": "dc"
+    }
   ],
   "relationships": [
-    { "relationshipType": "belongs_to", "alias": "r1", "from": "c", "to": "g" }
+    {
+      "relationshipType": "installed_on",
+      "alias": "r1",
+      "from": "d",
+      "to": "s"
+    },
+    {
+      "relationshipType": "deployed_in",
+      "alias": "r2",
+      "from": "s",
+      "to": "dc"
+    }
   ],
   "conditions": {
-    "kind": "PREDICATE",
-    "ref": "c",
-    "field": "cell_id",
-    "operator": "EQ",
-    "values": ["CELL_A"]
+    "kind": "GROUP",
+    "relation": "AND",
+    "children": [
+      {
+        "kind": "PREDICATE",
+        "ref": "d",
+        "field": "status",
+        "operator": "EQ",
+        "values": ["running"]
+      },
+      {
+        "kind": "PREDICATE",
+        "ref": "dc",
+        "field": "region",
+        "operator": "EQ",
+        "values": ["华东"]
+      }
+    ]
   },
   "returns": [
-    { "kind": "FIELDS", "ref": "c", "fields": ["cell_id"] },
-    { "kind": "FIELDS", "ref": "g", "fields": ["grid_id"] },
-    { "kind": "FIELDS", "ref": "r1", "fields": ["*"] }
+    { 
+      "kind": "FIELDS",
+      "ref": "d",
+      "fields": ["*"]
+    },
+    {
+      "kind": "FIELDS",
+      "ref": "r1",
+      "fields": ["*"]
+    }
   ],
-  "maxResults": 1000
+  "maxResults": 100000
 }
 ```
