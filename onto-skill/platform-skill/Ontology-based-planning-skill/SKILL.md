@@ -119,13 +119,13 @@ StepExecutionRecord：
 
 ```text
 subgraphOutput：
-- rawSubgraph
-- objectCandidates
-- propertyCandidates
-- relationCandidates
-- functionCandidates
-- missingItems
-- conflictItems
+- rawSubgraph：OAG 返回的原始图结构
+- objectCandidates：对象候选
+- propertyCandidates：字段候选及归属对象
+- relationCandidates：关系候选及方向
+- functionCandidates：函数候选
+- missingItems：缺失项
+- conflictItems：冲突项
 ```
 
 规则：OAG 返回结构是对象、字段、关系、函数的事实来源。业务领域知识和步骤级定制只能影响检索范围、召回重点、返回字段裁剪和缺失项判定，不能替代 OAG 事实。
