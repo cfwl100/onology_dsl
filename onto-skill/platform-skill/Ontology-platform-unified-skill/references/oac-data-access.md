@@ -43,16 +43,6 @@ Planning 层委托 OAC 时默认使用以下模板；如果业务定制文件提
 期望输出：只返回对象结构结果，包含 objects 和 relationships；不输出 operationDecision、oql、validation。
 ```
 
-最小输入应包含：
-
-```text
-本体ID：<公共本体ID>
-操作类型：<QUERY / ASSOCIATION_QUERY / AGGREGATE，如可判断>
-查询对象：<来自子图 objectType>
-本体子图依据：<至少包含对象和字段归属；关系查询还要包含关系名>
-返回要求：<需要返回什么>
-```
-
 ## 5. 最终输出格式
 
 OAC 最终输出必须是对象结构。
@@ -76,7 +66,7 @@ OAC 最终输出必须是对象结构。
 
 ## 6. 执行流程
 
-1. 根据自然语言数据访问需求判断唯一 OAC 操作类型。
+1. 判断唯一 OAC 操作类型。
 2. 读取对应 operation 操作手册。
 3. 读取对应 schema。operation 手册内已包含最小示例。
 4. 基于本体ID、操作类型、查询对象、关系路径、过滤条件、返回要求、执行要求、期望输出生成 OQL JSON。
@@ -92,6 +82,13 @@ OAC 最终输出必须是对象结构。
 OQL 顶层结构、`version`、`schemaRef`、`returns` 类型、字段语法、`maxResults` 格式等以对应 schema 为准。
 
 当前本体 Skill 的 OQL 初始版本统一为 `version: "1.0"`。生成 OQL 时必须使用 schema 中声明的版本，不得从历史样例沿用其他版本号。
+
+### 7.1 返回字段通配符
+
+- `returns.kind=FIELDS.fields` 允许使用 `["*"]`，表示返回该 `ref` 对应对象或关系的全部字段。
+- `*` 只允许出现在 `returns.kind=FIELDS.fields[]`。
+- 条件字段、排序字段、表达式字段仍不得使用 `*`。
+- 关系返回可以写 `{ "kind": "FIELDS", "ref": "r1", "fields": ["*"] }`，前提是 `r1` 是 `relationships[].alias`。
 
 ## 8. 路由判断
 
@@ -152,38 +149,34 @@ OQL 校验已通过，但真实 OAC 执行环境未配置：缺少 SERVICE_NAMES
 
 ### 10.3 跨平台 Shell 兼容规则
 
-不要生成跨 Shell 混合命令。先识别当前环境，再选择命令样式。
+默认不要输出链式命令。优先使用绝对脚本路径，或分行命令。
 
-#### Windows PowerShell 5.1 / PowerShell 7+
+#### Windows PowerShell / PowerShell 7+
 
 ```powershell
-Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
-python .\scripts\validate_oql.py --input "C:\path\to\oql.json"
-if ($LASTEXITCODE -eq 0) {
-  python .\scripts\execute_oac_operation.py --input "C:\path\to\oql.json" --message-type "<message_type>"
-}
+python "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill\scripts\validate_oql.py" --input "C:\path\to\oql.json"
+python "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill\scripts\execute_oac_operation.py" --input "C:\path\to\oql.json" --message-type "<message_type>"
 ```
 
 #### Windows CMD
 
 ```bat
-cd /d "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
-python scripts\validate_oql.py --input "C:\path\to\oql.json" && python scripts\execute_oac_operation.py --input "C:\path\to\oql.json" --message-type "<message_type>"
+python "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill\scripts\validate_oql.py" --input "C:\path\to\oql.json"
+python "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill\scripts\execute_oac_operation.py" --input "C:\path\to\oql.json" --message-type "<message_type>"
 ```
 
 #### Bash / zsh / Linux / macOS / WSL / Git Bash
 
 ```bash
-cd "/path/to/Ontology-platform-unified-skill"
-python scripts/validate_oql.py --input "/path/to/oql.json" && python scripts/execute_oac_operation.py --input "/path/to/oql.json" --message-type "<message_type>"
+python "/path/to/Ontology-platform-unified-skill/scripts/validate_oql.py" --input "/path/to/oql.json"
+python "/path/to/Ontology-platform-unified-skill/scripts/execute_oac_operation.py" --input "/path/to/oql.json" --message-type "<message_type>"
 ```
 
 #### 未知 Shell 的最低风险写法
 
 ```text
-进入 Ontology-platform-unified-skill 目录
-python scripts/validate_oql.py --input <json文件路径>
-python scripts/execute_oac_operation.py --input <json文件路径> --message-type <message_type>
+python <Ontology-platform-unified-skill目录>/scripts/validate_oql.py --input <json文件路径>
+python <Ontology-platform-unified-skill目录>/scripts/execute_oac_operation.py --input <json文件路径> --message-type <message_type>
 ```
 
-未知 Shell 时只输出逐行命令，不输出 `&&`、`||`、管道或 Shell 专属变量。
+除非用户明确指定当前 Shell 并要求链式写法，否则不要输出 `cd ... && python ...`、`python ... || echo ...` 或管道命令。
