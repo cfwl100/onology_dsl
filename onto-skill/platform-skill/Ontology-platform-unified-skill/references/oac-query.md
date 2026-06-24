@@ -70,16 +70,9 @@
 
 ## Shell 兼容校验命令
 
-先确认当前终端，再生成命令。Windows PowerShell 5.1 不支持 `&&` 和 `||`，不要输出 Bash 风格串联命令。
+先确认当前终端，再生成命令；不要只按某一种操作系统或 Shell 输出。无法确认当前终端时，输出逐行命令，不使用 `&&`、`||`、管道、`$LASTEXITCODE`、`Test-Path` 等 Shell 专属语法。
 
-PowerShell 推荐写法：
-
-```powershell
-Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
-python .\scripts\validate_oql.py --oac-json '<compact-single-line-oql-json>'
-```
-
-PowerShell 中需要失败处理时：
+### Windows PowerShell
 
 ```powershell
 Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
@@ -87,14 +80,26 @@ python .\scripts\validate_oql.py --oac-json '<compact-single-line-oql-json>'
 if ($LASTEXITCODE -ne 0) { Write-Output "OQL validation failed" }
 ```
 
-Bash 环境才使用管道或 `&&` / `||`：
+### Windows CMD
+
+```bat
+cd /d "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
+python scripts\validate_oql.py --oac-json "<compact-single-line-oql-json>" || echo OQL validation failed
+```
+
+### Bash / zsh / Linux / macOS / WSL / Git Bash
 
 ```bash
 cd "/path/to/Ontology-platform-unified-skill"
 printf '%s' '<compact-single-line-oql-json>' | python scripts/validate_oql.py --input -
 ```
 
-如果不确定当前终端类型，优先输出单条 Python 命令，不输出命令连接符。
+### 未知 Shell
+
+```text
+进入 Ontology-platform-unified-skill 目录
+python scripts/validate_oql.py --oac-json '<compact-single-line-oql-json>'
+```
 
 ## 最小示例
 
