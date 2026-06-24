@@ -72,7 +72,7 @@ OAC 最终输出必须是对象结构。
 - `objects[].props` 表示返回属性。
 - `relationships[]` 表示对象间关系结果；没有关系时返回空数组。
 - 查询成功但结果为空时返回 `{ "objects": [], "relationships": [] }`。
-- 错误或缺失信息由外层步骤状态或 S7 汇总说明，不混入对象结构字段。
+- 错误或缺失信息由外层步骤状态或 S6 汇总说明，不混入对象结构字段。
 
 ## 6. 执行流程
 
@@ -80,10 +80,12 @@ OAC 最终输出必须是对象结构。
 2. 读取对应 operation 操作手册。
 3. 读取对应 schema。operation 手册内已包含最小示例。
 4. 基于本体ID、操作类型、查询对象、关系路径、过滤条件、返回要求、执行要求、期望输出生成 OQL JSON。
-5. 使用 `scripts/validate_oql.py` 校验。默认通过 `--oac-json` 或 `--input -` 传入 OQL，不写 `temp_oql*.json` 临时文件。
-6. 校验失败时修复，不得执行。
-7. 用户或 planning 明确要求执行时，调用 `scripts/execute_oac_operation.py`。默认通过 `--oac-json` 或 `--input -` 传入 OQL，不写临时输入文件。
-8. 将执行结果转换为 `{objects, relationships}` 对象结构返回。
+5. 对复杂 OQL 使用程序化方式写入 UTF-8 JSON 文件，不手写 JSON 文本。
+6. 使用 `scripts/validate_oql.py --input <json文件>` 校验；短小 JSON 且确认 Shell 引号安全时，才可使用 `--oac-json`。
+7. 校验失败时只修复 OQL，不得执行。
+8. 真实执行前检查服务环境，至少确认 `SERVICE_NAMESPACE` 和 `TENANT_ID` 已设置。
+9. 用户或 planning 明确要求执行且环境完整时，调用 `scripts/execute_oac_operation.py --input <json文件>`，并复用已校验的同一个文件。
+10. 将执行结果转换为 `{objects, relationships}` 对象结构返回。
 
 ## 7. Schema 权威规则
 
@@ -106,16 +108,49 @@ OQL 顶层结构、`version`、`schemaRef`、`returns` 类型、字段语法、`
 - 自然语言中的单位、同义词、业务别名可以由业务 Skill 说明，但最终 OQL 字段名必须是平台字段。
 - 业务定制知识中的查询类型和返回字段可覆盖默认模板，但不能越过 schema、validator 和子图确认结果。
 
-## 10. 校验与执行：无临时文件优先
+## 10. 校验与执行：复杂 JSON 优先文件输入
 
-| 脚本 | 作用 | 默认推荐调用 |
+| 脚本 | 作用 | 推荐调用 |
 |---|---|---|
-| `scripts/validate_oql.py` | 对 OQL JSON 做结构和语义校验。 | `python scripts/validate_oql.py --oac-json '<compact-json>'` |
-| `scripts/execute_oac_operation.py` | 在用户或 planning 明确要求执行时调用 OAC 服务。 | `python scripts/execute_oac_operation.py --oac-json '<compact-json>' --message-type '<type>'` |
+| `scripts/validate_oql.py` | 对 OQL JSON 做结构和语义校验。 | 复杂 OQL：`python scripts/validate_oql.py --input <json文件>`；短小 JSON：`--oac-json '<compact-json>'` |
+| `scripts/execute_oac_operation.py` | 在用户或 planning 明确要求执行时调用 OAC 服务。 | 复杂 OQL：`python scripts/execute_oac_operation.py --input <json文件> --message-type '<type>'` |
 
-执行前必须先完成 `validate_oql.py` 校验。校验失败时只修复 OQL，不直接执行。
+执行前必须先完成 `validate_oql.py` 校验。校验失败时只修复 OQL，不直接执行。校验成功只代表 JSON 和 OQL 结构合法，不代表真实 OAC 服务环境可用。
 
-### 10.1 跨平台 Shell 兼容规则
+### 10.1 复杂 OQL 文件生成规则
+
+适用场景：
+
+- `IN` 条件中包含大量取值。
+- OQL JSON 很长。
+- 当前 Shell 是 Windows PowerShell 或 CMD，且 JSON 中包含大量双引号。
+- 日志中出现 `JSON_PARSE_ERROR`、`Expecting property name enclosed in double quotes`、引号丢失、转义异常。
+
+要求：
+
+- 使用 Python `json.dumps(..., ensure_ascii=False)` 或等价 JSON 序列化方式写文件。
+- 不手工拼接 JSON 文件内容。
+- 校验和执行必须复用同一个 JSON 文件。
+- 不要先读取文件再把长 JSON 放进 Shell 变量传给 `--oac-json`。
+
+### 10.2 真实执行环境预检查
+
+`execute_oac_operation.py` 会访问真实 OAC 服务。执行前至少需要：
+
+```text
+SERVICE_NAMESPACE=<服务命名空间>
+TENANT_ID=<租户ID>
+```
+
+缺少这些变量时，应报告环境缺失，例如：
+
+```text
+OQL 校验已通过，但真实 OAC 执行环境未配置：缺少 SERVICE_NAMESPACE 或 TENANT_ID。
+```
+
+不得在环境缺失时声称真实查询已完成；也不得自动切换 mock，除非用户明确要求 mock。
+
+### 10.3 跨平台 Shell 兼容规则
 
 不要生成跨 Shell 混合命令。先识别当前环境，再选择命令样式。
 
@@ -123,9 +158,9 @@ OQL 顶层结构、`version`、`schemaRef`、`returns` 类型、字段语法、`
 
 ```powershell
 Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
-python .\scripts\validate_oql.py --oac-json '<compact-single-line-oql-json>'
+python .\scripts\validate_oql.py --input "C:\path\to\oql.json"
 if ($LASTEXITCODE -eq 0) {
-  python .\scripts\execute_oac_operation.py --oac-json '<compact-single-line-oql-json>' --message-type '<message_type>'
+  python .\scripts\execute_oac_operation.py --input "C:\path\to\oql.json" --message-type "<message_type>"
 }
 ```
 
@@ -133,21 +168,22 @@ if ($LASTEXITCODE -eq 0) {
 
 ```bat
 cd /d "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
-python scripts\validate_oql.py --oac-json "<compact-single-line-oql-json>" && python scripts\execute_oac_operation.py --oac-json "<compact-single-line-oql-json>" --message-type "<message_type>"
+python scripts\validate_oql.py --input "C:\path\to\oql.json" && python scripts\execute_oac_operation.py --input "C:\path\to\oql.json" --message-type "<message_type>"
 ```
 
 #### Bash / zsh / Linux / macOS / WSL / Git Bash
 
 ```bash
 cd "/path/to/Ontology-platform-unified-skill"
-printf '%s' '<compact-single-line-oql-json>' | python scripts/validate_oql.py --input -
+python scripts/validate_oql.py --input "/path/to/oql.json" && python scripts/execute_oac_operation.py --input "/path/to/oql.json" --message-type "<message_type>"
 ```
 
 #### 未知 Shell 的最低风险写法
 
 ```text
 进入 Ontology-platform-unified-skill 目录
-python scripts/validate_oql.py --oac-json '<compact-single-line-oql-json>'
+python scripts/validate_oql.py --input <json文件路径>
+python scripts/execute_oac_operation.py --input <json文件路径> --message-type <message_type>
 ```
 
 未知 Shell 时只输出逐行命令，不输出 `&&`、`||`、管道或 Shell 专属变量。
