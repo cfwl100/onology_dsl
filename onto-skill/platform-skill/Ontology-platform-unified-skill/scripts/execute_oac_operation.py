@@ -2,6 +2,10 @@
 """Execute OAC Operation.
 
 The execution script reuses scripts/oql_validator.py as the single OQL validation gate.
+
+Input guidance:
+- Use --input for complex or long OQL JSON, especially on Windows shells.
+- Use --oac-json only for short compact JSON when the current shell quoting is known to be safe.
 """
 from __future__ import annotations
 
@@ -66,6 +70,11 @@ def validate_for_execution(oql: dict[str, Any]) -> tuple[bool, list[dict[str, An
     return not errors, errors
 
 
+def missing_runtime_env() -> list[str]:
+    required = ["SERVICE_NAMESPACE", "TENANT_ID"]
+    return [name for name in required if not os.environ.get(name)]
+
+
 def execute_operation(oql: dict[str, Any]) -> dict[str, Any]:
     if os.environ.get("DEBUG_OAC", "false").lower() == "true":
         debug_dir = os.environ.get("DEBUG_OAC_DIR", "/tmp")
@@ -75,12 +84,20 @@ def execute_operation(oql: dict[str, Any]) -> dict[str, Any]:
             json.dump(oql, f, ensure_ascii=False, indent=2)
         return {"success": True, "data": json.dumps({"data": [f"DEBUG_MODE: OQL 已写入 {debug_file}"]}, ensure_ascii=False)}
 
+    missing = missing_runtime_env()
+    if missing:
+        return {
+            "success": False,
+            "error": {
+                "code": "ENV_MISSING",
+                "exception_type": "EnvironmentError",
+                "missing": missing,
+                "message": "真实 OAC 执行环境变量未设置，请检查集群与租户配置: " + ", ".join(missing),
+            },
+        }
+
     namespace = os.environ.get("SERVICE_NAMESPACE")
     tenant_id = os.environ.get("TENANT_ID")
-    if not namespace:
-        return {"success": False, "error": {"exception_type": "EnvironmentError", "message": "环境变量 SERVICE_NAMESPACE 未设置，请检查集群配置"}}
-    if not tenant_id:
-        return {"success": False, "error": {"exception_type": "EnvironmentError", "message": "环境变量 TENANT_ID 未设置，请检查租户配置"}}
 
     url = f"http://api-gateway-mesh.{namespace}.svc.cluster.local:39071/ontoaccess/rest/v1/objects/query"
     headers = {
@@ -110,8 +127,8 @@ def format_success(result: dict[str, Any], message_type: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Execute OAC Operation")
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--oac-json", help="OAC JSON 字符串")
-    group.add_argument("--input", help="从文件或 stdin 读取 JSON，使用 - 表示 stdin")
+    group.add_argument("--oac-json", help="OAC JSON 字符串；仅建议用于短小 compact JSON，复杂 JSON 优先使用 --input")
+    group.add_argument("--input", help="从 UTF-8 文件或 stdin 读取 JSON，使用 - 表示 stdin；复杂/长 OQL 推荐使用该方式")
     parser.add_argument("--output", help="输出文件路径")
     parser.add_argument("--message-type", "--msg-type", dest="message_type", default="OAC_RETURN", help="返回消息类型")
     args = parser.parse_args()
