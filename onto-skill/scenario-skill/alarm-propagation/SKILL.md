@@ -70,8 +70,6 @@ S1 -> S2 -> S3 -> S6
 缺失信息：<没有则写无>
 ```
 
-不要输出 `planningDelegationPackage`、`stepContracts`、复杂 JSON 或旧字段 `业务定制文件路径` / `业务定制文件内容`。
-
 ## 5. 字段填写规则
 
 ### 5.1 本体ID
