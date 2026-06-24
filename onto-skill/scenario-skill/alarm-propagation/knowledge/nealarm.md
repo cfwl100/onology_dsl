@@ -1,49 +1,109 @@
-# 获取网元告警
+# 网元告警查询知识
 
-## 目标
-识别输入网元是否存在告警，并返回告警信息
+本文档用于业务定制开发人员维护“查询网元告警”场景的 Planning 输入片段。外层 `alarm-propagation/SKILL.md` 只读取本文件、替换变量，并组装为 6 行输入后传递给 `Ontology-based-planning-skill`。
 
-## 核心经验性知识
+---
 
-### 告警基础
-- **告警和异常事件不同**，不要去查找 AbnormalStatus
-- 告警的 `alarmName` 实际上是告警类型，进行特定某条或某几条告警时**不要使用该字段作为筛选条件**，需要使用 `identifier`（告警的唯一标识符）
-- 告警的实例数据可能会很多，如果有合适的 Function 的话，可以通过 Function 来查询告警
+## 本体ID
 
-### 网元层级（neLayer）属性
-- CN：核心路由（Core Network），ne_layer = 30
-- AN：汇聚路由（Aggregation Network），ne_layer = 20
-- EN：接入路由（Edge Network），ne_layer = 10
+**填写值：**
 
-**【关键约束 - 必须严格遵守】返回字段（共8个，全部为告警alarm的属性】**：
-- **告警属性**：ownerVid、severity、alarmName、identifier、firstOccurrence、lastOccurrence、node
-- **注意**：以上8个字段**全部是告警(alarm)的属性**，在一次OAC查询中**全部返回**，禁止遗漏任何一个
-
-**查询语句格式**：
-```
-查数据：查询{网元名称}的告警
-查询目标：返回告警的ownerVid、severity、alarmName、identifier、firstOccurrence、lastOccurrence、node属性
-关系路径：严格通过OAG返回结果推断
-过滤条件：
-- ne.name = "{网元名称}"
-返回要求：返回消息格式message_type为alarm，必须返回告警的ownerVid、severity、alarmName、identifier、firstOccurrence、lastOccurrence、node共8个字段
+```text
+network@1.0
 ```
 
-### 告警类型示例参考
-- Ethernet Physical (ETPI) LOS
-- Ethernet Physical (ETPI) Port down
-- Ethernet Physical (ETPI) Interface down
-- BN EMS Alarm NE Communication Failure
+**填写说明：**固定填写公共本体 ID。
 
-## 执行建议
+---
 
-1. **首选**：通过 OAG 查询获取 Function（从 has_function 边），优先使用 Function
-2. **备选**：通过 OAG 查询子图确认关系路径，再生成查询实例
+## 业务意图
 
-**关键约束**：
-- **直接使用网元名称查询**：查询网元告警时，**直接使用 `ne.name` 作为过滤条件**，不需要先查询网元ID
-- 例如：`过滤条件：ne.name = "DLE_AIRHITAM_GEBANG_MT"`，无需先查 ne_id 再查告警
+**填写模板：**
 
-**条件归属**：
-- name：直接条件，属于 Ne 对象
-- alarmName：关联到 Alarm ，是Alarm的属性
+```text
+查询网元 ${neName} 上的当前活动告警，并返回告警对象结构。
+```
+
+**变量说明：**`${neName}` 是用户指定的网元名称。
+
+---
+
+## 业务领域知识
+
+### 场景知识
+
+网元告警查询用于回答“某个网元当前有哪些活动告警”或“某个网元是否存在指定告警”。本场景查询告警对象，不查询异常事件对象。
+
+### 业务规则
+
+- 网元名称直接作为查询条件。
+- `alarmName` 表示告警类型，不是告警唯一标识。
+- 查询指定告警实例时使用 `identifier`。
+- 未指定告警类型时，查询该网元下的当前活动告警。
+
+### 子图检索规则
+
+检索网元对象、告警对象以及二者之间的关联关系。
+
+### 任务规划规则
+
+规划网元到告警的查询任务，过滤条件至少包含网元名称。
+
+### 查询规则
+
+返回告警对象结构；默认只返回当前活动告警。
+
+### Function 规则
+
+默认不启用 Function；只有用户明确要求时才在流程级定制中追加 S4/S5。
+
+### 返回要求和失败策略
+
+- 返回告警对象的关键字段。
+- 查询结果为空时，表示该网元当前未发现匹配告警。
+- 缺少网元名称时，不得猜测补齐。
+
+---
+
+## 流程级定制
+
+**默认填写：**
+
+```text
+使用默认流程 S1 -> S2 -> S3 -> S6。
+```
+
+---
+
+## 步骤级定制
+
+**默认填写：**
+
+```text
+S1：检索网元、告警及二者关系子图；S2：规划网元到告警的查询任务；S3：按网元名称过滤并返回告警对象结构；S6：汇总网元告警查询结果。
+```
+
+---
+
+## 缺失信息
+
+**默认填写：**
+
+```text
+无
+```
+
+**填写规则：**缺少网元名称时填写 `缺少网元名称`。
+
+---
+
+## 可注入 6 行片段
+
+```text
+本体ID：network@1.0
+业务意图：查询网元 ${neName} 上的当前活动告警，并返回告警对象结构。
+业务领域知识：网元告警查询用于查询指定网元当前活动告警；查询告警对象，不查询异常事件对象；网元名称直接作为查询条件；alarmName 表示告警类型，identifier 表示告警唯一标识；默认返回告警对象结构；空结果表示当前未发现匹配告警；默认不启用 Function。
+流程级定制：使用默认流程 S1 -> S2 -> S3 -> S6。
+步骤级定制：S1：检索网元、告警及二者关系子图；S2：规划网元到告警的查询任务；S3：按网元名称过滤并返回告警对象结构；S6：汇总网元告警查询结果。
+缺失信息：无
+```
