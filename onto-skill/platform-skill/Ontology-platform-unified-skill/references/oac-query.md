@@ -55,8 +55,8 @@
 2. 声明 `objects` 和 alias。
 3. 将用户过滤条件写入 `conditions`。
 4. 将返回字段写入 `returns`。
-5. 生成紧凑单行 OQL JSON，用于内存传递。
-6. 调用 `validate_oql.py` 校验；默认使用 `--oac-json '<compact-json>'` 或 `--input -`，禁止写 `temp_oql*.json` 临时文件。
+5. 生成 OQL JSON。复杂 OQL、长数组或 Windows 原生命令环境下，优先通过程序化 JSON 序列化写入 UTF-8 文件。
+6. 调用 `validate_oql.py` 校验。复杂 OQL 优先使用 `--input <json文件>`；短小 JSON 且确认 Shell 引号安全时，才可使用 `--oac-json`。
 
 ## 校验与修复
 
@@ -67,16 +67,18 @@
 - `returns` 结构不符合 schema。
 - `maxResults` 使用旧对象格式。
 - `version` 未使用 schema 声明的初始版本。
+- 手写 JSON 文件缺少逗号、括号不闭合或存在隐藏字符。
+- 将长 JSON 通过 Shell 变量传给 `--oac-json` 后发生引号丢失。
 
 ## Shell 兼容校验命令
 
-先确认当前终端，再生成命令；不要只按某一种操作系统或 Shell 输出。无法确认当前终端时，输出逐行命令，不使用 `&&`、`||`、管道、`$LASTEXITCODE`、`Test-Path` 等 Shell 专属语法。
+优先遵循 `references/oac-data-access.md` 的跨平台命令与 JSON 传参规则。复杂 OQL 推荐文件输入方式。
 
 ### Windows PowerShell
 
 ```powershell
 Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
-python .\scripts\validate_oql.py --oac-json '<compact-single-line-oql-json>'
+python .\scripts\validate_oql.py --input "C:\path\to\oql.json"
 if ($LASTEXITCODE -ne 0) { Write-Output "OQL validation failed" }
 ```
 
@@ -84,21 +86,21 @@ if ($LASTEXITCODE -ne 0) { Write-Output "OQL validation failed" }
 
 ```bat
 cd /d "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
-python scripts\validate_oql.py --oac-json "<compact-single-line-oql-json>" || echo OQL validation failed
+python scripts\validate_oql.py --input "C:\path\to\oql.json" || echo OQL validation failed
 ```
 
 ### Bash / zsh / Linux / macOS / WSL / Git Bash
 
 ```bash
 cd "/path/to/Ontology-platform-unified-skill"
-printf '%s' '<compact-single-line-oql-json>' | python scripts/validate_oql.py --input -
+python scripts/validate_oql.py --input "/path/to/oql.json"
 ```
 
 ### 未知 Shell
 
 ```text
 进入 Ontology-platform-unified-skill 目录
-python scripts/validate_oql.py --oac-json '<compact-single-line-oql-json>'
+python scripts/validate_oql.py --input <json文件路径>
 ```
 
 ## 最小示例
