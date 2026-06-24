@@ -40,6 +40,8 @@
 - 用户明确指定返回字段时必须显式列出。
 - 用户未指定返回字段时，可按平台默认规则返回对象字段，但不要覆盖用户已指定字段。
 - 返回项的 `ref` 必须引用 `objects[].alias`。
+- `returns.kind=FIELDS.fields` 支持 `["*"]`，表示返回该对象别名对应的全部字段。
+- `*` 只允许出现在 `returns.kind=FIELDS.fields[]`，不得用于条件、排序或表达式字段。
 - 不要把聚合指标或关系路径结果写入 `QUERY` 的 `returns`。
 
 ## conditions 规则
@@ -74,33 +76,24 @@
 
 优先遵循 `references/oac-data-access.md` 的跨平台命令与 JSON 传参规则。复杂 OQL 推荐文件输入方式。
 
-### Windows PowerShell
+默认不要输出链式命令；使用绝对脚本路径或分行命令。
+
+### Windows 路径示例
 
 ```powershell
-Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
-python .\scripts\validate_oql.py --input "C:\path\to\oql.json"
-if ($LASTEXITCODE -ne 0) { Write-Output "OQL validation failed" }
+python "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill\scripts\validate_oql.py" --input "C:\path\to\oql.json"
 ```
 
-### Windows CMD
-
-```bat
-cd /d "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
-python scripts\validate_oql.py --input "C:\path\to\oql.json" || echo OQL validation failed
-```
-
-### Bash / zsh / Linux / macOS / WSL / Git Bash
+### Unix / WSL / Git Bash 路径示例
 
 ```bash
-cd "/path/to/Ontology-platform-unified-skill"
-python scripts/validate_oql.py --input "/path/to/oql.json"
+python "/path/to/Ontology-platform-unified-skill/scripts/validate_oql.py" --input "/path/to/oql.json"
 ```
 
 ### 未知 Shell
 
 ```text
-进入 Ontology-platform-unified-skill 目录
-python scripts/validate_oql.py --input <json文件路径>
+python <Ontology-platform-unified-skill目录>/scripts/validate_oql.py --input <json文件路径>
 ```
 
 ## 最小示例
