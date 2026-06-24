@@ -44,6 +44,38 @@ metadata:
 
 当用户或上层计划明确要求“先……再……”时，可以按步骤串联 OAG、OAC、Function。串联时每一步仍只进入一个能力目录，并在前一步成功后再进入下一步。
 
+## Shell 兼容规则
+
+生成命令前必须先判断当前终端类型。不要把 Bash、CMD、PowerShell 的连接符混用。
+
+Windows PowerShell 5.1 不支持 Bash 风格的 `&&` 和 `||`。在 PowerShell 中必须使用以下方式之一：
+
+```powershell
+Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
+python .\scripts\validate_oql.py --help
+```
+
+需要失败处理时，使用 `$LASTEXITCODE` 或 `if`，不要使用 `||`：
+
+```powershell
+Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
+python .\scripts\validate_oql.py --help
+if ($LASTEXITCODE -ne 0) { Write-Output "validate_oql.py failed" }
+```
+
+需要判断脚本是否存在时，使用 `Test-Path`：
+
+```powershell
+Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
+if (Test-Path ".\scripts\validate_oql.py") {
+  python .\scripts\validate_oql.py --help
+} else {
+  Write-Output "Script not found"
+}
+```
+
+在 Bash 中才可以使用 `&&`、`||`、`printf` 管道等写法。除非已确认当前终端是 Bash，否则不得输出 Bash 风格命令。
+
 ## 缺失信息识别
 
 - 子图检索常缺：检索问题、业务上下文、任务目标、本体范围。
@@ -60,6 +92,7 @@ metadata:
 - 不在未知函数参数规格时直接调用函数。
 - 用户明确指定完整多跳路径时，不拆成多个单跳查询。
 - 默认执行态不写 OQL 临时文件；OQL 中间过程只作为内存变量或 stdin 内容传递。
+- Windows PowerShell 中禁止输出 `cmd1 && cmd2` 或 `cmd1 || cmd2`；需要多条命令时分行输出。
 
 ## 内部目录说明
 
