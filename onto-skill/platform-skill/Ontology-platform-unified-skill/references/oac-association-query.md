@@ -65,7 +65,7 @@
 4. 按照输入模板中的`过滤条件`生成对象或关系上的 `conditions`。
 5. 按照输入模板中的`返回要求`、`期望输出`生成对象或关系返回项。
 6. 生成紧凑单行 OQL JSON，用于内存传递。
-7. 调用 `validate_oql.py` 校验；默认使用 `--oac-json '<compact-json>'` 或 `--input -`，禁止写 `temp_oql*.json` 临时文件，使用 ; 分隔多条命令。
+7. 调用 `validate_oql.py` 校验；默认使用 `--oac-json '<compact-json>'` 或 `--input -`，禁止写 `temp_oql*.json` 临时文件。
 
 ## 校验与修复
 
@@ -79,17 +79,33 @@
 - `maxResults` 使用旧对象格式。
 - `version` 未使用 schema 声明的初始版本。
 
-默认校验命令使用通用 shell 表达，不绑定 PowerShell、Bash 或具体终端，使用 ; 分隔多条命令：
+## Shell 兼容校验命令
 
-```sh
-python scripts/validate_oql.py --oac-json '<compact-single-line-oql-json>'
+先确认当前终端，再生成命令。Windows PowerShell 5.1 不支持 `&&` 和 `||`，不要输出 Bash 风格串联命令。
+
+PowerShell 推荐写法：
+
+```powershell
+Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
+python .\scripts\validate_oql.py --oac-json '<compact-single-line-oql-json>'
 ```
 
-OQL 过长、命令行长度受限或 shell 转义风险较高时，使用标准输入，而不是临时文件，使用 ; 分隔多条命令：
+PowerShell 中需要失败处理时：
 
-```sh
+```powershell
+Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
+python .\scripts\validate_oql.py --oac-json '<compact-single-line-oql-json>'
+if ($LASTEXITCODE -ne 0) { Write-Output "OQL validation failed" }
+```
+
+Bash 环境才使用管道或 `&&` / `||`：
+
+```bash
+cd "/path/to/Ontology-platform-unified-skill"
 printf '%s' '<compact-single-line-oql-json>' | python scripts/validate_oql.py --input -
 ```
+
+如果不确定当前终端类型，优先输出单条 Python 命令，不输出命令连接符。
 
 ## 最小示例
 
