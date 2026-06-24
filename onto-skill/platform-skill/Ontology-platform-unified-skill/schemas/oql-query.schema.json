@@ -91,7 +91,19 @@
             "pattern": "^(ID|NAME)\\("
           }
         ]
-      }
+      },
+      "description": "普通字段名。用于条件、排序、表达式等位置；这些位置不允许使用 *。"
+    },
+    "returnField": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/field"
+        },
+        {
+          "const": "*",
+          "description": "仅在 returns.kind=FIELDS.fields[] 中允许，表示返回该 ref 对应对象或关系的全部字段。"
+        }
+      ]
     },
     "idNameField": {
       "type": "string",
@@ -333,10 +345,11 @@
         "fields": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/field"
+            "$ref": "#/definitions/returnField"
           },
           "minItems": 1,
-          "uniqueItems": true
+          "uniqueItems": true,
+          "description": "返回字段列表。允许 [\"*\"] 表示返回 ref 对应对象或关系的全部字段；* 只允许出现在 returns.kind=FIELDS.fields[]。"
         }
       }
     },
