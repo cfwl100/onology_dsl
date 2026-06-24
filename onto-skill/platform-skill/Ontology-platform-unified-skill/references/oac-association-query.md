@@ -64,8 +64,8 @@
 3. 按照输入模板中的`关系路径`按路径顺序声明 `relationships`。
 4. 按照输入模板中的`过滤条件`生成对象或关系上的 `conditions`。
 5. 按照输入模板中的`返回要求`、`期望输出`生成对象或关系返回项。
-6. 生成紧凑单行 OQL JSON，用于内存传递。
-7. 调用 `validate_oql.py` 校验；默认使用 `--oac-json '<compact-json>'` 或 `--input -`，禁止写 `temp_oql*.json` 临时文件。
+6. 生成 OQL JSON。复杂 OQL、长数组或 Windows 原生命令环境下，优先通过程序化 JSON 序列化写入 UTF-8 文件。
+7. 调用 `validate_oql.py` 校验。复杂 OQL 优先使用 `--input <json文件>`；短小 JSON 且确认 Shell 引号安全时，才可使用 `--oac-json`。
 
 ## 校验与修复
 
@@ -78,10 +78,12 @@
 - `returns` 结构不符合 schema。
 - `maxResults` 使用旧对象格式。
 - `version` 未使用 schema 声明的初始版本。
+- 手写 JSON 文件缺少逗号、括号不闭合或存在隐藏字符。
+- 将长 JSON 通过 Shell 变量传给 `--oac-json` 后发生引号丢失。
 
 ## Shell 兼容校验命令
 
-校验命令必须遵循 `oac-data-access.md` 中的“跨平台 Shell 兼容规则”。
+校验命令必须遵循 `oac-data-access.md` 中的“跨平台 Shell 兼容规则”和“复杂 JSON 优先文件输入”规则。
 
 - Windows PowerShell、PowerShell 7+、Windows CMD、Bash/zsh、Linux、macOS、WSL、Git Bash 的命令连接符和路径写法不同。
 - 不确定当前终端时，只输出逐行命令，不输出 Shell 专属连接符、管道或专属变量。
