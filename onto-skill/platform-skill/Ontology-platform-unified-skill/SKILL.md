@@ -44,7 +44,7 @@ metadata:
 
 当用户或上层计划明确要求“先……再……”时，可以按步骤串联 OAG、OAC、Function。串联时每一步仍只进入一个能力目录，并在前一步成功后再进入下一步。
 
-## 跨平台 Shell 兼容规则
+## 跨平台命令与 JSON 传参规则
 
 生成命令前必须先识别当前运行环境，不要默认某一种 Shell。命令示例必须与当前 Shell 匹配。
 
@@ -55,25 +55,31 @@ metadata:
 | Windows CMD | `cd /d "C:\\path"` | `&&` | `||` | `scripts\xxx.py` |
 | Bash / zsh / Linux / macOS / WSL / Git Bash | `cd "/path"` | `&&` | `||` | `scripts/xxx.py` |
 
-默认策略：
+JSON 传参策略优先级：
 
-- 如果无法确认当前 Shell，输出逐行命令，不使用 `&&`、`||`、管道或 shell 专属语法。
-- 如果用户报错来自 PowerShell 5.1，应避免 `&&`、`||`，改用分行命令或 `$LASTEXITCODE`。
-- 如果用户环境是 Bash、zsh、Linux、macOS、WSL 或 Git Bash，可以使用 `&&`、`||`、管道和 stdin。
-- 如果用户环境是 CMD，可以使用 `&&`、`||`，但不要使用 PowerShell 的 `$LASTEXITCODE` 或 `Test-Path`。
-- 路径分隔符必须与环境一致；不要把 Windows 反斜杠路径和 Bash 管道写法混在同一条命令里。
+1. **复杂 OQL 或长数组**：优先生成 UTF-8 JSON 文件，并使用 `--input <file>` 校验和执行。
+2. **短小 JSON**：可以使用 `--oac-json '<compact-json>'`，但必须确认当前 Shell 的引号规则。
+3. **stdin 友好 Shell**：Bash / zsh / WSL / Git Bash 可使用 `printf '%s' '<json>' | python scripts/validate_oql.py --input -`。
+4. **PowerShell/CMD 复杂 JSON**：不要把长 JSON 放进变量后再传给 Python 原生命令，容易触发引号丢失或转义问题；优先 `--input <file>`。
+5. **未知 Shell**：只输出逐行命令和文件输入方式，不使用 `&&`、`||`、管道或 Shell 专属变量。
 
-跨平台最低风险写法是分行执行：
+OAC 真实执行前必须区分两个阶段：
+
+- `validate_oql.py` 成功只说明 OQL JSON 结构合法。
+- `execute_oac_operation.py` 还依赖真实服务环境，至少需要 `SERVICE_NAMESPACE` 和 `TENANT_ID`。
+- 如果缺少执行环境变量，必须报告环境缺失，不得把语法校验成功误判为真实执行成功，也不得自动切换 mock。
+
+跨平台最低风险写法：
 
 ```text
 <进入技能目录>
-python <脚本路径> <参数>
+python <脚本路径> --input <json文件路径> <其他参数>
 ```
 
 ## 缺失信息识别
 
 - 子图检索常缺：检索问题、业务上下文、任务目标、本体范围。
-- 数据访问常缺：`schemaRef`、对象范围、关系路径、筛选条件、返回内容、聚合要求、执行确认。
+- 数据访问常缺：`schemaRef`、对象范围、关系路径、筛选条件、返回内容、聚合要求、执行确认、真实服务环境变量。
 - 函数执行常缺：函数目标、参数规格、参数值、参数来源。
 
 信息不足时，返回缺失项，不编造模型、对象、关系、字段、函数名或参数值。
@@ -83,10 +89,11 @@ python <脚本路径> <参数>
 - 顶层只负责路由，不展开 OQL 字段级规则、schema 细节或脚本实现。
 - OAC 公共规则已内聚到三个 operation 文档中，不再额外读取公共规则文件。
 - 不在未校验 OQL 的情况下执行数据访问。
+- 不在缺少真实执行环境变量时声称已完成真实 OAC 执行。
 - 不在未知函数参数规格时直接调用函数。
 - 用户明确指定完整多跳路径时，不拆成多个单跳查询。
-- 默认执行态不写 OQL 临时文件；OQL 中间过程只作为内存变量或 stdin 内容传递。
-- 输出命令必须遵循跨平台 Shell 兼容规则；未知 Shell 时使用逐行命令，不输出 Shell 专属连接符。
+- 复杂 OQL 可以使用中间 JSON 文件作为脚本输入；生成文件时必须使用程序化 JSON 序列化，避免手写 JSON 破坏格式。
+- 输出命令必须遵循跨平台 Shell 兼容规则；未知 Shell 时使用逐行命令和 `--input` 文件方式，不输出 Shell 专属连接符。
 
 ## 内部目录说明
 
