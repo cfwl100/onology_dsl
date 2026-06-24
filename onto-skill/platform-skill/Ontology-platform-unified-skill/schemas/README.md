@@ -14,22 +14,20 @@ Use `scripts/validate_oql.py` to validate generated OQL JSON. Operation referenc
 
 ## Shell compatibility
 
-When checking validator usage or running validation, do not assume the terminal is Bash.
+When checking validator usage or running validation, do not assume the terminal is Bash or PowerShell. Choose the command style according to the actual shell.
 
-Windows PowerShell 5.1 does not support `&&` and `||` as command separators. Use separate lines or `$LASTEXITCODE`.
+| Environment | Directory change | Script path style | Notes |
+| --- | --- | --- | --- |
+| Windows PowerShell | `Set-Location "C:\\path"` | `.\scripts\validate_oql.py` | Use separate lines or `$LASTEXITCODE` for status checks. |
+| Windows CMD | `cd /d "C:\\path"` | `scripts\validate_oql.py` | `&&` and `||` are CMD separators. |
+| Bash / zsh / Linux / macOS / WSL / Git Bash | `cd "/path"` | `scripts/validate_oql.py` | Pipes and POSIX separators are allowed. |
+| Unknown shell | Plain step-by-step text | Avoid shell-specific syntax | Do not emit `&&`, `||`, pipes, or shell-specific variables. |
 
-```powershell
-Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
-python .\scripts\validate_oql.py --help
+Minimal cross-platform-safe instruction:
+
+```text
+Enter the Ontology-platform-unified-skill directory.
+Run: python scripts/validate_oql.py --help
 ```
 
-```powershell
-Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
-if (Test-Path ".\scripts\validate_oql.py") {
-  python .\scripts\validate_oql.py --help
-} else {
-  Write-Output "Script not found"
-}
-```
-
-Bash-only examples may use `&&`, `||` or `printf`, but agents must not emit those forms unless the runtime shell is known to be Bash.
+Shell-specific examples belong in `references/oac-data-access.md`. This README only defines the compatibility rule.
