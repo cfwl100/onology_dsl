@@ -85,31 +85,11 @@
 
 ## Shell 兼容校验命令
 
-先确认当前终端，再生成命令。Windows PowerShell 5.1 不支持 `&&` 和 `||`，不要输出 Bash 风格串联命令。
+校验命令必须遵循 `oac-data-access.md` 中的“跨平台 Shell 兼容规则”。
 
-PowerShell 推荐写法：
-
-```powershell
-Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
-python .\scripts\validate_oql.py --oac-json '<compact-single-line-oql-json>'
-```
-
-PowerShell 中需要失败处理时：
-
-```powershell
-Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
-python .\scripts\validate_oql.py --oac-json '<compact-single-line-oql-json>'
-if ($LASTEXITCODE -ne 0) { Write-Output "OQL validation failed" }
-```
-
-Bash 环境才使用管道或 `&&` / `||`：
-
-```bash
-cd "/path/to/Ontology-platform-unified-skill"
-printf '%s' '<compact-single-line-oql-json>' | python scripts/validate_oql.py --input -
-```
-
-如果不确定当前终端类型，优先输出单条 Python 命令，不输出命令连接符。
+- Windows PowerShell、PowerShell 7+、Windows CMD、Bash/zsh、Linux、macOS、WSL、Git Bash 的命令连接符和路径写法不同。
+- 不确定当前终端时，只输出逐行命令，不输出 Shell 专属连接符、管道或专属变量。
+- 本文件不重复维护各 Shell 的完整示例，避免不同文档之间出现不一致。
 
 ## 最小示例
 
