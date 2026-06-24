@@ -44,37 +44,31 @@ metadata:
 
 当用户或上层计划明确要求“先……再……”时，可以按步骤串联 OAG、OAC、Function。串联时每一步仍只进入一个能力目录，并在前一步成功后再进入下一步。
 
-## Shell 兼容规则
+## 跨平台 Shell 兼容规则
 
-生成命令前必须先判断当前终端类型。不要把 Bash、CMD、PowerShell 的连接符混用。
+生成命令前必须先识别当前运行环境，不要默认某一种 Shell。命令示例必须与当前 Shell 匹配。
 
-Windows PowerShell 5.1 不支持 Bash 风格的 `&&` 和 `||`。在 PowerShell 中必须使用以下方式之一：
+| 环境 | 目录切换 | 成功后继续 | 失败兜底 | 路径风格 |
+|---|---|---|---|---|
+| Windows PowerShell 5.1 | `Set-Location "C:\\path"` | 分行执行或 `$LASTEXITCODE` | `if ($LASTEXITCODE -ne 0) { ... }` | `.\scripts\xxx.py` |
+| PowerShell 7+ | `Set-Location "C:\\path"` 或 `Set-Location "/path"` | 可分行；确认支持时可用 `&&` | 可用 `$LASTEXITCODE`；确认支持时可用 `||` | Windows 或 Unix 路径均可能出现 |
+| Windows CMD | `cd /d "C:\\path"` | `&&` | `||` | `scripts\xxx.py` |
+| Bash / zsh / Linux / macOS / WSL / Git Bash | `cd "/path"` | `&&` | `||` | `scripts/xxx.py` |
 
-```powershell
-Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
-python .\scripts\validate_oql.py --help
+默认策略：
+
+- 如果无法确认当前 Shell，输出逐行命令，不使用 `&&`、`||`、管道或 shell 专属语法。
+- 如果用户报错来自 PowerShell 5.1，应避免 `&&`、`||`，改用分行命令或 `$LASTEXITCODE`。
+- 如果用户环境是 Bash、zsh、Linux、macOS、WSL 或 Git Bash，可以使用 `&&`、`||`、管道和 stdin。
+- 如果用户环境是 CMD，可以使用 `&&`、`||`，但不要使用 PowerShell 的 `$LASTEXITCODE` 或 `Test-Path`。
+- 路径分隔符必须与环境一致；不要把 Windows 反斜杠路径和 Bash 管道写法混在同一条命令里。
+
+跨平台最低风险写法是分行执行：
+
+```text
+<进入技能目录>
+python <脚本路径> <参数>
 ```
-
-需要失败处理时，使用 `$LASTEXITCODE` 或 `if`，不要使用 `||`：
-
-```powershell
-Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
-python .\scripts\validate_oql.py --help
-if ($LASTEXITCODE -ne 0) { Write-Output "validate_oql.py failed" }
-```
-
-需要判断脚本是否存在时，使用 `Test-Path`：
-
-```powershell
-Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
-if (Test-Path ".\scripts\validate_oql.py") {
-  python .\scripts\validate_oql.py --help
-} else {
-  Write-Output "Script not found"
-}
-```
-
-在 Bash 中才可以使用 `&&`、`||`、`printf` 管道等写法。除非已确认当前终端是 Bash，否则不得输出 Bash 风格命令。
 
 ## 缺失信息识别
 
@@ -92,7 +86,7 @@ if (Test-Path ".\scripts\validate_oql.py") {
 - 不在未知函数参数规格时直接调用函数。
 - 用户明确指定完整多跳路径时，不拆成多个单跳查询。
 - 默认执行态不写 OQL 临时文件；OQL 中间过程只作为内存变量或 stdin 内容传递。
-- Windows PowerShell 中禁止输出 `cmd1 && cmd2` 或 `cmd1 || cmd2`；需要多条命令时分行输出。
+- 输出命令必须遵循跨平台 Shell 兼容规则；未知 Shell 时使用逐行命令，不输出 Shell 专属连接符。
 
 ## 内部目录说明
 
