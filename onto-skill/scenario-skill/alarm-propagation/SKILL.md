@@ -20,7 +20,7 @@ metadata:
 2. 读取当前主意图所需的业务知识文件，并把必要内容注入 `业务领域知识`。
 3. 将用户问题改写成详细自然语言业务意图。
 4. 抽取必要变量，例如网元名、方向、告警列表、返回字段、message_type。
-5. 按 `Ontology-based-planning-skill` 当前 6 行顶层输入协议输出给 Planning 层。
+5. 按 `Ontology-based-planning-skill` 当前 6 行顶层输入协议输出给 Planning 层并执行。
 
 你不直接调用平台工具，不直接生成最终 OQL，不直接执行 OAC 或 Function。
 
