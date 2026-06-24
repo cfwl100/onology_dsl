@@ -46,35 +46,60 @@ metadata:
 
 ## 跨平台命令与 JSON 传参规则
 
-生成命令前必须先识别当前运行环境，不要默认某一种 Shell。命令示例必须与当前 Shell 匹配。
+生成命令前必须识别当前运行环境，但**默认不要生成链式命令**。为避免在 Windows PowerShell、CMD、Bash、zsh、WSL、Git Bash 之间误判，默认输出逐行命令或使用绝对脚本路径。
 
-| 环境 | 目录切换 | 成功后继续 | 失败兜底 | 路径风格 |
-|---|---|---|---|---|
-| Windows PowerShell 5.1 | `Set-Location "C:\\path"` | 分行执行或 `$LASTEXITCODE` | `if ($LASTEXITCODE -ne 0) { ... }` | `.\scripts\xxx.py` |
-| PowerShell 7+ | `Set-Location "C:\\path"` 或 `Set-Location "/path"` | 可分行；确认支持时可用 `&&` | 可用 `$LASTEXITCODE`；确认支持时可用 `||` | Windows 或 Unix 路径均可能出现 |
-| Windows CMD | `cd /d "C:\\path"` | `&&` | `||` | `scripts\xxx.py` |
-| Bash / zsh / Linux / macOS / WSL / Git Bash | `cd "/path"` | `&&` | `||` | `scripts/xxx.py` |
+### 1. Shell 判断规则
 
-JSON 传参策略优先级：
+| 观察到的环境线索 | 默认命令风格 |
+|---|---|
+| 路径包含 `C:\...`、`.\scripts\...` 或 Windows 用户目录 | 按 Windows 原生命令处理；默认使用 PowerShell 兼容写法，禁止 `&&` / `||`。 |
+| 用户明确说 CMD / `cmd.exe` | 可使用 CMD 语法，但优先仍给逐行命令。 |
+| 用户明确说 Bash / zsh / Linux / macOS / WSL / Git Bash | 可使用 POSIX 路径和 Bash 语法，但优先仍给逐行命令。 |
+| 无法确认 Shell | 使用最低风险写法：逐行命令，不使用连接符、管道或 Shell 专属变量。 |
+
+### 2. 禁止的默认写法
+
+除非用户明确要求某个 Shell 的链式命令，否则不要输出：
+
+```text
+cd "..." && python ...
+python ... || echo failed
+printf ... | python ...
+```
+
+尤其当路径是 `C:\Users\...` 时，不得输出 `cd ... && python ...`，因为 Windows PowerShell 5.1 会报“标记 && 不是此版本中的有效语句分隔符”。
+
+### 3. 推荐的最低风险写法
+
+优先使用绝对脚本路径，避免目录切换和连接符：
+
+```text
+python "<skill目录>/scripts/validate_oql.py" --input "<json文件路径>"
+python "<skill目录>/scripts/execute_oac_operation.py" --input "<json文件路径>" --message-type "<message_type>"
+```
+
+如果必须切换目录，分行输出：
+
+```text
+<进入技能目录>
+python <脚本路径> --input <json文件路径>
+python <执行脚本路径> --input <json文件路径> --message-type <message_type>
+```
+
+### 4. JSON 传参策略优先级
 
 1. **复杂 OQL 或长数组**：优先生成 UTF-8 JSON 文件，并使用 `--input <file>` 校验和执行。
 2. **短小 JSON**：可以使用 `--oac-json '<compact-json>'`，但必须确认当前 Shell 的引号规则。
-3. **stdin 友好 Shell**：Bash / zsh / WSL / Git Bash 可使用 `printf '%s' '<json>' | python scripts/validate_oql.py --input -`。
-4. **PowerShell/CMD 复杂 JSON**：不要把长 JSON 放进变量后再传给 Python 原生命令，容易触发引号丢失或转义问题；优先 `--input <file>`。
-5. **未知 Shell**：只输出逐行命令和文件输入方式，不使用 `&&`、`||`、管道或 Shell 专属变量。
+3. **Windows 原生命令环境中的复杂 JSON**：不要把长 JSON 放进变量后传给 Python；优先 `--input <file>`。
+4. **未知 Shell**：只输出逐行命令和文件输入方式，不使用 `&&`、`||`、管道或 Shell 专属变量。
+
+## OAC 执行环境边界
 
 OAC 真实执行前必须区分两个阶段：
 
 - `validate_oql.py` 成功只说明 OQL JSON 结构合法。
 - `execute_oac_operation.py` 还依赖真实服务环境，至少需要 `SERVICE_NAMESPACE` 和 `TENANT_ID`。
 - 如果缺少执行环境变量，必须报告环境缺失，不得把语法校验成功误判为真实执行成功，也不得自动切换 mock。
-
-跨平台最低风险写法：
-
-```text
-<进入技能目录>
-python <脚本路径> --input <json文件路径> <其他参数>
-```
 
 ## 缺失信息识别
 
@@ -93,7 +118,7 @@ python <脚本路径> --input <json文件路径> <其他参数>
 - 不在未知函数参数规格时直接调用函数。
 - 用户明确指定完整多跳路径时，不拆成多个单跳查询。
 - 复杂 OQL 可以使用中间 JSON 文件作为脚本输入；生成文件时必须使用程序化 JSON 序列化，避免手写 JSON 破坏格式。
-- 输出命令必须遵循跨平台 Shell 兼容规则；未知 Shell 时使用逐行命令和 `--input` 文件方式，不输出 Shell 专属连接符。
+- 输出命令必须遵循跨平台 Shell 兼容规则；默认使用逐行命令和 `--input` 文件方式，不输出 Shell 专属连接符。
 
 ## 内部目录说明
 
