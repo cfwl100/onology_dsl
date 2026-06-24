@@ -32,7 +32,7 @@ metadata:
 | 主意图 | 触发表达 | 业务知识来源 |
 |---|---|---|
 | `nealarm_query` | 查询某网元上的当前/活动告警 | `knowledge/nealarm.md` |
-| `propagation_relation_query` | 查询某告警分类的传播关系、影响关系、依赖关系 | `knowledge/propagation_relation.md` |
+| `propagation_relation_query` | 查询某告警分类的传播关系、影响关系、依赖关系 | `knowledge/propagation.md` |
 | `propagation_evidence_check` | 验证同站点、同机房、对端网元、业务路径上是否存在活动告警 | `knowledge/evidence.md` |
 
 如果多个意图同时出现，优先选择用户最核心的问题；禁止同时执行多个主意图，除非用户明确要求多任务。
