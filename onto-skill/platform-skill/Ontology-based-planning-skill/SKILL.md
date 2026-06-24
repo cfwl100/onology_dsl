@@ -52,10 +52,10 @@ onto-skill/docs/planning-input-interface.md
 
 ## 3. 极简执行原则
 
-- 不把 `本体ID` 映射成新的 `ontologyId` 变量后再传递；步骤中直接引用 `本体ID` 行。
-- 不把 `业务意图` 映射成新的 `businessIntent` 变量后再传递；步骤中直接引用 `业务意图` 行。
-- 不把 `业务领域知识` 重新摘要或拆分成新的知识块；步骤中按需引用原文相关片段。
-- 不根据 `步骤级定制` 生成显式 `stepRuleMap` 对象；步骤执行时直接读取与当前步骤编号相关的句子。
+- 步骤中直接引用 `本体ID` 行。
+- 步骤中直接引用 `业务意图` 行。
+- 步骤中按需引用原文相关片段。
+- 步骤执行时直接读取与当前步骤编号相关的句子。
 - 不要求业务 Skill 重复标准步骤模板；缺少某步增量规则时，使用本 Skill 内置默认模板。
 - 不重复输出长列表、字段列表、告警列表、对象列表；长内容只保留变量引用。
 
@@ -133,6 +133,7 @@ subgraphOutput：
 ## 7. S2 基于本体子图的任务规划
 
 职责：基于 `S1.subgraphOutput`、6 行输入原文和 S2 相关步骤级定制，规划一个或多个可执行任务。
+默认规划规则：从【{起点对象类型}】出发，查找到【{终点对象类型}】；步骤级定制可以覆写该规划规则。
 
 默认输入模板：
 
@@ -148,16 +149,16 @@ subgraphOutput：
 
 ```text
 plannedTasks：
-- taskId
-- taskType
-- operationType
-- objectPlan
-- relationPathPlan
-- filterPlan
-- returnPlan
-- functionPlan
-- dependsOn
-- failurePolicy
+- taskId：任务标识
+- taskType：OAC_QUERY | ASSOCIATION_QUERY | AGGREGATE_QUERY | FUNCTION_CALL | MIXED
+- operationType：QUERY | ASSOCIATION_QUERY | AGGREGATE_QUERY | FUNCTION
+- objectPlan：对象、别名、字段归属
+- relationPathPlan：关系路径、方向、跳数、连接约束
+- filterPlan：过滤字段、操作符、取值来源
+- returnPlan：返回对象、字段、关系和聚合结果
+- functionPlan：函数需求、输入来源、输出用途
+- dependsOn：依赖的上游任务
+- failurePolicy：失败策略
 ```
 
 规则：规划必须基于 S1 子图事实，不编造对象、字段、关系、函数。S2 输出的 `plannedTasks` 是 S3/S4/S5 的唯一规划依据，后续步骤不得重新推理业务路径。
@@ -183,11 +184,11 @@ plannedTasks：
 
 ```text
 oacResult：
-- objects
-- relationships
-- summary
-- emptyResult
-- error
+- objects：对象实例数组
+- relationships：关系实例数组
+- summary：结果摘要
+- emptyResult：true | false
+- error：无错误则为空
 ```
 
 规则：S3 只消费 S2 plannedTasks、S1 必要子图摘要和顶层输入中的业务增量规则。S3 不重新解释用户原始问题，不重新推理 S2 已规划路径。OAC 最终业务输出只保留 `{objects, relationships}`；调试信息只在 debug 或失败时输出。默认不写临时 OQL 文件，优先使用内存参数或标准输入传递紧凑 JSON。
@@ -210,13 +211,13 @@ oacResult：
 
 ```text
 functionSelection：
-- functionId
-- functionName
-- inputSpec
-- outputSpec
-- parameterMappingPlan
-- confidence
-- missingParameters
+- functionId：函数 ID
+- functionName：函数名称
+- inputSpec：输入参数规格
+- outputSpec：输出规格
+- parameterMappingPlan：参数映射计划
+- confidence：选择置信度
+- missingParameters：缺失参数
 ```
 
 规则：不编造 Function。候选必须来自 S1 子图或平台可检索结果。如果业务规则指定 Function 或选择策略，优先使用业务规则。
@@ -237,11 +238,11 @@ functionSelection：
 
 ```text
 functionOutput：
-- functionId
-- status
-- result
-- resultMapping
-- error
+- functionId：函数 ID
+- status：success | failed
+- result：函数返回结果
+- resultMapping：函数结果如何映射到后续 OAC 或汇总
+- error：无错误则为空
 ```
 
 规则：S5 只能执行 S4 选中的 Function。执行前必须确认必要参数完整。Function 结果如果进入 S3，必须说明字段映射和过滤条件映射。
@@ -265,46 +266,16 @@ Function结果：<S5.functionOutput；没有则写无>
 
 ```text
 finalAnswer：
-- answer
-- evidence
-- dataSummary
-- missingInfo
-- failureReason
+- answer：最终业务结论
+- evidence：支撑证据摘要
+- dataSummary：数据摘要
+- missingInfo：缺失信息
+- failureReason：失败原因；无失败则为空
 ```
 
 规则：不输出未经 OAG/OAC/Function 支撑的对象、字段、关系或结果。汇总阶段不重新生成 OQL，不重新规划 Function。
 
-## 12. alarm-propagation 端到端样例
-
-业务 Skill 输入给本层的 6 行样例：
-
-```text
-本体ID：dtmi.ontology.alarm.1
-业务意图：验证起始网元 ${neName_same_site} 的同站点范围内，是否存在名称属于 ${alarmNames_same_site} 的活动告警，并返回相关网元和告警对象结构。
-业务领域知识：规则来源 knowledge/evidence.md；同站点传播证据验证使用 happenOn 关系从起始网元定位同站点网元，再查询同站点网元上的活动告警；告警名称来自 ${alarmNames_same_site}；返回网元和告警 objects/relationships；S3 空结果是有效证据结果，不自动放宽条件重试。
-流程级定制：使用默认流程 S1 -> S2 -> S3 -> S6；不执行 S4/S5 Function；每个方向独立执行；S3 空结果视为有效结果。
-步骤级定制：S1 使用同站点子图检索规则；S2 使用同站点路径规划规则；S3 使用同站点告警查询规则，输出 objects 与 relationships；S6 使用证据汇总规则。
-缺失信息：无
-```
-
-本层直接生成：
-
-```text
-executionPlan = [S1, S2, S3, S6]
-Function = 不需要
-S3 空结果策略 = 有效空结果
-```
-
-执行闭环：
-
-```text
-S1：获取同站点相关对象、字段和关系，输出 subgraphOutput。
-S2：基于 subgraphOutput 生成 plannedTasks。
-S3：基于 plannedTasks 查询数据，输出 {objects, relationships}。
-S6：基于 oacResult 输出传播证据结论、证据摘要和缺失信息。
-```
-
-## 13. 步骤依赖
+## 12. 步骤依赖
 
 - 缺少必要顶层输入时，不得进入 S1。
 - S1 未输出 `subgraphOutput`，不得进入 S2。
