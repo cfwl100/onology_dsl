@@ -80,9 +80,9 @@ OAC 最终输出必须是对象结构。
 2. 读取对应 operation 操作手册。
 3. 读取对应 schema。operation 手册内已包含最小示例。
 4. 基于`## 4. 面向自然语言的固定输入模板`中的`本体ID`、`操作类型`、`查询对象`、`关系路径`、`过滤条件`、`返回要求`、`执行要求`、`期望输出`依据生成 OQL JSON。
-5. 使用 `scripts/validate_oql.py` 校验，使用 ; 分隔多条命令。默认必须通过 `--oac-json` 或 `--input -` 传入 OQL，不写 `temp_oql*.json` 临时文件。
+5. 使用 `scripts/validate_oql.py` 校验。默认必须通过 `--oac-json` 或 `--input -` 传入 OQL，不写 `temp_oql*.json` 临时文件。
 6. 校验失败时修复，不得执行。
-7. 用户或 planning 明确要求执行时，调用 `scripts/execute_oac_operation.py`，使用 ; 分隔多条命令。默认必须通过 `--oac-json` 或 `--input -` 传入 OQL，不写临时输入文件。
+7. 用户或 planning 明确要求执行时，调用 `scripts/execute_oac_operation.py`。默认必须通过 `--oac-json` 或 `--input -` 传入 OQL，不写临时输入文件。
 8. 将执行结果转换为 `{objects, relationships}` 对象结构返回。
 
 ## 7. Schema 权威规则
@@ -110,21 +110,48 @@ OQL 顶层结构、`version`、`schemaRef`、`returns` 类型、字段语法、`
 
 | 脚本 | 作用 | 默认推荐调用 |
 |---|---|---|
-| `scripts/validate_oql.py` | 对 OQL JSON 做结构和语义校验，使用 ; 分隔多条命令。 | `python scripts/validate_oql.py --oac-json '<compact-json>'` |
-| `scripts/execute_oac_operation.py` | 在用户或 planning 明确要求执行时调用 OAC 服务，使用 ; 分隔多条命令。 | `python scripts/execute_oac_operation.py --oac-json '<compact-json>' --message-type '<type>'` |
+| `scripts/validate_oql.py` | 对 OQL JSON 做结构和语义校验。 | `python scripts/validate_oql.py --oac-json '<compact-json>'` |
+| `scripts/execute_oac_operation.py` | 在用户或 planning 明确要求执行时调用 OAC 服务。 | `python scripts/execute_oac_operation.py --oac-json '<compact-json>' --message-type '<type>'` |
 
-执行前必须先完成 `validate_oql.py` 校验。校验失败时只修复 OQL，不直接执行，使用 ; 分隔多条命令。
+执行前必须先完成 `validate_oql.py` 校验。校验失败时只修复 OQL，不直接执行。
 
-推荐方式使用通用 shell 表达，不绑定 PowerShell、Bash 或具体终端，使用 ; 分隔多条命令：
+### 10.1 Shell 兼容规则
 
-```sh
-python scripts/validate_oql.py --oac-json '<compact-single-line-oql-json>'
-python scripts/execute_oac_operation.py --oac-json '<compact-single-line-oql-json>' --message-type '<message_type>'
+不要生成跨 Shell 混合命令。Windows PowerShell 5.1 不支持 `&&` 和 `||`；这两个连接符只适用于 Bash、CMD 或 PowerShell 7+ 的部分场景。面向 Windows PowerShell 5.1 时必须分行执行，或使用 `$LASTEXITCODE` 判断上一步结果。
+
+PowerShell 推荐校验：
+
+```powershell
+Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
+python .\scripts\validate_oql.py --oac-json '<compact-single-line-oql-json>'
 ```
 
-当 OQL JSON 过长、命令行长度受限或 shell 转义风险较高时，仍然不要落文件，改用 stdin：
+PowerShell 推荐校验后执行：
 
-```sh
+```powershell
+Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
+python .\scripts\validate_oql.py --oac-json '<compact-single-line-oql-json>'
+if ($LASTEXITCODE -eq 0) {
+  python .\scripts\execute_oac_operation.py --oac-json '<compact-single-line-oql-json>' --message-type '<message_type>'
+}
+```
+
+PowerShell 查询脚本帮助：
+
+```powershell
+Set-Location "C:\Users\a\.config\opencode\skills\Ontology-platform-unified-skill"
+if (Test-Path ".\scripts\validate_oql.py") {
+  python .\scripts\validate_oql.py --help
+} else {
+  Write-Output "Script not found"
+}
+```
+
+Bash 环境才使用管道写法：
+
+```bash
+cd "/path/to/Ontology-platform-unified-skill"
 printf '%s' '<compact-single-line-oql-json>' | python scripts/validate_oql.py --input -
-printf '%s' '<compact-single-line-oql-json>' | python scripts/execute_oac_operation.py --input - --message-type '<message_type>'
 ```
+
+如果无法确认当前终端类型，输出单条 Python 命令，不输出 `&&`、`||` 或 `printf`。
