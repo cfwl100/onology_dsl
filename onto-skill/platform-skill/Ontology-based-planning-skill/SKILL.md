@@ -8,6 +8,7 @@ metadata:
   role: default-ontology-planning-layer
   extension_mode: business-customized-planning
   optimization: direct-business-context-execution
+  e2e_example: alarm-propagation
 ---
 
 # 本体规划 Skill
@@ -37,21 +38,96 @@ metadata:
 
 - `本体ID`：唯一公共本体 ID，是 OAG、OAC 和 Function 的统一本体上下文。
 - `业务意图`：业务 Skill 改写后的详细自然语言问题，本层直接使用。
-- `业务领域知识`：本次执行业务定制的全局上下文，承载原先“业务定制文件路径”和“业务定制文件内容”的有效信息。路径、来源、规则原文、规则摘录、场景知识、查询类型、返回要求、Function 规则和失败策略都可以写在这里。
+- `业务领域知识`：本次执行业务定制的全局上下文，承载业务来源、规则原文、规则摘录、场景知识、查询类型、返回要求、Function 规则和失败策略。
 - `流程级定制`：只写默认流程的差异。默认流程为 `S1 -> S2 -> S3 -> S6`。
 - `步骤级定制`：只写各步骤相对默认模板的业务增量规则。
 - `缺失信息`：没有则写 `无`；存在缺失时按失败策略处理，不猜测补齐。
 
 ## 3. 直接执行规则
 
-1. 直接识别顶层输入原文。
+1. 直接识别 6 行顶层输入原文。
 2. 根据 `流程级定制` 决定执行哪些步骤和顺序。
 3. 根据 `步骤级定制` 提取每个步骤的业务增量规则。
 4. 根据 `业务领域知识` 提取全局业务规则，并在每个步骤中按需叠加使用。
 5. 若缺少 `本体ID` 或 `业务意图`，直接失败，不进入执行步骤。
 6. 若业务步骤依赖业务规则但 `业务领域知识` 为 `无`，按失败策略处理，不猜测补齐。
+7. 不生成新的 `planningContext` 或 `inputGate`；每个步骤直接读取 6 行输入和上游步骤输出。
 
-## 4. 默认流程
+## 4. 解析与执行步骤
+
+Agent 必须按以下顺序解析和执行，不得跳过解析直接调用 OAC 或 Function。
+
+### 4.1 解析 6 行输入
+
+将 6 行输入原样映射为以下运行时字段，只做定位，不改写、不摘要、不扩展：
+
+```text
+ontologyId = 本体ID
+businessIntent = 业务意图
+businessKnowledge = 业务领域知识
+flowCustomization = 流程级定制
+stepCustomization = 步骤级定制
+missingInfo = 缺失信息
+```
+
+如果某行缺失，记录 `PARSE_ERROR`，并按最终失败输出返回；不要补写缺失字段。
+
+### 4.2 解析流程级定制
+
+根据 `flowCustomization` 生成 `executionPlan`：
+
+- 如果写“使用默认流程”，执行 `S1 -> S2 -> S3 -> S6`。
+- 如果出现 `S4` 或 `S5`，按指定顺序加入 Function 发现/执行步骤。
+- 如果写“每个方向独立执行”，为每个方向生成独立 `executionPlan`，每个方向独立维护 S1/S2/S3/S6 输出。
+- 如果写“跳过某步骤”，只能跳过非必要步骤；不得跳过当前流程所依赖的上游步骤。
+- 如果流程级定制与默认流程冲突，以流程级定制为准，但必须满足步骤依赖。
+
+### 4.3 解析步骤级定制
+
+根据 `stepCustomization` 生成 `stepRuleMap`：
+
+```text
+S1.rule = 子图检索增量规则
+S2.rule = 基于子图任务规划增量规则
+S3.rule = OAC 查询增量规则
+S4.rule = Function 发现增量规则
+S5.rule = Function 执行增量规则
+S6.rule = 汇总增量规则
+```
+
+如果某个步骤未写增量规则，使用该步骤默认模板；不要要求业务 Skill 重复标准输入、输出和通用执行规则。
+
+### 4.4 按 executionPlan 执行
+
+对 `executionPlan` 中的每个步骤，按顺序执行：
+
+1. 读取 `ontologyId`、`businessIntent`、`businessKnowledge`、当前步骤规则和上游步骤输出。
+2. 组装当前步骤输入模板。
+3. 调用对应平台能力或内部规划能力。
+4. 生成当前步骤标准输出。
+5. 记录 compact `StepExecutionRecord`，只记录步骤名、输入来源摘要、输出摘要、缺失项和失败原因。
+
+默认步骤能力映射：
+
+| 步骤 | 能力 | 上游依赖 | 输出 |
+|---|---|---|---|
+| S1 子图检索 | OAG 子图检索 | 6 行输入 | `subgraphOutput` |
+| S2 任务规划 | 本层规划逻辑 | `S1.subgraphOutput` | `plannedTasks` |
+| S3 OAC 查询 | OAC 数据访问 | `S2.plannedTasks` | `oacResult` |
+| S4 Function 发现 | Function 检索/选择 | `S1.subgraphOutput`、`S2.plannedTasks` | `functionSelection` |
+| S5 Function 执行 | Function 调用 | `S4.functionSelection` | `functionOutput` |
+| S6 汇总 | 本层汇总逻辑 | `S3.oacResult`、可选 `S5.functionOutput` | `finalAnswer` |
+
+### 4.5 失败处理
+
+- S1 无法获得 `subgraphOutput`：停止依赖子图的后续步骤，输出缺失对象/字段/关系。
+- S2 无法生成 `plannedTasks`：停止 S3/S4/S5，输出无法规划的对象、路径或字段。
+- S3 返回空结果：如果业务规则声明空结果有效，则进入 S6；否则按失败策略输出空结果说明。
+- S4 无候选 Function：停止 S5，但不影响不依赖 Function 的 S3/S6。
+- S5 参数不完整：停止 Function 执行，记录缺失参数。
+- 任一步失败时，不重写业务意图，不放宽业务条件，不重新读取业务文件。
+
+## 5. 默认流程
 
 默认执行链路：
 
@@ -67,7 +143,7 @@ S1 子图检索 -> S2 基于子图的任务规划 -> S4 Function 发现 -> S5 Fu
 
 流程级定制可以跳过、追加或调整步骤，但不得绕过必要依赖。例如没有 S1 子图事实时，不得进入需要子图约束的 S2；没有 S2 plannedTasks 时，不得进入依赖规划结果的 S3/S4/S5。
 
-## 5. S1 子图检索
+## 6. S1 子图检索
 
 职责：根据顶层输入中的本体ID、业务意图、业务领域知识和 S1 步骤级定制获取本体子图。
 
@@ -98,10 +174,11 @@ subgraphOutput：
 
 规则：OAG 返回结构是对象、字段、关系、函数的事实来源。业务领域知识和步骤级定制只能影响检索范围、召回重点、返回字段裁剪和缺失项判定，不能替代 OAG 事实。
 
-## 6. S2 基于本体子图的任务规划
+## 7. S2 基于本体子图的任务规划
 
 职责：基于 S1 的子图事实、业务领域知识和 S2 步骤级定制，规划一个或多个可执行任务。
-任务规划的默认规则：从【{起点对象类型}】出发，查找到【{终点对象类型}】，步骤级定制Skill可以覆写这个规划规则
+
+默认规划规则：从【{起点对象类型}】出发，查找到【{终点对象类型}】；步骤级定制可以覆写该规划规则。
 
 输入模板：
 
@@ -133,7 +210,7 @@ plannedTasks：
 
 规则：规划必须基于 S1 子图事实，不编造对象、字段、关系、函数。S2 输出的 `plannedTasks` 是 S3/S4/S5 的唯一规划依据，后续步骤不得重新推理业务路径。
 
-## 7. S3 OAC 数据访问
+## 8. S3 OAC 数据访问
 
 职责：根据 S2 的 `plannedTasks` 生成 OAC 数据访问请求，并调用 OAC 查询数据。
 
@@ -164,7 +241,7 @@ oacResult：
 
 规则：S3 只消费 S2 plannedTasks、S1 必要子图摘要和顶层输入中的业务增量规则。S3 不重新解释用户原始问题，不重新推理 S2 已规划路径。OAC 最终业务输出只保留 `{objects, relationships}`；调试信息只在 debug 或失败时输出。默认不写临时 OQL 文件，优先使用内存参数或标准输入传递紧凑 JSON。
 
-## 8. S4 Function 发现
+## 9. S4 Function 发现
 
 职责：当流程级定制或 S2 规划明确需要 Function 时，基于业务意图、S1 函数候选和 S2 plannedTasks 选择可调用 Function。
 
@@ -194,7 +271,7 @@ functionSelection：
 
 规则：不编造 Function。候选必须来自 S1 子图或平台可检索结果。如果业务规则指定 Function 或选择策略，优先使用业务规则。
 
-## 9. S5 Function 执行
+## 10. S5 Function 执行
 
 职责：根据 S4 的 Function 选择结果和参数映射计划调用 Function，得到函数执行结果。
 
@@ -220,7 +297,7 @@ functionOutput：
 
 规则：S5 只能执行 S4 选中的 Function。执行前必须确认必要参数完整。Function 结果如果进入 S3，必须说明字段映射和过滤条件映射。
 
-## 10. S6 汇总
+## 11. S6 汇总
 
 职责：基于 S3 OAC 结果、S5 Function 结果和业务汇总规则生成最终回答。
 
@@ -249,7 +326,52 @@ finalAnswer：
 
 规则：不输出未经 OAG/OAC/Function 支撑的对象、字段、关系或结果。汇总阶段不重新生成 OQL，不重新规划 Function。
 
-## 11. 步骤门禁
+## 12. alarm-propagation 端到端样例
+
+以下样例用于验证业务 Skill 与 Planning Skill 的端到端衔接。业务 Skill 输出 6 行后，本层必须按解析与执行步骤直接执行。
+
+业务 Skill 输入给本层的 6 行样例：
+
+```text
+本体ID：dtmi.ontology.alarm.1
+业务意图：验证起始网元 ${neName_same_site} 的同站点范围内，是否存在名称属于 ${alarmNames_same_site} 的活动告警，并返回相关网元和告警对象结构。
+业务领域知识：规则来源 knowledge/evidence.md；同站点传播证据验证使用 happenOn 关系从起始网元定位同站点网元，再查询同站点网元上的活动告警；告警名称来自 ${alarmNames_same_site}；返回网元和告警 objects/relationships；S3 空结果是有效证据结果，不自动放宽条件重试。
+流程级定制：使用默认流程 S1 -> S2 -> S3 -> S6；不执行 S4/S5 Function；每个方向独立执行；S3 空结果视为有效结果。
+步骤级定制：S1 使用同站点子图检索规则，变量使用 neName_same_site、alarmNames_same_site、returnFields_ne、returnFields_alarm、messageType_same_site；S2 使用同站点路径规划规则，输入使用 S1 子图输出和同站点方向计划；S3 使用同站点告警查询规则，输出 objects 与 relationships；S6 使用证据汇总规则。
+缺失信息：无
+```
+
+期望解析结果：
+
+```text
+executionPlan = [S1, S2, S3, S6]
+stepRuleMap.S1 = 同站点子图检索规则
+stepRuleMap.S2 = 同站点路径规划规则
+stepRuleMap.S3 = 同站点告警查询规则
+stepRuleMap.S6 = 证据汇总规则
+functionRequired = false
+emptyResultPolicy.S3 = valid_empty_result
+```
+
+期望执行闭环：
+
+```text
+S1：根据本体ID、业务意图、业务领域知识和 S1 规则检索同站点相关对象、字段和 happenOn 关系，输出 subgraphOutput。
+S2：基于 subgraphOutput 和同站点路径规划规则生成 plannedTasks，明确 QUERY 或 ASSOCIATION_QUERY、对象计划、关系路径、过滤条件和返回要求。
+S3：基于 plannedTasks 生成 OAC 数据访问请求并执行，输出 {objects, relationships}；如果结果为空且规则声明空结果有效，继续进入 S6。
+S6：根据 oacResult 和证据汇总规则输出“存在/不存在同站点传播证据”的业务结论、证据摘要和缺失信息。
+```
+
+端到端检查点：
+
+- 不生成 `planningContext` 或 `inputGate`。
+- 不重新读取 `knowledge/evidence.md`，只使用业务 Skill 已注入的业务领域知识。
+- 不展开完整长告警列表，除非进入最终 OAC 查询参数。
+- 不执行 S4/S5，除非流程级定制明确要求 Function。
+- S3 不重新推理 S2 已规划路径。
+- S3 空结果按业务规则进入 S6 汇总，不自动放宽条件重试。
+
+## 13. 步骤依赖
 
 - 缺少必要顶层输入时，不得进入 S1。
 - S1 未输出 `subgraphOutput`，不得进入 S2。
@@ -258,7 +380,7 @@ finalAnswer：
 - S4 未输出 `functionSelection`，不得进入 S5。
 - S5 未输出 `functionOutput`，不得把 Function 结果传给 S3 或 S6。
 
-## 12. 执行效率规则
+## 14. 执行效率规则
 
 - 默认 compact 模式：只输出必要步骤结果摘要，不展开完整中间上下文。
 - 不设置显式输入门禁步骤。
@@ -270,6 +392,6 @@ finalAnswer：
 - OAC 默认不写临时文件，优先内存参数或标准输入传递。
 - 只有 debug、失败定位或用户明确要求时，才展开完整中间输入输出。
 
-## 13. 最终输出要求
+## 15. 最终输出要求
 
 正常成功时输出最终业务结论和必要证据摘要。失败时输出失败原因、失败步骤、缺失信息和下一步建议。
