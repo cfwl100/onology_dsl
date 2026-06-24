@@ -2,6 +2,8 @@
 
 本文是 `alarm-propagation` 的业务领域知识文件，采用 `Ontology-based-planning-skill` 当前六步协议组织。业务 Skill 读取本文后，应将必要内容注入 Planning 顶层输入的 `业务领域知识`、`流程级定制`、`步骤级定制` 和 `缺失信息` 中。
 
+本体ID：network@1.0
+
 ## 0. 全局业务领域知识
 
 ### 0.1 目标
