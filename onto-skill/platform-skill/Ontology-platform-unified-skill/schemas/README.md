@@ -12,6 +12,14 @@ This directory stores operation-level schema files.
 
 Use `scripts/validate_oql.py` to validate generated OQL JSON. Operation references already include minimal examples, so agents do not need to read a separate examples directory.
 
+## Return wildcard rule
+
+- `returns.kind=FIELDS.fields` supports `["*"]` in `QUERY` and `ASSOCIATION_QUERY` schemas.
+- `["*"]` means return all fields of the referenced object or relationship alias.
+- Relationship aliases are valid `ref` values in `ASSOCIATION_QUERY` returns, for example `{ "kind": "FIELDS", "ref": "r2", "fields": ["*"] }`.
+- `*` is only valid in `returns.kind=FIELDS.fields[]`.
+- Conditions, orders, FIELD expressions, GROUP_BY fields, and non-COUNT aggregate metric fields must not use `*`.
+
 ## Input mode preference
 
 - Complex or long OQL JSON should be serialized to a UTF-8 JSON file and validated with `--input <json-file>`.
@@ -20,20 +28,19 @@ Use `scripts/validate_oql.py` to validate generated OQL JSON. Operation referenc
 
 ## Shell compatibility
 
-When checking validator usage or running validation, do not assume the terminal is Bash or PowerShell. Choose the command style according to the actual shell.
+When checking validator usage or running validation, do not assume the terminal is Bash, CMD, or PowerShell. Choose the command style according to the actual shell, but default to step-by-step commands.
 
-| Environment | Directory change | Script path style | Notes |
-| --- | --- | --- | --- |
-| Windows PowerShell | `Set-Location "C:\\path"` | `.\scripts\validate_oql.py` | Use separate lines or `$LASTEXITCODE` for status checks. Prefer `--input` for complex JSON. |
-| Windows CMD | `cd /d "C:\\path"` | `scripts\validate_oql.py` | `&&` and `||` are CMD separators. Prefer `--input` for complex JSON. |
-| Bash / zsh / Linux / macOS / WSL / Git Bash | `cd "/path"` | `scripts/validate_oql.py` | Pipes and POSIX separators are allowed. `--input` is still preferred for long JSON. |
-| Unknown shell | Plain step-by-step text | Avoid shell-specific syntax | Do not emit `&&`, `||`, pipes, or shell-specific variables. Use `--input`. |
+| Environment | Path style | Default command style |
+| --- | --- | --- |
+| Windows PowerShell / PowerShell 7+ | `C:\...` or `.\scripts\...` | Use separate lines or absolute script paths. Do not use Bash-style chaining by default. |
+| Windows CMD | `C:\...` or `scripts\...` | Use separate lines or absolute script paths unless the user explicitly requests CMD chaining. |
+| Bash / zsh / Linux / macOS / WSL / Git Bash | `/path/...` or `scripts/...` | Use separate lines or absolute script paths unless the user explicitly requests POSIX chaining. |
+| Unknown shell | Unknown | Do not emit chained commands, pipes, or shell-specific variables. |
 
 Minimal cross-platform-safe instruction:
 
 ```text
-Enter the Ontology-platform-unified-skill directory.
-Run: python scripts/validate_oql.py --input <json-file>
+python <Ontology-platform-unified-skill目录>/scripts/validate_oql.py --input <json-file>
 ```
 
 Shell-specific examples belong in `references/oac-data-access.md`. This README only defines the compatibility rule.
