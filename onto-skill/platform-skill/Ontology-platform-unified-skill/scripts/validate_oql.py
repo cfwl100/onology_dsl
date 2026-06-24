@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Validate generated OQL JSON."""
+"""Validate generated OQL JSON.
+
+Input guidance:
+- Use --input for complex or long OQL JSON, especially on Windows shells.
+- Use --oac-json only for short compact JSON when the current shell quoting is known to be safe.
+"""
 from __future__ import annotations
 
 import argparse
@@ -33,8 +38,19 @@ def load_oql(args):
 def main():
     parser = argparse.ArgumentParser(description="Validate OQL JSON")
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--oac-json", "--oql-json", dest="oac_json", help="OAC/OQL JSON 字符串；默认推荐使用，避免临时文件")
-    group.add_argument("--input", "--oql-file", "--oql_file", dest="input", help="从文件或 stdin 读取 JSON，使用 - 表示 stdin；--oql-file/--oql_file 为兼容旧用法")
+    group.add_argument(
+        "--oac-json",
+        "--oql-json",
+        dest="oac_json",
+        help="OAC/OQL JSON 字符串；仅建议用于短小 compact JSON，复杂 JSON 优先使用 --input",
+    )
+    group.add_argument(
+        "--input",
+        "--oql-file",
+        "--oql_file",
+        dest="input",
+        help="从 UTF-8 文件或 stdin 读取 JSON，使用 - 表示 stdin；复杂/长 OQL 推荐使用该方式",
+    )
     args = parser.parse_args()
     try:
         errors = validate_oql_dict(load_oql(args))
