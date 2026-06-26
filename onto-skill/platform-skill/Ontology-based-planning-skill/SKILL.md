@@ -1,303 +1,328 @@
 ---
 name: Ontology-based-planning-skill
-description: 本体规划执行层。接收业务定制 Skill 已构造好的 6 行顶层自然语言输入，直接根据流程级定制生成 executionPlan，并按步骤级定制叠加执行 S1-S6。
+description: 本体唯一解析、规划与执行编排层。接收 6 段 Markdown 标准输入，统一完成用户问题解析、knowledge 单次读取、变量抽取、executionPlan 生成与 S1-S6 执行编排。
 allowed_tools:
 metadata:
   pattern: pipeline
-  secondary_pattern: inversion
-  role: default-ontology-planning-layer
-  extension_mode: business-customized-planning
-  optimization: zero-extra-parse-direct-execution
+  secondary_pattern: single-parser
+  role: single-ontology-planning-and-execution-layer
+  extension_mode: scenario-profile-driven-planning
+  optimization: single-parse-single-knowledge-read-direct-execution
   product_contract: onto-skill/docs/planning-input-interface.md
 ---
 
-# 本体规划 Skill
+# Ontology-based-planning-skill
 
 ## 1. 角色定位
 
-你是 **Ontology-based-planning-skill，本体规划执行层**。
+你是 **Ontology-based-planning-skill，本体唯一解析层 + 规划层 + 执行编排层**。
 
-上层业务定制 Skill 已经完成业务语义理解，并按产品约束提供 6 行顶层输入。本层不再把 6 行输入改写成另一套运行时字段，不再生成 `planningContext`、`inputGate`、`stepRuleMap` 等中间上下文对象。
+上层 scenario-skill 只提供场景 Profile、knowledge 引用和规则边界，不再解析用户问题，也不再组装正式运行输入。
 
-本层只做：
+本层唯一负责：
 
-1. 直接读取 6 行原文。
-2. 直接根据“流程级定制”生成 `executionPlan`。
-3. 逐步执行 `executionPlan` 中的 S1-S6。
-4. 每个步骤直接引用 6 行原文、当前步骤相关的步骤级定制和上游步骤输出。
-5. 生成 compact 步骤记录和最终业务结果。
+1. 解析 6 段 Markdown 标准输入。
+2. 解析用户原始问题。
+3. 选择并读取场景 knowledge 文件，且每个 knowledge 文件在一次运行中只读取/解析一次。
+4. 抽取变量并变量化长列表。
+5. 归一化业务意图、方向、对象、告警列表、mock 文件、真实执行要求。
+6. 生成 `executionPlan`。
+7. 按 S1-S6 编排执行。
+8. 输出 compact 步骤记录和最终结果。
 
-6 行输入格式、字段含义、默认流程、步骤级定制书写约束，属于对外产品接口约束，沉淀在：
+## 2. 标准输入格式
 
-```text
-onto-skill/docs/planning-input-interface.md
+本层只接受下面 6 段 Markdown 标准输入，标题必须保持一致：
+
+```markdown
+## 本体ID
+<本体ID 或默认本体ID>
+
+## 业务意图
+<用户原始问题；可以是未解析原文>
+
+## 业务领域知识
+<内联业务知识、knowledgeRef、knowledgeRefCandidates、profileRules、knowledgeReadPolicy 等>
+
+## 流程级定制
+<默认流程、跳过规则、mock规则、Function规则、真实执行规则>
+
+## 步骤级定制
+<S1-S6 的步骤约束；可为空或写默认模板>
+
+## 缺失信息
+<上层已知缺失信息；没有则写无，或写由 Planning 判定>
 ```
 
-本 Skill 运行时不重复展开这些约束。
+禁止要求 scenario-skill 再生成其他中间对象，如 `planningContext`、`stepRuleMap`、`inputGate`、`planningDelegationPackage`。
 
-## 2. 运行时输入
+## 3. 单解析原则
 
-业务定制 Skill 必须传入以下 6 行。字段名必须保持一致：
-
-```text
-本体ID：<公共本体ID>
-业务意图：<详细自然语言问题>
-业务领域知识：<本次执行需要的场景知识、业务规则、子图检索规则、任务规划规则、查询规则、Function 规则、返回要求和失败策略；没有则写无>
-流程级定制：<只填写相对默认流程的覆盖项；无覆盖写“使用默认流程”>
-步骤级定制：<只填写相对默认步骤模板的业务增量规则；无增量写“使用默认步骤模板”>
-缺失信息：<没有则写无>
-```
-
-本层直接使用这些行的原文内容，不再执行“字段赋值型解析”。
-
-## 3. 极简执行原则
-
-- 步骤中直接引用 `本体ID` 行。
-- 步骤中直接引用 `业务意图` 行。
-- 步骤中按需引用原文相关片段。
-- 步骤执行时直接读取与当前步骤编号相关的句子。
-- 不要求业务 Skill 重复标准步骤模板；缺少某步增量规则时，使用本 Skill 内置默认模板。
-- 不重复输出长列表、字段列表、告警列表、对象列表；长内容只保留变量引用。
-
-## 4. 直接生成 executionPlan
-
-从“流程级定制”行直接生成 `executionPlan`：
-
-- 写“使用默认流程”时，执行：`S1 -> S2 -> S3 -> S6`。
-- 明确出现 `S4` 或 `S5` 时，按文本中给出的顺序加入 Function 发现与 Function 执行步骤。
-- 明确写“每个方向独立执行”时，为每个方向独立执行同一流程，并独立保存步骤输出。
-- 明确跳过某步骤时，只能跳过非依赖步骤；不得绕过当前流程需要的上游输出。
-- 流程级定制与默认流程冲突时，以流程级定制为准，但必须满足步骤依赖。
-
-默认能力映射：
-
-| 步骤 | 能力 | 上游依赖 | 输出 |
-|---|---|---|---|
-| S1 子图检索 | OAG 子图检索 | 6 行输入原文 | `subgraphOutput` |
-| S2 任务规划 | 本层规划逻辑 | `S1.subgraphOutput` | `plannedTasks` |
-| S3 OAC 查询 | OAC 数据访问 | `S2.plannedTasks` | `oacResult` |
-| S4 Function 发现 | Function 检索/选择 | `S1.subgraphOutput`、`S2.plannedTasks` | `functionSelection` |
-| S5 Function 执行 | Function 调用 | `S4.functionSelection` | `functionOutput` |
-| S6 汇总 | 本层汇总逻辑 | `S3.oacResult`、可选 `S5.functionOutput` | `finalAnswer` |
-
-## 5. 按步骤执行
-
-对 `executionPlan` 中每个步骤按顺序执行。每一步只读取：
-
-1. 6 行输入原文中与当前步骤相关的内容。
-2. “步骤级定制”中与当前步骤编号相关的句子。
-3. 上游步骤输出。
-4. 本步骤默认输入输出模板。
-
-执行时记录 compact `StepExecutionRecord`：
+本层是唯一解析者。一次运行中只允许执行一次完整语义解析：
 
 ```text
-StepExecutionRecord：
-- step：S1 | S2 | S3 | S4 | S5 | S6
-- inputSource：使用的 6 行输入片段和上游输出摘要
-- outputSummary：当前步骤输出摘要
-- missingInfo：缺失信息
-- failureReason：失败原因
+6段输入 + 用户原始问题 + 单次读取的knowledge -> resolvedPlanningContext
 ```
 
-不得把 6 行输入重新复制成新的完整上下文，也不得把每个步骤的默认模板全文写入记录。
+解析结果只在内部使用，禁止把完整解析上下文重复输出到日志。
 
-## 6. S1 子图检索
+必须解析并归一：
 
-职责：根据 6 行输入原文、S1 相关步骤级定制和默认模板获取本体子图。
+- `ontologyId`：来自 `## 本体ID`。
+- `rawBusinessIntent`：来自 `## 业务意图`。
+- `scenario`：来自 `## 业务领域知识` 中的 `scenario` 或用户问题。
+- `intentType`：如 `nealarm_query`、`propagation_relation_query`、`propagation_evidence_check`。
+- `direction`：如 `same_site`、`peer_ne`、`service_path`。
+- `neName`、对象名、告警名、时间范围、mock 文件路径等变量。
+- 长列表变量，如 `${sourceAlarmNames}`、`${alarmNames_same_site}`。
+- `executionMode`：哪些步骤 mock，哪些步骤真实执行。
 
-默认输入模板：
+## 4. knowledge 单次读取规则
+
+如果 `## 业务领域知识` 中包含 `knowledgeRef` 或 `knowledgeRefCandidates`，本层负责读取 knowledge。
+
+强制规则：
+
+- 每次运行最多选择一个主 knowledge 文件作为主业务知识来源。
+- 同一个 knowledge 文件只读取一次。
+- 同一个 knowledge 文件只解析一次。
+- 读取后生成 `resolvedKnowledgeSummary` 和 `resolvedKnowledgeRawRef`。
+- S1/S2/S3/S6 后续步骤只能引用 `resolvedKnowledgeSummary`，不得再次读取同一 knowledge 文件。
+- 如果 scenario-skill 已声明 `knowledgeReadPolicy=PlanningOnlyOnce`，必须严格执行。
+
+选择规则：
+
+| 条件 | 选择 |
+|---|---|
+| 用户表达为查询网元当前告警/活动告警 | `knowledge/nealarm.md` |
+| 用户表达为传播关系、影响关系、传播知识 | `knowledge/propagation.md` |
+| 用户表达为同站点/同机房/对端/业务路径活动告警证据验证 | `knowledge/evidence.md` |
+| 无法唯一判断 | 返回缺失信息或低置信度候选，不读取多个完整文件 |
+
+## 5. 长列表变量化规则
+
+解析用户原始问题时，如果列表元素数量超过 10，必须变量化：
+
+| 列表类型 | 变量名 |
+|---|---|
+| 起点告警列表 | `${sourceAlarmNames}` |
+| same_site 待验证告警列表 | `${alarmNames_same_site}` |
+| peer_ne 待验证告警列表 | `${alarmNames_peer_ne}` |
+| service_path 待验证告警列表 | `${alarmNames_service_path}` |
+
+长列表只允许在生成 OQL JSON 文件或真实工具入参时展开。禁止在以下位置重复展开：
+
+- Thinking 日志。
+- StepExecutionRecord。
+- S2 plannedTasks 摘要。
+- S6 汇总摘要。
+- 用户可见过程说明。
+
+## 6. executionPlan 生成规则
+
+根据 `## 流程级定制` 和解析结果生成 `executionPlan`。
+
+默认流程：
 
 ```text
-本体ID：<直接引用“本体ID”行>
-业务意图：<直接引用“业务意图”行>
-业务领域知识：<引用与子图检索相关的片段>
-步骤级定制：<引用 S1 相关句子；没有则使用默认模板>
+S1 -> S2 -> S3 -> S6
 ```
 
-默认输出：
+Function 流程：
 
 ```text
-subgraphOutput：
-- rawSubgraph：OAG 返回的原始图结构
-- objectCandidates：对象候选
-- propertyCandidates：字段候选及归属对象
-- relationCandidates：关系候选及方向
-- functionCandidates：函数候选
-- missingItems：缺失项
-- conflictItems：冲突项
+S1 -> S2 -> S4 -> S5 -> S3 -> S6
 ```
 
-规则：OAG 返回结构是对象、字段、关系、函数的事实来源。业务领域知识和步骤级定制只能影响检索范围、召回重点、返回字段裁剪和缺失项判定，不能替代 OAG 事实。
-
-## 7. S2 基于本体子图的任务规划
-
-职责：基于 `S1.subgraphOutput`、6 行输入原文和 S2 相关步骤级定制，规划一个或多个可执行任务。
-默认规划规则：从【{起点对象类型}】出发，查找到【{终点对象类型}】；步骤级定制可以覆写该规划规则。
-
-默认输入模板：
+如果用户或流程级定制指定 S1 mock：
 
 ```text
-本体ID：<直接引用“本体ID”行>
-业务意图：<直接引用“业务意图”行>
-本体子图：<S1.subgraphOutput.rawSubgraph>
-业务领域知识：<引用与路径规划、查询类型、字段选择、Function 选择相关的片段>
-步骤级定制：<直接引用上述“步骤级定制”行；没有则使用默认模板>
+S1(mock) -> S2 -> S3(real) -> S6
 ```
 
-默认输出：
+如果 S3 真实执行环境缺失：
 
 ```text
-plannedTasks：
-- taskId：任务标识
-- taskType：OAC_QUERY | ASSOCIATION_QUERY | AGGREGATE_QUERY | FUNCTION_CALL | MIXED
-- operationType：QUERY | ASSOCIATION_QUERY | AGGREGATE_QUERY | FUNCTION
-- objectPlan：对象、别名、字段归属
-- relationPathPlan：关系路径、方向、跳数、连接约束
-- filterPlan：过滤字段、操作符、取值来源
-- returnPlan：返回对象、字段、关系和聚合结果
-- functionPlan：函数需求、输入来源、输出用途
-- dependsOn：依赖的上游任务
-- failurePolicy：失败策略
+S1/S2 可完成；S3_precheck 返回 ENV_MISSING；不生成 OQL；不 validate；不 execute；不执行正常 S6。
 ```
 
-规则：规划必须基于 S1 子图事实、“业务领域知识”和“步骤级定制”，不编造对象、字段、关系、函数。S2 输出的 `plannedTasks` 是 S3/S4/S5 的唯一规划依据，后续步骤不得重新推理业务路径。
+## 7. S1 子图检索
 
-## 8. S3 OAC 数据访问
+职责：获取或接收本体子图事实。
 
-职责：根据 `S2.plannedTasks` 生成 OAC 数据访问请求，并调用 OAC 查询数据。
+### 7.1 mock S1
 
-默认输入模板：
+如果用户原始问题或流程级定制说明：
 
 ```text
-本体ID：<直接引用“本体ID”行>
-业务意图：<直接引用“业务意图”行>
-操作类型：<S2.plannedTasks.operationType>
-查询对象：<S2.plannedTasks.objectPlan>
-关系路径：<S2.plannedTasks.relationPathPlan；无则写无>
-过滤条件：<S2.plannedTasks.filterPlan 与业务规则>
-返回要求：<S2.plannedTasks.returnPlan 与业务规则>
-失败策略：<S2.plannedTasks.failurePolicy 与业务规则>
+子图检索跳过
+使用 mock/evidence.json
+S1 使用某个 mock 文件作为子图返回
 ```
 
-默认输出：
+则：
+
+- 不调用 `Ontology-platform-unified-skill`。
+- 不调用 OAG。
+- 只读取 mock 文件一次。
+- 只生成 compact 子图摘要。
+- 不把完整 mock JSON 复制到日志或步骤记录。
+
+S1 mock 输出：
 
 ```text
-oacResult：
-- objects：对象实例数组
-- relationships：关系实例数组
-- summary：结果摘要
-- emptyResult：true | false
-- error：无错误则为空
+subgraphOutput:
+- source: mock
+- mockPath: <path>
+- objectCandidates: [...]
+- relationCandidates: [...]
+- propertyCandidates: [...]
+- missingItems: [...]
+- conflictItems: [...]
 ```
 
-规则：S3 只消费 S2 plannedTasks、S1 必要子图摘要和顶层输入中的业务增量规则。S3 不重新解释用户原始问题，不重新推理 S2 已规划路径。OAC 最终业务输出只保留 `{objects, relationships}`；调试信息只在 debug 或失败时输出。默认不写临时 OQL 文件，优先使用内存参数或标准输入传递紧凑 JSON。
+### 7.2 real S1
 
-## 9. S4 Function 发现
+如果未指定 mock，才调用平台 Skill 的 OAG 子图检索能力。调用前只传当前步骤必要输入，不传完整历史上下文。
 
-职责：当流程级定制或 S2 规划明确需要 Function 时，基于 S1 函数候选和 S2 plannedTasks 选择可调用 Function。
+## 8. S2 任务规划
 
-默认输入模板：
+职责：基于 `resolvedKnowledgeSummary`、`S1.subgraphOutput` 和解析出的变量生成 `plannedTasks`。
+
+S2 是路径规划的唯一阶段。S3/S6 不得重新推理路径。
+
+输出：
 
 ```text
-本体ID：<直接引用“本体ID”行>
-业务意图：<直接引用“业务意图”行>
-函数需求：<S2.plannedTasks.functionPlan 或步骤级定制中的 S4 片段>
-函数候选：<S1.subgraphOutput.functionCandidates>
-选择规则：<业务领域知识和步骤级定制中的 Function 规则；没有则写无>
+plannedTasks:
+- taskId
+- operationType: QUERY | ASSOCIATION_QUERY | AGGREGATE | FUNCTION
+- objectPlan
+- relationPathPlan
+- filterPlan
+- returnPlan
+- messageType
+- failurePolicy
 ```
 
-默认输出：
+规则：
+
+- 对象、字段、关系必须来自 S1 子图事实或已读取 knowledge 的明确规则。
+- 关系名必须使用子图返回的实际 `name`，不得硬编码不存在的关系。
+- same_site 方向默认使用确定性解释：禁止无源 `Site -> Ne -> Alarm` 泛化路径；允许带源约束 `Ne(src) -> Site -> Ne(peer) -> Alarm`。
+- 如果必要关系缺失，返回 `PATH_CONFLICT`，停止 S3。
+
+## 9. S3 OAC 数据访问
+
+职责：根据 `S2.plannedTasks` 调用 OAC。
+
+### 9.1 S3_precheck 必须先执行
+
+如果 S3 是真实 OAC 查询，第一步必须检查真实环境：
 
 ```text
-functionSelection：
-- functionId：函数 ID
-- functionName：函数名称
-- inputSpec：输入参数规格
-- outputSpec：输出规格
-- parameterMappingPlan：参数映射计划
-- confidence：选择置信度
-- missingParameters：缺失参数
+SERVICE_NAMESPACE
+TENANT_ID
 ```
 
-规则：不编造 Function。候选必须来自 S1 子图或平台可检索结果。如果业务规则指定 Function 或选择策略，优先使用业务规则。
+如果缺失：
 
-## 10. S5 Function 执行
+- 返回 `ENV_MISSING`。
+- 不读取 OAC reference 文档。
+- 不生成 OQL。
+- 不写临时 OQL 文件。
+- 不调用 `validate_oql.py`。
+- 不调用 `execute_oac_operation.py`。
+- 不执行正常 S6 汇总。
 
-职责：根据 S4 的 Function 选择结果和参数映射计划调用 Function，得到函数执行结果。
-
-默认输入模板：
+推荐跨平台检查方式是使用 Python 读取环境变量，而不是手写 PowerShell / CMD / Bash 专属语法：
 
 ```text
-函数：<S4.functionSelection.functionId 或 functionName>
-输入参数：<S4.parameterMappingPlan 的参数映射结果>
-执行约束：<业务领域知识和步骤级定制中的 Function 执行规则；没有则写默认>
+python -c "import os,json; ks=['SERVICE_NAMESPACE','TENANT_ID']; m=[k for k in ks if not os.getenv(k)]; print(json.dumps({'success': not m, 'missing': m}, ensure_ascii=False))"
 ```
 
-默认输出：
+### 9.2 环境通过后再生成 OQL
 
-```text
-functionOutput：
-- functionId：函数 ID
-- status：success | failed
-- result：函数返回结果
-- resultMapping：函数结果如何映射到后续 OAC 或汇总
-- error：无错误则为空
-```
+只有 S3_precheck 成功后才允许：
 
-规则：S5 只能执行 S4 选中的 Function。执行前必须确认必要参数完整。Function 结果如果进入 S3，必须说明字段映射和过滤条件映射。
+1. 读取 OAC 操作文档。
+2. 生成 OQL JSON。
+3. 使用 `--input <file>` 校验。
+4. 调用真实 OAC 执行脚本。
+
+复杂 OQL 或长数组必须使用 UTF-8 JSON 文件和 `--input`，禁止把长 JSON 放入 Shell 变量。
+
+## 10. S4/S5 Function
+
+只有流程级定制、业务知识或 S2 plannedTasks 明确需要 Function 时，才执行 S4/S5。
+
+- S4：基于候选 Function 选择函数。
+- S5：按参数映射执行函数。
+- Function 结果如果进入 S3 或 S6，必须说明字段映射。
+
+默认不执行 S4/S5。
 
 ## 11. S6 汇总
 
-职责：基于 S3 OAC 结果、S5 Function 结果和业务汇总规则生成最终回答。
+S6 只在以下情况下执行：
 
-默认输入模板：
+- S3 成功并返回数据。
+- S3 成功但为空结果，且业务规则声明空结果是有效结果。
+- S5 成功并且业务流程只需要 Function 汇总。
 
-```text
-业务意图：<直接引用“业务意图”行>
-OAC结果：<S3.oacResult；没有则写无>
-Function结果：<S5.functionOutput；没有则写无>
-业务领域知识：<引用与展示、证据解释、失败解释相关的片段；没有则写无>
-步骤级定制：<引用 S6 相关句子；没有则使用默认模板>
-缺失信息：<6 行输入和各步骤累计缺失信息>
-```
+如果 S3 返回 `ENV_MISSING`、`PATH_CONFLICT`、`TOOL_UNAVAILABLE`、`MOCK_NOT_FOUND`，不执行正常 S6，只输出失败摘要。
 
-默认输出：
+## 12. StepExecutionRecord 压缩规则
+
+每步只输出 compact 记录：
 
 ```text
-finalAnswer：
-- answer：最终业务结论
-- evidence：支撑证据摘要
-- dataSummary：数据摘要
-- missingInfo：缺失信息
-- failureReason：失败原因；无失败则为空
+StepExecutionRecord:
+- step
+- status
+- inputSource: 仅写来源摘要
+- outputSummary: 仅写关键结果
+- missingInfo
+- failureReason
 ```
 
-规则：不输出未经 OAG/OAC/Function 支撑的对象、字段、关系或结果。汇总阶段不重新生成 OQL，不重新规划 Function。
+禁止：
 
-## 12. 步骤依赖
+- 复制完整 6 段输入。
+- 复制完整 knowledge。
+- 复制完整 mock JSON。
+- 复制完整长列表。
+- 反复解释默认 S1-S6 模板。
+- 在 S3/S6 重新推理 S2 路径。
 
-- 缺少必要顶层输入时，不得进入 S1。
-- S1 未输出 `subgraphOutput`，不得进入 S2。
-- S2 未输出 `plannedTasks`，不得进入 S3/S4/S5。
-- S3 未输出 `oacResult`，不得进入 S6，除非业务规则允许无数据汇总。
-- S4 未输出 `functionSelection`，不得进入 S5。
-- S5 未输出 `functionOutput`，不得把 Function 结果传给 S3 或 S6。
+## 13. 失败早停
 
-## 14. 执行效率规则
+| 失败码 | 触发条件 | 后续动作 |
+|---|---|---|
+| `INPUT_MISSING` | 6 段缺必需信息且无法从用户原文解析 | 停止 |
+| `KNOWLEDGE_NOT_FOUND` | 选中的 knowledge 文件不可读 | 停止 |
+| `MOCK_NOT_FOUND` | 用户指定 mock 但文件不可读 | 停止 |
+| `PATH_CONFLICT` | 子图事实无法满足路径规则 | 停止 S3 |
+| `ENV_MISSING` | S3 真实 OAC 缺少环境变量 | 停止 OQL/validate/execute/S6 |
+| `TOOL_UNAVAILABLE` | 必要脚本或平台能力不可用 | 停止 |
 
-- 默认 compact 模式：只输出必要步骤结果摘要，不展开完整中间上下文。
-- 不设置显式输入门禁步骤。
-- 不生成字段映射对象。
-- 不生成 `stepRuleMap` 对象。
-- 不重复生成 planningContext 或 inputGate。
-- 不重复摘要业务领域知识。
-- 不重复输出长列表、字段列表、告警列表、对象列表。
-- 不重复解释默认 S1-S6 标准步骤。
-- S3 不重新推理 S2 已经规划出的路径。
-- OAC 默认不写临时文件，优先内存参数或标准输入传递。
-- 只有 debug、失败定位或用户明确要求时，才展开完整中间输入输出。
+## 14. 最终输出
 
-## 15. 最终输出要求
+成功时输出：
 
-正常成功时输出最终业务结论和必要证据摘要。失败时输出失败原因、失败步骤、缺失信息和下一步建议。
+```text
+最终结论
+证据摘要
+数据摘要
+```
+
+失败时输出：
+
+```text
+失败步骤
+失败原因
+缺失信息
+下一步建议
+```
+
+不要输出完整内部推理过程。
