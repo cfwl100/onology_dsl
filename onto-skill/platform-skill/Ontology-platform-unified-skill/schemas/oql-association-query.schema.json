@@ -2,6 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://cfwl100.github.io/onology_dsl/schemas/oql-association-query.schema.json",
   "title": "OQL ASSOCIATION_QUERY JSON Schema",
+  "description": "对象关系/路径关联查询。用于一跳关系导航、多跳路径关联和关系字段返回。",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -14,47 +15,58 @@
   ],
   "properties": {
     "version": {
-      "const": "1.0"
+      "const": "1.0",
+      "description": "OQL 协议版本，当前 schema 保持 1.0。"
     },
     "schemaRef": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "description": "本次请求绑定的本体 schema 标识。"
     },
     "strict": {
       "type": "boolean",
-      "default": true
+      "default": true,
+      "description": "是否启用严格校验；未指定时默认 true。"
     },
     "conditions": {
-      "$ref": "#/definitions/condition"
+      "$ref": "#/definitions/condition",
+      "description": "对象级或明细级过滤条件；无过滤条件时省略。"
     },
     "orders": {
       "type": "array",
       "items": {
         "$ref": "#/definitions/order"
       },
-      "minItems": 1
+      "minItems": 1,
+      "description": "排序规则列表；无排序要求时省略。"
     },
     "maxResults": {
-      "$ref": "#/definitions/maxResults"
+      "$ref": "#/definitions/maxResults",
+      "description": "最大返回条数；无数量限制要求时省略并由 OAC 默认控制。"
     },
     "sourceQuery": {
-      "$ref": "#/definitions/sourceQuery"
+      "$ref": "#/definitions/sourceQuery",
+      "description": "中间结果查询；仅复杂多阶段查询时生成。"
     },
     "options": {
-      "$ref": "#/definitions/options"
+      "$ref": "#/definitions/options",
+      "description": "执行选项；未使用时省略。"
     },
     "extensions": {
-      "$ref": "#/definitions/extensions"
+      "$ref": "#/definitions/extensions",
+      "description": "业务扩展参数；无明确约定时省略。"
     },
     "operation": {
-      "const": "ASSOCIATION_QUERY"
+      "const": "ASSOCIATION_QUERY",
+      "description": "固定为 ASSOCIATION_QUERY，表示当前 OQL 操作类型。"
     },
     "objects": {
       "type": "array",
       "items": {
         "$ref": "#/definitions/object"
       },
-      "minItems": 2
+      "minItems": 2,
+      "description": "参与本次操作的本体对象声明列表。"
     },
     "returns": {
       "type": "array",
@@ -71,21 +83,24 @@
           }
         ]
       },
-      "minItems": 1
+      "minItems": 1,
+      "description": "返回定义列表；只生成用户需要的字段、表达式或指标。"
     },
     "relationships": {
       "type": "array",
       "items": {
         "$ref": "#/definitions/relationship"
       },
-      "minItems": 1
+      "minItems": 1,
+      "description": "对象关系路径声明，至少一条；多跳路径按数组顺序生成。"
     }
   },
   "definitions": {
     "alias": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+      "description": "对象、关系或中间结果引用别名；在当前 OQL 层级内应保持唯一。"
     },
     "field": {
       "type": "string",
@@ -100,7 +115,7 @@
           }
         ]
       },
-      "description": "普通字段名。用于条件、排序、表达式等位置；这些位置不允许使用 *。"
+      "description": "普通本体属性名。用于条件、排序、表达式等位置；不得使用 *、ID(field) 或 NAME(field)。"
     },
     "returnField": {
       "oneOf": [
@@ -111,12 +126,13 @@
           "const": "*",
           "description": "仅在 returns.kind=FIELDS.fields[] 中允许，表示返回该 ref 对应对象或关系的全部字段。"
         }
-      ]
+      ],
+      "description": "FIELDS 返回字段。优先显式列出字段；如确需全字段返回可使用 *。"
     },
     "idNameField": {
       "type": "string",
       "pattern": "^(ID|NAME)\\([A-Za-z_][A-Za-z0-9_]*\\)$",
-      "description": "仅允许大写 ID(fieldName) 或 NAME(fieldName)。"
+      "description": "返回字段类型指定函数，仅允许大写 ID(fieldName) 或 NAME(fieldName)，只能用于 returns.kind=FUNCTION.field。"
     },
     "value": {
       "type": [
@@ -124,7 +140,8 @@
         "number",
         "integer",
         "boolean"
-      ]
+      ],
+      "description": "条件或表达式中的字面量值；不要用字符串包裹本应为数字或布尔的值。"
     },
     "object": {
       "type": "object",
@@ -133,17 +150,21 @@
         "objectType",
         "alias"
       ],
+      "description": "声明参与查询的本体对象；对象实例筛选应放在 conditions 中，不放在 objects 中。",
       "properties": {
         "objectType": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "本体对象类型，必须来自本体模型，不要生成物理表名或 SQL 表别名。"
         },
         "alias": {
-          "$ref": "#/definitions/alias"
+          "$ref": "#/definitions/alias",
+          "description": "当前对象在 conditions、returns、orders、relationships 中使用的引用别名。"
         },
         "fromSource": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "可选：引用 sourceQuery[].outputAs，将中间结果作为当前对象输入。"
         }
       }
     },
@@ -155,15 +176,19 @@
         "ref",
         "field"
       ],
+      "description": "字段表达式，用于在表达式中引用某个对象或关系的字段。",
       "properties": {
         "kind": {
-          "const": "FIELD"
+          "const": "FIELD",
+          "description": "固定为 FIELD，表示字段引用表达式。"
         },
         "ref": {
-          "$ref": "#/definitions/alias"
+          "$ref": "#/definitions/alias",
+          "description": "字段所属对象或关系的 alias。"
         },
         "field": {
-          "$ref": "#/definitions/field"
+          "$ref": "#/definitions/field",
+          "description": "字段名；不得使用 ID()/NAME() 或 *。"
         }
       }
     },
@@ -174,11 +199,15 @@
         "kind",
         "value"
       ],
+      "description": "字面量表达式，用于函数参数或表达式计算中的常量值。",
       "properties": {
         "kind": {
-          "const": "VALUE"
+          "const": "VALUE",
+          "description": "固定为 VALUE，表示字面量表达式。"
         },
-        "value": {}
+        "value": {
+          "description": "字面量值，可以是字符串、数字、布尔、对象或数组；按业务真实类型生成。"
+        }
       }
     },
     "functionExpr": {
@@ -189,13 +218,16 @@
         "name",
         "args"
       ],
+      "description": "受控函数表达式，用于轻量转换、归一化、派生字段或函数过滤；不得表达 ID()/NAME() 返回字段语义。",
       "properties": {
         "kind": {
-          "const": "FUNCTION"
+          "const": "FUNCTION",
+          "description": "固定为 FUNCTION，表示受控函数表达式。"
         },
         "namespace": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "可选：函数命名空间；扩展函数建议填写，如 custom。"
         },
         "name": {
           "type": "string",
@@ -207,13 +239,15 @@
               "id",
               "name"
             ]
-          }
+          },
+          "description": "函数名。不得使用 ID/NAME；ID(field)/NAME(field) 必须使用 returns.kind=FUNCTION.field 表达。"
         },
         "args": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/expr"
-          }
+          },
+          "description": "函数参数列表，每个参数必须是 FIELD、VALUE 或 FUNCTION 表达式。"
         }
       }
     },
@@ -228,7 +262,8 @@
         {
           "$ref": "#/definitions/functionExpr"
         }
-      ]
+      ],
+      "description": "表达式统一结构，支持字段、字面量和受控函数。"
     },
     "predicate": {
       "type": "object",
@@ -250,18 +285,23 @@
           ]
         }
       ],
+      "description": "原子条件。普通字段条件使用 ref+field；函数或复杂左值条件使用 left 表达式。",
       "properties": {
         "kind": {
-          "const": "PREDICATE"
+          "const": "PREDICATE",
+          "description": "固定为 PREDICATE，表示一个原子过滤条件。"
         },
         "ref": {
-          "$ref": "#/definitions/alias"
+          "$ref": "#/definitions/alias",
+          "description": "字段所属对象或关系 alias；必须引用已声明对象或关系。"
         },
         "field": {
-          "$ref": "#/definitions/field"
+          "$ref": "#/definitions/field",
+          "description": "被过滤的普通字段名；不得使用 * 或 ID()/NAME()。"
         },
         "left": {
-          "$ref": "#/definitions/expr"
+          "$ref": "#/definitions/expr",
+          "description": "表达式左值；当需要函数过滤时使用，例如 LENGTH(comment) > 100。"
         },
         "operator": {
           "enum": [
@@ -284,16 +324,19 @@
             "IS_NOT_EMPTY",
             "EXISTS",
             "NOT_EXISTS"
-          ]
+          ],
+          "description": "比较或匹配操作符；范围用 BETWEEN，集合用 IN/NOT_IN，空值判断用 IS_NULL/IS_NOT_NULL。"
         },
         "values": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/value"
-          }
+          },
+          "description": "比较值数组。BETWEEN 用两个值；IS_NULL/IS_NOT_NULL/IS_EMPTY/IS_NOT_EMPTY 不生成 values。"
         },
         "subquery": {
-          "type": "object"
+          "type": "object",
+          "description": "EXISTS/NOT_EXISTS 使用的子查询对象；普通比较条件不要生成。"
         }
       }
     },
@@ -305,23 +348,27 @@
         "relation",
         "children"
       ],
+      "description": "条件逻辑组，用于组合多个 PREDICATE 或嵌套 GROUP。",
       "properties": {
         "kind": {
-          "const": "GROUP"
+          "const": "GROUP",
+          "description": "固定为 GROUP，表示条件逻辑组。"
         },
         "relation": {
           "enum": [
             "AND",
             "OR",
             "NOT"
-          ]
+          ],
+          "description": "条件组合关系。多个条件默认优先使用 AND；NOT 仅包裹一个子条件。"
         },
         "children": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/condition"
           },
-          "minItems": 1
+          "minItems": 1,
+          "description": "子条件列表；不要生成空数组。"
         }
       }
     },
@@ -333,7 +380,8 @@
         {
           "$ref": "#/definitions/group"
         }
-      ]
+      ],
+      "description": "对象级或明细级过滤条件树，语义类似 WHERE。"
     },
     "fieldsReturn": {
       "type": "object",
@@ -343,12 +391,15 @@
         "ref",
         "fields"
       ],
+      "description": "字段返回定义。用于返回某个对象或关系的一个或多个字段。",
       "properties": {
         "kind": {
-          "const": "FIELDS"
+          "const": "FIELDS",
+          "description": "固定为 FIELDS，表示普通字段返回。"
         },
         "ref": {
-          "$ref": "#/definitions/alias"
+          "$ref": "#/definitions/alias",
+          "description": "返回字段所属对象或关系 alias。"
         },
         "fields": {
           "type": "array",
@@ -357,7 +408,7 @@
           },
           "minItems": 1,
           "uniqueItems": true,
-          "description": "返回字段列表。允许 [\"*\"] 表示返回 ref 对应对象或关系的全部字段；* 只允许出现在 returns.kind=FIELDS.fields[]。"
+          "description": "返回字段列表。优先只列出用户需要的字段，避免返回过多字段。"
         }
       }
     },
@@ -369,16 +420,20 @@
         "expr",
         "alias"
       ],
+      "description": "表达式返回定义，用于返回函数计算或派生字段结果。",
       "properties": {
         "kind": {
-          "const": "EXPR"
+          "const": "EXPR",
+          "description": "固定为 EXPR，表示返回表达式结果。"
         },
         "expr": {
-          "$ref": "#/definitions/expr"
+          "$ref": "#/definitions/expr",
+          "description": "要返回的表达式，通常是受控函数表达式。"
         },
         "alias": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "返回列别名，必须清晰表达该派生字段含义。"
         }
       }
     },
@@ -391,19 +446,24 @@
         "field",
         "alias"
       ],
+      "description": "ID/NAME 返回字段类型指定函数。仅用于返回维度 ID 或名称语义，不表示数据库函数调用。",
       "properties": {
         "kind": {
-          "const": "FUNCTION"
+          "const": "FUNCTION",
+          "description": "固定为 FUNCTION，表示 ID(field)/NAME(field) 返回字段类型指定。"
         },
         "ref": {
-          "$ref": "#/definitions/alias"
+          "$ref": "#/definitions/alias",
+          "description": "字段所属对象 alias。"
         },
         "field": {
-          "$ref": "#/definitions/idNameField"
+          "$ref": "#/definitions/idNameField",
+          "description": "必须是 ID(fieldName) 或 NAME(fieldName)，函数名大写。"
         },
         "alias": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "返回列别名；NAME 建议使用 _name 后缀，ID 建议使用 _id 后缀。"
         }
       }
     },
@@ -414,32 +474,37 @@
         "field",
         "direction"
       ],
+      "description": "排序定义。普通查询可用 ref+field；聚合查询优先按 returns.alias 排序。",
       "properties": {
         "ref": {
-          "$ref": "#/definitions/alias"
+          "$ref": "#/definitions/alias",
+          "description": "可选：排序字段所属对象或关系 alias；聚合结果排序通常省略。"
         },
         "field": {
           "type": "string",
           "minLength": 1,
           "not": {
             "pattern": "^(ID|NAME)\\("
-          }
+          },
+          "description": "排序字段名或聚合返回 alias；不得使用 ID()/NAME()。"
         },
         "direction": {
           "enum": [
             "ASC",
             "DESC"
-          ]
+          ],
+          "description": "排序方向：ASC 升序，DESC 降序。"
         }
       }
     },
     "maxResults": {
       "type": "integer",
       "minimum": 1,
-      "description": "最大返回条数，必须使用数字格式，例如 maxResults: 1000。"
+      "description": "最大返回条数，使用数字格式，例如 maxResults: 1000；未指定时由 OAC 使用默认值。"
     },
     "sourceQuery": {
       "type": "array",
+      "description": "中间结果查询列表。复杂问题可拆成多阶段，后续 objects[].fromSource 引用 outputAs。",
       "items": {
         "type": "object",
         "additionalProperties": true,
@@ -449,18 +514,21 @@
         "properties": {
           "outputAs": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "description": "当前子查询输出名称，供 objects[].fromSource 引用。"
           }
         }
       }
     },
     "options": {
       "type": "object",
-      "additionalProperties": true
+      "additionalProperties": true,
+      "description": "执行选项。仅在业务或 OAC 明确要求时生成，未使用时省略。"
     },
     "extensions": {
       "type": "object",
-      "additionalProperties": true
+      "additionalProperties": true,
+      "description": "业务扩展参数，例如时间口径、分表提示或场景参数；无明确约定时省略。"
     },
     "relationship": {
       "type": "object",
@@ -471,29 +539,36 @@
         "from",
         "to"
       ],
+      "description": "对象关系路径声明；一跳关系导航和多跳路径都通过 relationships 表达。",
       "properties": {
         "relationshipType": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "本体关系类型，必须来自本体关系模型，不要生成物理外键或表名。"
         },
         "alias": {
-          "$ref": "#/definitions/alias"
+          "$ref": "#/definitions/alias",
+          "description": "关系 alias，可在 conditions 或 returns 中引用关系字段。"
         },
         "from": {
-          "$ref": "#/definitions/alias"
+          "$ref": "#/definitions/alias",
+          "description": "关系起点对象 alias，必须引用 objects[].alias。"
         },
         "to": {
-          "$ref": "#/definitions/alias"
+          "$ref": "#/definitions/alias",
+          "description": "关系终点对象 alias，必须引用 objects[].alias。"
         },
         "direction": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "可选：关系方向，例如 OUTBOUND、INBOUND、BIDIRECTIONAL；按本体关系定义生成。"
         },
         "mode": {
           "enum": [
             "ONE",
             "LIST"
-          ]
+          ],
+          "description": "关系结果模式：ONE 表示期望单条，LIST 表示可返回多条。"
         }
       }
     }
