@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Execute OAC Operation.
 
-The execution script reuses scripts/oql_validator.py as the single OQL validation gate.
+The execution script reuses scripts/oql_validator.py as the single OQL
+validation gate.
 
 Input guidance:
 - Use --input for complex or long OQL JSON, especially on Windows shells.
-- Use --oac-json only for short compact JSON when the current shell quoting is known to be safe.
+- Use --oac-json only for short compact JSON when the current shell quoting is
+  known to be safe.
+- Use --validate-only to normalize and validate OQL locally without calling
+  the remote OAC service.
 """
 from __future__ import annotations
 
@@ -21,6 +25,7 @@ from typing import Any
 import requests
 
 from oql_validator import validate_oql_dict
+from skill_runtime import normalize_oql
 
 warnings.filterwarnings("ignore")
 
@@ -66,6 +71,9 @@ def apply_runtime_defaults(oql: dict[str, Any]) -> None:
 
 def validate_for_execution(oql: dict[str, Any]) -> tuple[bool, list[dict[str, Any]]]:
     apply_runtime_defaults(oql)
+    normalized = normalize_oql(oql, ontology_id=oql.get("schemaRef"))
+    oql.clear()
+    oql.update(normalized)
     errors = validate_oql_dict(oql)
     return not errors, errors
 
@@ -137,6 +145,7 @@ def main() -> int:
     group.add_argument("--input", help="从 UTF-8 文件或 stdin 读取 JSON，使用 - 表示 stdin；复杂/长 OQL 推荐使用该方式")
     parser.add_argument("--output", help="输出文件路径")
     parser.add_argument("--message-type", "--msg-type", dest="message_type", default="OAC_RETURN", help="返回消息类型")
+    parser.add_argument("--validate-only", action="store_true", help="只做归一化与校验，不访问远端服务")
     args = parser.parse_args()
 
     try:
@@ -152,6 +161,10 @@ def main() -> int:
     if not valid:
         write_or_print(compact({"success": False, "error": {"code": "VALIDATION_ERROR", "message": "OQL validation failed", "details": errors}}), args.output)
         return 1
+
+    if args.validate_only:
+        write_or_print(compact({"success": True, "validated": True, "oql": oql}), args.output)
+        return 0
 
     result = execute_operation(oql)
     output = format_success(result, args.message_type) if result.get("success") else compact(result)
