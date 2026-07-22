@@ -23,19 +23,32 @@ metadata:
 
 业务领域知识以 `knowledge/base_knowledge.md` 为准（TT/告警/Outage/MTTE-MTTR 字段、时间戳处理、枚举值、业务公式）。
 
+## 性能优先执行原则
+- **一次性路由**：先调用 `scripts/skill_planner.py` 生成 plan，plan 里一次性确定 `intent`、`operation`、`oag_payload`、`route`、`cache_key`。
+- **只在缺失时追问一次**：只有当 `blocking_gaps` 非空时才追问，不在每一步重复问同一类信息。
+- **代码承载确定性逻辑**：OAG/OAC/Function 的 JSON 组装、操作类型路由、OQL 归一化、空结果处理、缓存与重试都放在脚本里完成。
+- **先本地校验，再远端执行**：`execute_oac_operation.py --validate-only` 先做 OQL 归一化和校验，再决定是否访问后端。
+- **空结果仍是有效结果**：不因为空结果自动放宽条件、扩大范围或重复规划。
+
 ## 执行 SOP
-
 ```
-①意图识别+实体提取  →  ②子图检索(OAG)  →  ③判型+生成OQL+校验+执行(OAC)  →  ④汇总
+① 一次性路由 + 实体补全  →  ② 子图检索(OAG)  →  ③ 判型 + 生成OQL + 校验 + 执行(OAC)  →  ④ 函数能力（按需）  →  ⑤ 汇总
 ```
 
-**① 意图识别 + 实体提取**（见下文分类表与实体表）。
+**① 一次性路由 + 实体补全**
+- 由 `scripts/skill_planner.py` 先生成 `plan_json`。
+- `plan_json.route` 决定是否需要 OAG / OAC / Function / coordinate。
+- `plan_json.blocking_gaps` 非空时再追问缺失项；否则直接进入下一步。
 
-**② 子图检索（OAG）**：用改写后的业务问题调统一 skill 的 `semantic_subgraph_search.py`。
+**② 子图检索（OAG）**
+- 用 `scripts/semantic_subgraph_search.py --plan-json '<plan_json>'` 执行。
+- `plan_json.oag_payload` 已给出标准化查询与检索参数，不再重复构造检索 JSON。
 - query 规范：`从【起点对象】到【终点对象】之间的路径，其中[对象]携带【属性】`；明细查询直接以业务主题为 query。
 - 仅当数据库无该站点或其 `latitude`/`longitude` 为空时（见"经纬度"），才补调 `coordinate.py`。
 
-**③ 判型 + 生成 OQL + 校验 + 执行（OAC）**：基于子图事实生成 OQL，调用统一 skill 的 `validate_oql.py` 校验，环境完整时 `execute_oac_operation.py` 执行。
+**③ 判型 + 生成 OQL + 校验 + 执行（OAC）**
+- 基于子图事实生成 OQL，先用 `scripts/execute_oac_operation.py --validate-only` 归一化并校验。
+- 环境完整时再执行真实 OAC；失败只修复本地 OQL，不要把“校验/结构错误”误判成“数据为空”。
 - 操作类型路由（与统一 skill 一致）：
   - 单/多对象明细、列表、字段值 → `QUERY`
   - 关系/路径/归属/连接/一跳/多跳 → `ASSOCIATION_QUERY`
@@ -44,9 +57,11 @@ metadata:
 - 复杂/长 OQL 用 `json.dumps(ensure_ascii=False)` 写 UTF-8 文件，校验与执行复用同一文件；默认逐行命令 + 绝对脚本路径，禁用 `&&`/`||`/管道。
 - 空结果视为有效结果，不自动放宽条件重试。最终只取 `{objects, relationships}`。
 
-**④ 汇总**：基于 OAC 结果（可选 Function 结果）与 `base_knowledge.md` 规则产出最终回答；保留平台返回的对象结构；说明子图确认的对象/字段/关系依据；结果为空则按业务规则说明空结果有效。不输出未经子图/OAC 支撑的对象、字段、关系或结果。
+**④ 函数能力（按需）**
+- 需要 Function（如自动创建工单）时，在 ③ 之后插入 Function 发现与执行，按统一 skill `call-function.md` 流程：`get_function_params_spec.py` 取规格 → 组装 params → `get_function_result.py` 执行（统一用 `physicalName`）。
 
-> 需要 Function（如自动创建工单）时，在 ③ 之后插入 Function 发现与执行，按统一 skill `call-function.md` 流程：`get_function_params_spec.py` 取规格 → 组装 params → `get_function_result.py` 执行（统一用 `physicalName`）。
+**⑤ 汇总**
+- 基于 OAC 结果（可选 Function 结果）与 `base_knowledge.md` 规则产出最终回答；保留平台返回的对象结构；说明子图确认的对象/字段/关系依据；结果为空则按业务规则说明空结果有效。不输出未经子图/OAC 支撑的对象、字段、关系或结果。
 
 ## 意图分类
 | 意图 | 触发关键词 |
