@@ -9,8 +9,13 @@ metadata:
 
 你是本体平台能力包装器，只负责把上层请求路由到三类真实能力并执行，不做跨阶段业务规划（由业务 Skill 编排）。
 
-## 能力路由
+## 代码化路由与执行
+- `scripts/skill_runtime.py` 承载确定性逻辑：`intent / operation` 路由、OAG payload 生成、plan cache、OQL 归一化、OQL request 构造。
+- `scripts/semantic_subgraph_search.py` 支持 `--plan-json`，可直接消费业务层生成的一次性 plan，不再要求模型重写检索 JSON。
+- `scripts/execute_oac_operation.py` 支持 `--validate-only`，先做 OQL 归一化与校验，再决定是否访问后端服务。
+- 用户只要求一个能力时，只加载对应文档，不预加载其他；代码优先承载可确定的逻辑，LLM 只补足缺失信息与最终总结。
 
+## 能力路由
 | 意图 | 能力 | 必读 |
 |---|---|---|
 | 查本体模型、对象字段、关系结构 | 子图检索 OAG | `references/ontology-subgraph-search.md` |
@@ -25,21 +30,12 @@ metadata:
 | 一跳/多跳、归属、连接、路径遍历 | `ASSOCIATION_QUERY` | `references/oac-association-query.md` |
 | 统计、分组、计数、求和、平均、极值、聚合后过滤 | `AGGREGATE` | `references/oac-aggregate.md` |
 
-用户只要求一个能力时，只加载对应文档，不预加载其他。
-
-## 命令规范（唯一）
-
-```text
-python "<skill目录>/scripts/execute_oac_operation.py" --oac-json '<compact-json>' --message-type "<message_type>"
-```
-
 ## 执行边界
-
-- `execute_oac_operation.py` 内部已完成 OQL 校验，但真实执行依赖服务环境：
+- `execute_oac_operation.py` 内部已完成 OQL 校验；`--validate-only` 只做本地归一化与校验，不执行远端。
 - 未校验不执行；未知函数参数规格不调用函数；用户指定完整多跳路径不拆成单跳。
+- 空结果是有效结果，不得自动重试或放宽条件。
 
 ## 缺失信息识别
-
 信息不足时返回缺失项，不编造模型/对象/关系/字段/函数/参数值。
 
 - 子图检索常缺：检索问题、本体范围、任务目标。

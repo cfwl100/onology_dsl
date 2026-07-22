@@ -19,6 +19,8 @@ OAC 输入由两类信息结合生成：
 
 但业务定制不能凭空制造平台事实：查询对象必须来自子图确认的 `objectType`，字段必须来自子图确认的 `property + has_property`，关系必须来自子图确认的 `defines_relation.properties.name`，OQL 结构必须通过 schema 和 validator。
 
+如果上层已经由 `scripts/skill_runtime.py` 或业务侧 `plan_json` 给出确定性路由结果，则优先直接消费 `plan_json.oag_payload` / `plan_json.route`，不要重新让模型规划一遍输入结构。
+
 ## 3. 操作类型
 
 | 操作类型 | 适用场景 | 子文档 |
@@ -29,7 +31,7 @@ OAC 输入由两类信息结合生成：
 
 ## 4. 面向自然语言的固定输入模板
 
-Planning 层委托 OAC 时默认使用以下模板；如果业务定制文件提供了步骤级 OAC 模板，以业务定制文件为准。
+Planning 层委托 OAC 时默认使用以下模板；如果业务定制文件提供了步骤级 OAC 模板，以业务定制文件为准。若上层已经通过 `plan_json` 生成了确定性输入，则直接按 `plan_json` 中的对象、关系、过滤条件、返回要求执行，不再重复改写。
 
 ```text
 查数据
@@ -56,12 +58,13 @@ OAC 最终输出必须是对象结构。
 
 ## 6. 执行流程
 
-1. 判断唯一 OAC 操作类型。
+1. 判断唯一 OAC 操作类型；如果 `plan_json` 已给出，则直接使用其 `operation`。
 2. 读取对应 operation 操作手册。
 3. 读取对应 schema。operation 手册内已包含最小示例。
-4. 基于本体ID、操作类型、查询对象、关系路径、过滤条件、返回要求、执行要求、期望输出生成 OQL JSON。
+4. 基于本体ID、操作类型、查询对象、关系路径、过滤条件、返回要求、执行要求、期望输出生成 OQL JSON；若上层已经提供确定性 OQL 片段，则直接复用。
 5. 调用 `scripts/execute_oac_operation.py --oac-json '<compact-json>' --message-type '<type>'`。
    - 脚本内部会自动完成 OQL 校验；校验失败时不执行，只返回错误。
+   - 若只想本地归一化/校验而不访问后端，可使用 `--validate-only`。
 6. 将执行结果转换为 `{objects, relationships}` 对象结构返回。
 
 ## 7. Schema 权威规则
@@ -103,7 +106,7 @@ OQL 顶层结构、`version`、`schemaRef`、`returns` 类型、字段语法、`
 | `STARTS_WITH`                           | 恰好 1 个字符串值 | 前缀匹配                          |
 | `ENDS_WITH`                             | 恰好 1 个字符串值 | 后缀匹配                          |
 | `IS_NULL`                               | 不允许            | 空值判断                          |
-| `IS_NOT_NULL`                           | 不允许            | 非空判断                          |
+| `IS_NOT_NULL`                          | 不允许            | 非空判断                          |
 | `IS_EMPTY`                              | 不允许            | 空字符串判断                      |
 | `IS_NOT_EMPTY`                          | 不允许            | 非空字符串判断                    |
 
