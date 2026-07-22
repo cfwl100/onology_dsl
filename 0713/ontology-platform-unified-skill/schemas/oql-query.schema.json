@@ -1,0 +1,80 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cfwl100.github.io/onology_dsl/schemas/oql-query.schema.json",
+  "title": "OQL QUERY JSON Schema",
+  "description": "普通对象查询；不声明 relationships、aggregateFilter 或 mutation。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version","schemaRef","operation","objects","returns"],
+  "properties": {
+    "version": {"const":"1.0","description":"OQL 协议版本。"},
+    "schemaRef": {"type":"string","minLength":1,"description":"本体 schema 标识。"},
+    "strict": {"type":"boolean","default":true,"description":"是否严格校验，默认 true。"},
+    "conditions": {
+      "$ref":"#/definitions/condition",
+      "description":"过滤条件，支持多层嵌套。\n结构有两种：\n1. GROUP（条件组）：kind=\"GROUP\"，relation 为 AND/OR/NOT，children 包含多个子条件\n2. PREDICATE（原子条件）：kind=\"PREDICATE\"，具体过滤表达式\n\n完整示例：\n{\n  \"kind\": \"GROUP\",\n  \"relation\": \"AND\",\n  \"children\": [\n    {\n      \"kind\": \"PREDICATE\",\n      \"ref\": \"s\",\n      \"field\": \"name\",\n      \"operator\": \"EQ\",\n      \"values\": [\"华东站\"]\n    }\n  ]\n}"
+    },
+    "orders": {"type":"array","items":{"$ref":"#/definitions/order"},"minItems":1,"description":"排序；不用时省略。"},
+    "maxResults": {"$ref":"#/definitions/maxResults","description":"最大返回条数。"},
+    "sourceQuery": {"$ref":"#/definitions/sourceQuery","description":"中间结果查询。"},
+    "options": {"$ref":"#/definitions/options","description":"执行选项。"},
+    "extensions": {"$ref":"#/definitions/extensions","description":"业务扩展参数。"},
+    "operation": {"const":"QUERY","description":"普通对象查询。"},
+    "objects": {"type":"array","items":{"$ref":"#/definitions/object"},"minItems":1,"description":"对象声明。"},
+    "returns": {"type":"array","items":{"oneOf":[{"$ref":"#/definitions/fieldsReturn"},{"$ref":"#/definitions/exprReturn"},{"$ref":"#/definitions/idNameReturn"}]},"minItems":1,"description":"返回字段/表达式/ID-NAME。"}
+  },
+  "definitions": {
+    "alias": {"type":"string","minLength":1,"pattern":"^[A-Za-z_][A-Za-z0-9_]*$","description":"对象/关系别名；ref、from、to 必须引用已声明别名。"},
+    "field": {"type":"string","minLength":1,"not":{"anyOf":[{"const":"*"},{"pattern":"^(ID|NAME)\\("}]},"description":"普通本体属性名；条件/排序/表达式中不得使用 * 或 ID()/NAME()。"},
+    "idNameField": {"type":"string","pattern":"^(ID|NAME)\\([A-Za-z_][A-Za-z0-9_]*\\)$","description":"仅用于 returns.kind=FUNCTION.field，函数名必须大写。"},
+    "value": {"type":["string","number","integer","boolean"],"description":"条件值，按真实类型生成。"},
+    "object": {"type":"object","additionalProperties":false,"required":["objectType","alias"],"description":"本体对象声明；实例筛选放 conditions。","properties":{"objectType":{"type":"string","minLength":1,"description":"本体对象类型。"},"alias":{"$ref":"#/definitions/alias"},"fromSource":{"type":"string","minLength":1,"description":"引用 sourceQuery[].outputAs。"}}},
+    "fieldExpr": {"type":"object","additionalProperties":false,"required":["kind","ref","field"],"description":"字段表达式。","properties":{"kind":{"const":"FIELD"},"ref":{"$ref":"#/definitions/alias"},"field":{"$ref":"#/definitions/field"}}},
+    "valueExpr": {"type":"object","additionalProperties":false,"required":["kind","value"],"description":"字面量表达式。","properties":{"kind":{"const":"VALUE"},"value":{}}},
+    "functionExpr": {"type":"object","additionalProperties":false,"required":["kind","name","args"],"description":"受控函数表达式；ID/NAME 不在此处表达。","properties":{"kind":{"const":"FUNCTION"},"namespace":{"type":"string","minLength":1},"name":{"type":"string","minLength":1,"not":{"enum":["ID","NAME","id","name"]}},"args":{"type":"array","items":{"$ref":"#/definitions/expr"}}}},
+    "expr": {"oneOf":[{"$ref":"#/definitions/fieldExpr"},{"$ref":"#/definitions/valueExpr"},{"$ref":"#/definitions/functionExpr"}],"description":"FIELD/VALUE/FUNCTION 表达式。"},
+    "predicate": {
+      "type":"object",
+      "additionalProperties":false,
+      "required":["kind","operator"],
+      "oneOf":[{"required":["ref","field"]},{"required":["left"]}],
+      "description":"原子条件；普通条件用 ref+field，函数条件用 left。",
+      "properties":{
+        "kind":{"const":"PREDICATE","description":"条件类型，固定为 PREDICATE。"},
+        "ref":{"$ref":"#/definitions/alias","description":"引用对象别名，需在 objects 中声明。"},
+        "field":{"$ref":"#/definitions/field","description":"对象属性名，如 name、code、status。"},
+        "left":{"$ref":"#/definitions/expr","description":"左侧表达式，用于函数条件，左侧可为 FIELD/VALUE/FUNCTION。"},
+        "operator":{
+          "enum":["EQ","NE","GT","GTE","LT","LTE","IN","NOT_IN","BETWEEN","LIKE","CONTAINS","STARTS_WITH","ENDS_WITH","IS_NULL","IS_NOT_NULL","IS_EMPTY","IS_NOT_EMPTY","EXISTS","NOT_EXISTS"],
+          "description": "比较操作符：EQ(=)、NE(≠)、GT(>)、GTE(≥)、LT(<)、LTE(≤)、IN(在列表中)、NOT_IN(不在列表中)、BETWEEN(区间)、LIKE(模糊匹配)、CONTAINS(包含)、STARTS_WITH(前缀)、ENDS_WITH(后缀)、IS_NULL(为空)、IS_NOT_NULL(非空)、IS_EMPTY(空字符串)、IS_NOT_EMPTY(非空字符串)、EXISTS(子查询存在)、NOT_EXISTS(子查询不存在)。"
+        },
+        "values":{"type":"array","items":{"$ref":"#/definitions/value"},"description":"比较值数组；EQ/NE/GT/GTE/LT/LTE 单值，IN/NOT_IN 多值，BETWEEN 两个值 [min,max]，空值判断(IS_NULL/IS_NOT_NULL/IS_EMPTY/IS_NOT_EMPTY)不填。"},
+        "subquery":{"type":"object","description":"EXISTS/NOT_EXISTS 的子查询，结构同外层 query。"}
+      }
+    },
+    "group": {
+      "type":"object",
+      "additionalProperties":false,
+      "required":["kind","relation","children"],
+      "description":"条件逻辑组；NOT 仅支持单个子条件，AND/OR 支持多个。",
+      "properties":{
+        "kind":{"const":"GROUP","description":"条件类型，固定为 GROUP。"},
+        "relation":{"enum":["AND","OR","NOT"],"description":"逻辑关系：AND(与)、OR(或)、NOT(非)。"},
+        "children":{"type":"array","items":{"$ref":"#/definitions/condition"},"minItems":1,"description":"子条件数组，可嵌套 predicate 或 group。"}
+      }
+    },
+    "condition": {
+      "oneOf":[{"$ref":"#/definitions/predicate"},{"$ref":"#/definitions/group"}],
+      "description":"过滤条件树，支持多层嵌套。根节点可为 group（多条件组合）或 predicate（单条件）。示例：{kind:\"GROUP\",relation:\"AND\",children:[{kind:\"PREDICATE\",ref:\"s\",field:\"name\",operator:\"EQ\",values:[\"华东站\"]}]}。"
+    },
+    "order": {"type":"object","additionalProperties":false,"required":["field","direction"],"description":"排序；普通查询可带 ref，聚合查询优先按返回 alias。","properties":{"ref":{"$ref":"#/definitions/alias"},"field":{"type":"string","minLength":1,"not":{"pattern":"^(ID|NAME)\\("}},"direction":{"enum":["ASC","DESC"]}}},
+    "maxResults": {"type":"integer","minimum":1,"description":"最大返回条数，数字格式，如 1000。"},
+    "sourceQuery": {"type":"array","description":"多阶段中间查询；outputAs 可被 objects[].fromSource 引用。","items":{"type":"object","additionalProperties":true,"required":["outputAs"],"properties":{"outputAs":{"type":"string","minLength":1}}}},
+    "options": {"type":"object","additionalProperties":true,"description":"执行选项；无明确要求时省略。"},
+    "extensions": {"type":"object","additionalProperties":true,"description":"业务扩展参数；无明确约定时省略。"},
+    "returnField": {"oneOf":[{"$ref":"#/definitions/field"},{"const":"*"}],"description":"普通返回字段；优先显式列字段，必要时可用 *。"},
+    "fieldsReturn": {"type":"object","additionalProperties":false,"required":["kind","ref","fields"],"description":"返回对象/关系字段。","properties":{"kind":{"const":"FIELDS"},"ref":{"$ref":"#/definitions/alias"},"fields":{"type":"array","items":{"$ref":"#/definitions/returnField"},"minItems":1,"uniqueItems":true}}},
+    "exprReturn": {"type":"object","additionalProperties":false,"required":["kind","expr","alias"],"description":"返回派生表达式。","properties":{"kind":{"const":"EXPR"},"expr":{"$ref":"#/definitions/expr"},"alias":{"type":"string","minLength":1}}},
+    "idNameReturn": {"type":"object","additionalProperties":false,"required":["kind","ref","field","alias"],"description":"返回 ID(field)/NAME(field) 维度语义。","properties":{"kind":{"const":"FUNCTION"},"ref":{"$ref":"#/definitions/alias"},"field":{"$ref":"#/definitions/idNameField"},"alias":{"type":"string","minLength":1}}}
+  }
+}
