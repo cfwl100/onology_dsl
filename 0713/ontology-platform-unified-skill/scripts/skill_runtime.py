@@ -20,7 +20,7 @@ import re
 from pathlib import Path
 from typing import Any, Iterable
 
-DEFAULT_ONTLOGY_ID = "dtmi.ontology.07a3e859.1"
+DEFAULT_ONTOLOGY_ID = "dtmi.ontology.07a3e859.1"
 DEFAULT_VERSION = "1.0"
 DEFAULT_MAX_RESULTS = 1000
 DEFAULT_TOP_K = 3
@@ -204,7 +204,7 @@ def build_oag_payload(
     operation = detect_operation(question)
     query = build_oag_query(question, operation, entity_hints)
     return {
-        "ontology-id": ontology_id or os.environ.get("ONTOLOGY_ID") or DEFAULT_ONTLOGY_ID,
+        "ontology-id": ontology_id or os.environ.get("ONTOLOGY_ID") or DEFAULT_ONTOLOGY_ID,
         "query": query,
         "similarity-threshold": similarity_threshold,
         "include-functions": include_functions,
@@ -248,7 +248,18 @@ def plan_service_request(
     if need_function and not entity_hints.get("function_id"):
         blocking_gaps.append("缺少函数标识或函数名")
 
-    cache_key = context_fingerprint(ontology_id or os.environ.get("ONTOLOGY_ID") or DEFAULT_ONTLOGY_ID, question, entity_hints)
+    cache_key = context_fingerprint(
+        ontology_id or os.environ.get("ONTOLOGY_ID") or DEFAULT_ONTOLOGY_ID,
+        question,
+        entity_hints,
+        similarity_threshold,
+        include_functions,
+        include_actions,
+        top_k,
+        graph_expansion_strategy,
+        adaptive_retrieval,
+        hop_limit,
+    )
     oag_payload = build_oag_payload(
         question,
         ontology_id,
@@ -264,7 +275,7 @@ def plan_service_request(
 
     return {
         "message_type": "SERVICE_QUALITY_PLAN",
-        "ontology_id": ontology_id or os.environ.get("ONTOLOGY_ID") or DEFAULT_ONTLOGY_ID,
+        "ontology_id": ontology_id or os.environ.get("ONTOLOGY_ID") or DEFAULT_ONTOLOGY_ID,
         "question": question,
         "normalized_question": normalized_question,
         "intent": intent,
@@ -304,7 +315,7 @@ def normalize_oql(oql: dict[str, Any], ontology_id: str | None = None) -> dict[s
         payload["operation"] = operation.upper()
 
     if not payload.get("schemaRef"):
-        payload["schemaRef"] = ontology_id or os.environ.get("ONTOLOGY_ID") or DEFAULT_ONTLOGY_ID
+        payload["schemaRef"] = ontology_id or os.environ.get("ONTOLOGY_ID") or DEFAULT_ONTOLOGY_ID
 
     if "strict" not in payload or payload["strict"] is None:
         payload["strict"] = True
