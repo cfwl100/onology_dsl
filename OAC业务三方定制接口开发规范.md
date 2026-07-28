@@ -1,56 +1,67 @@
 # OAC 业务三方定制接口开发规范
 
-> **文档版本**：1.0
-> **发布日期**：2026-07
-> **OQL 基线版本**：2.0
-> **适用范围**：业务/三方数据访问服务对接 OAC 平台，实现 OQL 到物理查询（SQL/GQL/TQL 等）转换的接口开发
-> **核心原则**：接口参数格式由 RESTful 规范约定，业务方自行实现 Java Bean 和翻译逻辑
+> **文档版本**：1.0  
+> **发布日期**：2026-07  
+> **OQL 协议版本**：1.0  
+> **Binding 协议版本**：1.0  
+> **适用范围**：业务/三方数据访问服务对接 OAC 平台，实现 OQL 到物理查询（SQL、GQL、TQL 等）的转换与执行  
+> **核心原则**：OQL 表达查询语义，Binding 表达物理映射；两者独立传输、独立演进
 
 ---
 
-## 1. 目的
+## 1. 目的与边界
 
-本规范定义 OAC 平台与业务/三方数据访问服务之间的**本体访问接口契约**，指导业务方实现标准接口，完成 OQL 到物理查询的转换。
+本规范定义 OAC 平台与业务/三方数据访问服务之间的本体访问接口契约，指导业务方实现标准接口，完成以下处理：
+
+1. 接收 OAC 下发的精简 OQL；
+2. 接收与本次操作相关的最小 Runtime Binding；
+3. 将本体对象、属性和关系翻译为物理 SQL、GQL、TQL 等查询；
+4. 参数化执行物理查询；
+5. 将物理结果组装为统一的本体对象和关系结果。
 
 ### 1.1 核心流程
 
 ```text
 Agent / 上层应用
-      │ 标准 OQL
+      │ 标准 OQL 1.0
       ▼
 OAC 平台
-      │ 从 OMS 获取完整 Binding
-      │ 校验 OQL 结构
-      │ 按 OQL 实际引用裁剪 Binding
+      │ 从 OMS 查询完整 Canonical Binding
+      │ 校验 OQL
+      │ 选择唯一有效 Binding
+      │ 按本次操作裁剪为 Runtime Binding
       ▼
 业务三方服务（POST /ontology-access/v1/execute）
-      │ 入参1: 精简 OQL（去除了 schemaRef）
-      │ 入参2: 裁剪后的 Binding 映射
-      │ 业务自定义：OQL → 物理 SQL/GQL/TQL
-      │ 参数化执行物理查询
-      │ 组装统一响应格式
+      │ 入参1：精简 OQL 1.0
+      │ 入参2：Runtime Binding 1.0
+      │ OQL + Binding → SQL/GQL/TQL
+      │ 参数化执行
+      │ 统一结果组装
       ▼
-物理数据源（MySQL/GaussDB/NebulaGraph/...）
+物理数据源
 ```
 
 ### 1.2 职责划分
 
 | 组件 | 职责 |
-|------|------|
-| **OAC 平台** | 接收标准 OQL → 校验 → 裁剪 Binding → 下发（精简 OQL + 最小 Binding）两个独立参数 → 汇总结果 |
-| **OMS** | 管理本体模型及完整 Binding 信息 |
-| **业务三方服务** | 按本规范定义接口 → 自建 Java Bean 接收参数 → 实现 OQL 到物理查询的翻译逻辑 → 执行查询 → 返回统一响应 |
+|---|---|
+| OAC 平台 | 接收标准 OQL、校验语义、从 OMS 获取完整 Binding、完成 Binding 唯一选择与裁剪、调用业务服务、汇总结果 |
+| OMS | 管理本体模型、对象/关系绑定和完整 Catalog 资产信息，提供对象类型与关系类型 Binding 查询接口 |
+| 业务三方服务 | 接收 OQL 与 Runtime Binding，实现物理查询翻译、参数化执行、结果组装和错误返回 |
+| 物理数据源 | 提供关系型、图、时序、检索或多维数据访问能力 |
 
 ### 1.3 设计原则
 
-1. **OQL 与 Binding 解耦**：OQL 和 Binding 作为两个独立入参传递，各自独立演进
-2. **OQL 精简**：OQL 仅保留查询语义核心字段，去除 `schemaRef` 等平台内部字段
-3. **接口优先**：参数格式通过 RESTful 接口规范约定，业务方直接据此实现 Java Bean
-4. **不修改 OQL 语法**：不新增顶层字段、operation、kind、条件操作符
-5. **不增加第二套查询 DSL**：不定义新的对外 JSON 查询协议
-6. **Binding 最小化**：OAC 只传递本次执行必要的对象、属性、关系和 Catalog 信息
-7. **物理标识受控**：物理表名、列名、Tag、Edge 只能来自 Binding
-8. **参数化执行**：OQL 中的值不得直接拼接到物理查询语句
+1. **OQL 与 Binding 解耦**：OQL 不承载物理表、列、Tag、Edge 等标识。
+2. **Runtime Binding 最小化**：仅下发本次执行所需的对象、属性、关系及 Catalog 资产闭包。
+3. **对象与关系显式区分**：通过 `bindingKind` 区分 `OBJECT` 和 `RELATIONSHIP`。
+4. **唯一 Binding**：OAC 下发前必须完成多 Binding 选择，业务侧不得依赖数组顺序猜测。
+5. **物理标识受控**：物理标识只能来自 Binding，禁止从用户输入或 OQL values 构造。
+6. **参数化执行**：条件值必须使用参数绑定，不得直接拼接。
+7. **隐藏技术字段不泄露**：主键、Join 键、分区键等可参与执行，但未在 `returns` 中声明时不得返回。
+8. **前向兼容**：新增字段必须默认为可选；业务方反序列化时必须忽略未知字段。
+9. **结构化字段使用原生 JSON 类型**：数组、对象不得编码成 JSON 字符串。
+10. **敏感配置不透传**：Binding 不携带数据库密码、Token、私钥等敏感连接信息。
 
 ---
 
@@ -58,71 +69,74 @@ OAC 平台
 
 ### 2.1 接口端点
 
-业务方**必须**提供以下端点：
+业务方必须提供：
 
-| 端点 | 方法 | 用途 | 说明 |
-|------|------|------|------|
-| `/ontology-access/v1/execute` | POST | 执行本体查询 | 核心接口，接收 OQL + Binding，返回查询结果 |
-注：可以通过OMS的模型注册接口注册服务名和短点信息，覆盖默认的URL
+| 端点 | 方法 | 用途 |
+|---|---|---|
+| `/ontology-access/v1/execute` | POST | 接收 OQL 与 Runtime Binding，执行本体访问操作 |
 
-### 2.2 请求格式
+业务方可通过 OMS 模型注册接口登记服务地址，以覆盖平台默认地址。
 
-#### 2.2.1 请求头
+### 2.2 请求头
 
 | Header | 必填 | 说明 |
-|--------|:---:|------|
-| `Content-Type` | 是 | `multipart/form-data` |
-| `X-Request-Id` | 是 | 全链路唯一请求标识（UUID） |
-| `X-Tenant-Id` | 条件必填 | 多租户场景的租户标识 |
-| `X-Schema-Ref` | 是 | 本体模型标识，如 `"fm-alarm-v1"`，由 OAC 从原始 OQL 中提取后通过 Header 传递 |
-| `X-Binding-Version` | 是 | Binding 协议版本，如 `"v0.94"` |
-| `X-Timeout-Ms` | 否 | 请求超时，单位毫秒 |
-| `Idempotency-Key` | 写操作必填 | 幂等键，用于 CREATE/UPDATE/DELETE/UPSERT |
+|---|:---:|---|
+| `Content-Type` | 是 | 固定为 `multipart/form-data` |
+| `X-Request-Id` | 是 | 全链路唯一请求标识 |
+| `X-Tenant-Id` | 条件必填 | 多租户场景必填 |
+| `X-Schema-Ref` | 是 | 本体模型标识，由 OAC 从原始 OQL 提取 |
+| `X-OQL-Version` | 是 | 固定为 `1.0` |
+| `X-Binding-Version` | 是 | 固定为 `1.0` |
+| `X-Binding-Revision` | 否 | Binding 内容修订号，用于缓存失效和问题定位 |
+| `X-Timeout-Ms` | 否 | 请求超时时间，单位毫秒 |
+| `Idempotency-Key` | 写操作必填 | CREATE、UPDATE、DELETE、UPSERT 的幂等键 |
 
-#### 2.2.2 请求体
+### 2.3 请求体
 
-采用 `multipart/form-data` 格式，包含两个独立 Part：
+请求采用 `multipart/form-data`，包含两个独立 Part：
 
-| Part 名称 | Content-Type | 说明 |
-|-----------|-------------|------|
-| `oql` | `application/json` | **入参 1**：精简 OQL 结构。去除 `schemaRef` 等平台内部字段，仅保留查询语义核心字段。完整结构见 §3 |
-| `binding` | `application/json` | **入参 2**：Binding 物理映射。按 OQL 中的 alias 组织，Key 为对象/关系 alias，Value 为裁剪后的 Binding 投影。完整结构见 §4 |
+| Part | Content-Type | 说明 |
+|---|---|---|
+| `oql` | `application/json` | 精简 OQL 1.0，不包含 `schemaRef` 和 Binding |
+| `binding` | `application/json` | 按 alias 组织的 Runtime Binding 1.0 |
 
 ```http
 POST /ontology-access/v1/execute
 Content-Type: multipart/form-data; boundary=----Boundary
 X-Request-Id: 550e8400-e29b-41d4-a716-446655440000
 X-Schema-Ref: fm-alarm-v1
-X-Binding-Version: v0.94
+X-OQL-Version: 1.0
+X-Binding-Version: 1.0
+X-Binding-Revision: 20260728-00015
 
 ------Boundary
 Content-Disposition: form-data; name="oql"
 Content-Type: application/json
 
-{ "version": "2.0", "operation": "QUERY", "objects": [...], ... }
+{ "version": "1.0", "operation": "QUERY", "objects": [], "returns": [] }
 ------Boundary
 Content-Disposition: form-data; name="binding"
 Content-Type: application/json
 
-{ "a": { "objectTypeContext": {...}, "propertyBindings": [...], "catalogContext": {...} } }
+{ "a": { "bindingKind": "OBJECT", "objectTypeContext": {}, "propertyBindings": [], "catalogContext": {} } }
 ------Boundary--
 ```
 
-#### 2.2.3 字段精简说明
+### 2.4 OQL 精简规则
 
-| 原 OQL 字段 | 处理方式 | 说明 |
-|-------------|---------|------|
-| `schemaRef` | 移至 Header `X-Schema-Ref` | 平台内部路由信息，无需进入 OQL 语义层 |
-| `extensions` | 保留为空对象 | 预留未来扩展，当前不承载数据 |
+| 原始信息 | 下发方式 |
+|---|---|
+| `schemaRef` | 移至 `X-Schema-Ref` |
+| OQL 版本 | OQL 中保留 `version: "1.0"`，同时通过 `X-OQL-Version` 传递 |
+| Binding | 独立放入 `binding` Part，不放入 `extensions` |
+| 空 `extensions` | 默认省略 |
+| 平台内部路由、缓存和鉴权信息 | 不进入 OQL |
 
-### 2.3 接口鉴权
+### 2.5 鉴权
 
-OAC 调用业务服务时需携带鉴权信息。业务方可根据自身环境选择鉴权方式：
-当前属于GDE信任域内，认证的证书统一使用GDE签发的二级根CA。
+OAC 与业务服务位于 GDE 信任域时，服务证书统一使用 GDE 签发的二级根 CA。业务服务必须校验调用方身份，不得仅依赖网络可达性。
 
-### 2.5 接口注册
-
-业务服务在 OMS 建模平台注册时，需声明以下信息：
+### 2.6 服务注册
 
 ```json
 {
@@ -130,233 +144,259 @@ OAC 调用业务服务时需携带鉴权信息。业务方可根据自身环境�
   "serviceName": "告警数据访问服务",
   "displayName": "Alarm Data Access Service",
   "endpoint": {
-    "baseUrl": "https://alarm-access.example.com", //服务名
+    "baseUrl": "https://alarm-access.example.com",
     "executePath": "/ontology-access/v1/execute"
   },
-  "supportedOperations": ["QUERY", "AGGREGATE", "ASSOCIATION_QUERY", "CREATE", "UPDATE", "DELETE"],
-  "supportedDatasourceTypes": ["rdb"],
+  "supportedOperations": [
+    "QUERY",
+    "AGGREGATE",
+    "ASSOCIATION_QUERY",
+    "CREATE",
+    "UPDATE",
+    "DELETE",
+    "UPSERT"
+  ],
+  "supportedDatasourceTypes": [
+    "MYSQL",
+    "GAUSSDB",
+    "NEBULAGRAPH"
+  ],
   "maxLimit": 5000,
   "timeoutMs": 30000,
-  "bindingVersions": ["v0.94"],
-  "oqlVersions": ["2.0"],
+  "bindingVersions": ["1.0"],
+  "oqlVersions": ["1.0"],
   "authentication": {
-    "type": "HMAC",
-    "publicKeyRef": "key-001"
+    "type": "MTLS",
+    "certificateRef": "gde-ca-service-cert"
   }
 }
 ```
 
-### 2.6 接口实现要求
-
-#### 2.6.1 Java Bean 自建
-
-业务方根据本规范定义的参数 JSON schema（§3 入参1、§4 入参2）自行实现 Java Bean 类。推荐使用 **Java Record**（不可变、简洁）或 **Lombok @Data**。
-
-**自建 Bean 的基本要求**：
+### 2.7 Java Bean 实现要求
 
 | 要求 | 说明 |
-|------|------|
-| JSON 库兼容 | 支持 Jackson 或 Fastjson2 反序列化 |
-| 忽略未知字段 | 配置 `FAIL_ON_UNKNOWN_PROPERTIES = false`，保证前向兼容 |
-| ConditionNode 多态 | 使用 `@JsonTypeInfo` + `@JsonSubTypes` 正确区分 PREDICATE/GROUP |
-| 枚举安全 | 使用字符串序列化，`valueOf` 失败时不应抛异常 |
-| null 值处理 | 未使用字段不参与序列化 |
+|---|---|
+| 忽略未知字段 | Jackson 配置 `FAIL_ON_UNKNOWN_PROPERTIES = false` |
+| 枚举安全 | 未识别枚举映射为 `UNKNOWN`，不得直接抛反序列化异常 |
+| ConditionNode 多态 | 使用 `kind` 区分 `PREDICATE` 和 `GROUP` |
+| 空值规范 | 空集合使用 `[]`；无值的可选对象或标量默认省略 |
+| 结构化字段 | 数组、对象使用 JSON 原生类型，不使用 JSON 字符串 |
+| 不可变模型 | 推荐 Java Record 或不可变 DTO |
+| 敏感字段 | 不定义或接收明文密码、Token、私钥字段 |
 
-#### 2.6.2 推荐工程结构
+推荐模型结构：
 
 ```text
-ontology-access-adapter/
-├── controller/
-│   └── OntologyAccessController.java   ← 接收 OQL + Binding，调用 Service
-├── model/                             ← 业务方自行定义（参照本规范 §3、§4）
-│   ├── oql/
-│   │   ├── OqlRequest.java            ← OQL 顶层结构
-│   │   ├── OqlObject.java
-│   │   ├── OqlRelationship.java
-│   │   ├── ConditionNode.java         ← sealed interface，多态根类型
-│   │   ├── PredicateCondition.java
-│   │   ├── GroupCondition.java
-│   │   ├── ReturnItem.java
-│   │   └── ...                         ← see §3 完整字段表
-│   ├── binding/
-│   │   ├── BindingProjection.java     ← Binding 投影
-│   │   ├── ObjectTypeContext.java
-│   │   ├── PropertyBinding.java
-│   │   ├── CatalogContext.java
-│   │   └── ...                         ← see §4 完整字段表
-│   └── response/
-│       ├── OntologyAccessResponse.java
-│       ├── OntologyAccessData.java
-│       ├── OntologyObject.java
-│       └── OntologyRelationship.java
-├── service/
-│   └── OntologyAccessService.java      ← 编排：校验 → 映射 → 翻译 → 执行
-├── translator/
-│   ├── SqlTranslator.java              ← OQL → SQL 翻译器
-│   ├── GqlTranslator.java              ← OQL → GQL 翻译器
-│   └── ConditionTranslator.java        ← 条件翻译辅助
-├── executor/
-│   ├── PhysicalQuery.java              ← 内部物理查询对象
-│   └── DataSourceExecutor.java         ← 数据源执行器
-├── assembler/
-│   ├── ObjectResultAssembler.java      ← 物理结果 → 本体对象
-│   ├── RelationshipResultAssembler.java
-│   └── RidGenerator.java               ← 稳定 rid 生成器
-└── error/
-    ├── OntologyAccessException.java    ← 统一异常类
-    └── GlobalExceptionHandler.java     ← 异常 → 统一响应
+model/
+├── oql/
+│   ├── OqlRequest.java
+│   ├── OqlObject.java
+│   ├── OqlRelationship.java
+│   ├── ConditionNode.java
+│   ├── PredicateCondition.java
+│   ├── GroupCondition.java
+│   └── ReturnItem.java
+├── binding/
+│   ├── BindingProjection.java
+│   ├── ObjectTypeContext.java
+│   ├── RelationshipContext.java
+│   ├── ObjectBinding.java
+│   ├── RelationBinding.java
+│   ├── JoinKey.java
+│   ├── PropertyBinding.java
+│   ├── PhysicalBinding.java
+│   └── CatalogContext.java
+└── response/
+    ├── OntologyAccessResponse.java
+    ├── OntologyObject.java
+    └── OntologyRelationship.java
 ```
 
 ---
 
-## 3. 入参 1：OQL 结构定义
+## 3. 入参 1：OQL 1.0
 
 ### 3.1 顶层字段
 
-| 字段 | 类型 | 必填 | 说明                                                                             |
-|------|------|:---:|--------------------------------------------------------------------------------|
-| `version` | String | 是 | OQL 规范版本，当前 `"1.0"`                                                            |
-| `operation` | String | 是 | 操作类型：QUERY / AGGREGATE / ASSOCIATION_QUERY / CREATE / UPDATE / DELETE / UPSERT |
-| `objects` | Array\<Object\> | 是 | 查询涉及的对象声明                                                                      |
-| `relationships` | Array\<Relationship\> | 条件 | 关系路径（ASSOCIATION_QUERY 必填，QUERY 禁止）                                            |
-| `conditions` | Object | 条件 | 过滤条件（PREDICATE / GROUP）                                                        |
-| `returns` | Array\<ReturnItem\> | 是 | 返回字段声明                                                                         |
-| `aggregateFilter` | Object | 否 | 聚合后过滤（仅 AGGREGATE）                                                             |
-| `orders` | Array\<OrderItem\> | 否 | 排序声明                                                                           |
-| `maxResults` | Object | 否 | 分页：`{ "limit": int, "offset": int }`                                           |
-| `sourceQuery` | Array\<OqlRequest\> | 否 | 前置子查询（递归结构）                                                                    |
-| `linkQuery` | Object | 否 | 单跳关系查询（LINK_QUERY 操作使用）                                                        |
-| `mutation` | Object | 条件 | 变更定义（写操作必填）                                                                    |
-| `options` | Object | 否 | 扩展选项                                                                           |
-| `extensions` | Object | 否 | 扩展字段（保留，当前接口不用于传递 Binding）                                                     |
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|:---:|---|
+| `version` | String | 是 | 固定为 `"1.0"` |
+| `operation` | String | 是 | QUERY、AGGREGATE、ASSOCIATION_QUERY、CREATE、UPDATE、DELETE、UPSERT |
+| `objects` | Array | 是 | 涉及的对象声明 |
+| `relationships` | Array | 条件 | ASSOCIATION_QUERY 必填 |
+| `conditions` | Object | 条件 | 查询过滤条件 |
+| `returns` | Array | 查询类操作必填 | 返回字段、分组或指标 |
+| `aggregateFilter` | Object | 否 | 聚合后过滤 |
+| `orders` | Array | 否 | 排序 |
+| `maxResults` | Object | 否 | `{ "limit": int, "offset": int }` |
+| `sourceQuery` | Array | 否 | 前置子查询 |
+| `mutation` | Object | 写操作必填 | 写操作定义 |
+| `options` | Object | 否 | 受控扩展选项 |
+| `extensions` | Object | 否 | 预留扩展，默认省略，不用于传递 Binding |
 
-> **精简说明**：OQL 已去除 `schemaRef`（改为 Header `X-Schema-Ref`）。Binding 独立作为入参 2 传递，不由 extensions 承载。
-
-### 3.2 objects 结构
+### 3.2 objects
 
 | 字段 | 类型 | 必填 | 说明 |
-|------|------|:---:|------|
-| `objectType` | String | 是 | 本体对象类型名，如 `"Alarm"`、`"Order"` |
-| `alias` | String | 是 | 对象别名，用于 OQL 内引用，如 `"a"`、`"o"` |
-| `fromSource` | String | 否 | 来自 sourceQuery 结果时，引用其 `outputAs` |
+|---|---|:---:|---|
+| `objectType` | String | 是 | 本体对象类型名称 |
+| `alias` | String | 是 | OQL 内唯一别名 |
+| `fromSource` | String | 否 | 引用 `sourceQuery` 的输出 |
 
-### 3.3 relationships 结构
+### 3.3 relationships
 
 | 字段 | 类型 | 必填 | 说明 |
-|------|------|:---:|------|
-| `relationshipType` | String | 是 | 本体关系类型名，如 `"hasPort"` |
-| `alias` | String | 是 | 关系别名，如 `"r1"` |
-| `from` | String | 是 | 起始对象 alias |
+|---|---|:---:|---|
+| `relationshipType` | String | 是 | 本体关系类型名称 |
+| `alias` | String | 是 | 关系别名 |
+| `from` | String | 是 | 源对象 alias |
 | `to` | String | 是 | 目标对象 alias |
-| `direction` | String | 是 | OUTBOUND / INBOUND / BIDIRECTIONAL |
-| `mode` | String | 否 | ONE / LIST（默认 LIST） |
+| `direction` | String | 是 | OUTBOUND、INBOUND、BIDIRECTIONAL |
+| `mode` | String | 否 | ONE 或 LIST，默认 LIST |
 
-### 3.4 conditions 结构
+### 3.4 conditions
 
-#### PREDICATE（叶子条件）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `kind` | String | 固定 `"PREDICATE"` |
-| `ref` | String | 对象 alias |
-| `field` | String | 本体属性名 |
-| `operator` | String | 操作符 |
-| `values` | Array | 条件值列表 |
-| `left` | Object | 左侧表达式（可选，字段间比较时使用） |
-| `subquery` | Object | 子查询（可选） |
-
-**操作符表**：
-
-| 操作符 | 含义 | values 要求 |
-|--------|------|-----------|
-| `EQ` | 等于 | 1 个值 |
-| `NE` | 不等于 | 1 个值 |
-| `GT` / `GTE` | 大于 / 大于等于 | 1 个值 |
-| `LT` / `LTE` | 小于 / 小于等于 | 1 个值 |
-| `IN` / `NOT_IN` | 在列表中 / 不在 | 多个值 |
-| `BETWEEN` | 在范围内 | 2 个值 [min, max] |
-| `LIKE` | 模糊匹配 | 1 个值 |
-| `IS_NULL` / `IS_NOT_NULL` | 为空 / 不为空 | 0 个值 |
-
-#### GROUP（组合条件）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `kind` | String | 固定 `"GROUP"` |
-| `relation` | String | AND / OR / NOT |
-| `children` | Array\<ConditionNode\> | 子条件列表 |
-
-### 3.5 returns 结构
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `kind` | String | FIELDS / EXPR / FUNCTION / GROUP_BY / METRIC |
-| `ref` | String | 对象 alias |
-| `fields` | Array\<String\> | 属性名列表（FIELDS 类型） |
-| `field` | String | 单个属性名（GROUP_BY / METRIC 类型） |
-| `function` | String | 聚合函数（METRIC 类型）：COUNT / SUM / AVG / MAX / MIN |
-| `alias` | String | 结果别名 |
-
-### 3.6 操作类型约束
-
-| operation | 必含 | 禁含 |
-|-----------|------|------|
-| QUERY | objects, returns | relationships, aggregateFilter, mutation |
-| AGGREGATE | objects, returns(GROUP_BY+METRIC) | relationships, mutation |
-| ASSOCIATION_QUERY | objects, relationships, returns | mutation |
-| CREATE | objects, mutation | — |
-| UPDATE | objects, mutation(scope+set), conditions | — |
-| DELETE | objects, mutation(scope), conditions | — |
-| UPSERT | objects, mutation(matchBy+data) | — |
-
----
-
-## 4. 入参 2：Binding 结构定义
-
-Binding 定义了 OQL 中本体元素到物理数据源的映射信息，作为独立入参传递，按 alias 组织。主要使用如下的接口查询模型绑定信息：
-
-| 接口名称           | 方法   | 路径                                                                               | 功能              |
-| -------------- | ---- | -------------------------------------------------------------------------------- | --------------- |
-| **查询对象类型绑定信息** | GET  | `/api/v1/ontologies/{ontologyId}/object-types/{objectTypeId}/bindings/query`     | 查询对象类型的数据模型绑定详情 |
-| **查询关系类型绑定信息** | GET  | `/api/v1/ontologies/{ontologyId}/relation-types/{relationTypeId}/bindings/query` | 查询关系类型的数据模型绑定详情 |
-
-### 4.1 顶层结构
+#### PREDICATE
 
 ```json
 {
-  "<alias>": {
-    "objectTypeContext": { ... },
-    "propertyBindings": [ ... ],
-    "catalogContext": { ... }
+  "kind": "PREDICATE",
+  "ref": "a",
+  "field": "severity",
+  "operator": "EQ",
+  "values": ["critical"]
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `kind` | 固定为 `PREDICATE` |
+| `ref` | 对象或关系 alias |
+| `field` | 本体属性名 |
+| `operator` | EQ、NE、GT、GTE、LT、LTE、IN、NOT_IN、BETWEEN、LIKE、IS_NULL、IS_NOT_NULL |
+| `values` | 条件值列表 |
+| `left` | 字段间比较的左侧表达式，可选 |
+| `subquery` | 子查询，可选 |
+
+#### GROUP
+
+```json
+{
+  "kind": "GROUP",
+  "relation": "AND",
+  "children": []
+}
+```
+
+`relation` 支持 AND、OR、NOT。
+
+### 3.5 returns
+
+| 字段 | 说明 |
+|---|---|
+| `kind` | FIELDS、EXPR、FUNCTION、GROUP_BY、METRIC |
+| `ref` | 对象或关系 alias |
+| `fields` | FIELDS 类型的属性列表 |
+| `field` | GROUP_BY、METRIC 等类型的单属性 |
+| `function` | COUNT、SUM、AVG、MAX、MIN |
+| `alias` | 结果别名 |
+
+### 3.6 operation 约束
+
+| operation | 必含 | 禁含 |
+|---|---|---|
+| QUERY | objects、returns | relationships、aggregateFilter、mutation |
+| AGGREGATE | objects、returns | relationships、mutation |
+| ASSOCIATION_QUERY | objects、relationships、returns | mutation |
+| CREATE | objects、mutation | — |
+| UPDATE | objects、mutation、conditions | — |
+| DELETE | objects、mutation、conditions | — |
+| UPSERT | objects、mutation | — |
+
+---
+
+## 4. 入参 2：Runtime Binding 1.0
+
+### 4.1 Binding 来源
+
+OAC 从 OMS 调用以下接口获取完整 Canonical Binding：
+
+| 接口 | 路径 |
+|---|---|
+| 查询对象类型绑定 | `/api/v1/ontologies/{ontologyId}/object-types/{objectTypeId}/bindings/query` |
+| 查询关系类型绑定 | `/api/v1/ontologies/{ontologyId}/relation-types/{relationTypeId}/bindings/query` |
+
+OAC 必须在下发业务服务前完成：
+
+1. 绑定合法性校验；
+2. 多 Binding 唯一选择；
+3. 本次操作所需属性计算；
+4. Catalog 资产闭包裁剪；
+5. 旧字段归一化；
+6. 敏感信息剔除。
+
+### 4.2 顶层结构
+
+Binding 顶层 Key 为 OQL alias。
+
+```json
+{
+  "a": {
+    "bindingKind": "OBJECT",
+    "objectTypeContext": {},
+    "propertyBindings": [],
+    "catalogContext": {}
+  },
+  "r1": {
+    "bindingKind": "RELATIONSHIP",
+    "relationshipContext": {},
+    "relationBindings": [],
+    "propertyBindings": [],
+    "catalogContext": {}
   }
 }
 ```
 
-Key 为 OQL 中对象的 `alias`（如 `"a"`）或关系的 `alias`（如 `"r1"`），Value 为该 alias 对应的裁剪 Binding。
+| 字段 | 必填条件 | 说明 |
+|---|---|---|
+| `bindingKind` | 是 | OBJECT 或 RELATIONSHIP |
+| `objectTypeContext` | OBJECT 必填 | 对象上下文和对象级 Dataset 绑定 |
+| `relationshipContext` | RELATIONSHIP 必填 | 关系上下文 |
+| `relationBindings` | RELATIONSHIP 必填 | 关系的直接、桥接或图边映射 |
+| `propertyBindings` | 是 | 本次执行所需属性映射 |
+| `catalogContext` | 是 | 本次执行依赖的最小物理资产闭包 |
 
-### 4.2 objectTypeContext
+### 4.3 objectTypeContext
 
 ```json
 {
   "objectTypeId": "obj_alarm",
   "name": "Alarm",
-  "description": "告警对象",
   "primaryKeys": ["alarmId"],
   "bindings": [
     {
-      "assetId": "资产id",
-      "assetIds": ["资产id_1", "资产id_2"],
-      "field_ids": ["字段id_1", "字段id_2"],
-      "expression": null,
-      "joinKeys": null,
-      "timeseriesFieldId": null,
-      "extendAttribute": {}
+      "assetId": "dataset_alarm",
+      "role": "PRIMARY"
     }
   ]
 }
 ```
 
-### 4.3 propertyBindings
+| 字段 | 必填 | 说明 |
+|---|:---:|---|
+| `objectTypeId` | 是 | 本体对象类型 ID |
+| `name` | 否 | 本体对象类型名称，便于诊断 |
+| `primaryKeys` | 是 | 本体主键属性名数组 |
+| `bindings` | 是 | 对象到物理 Dataset 的映射 |
+| `bindings[].assetId` | 是 | 必须指向 `catalogContext.datasets` 中的 Dataset |
+| `bindings[].role` | 是 | PRIMARY 或 EXTENSION |
+
+约束：
+
+- 每个对象必须且只能有一个 `PRIMARY` Dataset；
+- 对象级 Binding 不承载字段 ID、表达式或时序字段；
+- `description` 等展示信息默认不下发。
+
+### 4.4 propertyBindings
 
 ```json
 [
@@ -367,84 +407,235 @@ Key 为 OQL 中对象的 `alias`（如 `"a"`）或关系的 `alias`（如 `"r1"`
     "bindings": [
       {
         "bindingId": "pb_001",
-        "assetId": "资产id",
-        "groupId": "default",
-        "assetIds": ["资产id"],
-        "field_ids": ["字段id"],
-        "expression": null,
-        "joinKeys": null,
-        "timeseriesFieldId": null,
-        "extendAttribute": {}
+        "assetId": "field_alarm_id"
       }
     ]
   }
 ]
 ```
 
-| 字段 | 说明 |
-|------|------|
-| `propertyName` | **本体属性名**——翻译逻辑中查找映射的关键标识 |
-| `dataType` | STRING / INT / LONG / DOUBLE / DATETIME / BOOLEAN |
-| `bindings[].field_ids` | 映射到的物理字段 ID |
-| `bindings[].assetIds` | 关联的资产 ID 链 |
-| `bindings[].groupId` | 多绑定分组标识 |
-| `bindings[].expression` | 字段转换表达式 |
+| 字段 | 必填 | 说明 |
+|---|:---:|---|
+| `propertyId` | 是 | 本体属性 ID |
+| `propertyName` | 是 | 本体属性名，翻译时的关键索引 |
+| `dataType` | 是 | 本体逻辑数据类型 |
+| `bindings` | 是 | 归一化后的物理绑定；无绑定时为 `[]` |
+| `bindings[].bindingId` | 否 | Binding 记录 ID，用于诊断 |
+| `bindings[].assetId` | 条件 | 单物理字段映射，指向 Field |
+| `bindings[].assetIds` | 条件 | 多物理字段映射，按表达式参数顺序排列 |
+| `bindings[].expression` | 条件 | 多字段计算或类型转换表达式 |
+| `bindings[].timeseriesFieldId` | 否 | 时序属性依赖的时间字段 ID |
+| `bindings[].joinKeys` | 否 | 属性自身跨 Dataset 时的 Join 定义 |
+| `bindings[].extendAttribute` | 否 | 仅允许白名单扩展，空对象默认省略 |
 
-> 属性未绑定物理模型时 `bindings` 为空数组，仅返回元信息。
+约束：
 
-### 4.4 catalogContext
+- `assetId` 与 `assetIds` 至少存在一个，且不得表达 Catalog 层级路径；
+- Catalog 层级路径必须通过 `parentAssetId` 追溯；
+- Runtime Binding 中每个属性必须只有一个有效 `PhysicalBinding`；
+- 无法唯一选择时 OAC 返回 `BIND-AMBIGUOUS-001`；
+- 新协议不得输出 `field_ids`；
+- 业务侧不得按 `bindings[0]` 猜测优先级，只能在数组长度为 1 时使用。
 
-四级嵌套结构，沿 `parentAssetId` 链追溯物理路径：
+### 4.5 relationshipContext
 
-```text
-DataSource（数据源）→ Schema（模式/库）→ Dataset（表/Tag/Edge）→ Field（列/属性）
+```json
+{
+  "relationTypeId": "rel_order_product",
+  "name": "order_has_product",
+  "sourceObjectTypeId": "obj_order",
+  "targetObjectTypeId": "obj_product",
+  "connectionType": "OBJECT_TO_OBJECT"
+}
 ```
 
-**DataSource**：
+| 字段 | 必填 | 说明 |
+|---|:---:|---|
+| `relationTypeId` | 是 | 关系类型 ID |
+| `name` | 否 | 关系类型名称 |
+| `sourceObjectTypeId` | 是 | 源对象类型 ID |
+| `targetObjectTypeId` | 是 | 目标对象类型 ID |
+| `connectionType` | 是 | OBJECT_TO_OBJECT 或 PROPERTY_TO_PROPERTY |
+| `backingObjectTypeId` | 否 | 关系由中间对象承载时使用 |
+| `junctionDatasetId` | 否 | 关系由桥接 Dataset 承载时使用 |
 
-| 字段 | 说明 |
-|------|------|
-| `id` | 唯一标识 |
-| `parentAssetId` | 父资产 ID |
-| `displayName` | 显示名称 |
-| `datasourceType` | rdb / graph / es / api / cube |
+`junctionConfig`、`relationProperties` 等结构化信息不得使用 JSON 字符串；需要下发时必须分别使用 Object 和 Array。
 
-**Schema**：
+### 4.6 relationBindings
 
-| 字段 | 说明 |
-|------|------|
-| `id` | 唯一标识 |
-| `parentAssetId` | 父资产 ID（指向上级 DataSource） |
-| `name` | Schema 名称，如 `"fm_alarm_db"` |
+#### 4.6.1 DIRECT：主外键直接关联
 
-**Dataset**：
+```json
+[
+  {
+    "bindingMode": "DIRECT",
+    "joinKeys": [
+      {
+        "sourceFieldId": "field_order_customer_id",
+        "targetFieldId": "field_customer_id"
+      }
+    ]
+  }
+]
+```
 
-| 字段 | 说明 |
-|------|------|
-| `id` | 唯一标识 |
-| `parentAssetId` | 父资产 ID（指向上级 Schema） |
-| `name` | 表名/Tag名/Edge名，如 `"t_alarm"` |
-| `storageType` | ROW / COLUMN / GRAPH_TAG / GRAPH_EDGE |
-| `primaryKeys` | 主键字段名 |
+#### 4.6.2 JUNCTION：桥接表关联
 
-**Field**：
+```json
+[
+  {
+    "bindingMode": "JUNCTION",
+    "junctionDatasetId": "dataset_order_product",
+    "sourceJoinKeys": [
+      {
+        "sourceFieldId": "field_order_id",
+        "junctionFieldId": "field_junction_order_id"
+      }
+    ],
+    "targetJoinKeys": [
+      {
+        "junctionFieldId": "field_junction_product_id",
+        "targetFieldId": "field_product_id"
+      }
+    ]
+  }
+]
+```
 
-| 字段 | 说明 |
-|------|------|
-| `id` | 唯一标识 |
-| `parentAssetId` | 父资产 ID（指向上级 Dataset） |
-| `name` | 物理列名/属性名，如 `"alarm_id"` |
-| `dataType` | 物理数据类型，如 `"VARCHAR(64)"` |
-| `semanticRole` | 语义角色：PRIMARY_KEY / FOREIGN_KEY / DIMENSION / MEASURE |
+#### 4.6.3 BACKING_OBJECT：中间对象关联
 
-### 4.5 Binding 裁剪规则
+```json
+[
+  {
+    "bindingMode": "BACKING_OBJECT",
+    "backingObjectTypeId": "obj_order_product",
+    "junctionDatasetId": "dataset_order_product",
+    "sourceJoinKeys": [],
+    "targetJoinKeys": []
+  }
+]
+```
 
-OAC 下发前已完成裁剪，业务侧收到的 Binding：
+#### 4.6.4 GRAPH_EDGE：图数据库边
 
-1. **按 alias 裁剪**：只包含 OQL 实际引用的对象和关系 alias
-2. **按引用裁剪**：`propertyBindings` 只包含 conditions/returns/orders/mutation 引用的属性
-3. **Catalog 最小化**：`catalogContext` 只包含本次执行依赖的资产
-4. **多 Binding 已筛选**：OAC 一般已完成选择，业务侧按 `bindings[0]` 取映射即可
+```json
+[
+  {
+    "bindingMode": "GRAPH_EDGE",
+    "edgeDatasetId": "dataset_installed_on"
+  }
+]
+```
+
+约束：
+
+- Runtime Binding 中每个关系 alias 只能保留一个有效 `relationBinding`；
+- Join Key 必须通过 Field ID 引用，不直接携带用户输入的表名和列名；
+- Join Key 引用的所有 Field 及其祖先资产必须包含在 `catalogContext` 中。
+
+### 4.7 catalogContext
+
+Catalog 统一使用以下层级：
+
+```text
+DataSource → Schema → Dataset → Field
+```
+
+统一通过 `parentAssetId` 表达父子关系，不使用 `datasourceId`、`schemaId`、`datasetId` 等层级专用父字段。
+
+#### DataSource
+
+| 字段 | 必填 | 说明 |
+|---|:---:|---|
+| `id` | 是 | 数据源 ID |
+| `datasourceType` | 是 | MYSQL、GAUSSDB、NEBULAGRAPH、ELASTICSEARCH、API、CUBE 等产品类型 |
+| `queryDialect` | 否 | SQL、NGQL、TQL、ESDSL 等 |
+| `connectionRef` | 否 | 业务侧安全配置引用，不是明文连接信息 |
+
+不得下发密码、Token、私钥或完整敏感连接串。
+
+#### Schema
+
+| 字段 | 必填 | 说明 |
+|---|:---:|---|
+| `id` | 是 | Schema ID |
+| `parentAssetId` | 是 | 所属 DataSource ID |
+| `name` | 是 | 物理 Schema、库或命名空间名称 |
+
+#### Dataset
+
+| 字段 | 必填 | 说明 |
+|---|:---:|---|
+| `id` | 是 | Dataset ID |
+| `parentAssetId` | 是 | 所属 Schema ID |
+| `name` | 是 | 表、视图、Tag、Edge 或 Dimension 名称 |
+| `storageType` | 是 | TABLE、VIEW、TAG、EDGE、DIMENSION |
+| `storageLayout` | 否 | ROW、COLUMN 等物理布局 |
+| `primaryKeys` | 否 | 物理主键字段名数组 |
+
+#### Field
+
+| 字段 | 必填 | 说明 |
+|---|:---:|---|
+| `id` | 是 | Field ID |
+| `parentAssetId` | 是 | 所属 Dataset ID |
+| `name` | 是 | 物理字段或属性名称 |
+| `dataType` | 是 | 物理数据类型 |
+| `semanticRole` | 否 | PRIMARY_KEY、FOREIGN_KEY、DIMENSION、MEASURE、TIMESTAMP |
+| `timeSeriesInfo` | 否 | 时序字段的格式、时间角色和粒度 |
+
+### 4.8 Runtime Binding 最小字段集
+
+| 区域 | 必须保留 | 条件保留 | 默认删除 |
+|---|---|---|---|
+| objectTypeContext | objectTypeId、primaryKeys、对象 Dataset Binding | name | description |
+| propertyBindings | propertyId、propertyName、dataType、assetId/assetIds | expression、timeseriesFieldId、joinKeys | groupId、空 extendAttribute |
+| relationshipContext | relationTypeId、source/target ID、connectionType | backingObjectTypeId、junctionDatasetId、name | description、展示名称 |
+| relationBindings | bindingMode 和对应 Join/Edge 信息 | — | 无关关系映射 |
+| DataSource | id、datasourceType | queryDialect、connectionRef | displayName、description、敏感连接配置 |
+| Schema | id、parentAssetId、name | — | displayName、description |
+| Dataset | id、parentAssetId、name、storageType | storageLayout、primaryKeys | displayName、description |
+| Field | id、parentAssetId、name、dataType | semanticRole、timeSeriesInfo | displayName、description、sortOrder |
+
+### 4.9 Binding 裁剪规则
+
+OAC 必须按以下集合计算所需属性：
+
+```text
+RequiredProperties =
+    OQL 显式引用属性
+  ∪ 对象主键属性
+  ∪ 关系 Join 属性
+  ∪ 时序字段
+  ∪ 分区键和路由字段
+  ∪ expression 依赖字段
+  ∪ 写操作 matchBy 属性
+  ∪ 结果组装所需隐藏字段
+```
+
+其中 OQL 显式引用属性至少包括：
+
+```text
+conditions
+returns
+orders
+aggregateFilter
+mutation
+sourceQuery
+```
+
+裁剪步骤：
+
+1. **按 alias 裁剪**：只保留本次 OQL 引用的对象和关系 alias；
+2. **补齐技术字段**：即使未在 `returns` 中出现，也必须补齐主键、Join 键、时序字段等；
+3. **按属性裁剪**：只保留 `RequiredProperties` 对应的 `propertyBindings`；
+4. **按关系裁剪**：只保留当前关系 alias 唯一选中的 `relationBinding`；
+5. **Catalog 闭包裁剪**：保留所引用 Field、Dataset、Schema、DataSource 及完整祖先链；
+6. **敏感字段剔除**：删除明文凭据和非白名单扩展；
+7. **结构归一化**：统一 `parentAssetId`、数组和对象类型；
+8. **唯一性校验**：对象 PRIMARY Dataset、属性 Binding、关系 Binding 均必须唯一。
+
+主键、Join 键等隐藏技术字段可加入物理 SELECT，但最终响应只输出 `returns` 显式声明的属性。
 
 ---
 
@@ -460,24 +651,15 @@ OAC 下发前已完成裁剪，业务侧收到的 Binding：
     "taskStatus": "SUCCESS",
     "objects": [
       {
-        "rid": "Alarm-1",
+        "rid": "Alarm-ALM-001",
         "objectType": "Alarm",
         "properties": {
-          "alarmId": "ALM-001",
           "alarmName": "CPU高温告警",
           "severity": "critical"
         }
       }
     ],
-    "relationships": [
-      {
-        "rid": "Alarm-1->Server-1",
-        "relationshipType": "generated_by",
-        "sourceId": "Alarm-1",
-        "targetId": "Server-1",
-        "properties": {}
-      }
-    ],
+    "relationships": [],
     "metadata": {
       "totalCount": 1,
       "successTaskCount": 1,
@@ -502,14 +684,21 @@ OAC 下发前已完成裁剪，业务侧收到的 Binding：
     "taskStatus": "FAILED",
     "objects": [],
     "relationships": [],
-    "metadata": { "totalCount": 0, "successTaskCount": 0, "failedTaskCount": 1 },
-    "trace": { "requestId": "req-001", "executionTime": 12 }
+    "metadata": {
+      "totalCount": 0,
+      "successTaskCount": 0,
+      "failedTaskCount": 1
+    },
+    "trace": {
+      "requestId": "req-001",
+      "executionTime": 12
+    }
   },
   "errors": [
     {
-      "code": "OQL-VAL-001",
-      "message": "property 'foo' does not exist on alias 'a'",
-      "path": "$.conditions.children[0].field",
+      "code": "BIND-PROP-001",
+      "message": "property binding not found",
+      "path": "$.binding.a.propertyBindings",
       "details": {}
     }
   ]
@@ -519,391 +708,435 @@ OAC 下发前已完成裁剪，业务侧收到的 Binding：
 ### 5.3 响应约束
 
 | 约束 | 说明 |
-|------|------|
-| objectType | 返回本体对象类型名，**不得返回物理表名** |
-| properties key | 使用本体属性名或 OQL 显式 alias |
-| rid | **必须稳定、可重复生成**（由主键值生成，不能用随机 UUID） |
-| sourceId / targetId | 必须关联到对象的 rid |
-| 字段安全 | 未在 returns 中请求的物理字段**不得泄露** |
-| 物理语句 | 默认**不得**返回原始 SQL/GQL/TQL |
+|---|---|
+| `objectType` | 返回本体对象类型，不得返回物理表名 |
+| `properties` | Key 使用本体属性名或 OQL 结果 alias |
+| `rid` | 必须由对象类型和主键值稳定生成，不得使用随机 UUID |
+| `sourceId/targetId` | 必须引用已返回对象的 rid |
+| 字段安全 | 隐藏技术字段不得泄露到 properties |
+| 物理语句 | 默认不得返回原始 SQL、GQL、TQL |
+| 错误信息 | 不得包含密码、Token、完整连接串 |
 
 ---
 
 ## 6. 开发指导
 
-### 6.1 Controller 实现
-
-接口接收两个独立参数：
+### 6.1 Controller
 
 ```java
-@RestController
-@RequestMapping("/ontology-access/v1")
-public class OntologyAccessController {
+@PostMapping("/execute")
+public OntologyAccessResponse execute(
+        @RequestHeader("X-Request-Id") String requestId,
+        @RequestHeader(value = "X-Tenant-Id", required = false) String tenantId,
+        @RequestHeader("X-Schema-Ref") String schemaRef,
+        @RequestHeader("X-OQL-Version") String oqlVersion,
+        @RequestHeader("X-Binding-Version") String bindingVersion,
+        @RequestHeader(value = "X-Binding-Revision", required = false) String bindingRevision,
+        @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+        @RequestPart("oql") String oqlJson,
+        @RequestPart("binding") String bindingJson) {
 
-    private final OntologyAccessService service;
+    OqlRequest oql = JsonUtil.fromJson(oqlJson, OqlRequest.class);
+    Map<String, BindingProjection> bindings =
+        JsonUtil.fromJsonMap(bindingJson, BindingProjection.class);
 
-    public OntologyAccessController(OntologyAccessService service) {
-        this.service = service;
-    }
-
-    @PostMapping("/execute")
-    public OntologyAccessResponse execute(
-            @RequestHeader("X-Request-Id") String requestId,
-            @RequestHeader(value = "X-Tenant-Id", required = false) String tenantId,
-            @RequestHeader(value = "X-Schema-Ref", required = false) String schemaRef,
-            @RequestHeader("X-Binding-Version") String bindingVersion,
-            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
-            @RequestPart("oql") String oqlJson,
-            @RequestPart("binding") String bindingJson) {
-
-        long start = System.currentTimeMillis();
-
-        try {
-            // 反序列化：使用业务方自建的 Java Bean
-            OqlRequest oql = JsonUtil.fromJson(oqlJson, OqlRequest.class);
-            Map<String, BindingProjection> bindings =
-                JsonUtil.fromJsonMap(bindingJson, BindingProjection.class);
-
-            OntologyAccessData data = service.execute(
-                oql, bindings, requestId, tenantId, schemaRef,
-                bindingVersion, idempotencyKey);
-
-            return buildSuccessResponse(data, requestId, start);
-        } catch (OntologyAccessException ex) {
-            return buildFailureResponse(ex, requestId, start);
-        }
-    }
+    return service.execute(
+        oql, bindings, requestId, tenantId, schemaRef,
+        oqlVersion, bindingVersion, bindingRevision, idempotencyKey);
 }
 ```
 
-### 6.2 Service 编排实现
+### 6.2 翻译器选择
+
+`datasourceType` 表示具体产品类型，不能直接假设为 `rdb` 或 `graph`。建议使用注册表：
 
 ```java
-@Service
-public class OntologyAccessService {
-
-    private final SqlTranslator sqlTranslator;     // 业务自定义
-    private final GqlTranslator gqlTranslator;     // 业务自定义
-    private final DataSourceExecutor executor;
-
-    public OntologyAccessData execute(
-            OqlRequest oql,
-            Map<String, BindingProjection> bindings,
-            String requestId, String tenantId,
-            String schemaRef, String bindingVersion,
-            String idempotencyKey) {
-
-        // === 1. OQL 校验 ===
-        validateOql(oql);
-
-        // === 2. Binding 完备性校验 ===
-        validateBinding(oql, bindings);
-
-        // === 3. 确定数据源类型 → 选择翻译器 ===
-        BindingProjection firstBinding = bindings.get(
-            oql.objects().getFirst().alias());
-        String dsType = firstBinding.catalogContext()
-            .dataSources().getFirst().datasourceType();
-
-        PhysicalQuery physicalQuery;
-        if ("rdb".equals(dsType)) {
-            physicalQuery = sqlTranslator.translate(oql, bindings);
-        } else if ("graph".equals(dsType)) {
-            physicalQuery = gqlTranslator.translate(oql, bindings);
-        } else {
-            throw error("TRANS-001", "Unsupported datasource: " + dsType);
-        }
-
-        // === 4. 参数化执行 ===
-        ExecutionResult result = executor.execute(physicalQuery);
-
-        // === 5. 组装结果 ===
-        return assembleResult(oql, bindings, result);
-    }
-}
+Translator translator = translatorRegistry.get(datasource.datasourceType())
+    .orElseThrow(() -> error(
+        "TRANS-001",
+        "unsupported datasourceType: " + datasource.datasourceType()));
 ```
 
-### 6.3 属性到物理字段的解析（推荐模式）
+示例映射：
 
-这是翻译过程中最核心的操作。推荐业务方实现一个轻量解析工具：
+```text
+MYSQL         → SqlTranslator
+GAUSSDB       → SqlTranslator
+NEBULAGRAPH   → NgqlTranslator
+ELASTICSEARCH → EsTranslator
+```
+
+### 6.3 对象主 Dataset 解析
+
+物理 FROM、Tag 等入口必须来自 `objectTypeContext.bindings[role=PRIMARY]`，不得通过第一个返回属性反推。
 
 ```java
-/**
- * 沿 catalogContext 的 parentAssetId 链，将 fieldId 解析为完整的物理路径。
- * 这是业务方自建的工具方法，非平台 SDK 提供。
- */
-public record ResolvedField(
-    String objectAlias,
-    String propertyName,
-    String dataType,
-    String datasourceType,      // "rdb" | "graph" | ...
-    String physicalSchema,      // "fm_alarm_db"
-    String physicalTable,       // "t_alarm"
-    String physicalColumn       // "alarm_id"
-) {}
+ObjectBinding primary = bp.objectTypeContext().bindings().stream()
+    .filter(b -> "PRIMARY".equals(b.role()))
+    .findFirst()
+    .orElseThrow(() -> error("BIND-OBJ-001", "primary dataset missing"));
 
+DatasetAsset dataset = findById(bp.catalogContext().datasets(), primary.assetId());
+```
+
+### 6.4 属性解析
+
+```java
 public ResolvedField resolveField(
-        String objectAlias, String propertyName,
+        String alias,
+        String propertyName,
         Map<String, BindingProjection> bindings) {
 
-    BindingProjection bp = bindings.get(objectAlias);
-    if (bp == null) throw error("BIND-OBJ-001", "alias not found: " + objectAlias);
+    BindingProjection bp = requireObjectBinding(alias, bindings);
 
-    PropertyBinding pb = bp.propertyBindings().stream()
+    PropertyBinding property = bp.propertyBindings().stream()
         .filter(p -> p.propertyName().equals(propertyName))
         .findFirst()
-        .orElseThrow(() -> error("BIND-PROP-001",
-            "property not found: " + objectAlias + "." + propertyName));
+        .orElseThrow(() -> error(
+            "BIND-PROP-001", "property not found: " + alias + "." + propertyName));
 
-    PhysicalBinding phys = pb.bindings().getFirst(); // OAC 已筛选多绑定
-    String fieldId = phys.field_ids().getFirst();
+    if (property.bindings().size() != 1) {
+        throw error("BIND-AMBIGUOUS-001",
+            "property binding must be unique: " + alias + "." + propertyName);
+    }
 
-    // 沿 parentAssetId 链追溯：Field → Dataset → Schema → DataSource
+    PhysicalBinding physical = property.bindings().getFirst();
+    if (physical.assetId() == null) {
+        throw error("BIND-PROP-001",
+            "single field mapping requires assetId: " + alias + "." + propertyName);
+    }
+
     CatalogContext catalog = bp.catalogContext();
-    FieldAsset field = findById(catalog.fields(), fieldId);
+    FieldAsset field = findById(catalog.fields(), physical.assetId());
     DatasetAsset dataset = findById(catalog.datasets(), field.parentAssetId());
     SchemaAsset schema = findById(catalog.schemas(), dataset.parentAssetId());
-    DataSourceAsset ds = findById(catalog.dataSources(), schema.parentAssetId());
+    DataSourceAsset dataSource =
+        findById(catalog.dataSources(), schema.parentAssetId());
 
-    return new ResolvedField(objectAlias, propertyName, pb.dataType(),
-        ds.datasourceType(), schema.name(), dataset.name(), field.name());
+    return new ResolvedField(
+        alias,
+        propertyName,
+        property.dataType(),
+        dataSource.datasourceType(),
+        schema.name(),
+        dataset.name(),
+        field.name());
 }
 ```
 
-> 此模式屏蔽了 catalogContext 四级嵌套的遍历复杂度，将"属性→物理字段"映射变成一行调用。**推荐但非强制**——业务方可自行设计等价实现。
+### 6.5 关系解析
+
+```java
+BindingProjection relation = bindings.get(relationship.alias());
+
+if (relation == null
+        || !"RELATIONSHIP".equals(relation.bindingKind())
+        || relation.relationBindings().size() != 1) {
+    throw error("BIND-REL-001",
+        "unique relationship binding required: " + relationship.alias());
+}
+
+RelationBinding physicalRelation = relation.relationBindings().getFirst();
+```
+
+关系型数据库根据 `DIRECT`、`JUNCTION`、`BACKING_OBJECT` 生成 Join；图数据库根据 `GRAPH_EDGE.edgeDatasetId` 解析 Edge 名称。
 
 ---
 
-## 7. OQL 到物理 SQL 翻译范例
+## 7. QUERY 翻译示例
 
-### 7.1 QUERY 翻译
-
-**输入 OQL**（精简结构）：
+### 7.1 输入 OQL
 
 ```json
 {
-  "version": "2.0",
+  "version": "1.0",
   "operation": "QUERY",
-  "objects": [{ "objectType": "Alarm", "alias": "a" }],
+  "objects": [
+    {
+      "objectType": "Alarm",
+      "alias": "a"
+    }
+  ],
   "conditions": {
-    "kind": "GROUP", "relation": "AND",
+    "kind": "GROUP",
+    "relation": "AND",
     "children": [
-      { "kind": "PREDICATE", "ref": "a", "field": "severity", "operator": "EQ", "values": ["critical"] },
-      { "kind": "PREDICATE", "ref": "a", "field": "occurTime", "operator": "GTE", "values": ["2026-01-01T00:00:00Z"] }
+      {
+        "kind": "PREDICATE",
+        "ref": "a",
+        "field": "severity",
+        "operator": "EQ",
+        "values": ["critical"]
+      },
+      {
+        "kind": "PREDICATE",
+        "ref": "a",
+        "field": "occurTime",
+        "operator": "GTE",
+        "values": ["2026-01-01T00:00:00Z"]
+      }
     ]
   },
   "returns": [
-    { "kind": "FIELDS", "ref": "a", "fields": ["alarmId", "alarmName", "severity"] }
+    {
+      "kind": "FIELDS",
+      "ref": "a",
+      "fields": ["alarmName", "severity"]
+    }
   ],
-  "orders": [{ "ref": "a", "field": "occurTime", "direction": "DESC" }],
-  "maxResults": { "limit": 100, "offset": 0 }
+  "orders": [
+    {
+      "ref": "a",
+      "field": "occurTime",
+      "direction": "DESC"
+    }
+  ],
+  "maxResults": {
+    "limit": 100,
+    "offset": 0
+  }
 }
 ```
 
-**翻译逻辑**：
+虽然 `alarmId` 未在 `returns` 中声明，OAC 仍必须将其作为主键隐藏字段加入 Runtime Binding 和物理查询，用于生成稳定 rid。
 
-```java
-public PhysicalQuery translate(OqlRequest oql, Map<String, BindingProjection> bindings) {
-    OqlObject obj = oql.objects().getFirst();
-    String alias = obj.alias();
-    List<Object> params = new ArrayList<>();
+### 7.2 Runtime Binding
 
-    // SELECT
-    StringBuilder sql = new StringBuilder("SELECT ");
-    for (ReturnItem item : oql.returns()) {
-        if (item.kind().equals("FIELDS")) {
-            for (String prop : item.fields()) {
-                ResolvedField f = resolveField(alias, prop, bindings);
-                sql.append(quote(f.physicalColumn()))
-                   .append(" AS ").append(quote(prop)).append(", ");
-            }
+```json
+{
+  "a": {
+    "bindingKind": "OBJECT",
+    "objectTypeContext": {
+      "objectTypeId": "obj_alarm",
+      "name": "Alarm",
+      "primaryKeys": ["alarmId"],
+      "bindings": [
+        {
+          "assetId": "dataset_alarm",
+          "role": "PRIMARY"
         }
+      ]
+    },
+    "propertyBindings": [
+      {
+        "propertyId": "prop_alarm_id",
+        "propertyName": "alarmId",
+        "dataType": "STRING",
+        "bindings": [
+          {
+            "bindingId": "pb_001",
+            "assetId": "field_alarm_id"
+          }
+        ]
+      },
+      {
+        "propertyId": "prop_alarm_name",
+        "propertyName": "alarmName",
+        "dataType": "STRING",
+        "bindings": [
+          {
+            "bindingId": "pb_002",
+            "assetId": "field_alarm_name"
+          }
+        ]
+      },
+      {
+        "propertyId": "prop_severity",
+        "propertyName": "severity",
+        "dataType": "STRING",
+        "bindings": [
+          {
+            "bindingId": "pb_003",
+            "assetId": "field_severity"
+          }
+        ]
+      },
+      {
+        "propertyId": "prop_occur_time",
+        "propertyName": "occurTime",
+        "dataType": "TIMESTAMP",
+        "bindings": [
+          {
+            "bindingId": "pb_004",
+            "assetId": "field_occur_time"
+          }
+        ]
+      }
+    ],
+    "catalogContext": {
+      "dataSources": [
+        {
+          "id": "datasource_mysql",
+          "datasourceType": "MYSQL",
+          "queryDialect": "SQL",
+          "connectionRef": "alarm-mysql-prod"
+        }
+      ],
+      "schemas": [
+        {
+          "id": "schema_alarm",
+          "parentAssetId": "datasource_mysql",
+          "name": "fm_alarm_db"
+        }
+      ],
+      "datasets": [
+        {
+          "id": "dataset_alarm",
+          "parentAssetId": "schema_alarm",
+          "name": "t_alarm",
+          "storageType": "TABLE",
+          "storageLayout": "ROW",
+          "primaryKeys": ["alarm_id"]
+        }
+      ],
+      "fields": [
+        {
+          "id": "field_alarm_id",
+          "parentAssetId": "dataset_alarm",
+          "name": "alarm_id",
+          "dataType": "VARCHAR(64)",
+          "semanticRole": "PRIMARY_KEY"
+        },
+        {
+          "id": "field_alarm_name",
+          "parentAssetId": "dataset_alarm",
+          "name": "alarm_name",
+          "dataType": "VARCHAR(128)"
+        },
+        {
+          "id": "field_severity",
+          "parentAssetId": "dataset_alarm",
+          "name": "severity",
+          "dataType": "VARCHAR(32)"
+        },
+        {
+          "id": "field_occur_time",
+          "parentAssetId": "dataset_alarm",
+          "name": "occur_time",
+          "dataType": "TIMESTAMP",
+          "semanticRole": "TIMESTAMP"
+        }
+      ]
     }
-    sql.setLength(sql.length() - 2); // 去掉末尾 ", "
-
-    // FROM
-    ResolvedField first = resolveField(alias, oql.returns().getFirst().fields().getFirst(), bindings);
-    sql.append(" FROM ").append(quote(first.physicalSchema()))
-       .append(".").append(quote(first.physicalTable()))
-       .append(" ").append(alias);
-
-    // WHERE
-    if (oql.conditions() != null) {
-        sql.append(" WHERE ").append(buildCondition(oql.conditions(), bindings, params));
-    }
-
-    // ORDER BY + LIMIT
-    if (!oql.orders().isEmpty()) {
-        OrderItem o = oql.orders().getFirst();
-        ResolvedField f = resolveField(o.ref(), o.field(), bindings);
-        sql.append(" ORDER BY ").append(quote(f.physicalColumn())).append(" ").append(o.direction());
-    }
-    sql.append(" LIMIT ").append(oql.maxResults().limit());
-
-    return new PhysicalQuery(sql.toString(), params,
-        first.datasourceType(), first.physicalSchema());
+  }
 }
 ```
 
-**输出 SQL**：
+### 7.3 输出 SQL
 
 ```sql
-SELECT alarm_id AS alarmId, alarm_name AS alarmName, severity AS severity
+SELECT
+    a.alarm_id AS __pk_alarmId,
+    a.alarm_name AS alarmName,
+    a.severity AS severity
 FROM fm_alarm_db.t_alarm a
-WHERE (a.severity = ? AND a.occur_time >= ?)
+WHERE a.severity = ?
+  AND a.occur_time >= ?
 ORDER BY a.occur_time DESC
-LIMIT 100
+LIMIT 100 OFFSET 0
 ```
 
-**参数**：`["critical", "2026-01-01T00:00:00Z"]`
+参数：
 
-### 7.2 条件翻译
-
-```java
-public String buildCondition(ConditionNode node,
-        Map<String, BindingProjection> bindings, List<Object> params) {
-
-    if (node instanceof PredicateCondition pred) {
-        ResolvedField f = resolveField(pred.ref(), pred.field(), bindings);
-        String col = pred.ref() + "." + quote(f.physicalColumn());
-
-        return switch (pred.operator()) {
-            case "EQ"      -> { params.add(pred.values().getFirst()); yield col + " = ?"; }
-            case "NE"      -> { params.add(pred.values().getFirst()); yield col + " <> ?"; }
-            case "IN"      -> buildIn(col, pred.values(), params);
-            case "LIKE"    -> { params.add(pred.values().getFirst()); yield col + " LIKE ?"; }
-            case "IS_NULL" -> col + " IS NULL";
-            default        -> col + " " + pred.operator() + " ?";
-        };
-    }
-
-    if (node instanceof GroupCondition group) {
-        String join = " " + group.relation() + " ";
-        return group.children().stream()
-            .map(c -> "(" + buildCondition(c, bindings, params) + ")")
-            .collect(Collectors.joining(join));
-    }
-
-    throw error("TRANS-001", "Unknown condition type");
-}
+```json
+["critical", "2026-01-01T00:00:00Z"]
 ```
 
-### 7.3 AGGREGATE 翻译
-
-- `conditions` → WHERE（聚合前过滤）
-- `returns[kind=GROUP_BY]` → GROUP BY
-- `returns[kind=METRIC]` → COUNT / SUM / AVG / MAX / MIN
-- `aggregateFilter` → HAVING（聚合后过滤）
-
-### 7.4 ASSOCIATION_QUERY 翻译
-
-**关系型数据库**（基于 joinKeys）：
-
-```java
-// 从 Binding 中获取关系 alias 的 joinKeys
-BindingProjection relBinding = bindings.get(relationship.alias());
-JoinKey jk = relBinding.getJoinKeys().getFirst();
-
-sql.append(" LEFT JOIN ").append(quote(jk.targetTable()))
-   .append(" ").append(toAlias)
-   .append(" ON ").append(fromAlias).append(".").append(quote(jk.sourceColumn()))
-   .append(" = ").append(toAlias).append(".").append(quote(jk.targetColumn()));
-```
-
-**图数据库**（NebulaGraph nGQL）：
-
-```java
-// MATCH (d:Device)-[r1:installed_on]->(s:Server)
-String gql = String.format("MATCH (%s:%s)-[:%s]->(%s:%s)",
-    fromAlias, getTag(fromAlias, bindings),
-    relationship.relationshipType(),
-    toAlias, getTag(toAlias, bindings));
-```
-
-### 7.5 写操作翻译
-
-- **CREATE**：使用 `mutation.data.properties` 生成 INSERT
-- **UPDATE**：检查 `conditions` 和 `mutation.scope` 存在
-- **UPSERT**：基于 `matchBy` 字段判断存在性
+`__pk_alarmId` 仅用于生成 rid，不进入响应 `properties`。
 
 ---
 
 ## 8. 结果组装
 
-### 8.1 对象组装
+### 8.1 rid 生成
 
 ```java
-public OntologyObject assembleObject(OqlObject obj,
-        Map<String, Object> row, List<ReturnItem> returns,
-        Map<String, BindingProjection> bindings) {
+public String generateRid(
+        String objectType,
+        Map<String, Object> technicalValues,
+        List<String> primaryKeys) {
 
-    Map<String, Object> properties = new LinkedHashMap<>();
-    for (ReturnItem item : returns) {
-        if (item.ref().equals(obj.alias()) && "FIELDS".equals(item.kind())) {
-            for (String prop : item.fields()) {
-                properties.put(prop, row.get(prop)); // 本体属性名作为 key
-            }
-        }
+    String key = primaryKeys.stream()
+        .map(pk -> Objects.toString(technicalValues.get(pk), ""))
+        .collect(Collectors.joining("|"));
+
+    if (key.isBlank()) {
+        throw error("RESULT-MAP-001", "primary key value missing");
     }
 
-    BindingProjection bp = bindings.get(obj.alias());
-    String rid = generateRid(obj.objectType(), properties,
-        bp.objectTypeContext().primaryKeys());
-
-    return new OntologyObject(rid, obj.objectType(), properties);
-}
-```
-
-### 8.2 rid 生成
-
-```java
-public String generateRid(String objectType,
-        Map<String, Object> properties, List<String> primaryKeys) {
-    String key = primaryKeys.stream()
-        .map(pk -> String.valueOf(properties.get(pk)))
-        .collect(Collectors.joining("|"));
     return objectType + "-" + key;
 }
 ```
 
-> **禁止**使用随机 UUID 代替可重复 rid。
+禁止使用随机 UUID 替代稳定 rid。
+
+### 8.2 返回字段过滤
+
+结果组装分为两套映射：
+
+1. `technicalValues`：包含主键、Join 键等隐藏字段，仅供 rid 和关系组装使用；
+2. `properties`：只包含 OQL `returns` 显式声明的属性。
 
 ---
 
 ## 9. 安全规范
 
-### 9.1 参数化查询（强制）
+### 9.1 参数化查询
 
-❌ `"WHERE severity = '" + value + "'"`
-✅ `"WHERE severity = ?"` + `params.add(value)`
+禁止：
 
-### 9.2 物理标识符白名单（强制）
+```java
+"WHERE severity = '" + value + "'"
+```
 
-物理表名、列名**只能从 Binding 解析获得**，不得从 OQL 中直接读取、拼接用户输入或使用 OQL values 作为标识符。
+必须：
 
-### 9.3 写操作安全检查
+```java
+"WHERE severity = ?"
+params.add(value);
+```
 
-| 操作 | 检查项 |
-|------|--------|
-| UPDATE | conditions 非空 + mutation.scope 存在 + mutation.set 非空 + 影响范围 ≤ 阈值 |
-| DELETE | conditions 非空 + mutation.scope 存在 + **禁止无条件删除** |
-| UPSERT | matchBy 字段必须有 Binding 映射 |
+### 9.2 物理标识符白名单
+
+表名、列名、Schema、Tag、Edge 必须从 Runtime Binding 解析，不得来自：
+
+- OQL `values`；
+- 用户输入的动态字段名；
+- URL 参数；
+- `extensions` 中的任意字符串。
+
+### 9.3 写操作安全
+
+| 操作 | 必须检查 |
+|---|---|
+| CREATE | 必填属性、主键生成策略、幂等键 |
+| UPDATE | conditions 非空、mutation.scope 存在、影响范围不超过阈值 |
+| DELETE | conditions 非空、mutation.scope 存在、禁止无条件删除 |
+| UPSERT | matchBy 属性存在且具有唯一 Binding |
+
+### 9.4 连接信息
+
+- Runtime Binding 只允许携带 `connectionRef`；
+- 业务服务通过本地配置中心或密钥管理系统解析真实连接信息；
+- 日志和错误信息中不得输出凭据或完整连接串。
 
 ---
 
 ## 10. 错误处理
 
-### 10.1 错误码
-
 | 错误码 | HTTP | 说明 |
-|--------|:---:|------|
+|---|:---:|---|
 | `OQL-VAL-001` | 400 | OQL 结构校验失败 |
-| `OQL-REF-001` | 400 | alias 或字段引用不存在 |
+| `OQL-REF-001` | 400 | alias 或属性引用不存在 |
 | `OQL-OP-001` | 400 | operation 不支持 |
-| `BIND-OBJ-001` | 400 | 对象 Binding 缺失 |
+| `OQL-VERSION-001` | 400 | OQL 版本不支持 |
+| `BIND-VERSION-001` | 400 | Binding 版本不支持 |
+| `BIND-OBJ-001` | 400 | 对象 Binding 缺失或 PRIMARY Dataset 不唯一 |
 | `BIND-PROP-001` | 400 | 属性 Binding 缺失 |
 | `BIND-REL-001` | 400 | 关系 Binding 缺失 |
+| `BIND-AMBIGUOUS-001` | 400 | 多 Binding 无法唯一选择 |
 | `BIND-ASSET-001` | 400 | Catalog 资产闭包不完整 |
+| `BIND-LEGACY-001` | 400 | 历史字段无法归一化 |
 | `TRANS-001` | 500 | OQL 到物理查询转换失败 |
 | `EXEC-001` | 500 | 物理查询执行失败 |
 | `EXEC-TIMEOUT-001` | 504 | 查询超时 |
@@ -911,12 +1144,13 @@ public String generateRid(String objectType,
 | `SEC-FIELD-001` | 403 | 访问未授权物理字段 |
 | `WRITE-SCOPE-001` | 400 | 写操作范围不安全 |
 
-### 10.2 错误路径格式（JSONPath）
+JSONPath 示例：
 
 ```text
 $.conditions.children[0].field
 $.returns[1].fields[0]
-$.binding.a.propertyBindings[2].bindings[0].field_ids[0]
+$.binding.a.propertyBindings[2].bindings[0].assetId
+$.binding.r1.relationBindings[0].joinKeys[0].sourceFieldId
 ```
 
 ---
@@ -926,107 +1160,167 @@ $.binding.a.propertyBindings[2].bindings[0].field_ids[0]
 每个请求至少记录：
 
 ```text
-requestId=req-001 schemaRef=fm-alarm-v1 operation=QUERY
-objectTypes=Alarm datasourceType=rdb dataset=t_alarm
-translateMs=4 executeMs=85 assembleMs=3
-objectCount=100 result=SUCCESS
+requestId=req-001
+schemaRef=fm-alarm-v1
+oqlVersion=1.0
+bindingVersion=1.0
+bindingRevision=20260728-00015
+operation=QUERY
+objectTypes=Alarm
+datasourceType=MYSQL
+dataset=t_alarm
+translateMs=4
+executeMs=85
+assembleMs=3
+objectCount=100
+result=SUCCESS
 ```
+
+日志不得记录 OQL 原始敏感值、数据库凭据或完整物理查询参数。
 
 ---
 
 ## 12. 测试规范
 
-### 12.1 测试覆盖清单
+### 12.1 P0 契约测试
 
-| 类别 | 场景 | 优先级 |
-|------|------|:---:|
-| OQL 反序列化 | 标准 QUERY、含 sourceQuery、含未知字段 | P0 |
-| 条件多态 | PREDICATE、GROUP(AND/OR/NOT)、嵌套 | P0 |
-| Binding 反序列化 | 四级结构、属性未绑定 | P0 |
-| 校验 | version/operation/ref/maxResults | P0 |
-| 条件翻译 | 12 种操作符 + AND/OR/NOT 嵌套 | P0 |
-| 返回类型 | FIELDS、GROUP_BY、METRIC | P0 |
-| 安全 | SQL 注入字符、参数绑定 | P1 |
-| 写操作 | 幂等、范围检查 | P1 |
+| 类别 | 场景 |
+|---|---|
+| OQL 反序列化 | QUERY、AGGREGATE、ASSOCIATION_QUERY、未知字段 |
+| 条件多态 | PREDICATE、GROUP、AND/OR/NOT 嵌套 |
+| 对象 Binding | 单 Dataset、PRIMARY 唯一、多 Dataset 扩展 |
+| 属性 Binding | assetId、assetIds、表达式、无绑定 |
+| 关系 Binding | DIRECT、JUNCTION、BACKING_OBJECT、GRAPH_EDGE |
+| Catalog 闭包 | Field→Dataset→Schema→DataSource 完整追溯 |
+| 裁剪 | returns 属性、主键隐藏字段、Join 键、时序字段 |
+| 版本 | OQL 1.0、Binding 1.0、未知版本拒绝 |
+| 唯一性 | 多属性 Binding、多关系 Binding 必须报错 |
+| 结果组装 | 稳定 rid、隐藏字段不泄露 |
 
-### 12.2 黄金语句测试
+### 12.2 P1 测试
 
-每类数据源维护输入-期望对照表：
+| 类别 | 场景 |
+|---|---|
+| 安全 | SQL 注入、标识符注入、敏感连接信息 |
+| 写操作 | 幂等、范围限制、无条件删除拦截 |
+| 性能 | 大属性对象裁剪、Catalog 去重、批量请求 |
+| 兼容 | 历史字段读取、未知可选字段忽略 |
 
-| ID | 输入 OQL | 输入 Binding | 期望物理语句 | 期望参数 |
-|----|---------|-------------|-------------|---------|
-| GOLD-SQL-001 | QUERY 单表过滤 | 单对象 Binding | `SELECT ... FROM t_alarm WHERE severity = ? LIMIT 100` | `["critical"]` |
-| GOLD-SQL-002 | AGGREGATE 分组 | 单对象 Binding | `SELECT region, SUM(amount) ... GROUP BY region` | `[]` |
-| GOLD-GQL-001 | ASSOCIATION 单跳 | 关系图 Binding | `MATCH (e:Employee)-[:works_in]->(d:Department) ...` | `["E1002"]` |
+### 12.3 黄金语句
 
-### 12.3 契约测试
-
-```text
-标准 OQL + 完整 Binding
-        ↓ OAC 裁剪 + 拆分
-入参1: 精简 OQL
-入参2: 最小 Binding
-        ↓ 业务服务处理
-参数化 SQL/GQL/TQL
-        ↓ Mock 执行 + 组装
-统一对象结果
-```
+| ID | 场景 | 期望 |
+|---|---|---|
+| GOLD-SQL-001 | 单对象 QUERY | 参数化 SELECT + WHERE + LIMIT |
+| GOLD-SQL-002 | 主键未返回 | SQL 包含隐藏主键，响应不泄露主键 |
+| GOLD-SQL-003 | DIRECT 关系 | 按 sourceFieldId/targetFieldId 生成 JOIN |
+| GOLD-SQL-004 | JUNCTION 关系 | 生成两段桥接 JOIN |
+| GOLD-GQL-001 | GRAPH_EDGE | 使用 Binding 中的 Edge Dataset 生成图查询 |
+| GOLD-WRITE-001 | UPDATE | 条件和影响范围校验通过后执行 |
 
 ---
 
 ## 13. 接入检查清单
 
-### 接口定义
+### 接口
 
 - [ ] 实现 `POST /ontology-access/v1/execute`
-- [ ] 在 OMS 注册服务信息（endpoint、支持的操作/数据源类型）
-- [ ] 鉴权方式已配置
+- [ ] 支持 `multipart/form-data`
+- [ ] 校验 `X-OQL-Version: 1.0`
+- [ ] 校验 `X-Binding-Version: 1.0`
+- [ ] 在 OMS 注册 endpoint、操作类型和数据源类型
 
-### 参数实现
+### Binding
 
-- [ ] OQL 和 Binding 作为两个独立入参接收
-- [ ] 自建 Java Bean 与规范字段 1:1 对应
-- [ ] JSON 反序列化配置忽略未知字段
-- [ ] ConditionNode 多态反序列化正确
-- [ ] 未增加 OQL 顶层字段、operation 或操作符
+- [ ] 支持 `bindingKind`
+- [ ] 对象 PRIMARY Dataset 唯一
+- [ ] 属性 Binding 唯一
+- [ ] 关系 Binding 唯一
+- [ ] 使用 `assetId/assetIds`
+- [ ] 不依赖 `field_ids`
+- [ ] 使用 `parentAssetId` 追溯 Catalog
+- [ ] 主键、Join 键、时序字段已补齐
+- [ ] 明文连接配置未透传
 
-### 翻译实现
+### 翻译
 
-- [ ] 属性→物理字段解析沿 `parentAssetId` 链正确追溯
-- [ ] **所有查询值使用参数化绑定（`?` 占位符）**
-- [ ] 物理表名、列名只从 Binding 获取
+- [ ] FROM/Tag 来源于对象级 PRIMARY Dataset
+- [ ] 物理标识只从 Binding 解析
+- [ ] 查询值全部参数化
+- [ ] datasourceType 通过 Translator Registry 选择翻译器
+- [ ] 隐藏技术字段不进入响应
+
+### 结果
+
 - [ ] rid 稳定、可重复生成
-
-### 安全
-
-- [ ] 写操作检查条件和影响范围
-- [ ] 限制 maxResults 上限
-- [ ] 敏感信息不写入日志
+- [ ] properties 只包含 returns 声明字段
+- [ ] 关系 sourceId/targetId 引用有效 rid
 
 ### 测试
 
-- [ ] 所有条件操作符覆盖
-- [ ] 所有 returns 类型覆盖
-- [ ] SQL 注入防御测试
-- [ ] 契约测试（与 OAC 共同维护）
-- [ ] 黄金语句测试
+- [ ] P0 契约测试通过
+- [ ] 黄金语句测试通过
+- [ ] 注入防御测试通过
+- [ ] 写操作安全测试通过
+- [ ] 历史字段兼容测试通过
 
 ---
 
-## 14. 兼容性
+## 14. 兼容性与平滑升级
 
-| 维度 | 策略 |
-|------|------|
-| OQL 版本 | OAC 不下发业务不支持的版本；当前 OQL 2.0 |
-| Binding 版本 | 通过 `X-Binding-Version` Header 传递 |
-| 前向兼容 | Bean 反序列化配置忽略未知字段，新增可选字段不破坏旧版 |
-| 业务自建 Bean | 规范字段变更时，业务方按新 JSON schema 更新 Bean 定义 |
+### 14.1 版本策略
+
+- 当前 OQL 协议版本固定为 `1.0`；
+- 当前 Binding 协议版本固定为 `1.0`；
+- 小版本演进只允许增加可选字段或新增枚举值；
+- 字段改名、类型变化或语义变化必须升级主版本；
+- OAC 不得向业务服务下发其未注册支持的版本。
+
+### 14.2 双读单写
+
+迁移期允许业务方读取历史字段，但新协议只输出规范字段：
+
+| 历史输入 | 归一化结果 |
+|---|---|
+| `field_ids: ["field_1"]` | `assetId: "field_1"` |
+| `field_ids: ["field_1", "field_2"]` | `assetIds: ["field_1", "field_2"]` |
+| `datasourceId/schemaId/datasetId` | `parentAssetId` |
+| JSON 字符串形式 `primaryKeys` | JSON Array |
+| JSON 字符串形式 `junctionConfig` | JSON Object |
+| JSON 字符串形式 `relationProperties` | JSON Array |
+| `datasourceType: rdb` | 根据注册信息映射为具体产品类型 |
+| `datasourceType: graph` | 根据注册信息映射为具体产品类型 |
+
+约束：
+
+1. OAC 兼容读取历史 Canonical Binding；
+2. OAC 统一转换为 Runtime Binding 1.0；
+3. OAC 对业务服务只输出 Runtime Binding 1.0；
+4. 业务服务可临时保留历史字段反序列化别名，但不得继续生成历史字段；
+5. 历史字段无法唯一转换时返回 `BIND-LEGACY-001`，不得静默猜测。
+
+### 14.3 未知字段和枚举
+
+- 未知可选字段：忽略并记录 debug 日志；
+- 未知必需语义：返回明确错误；
+- 未知枚举：反序列化为 `UNKNOWN`，由业务校验决定是否支持；
+- 不得因为新增展示字段导致旧业务服务不可用。
+
+### 14.4 Binding 缓存
+
+业务服务可使用以下组合缓存解析结果：
+
+```text
+X-Schema-Ref
++ X-Binding-Version
++ X-Binding-Revision
++ alias
+```
+
+当 `X-Binding-Revision` 变化时必须使旧缓存失效。
 
 ---
 
-## 15. 附录：完整请求示例
-
-### HTTP 请求
+## 15. 完整请求示例
 
 ```http
 POST /ontology-access/v1/execute
@@ -1034,101 +1328,19 @@ Content-Type: multipart/form-data
 X-Request-Id: req-001
 X-Tenant-Id: tenant-001
 X-Schema-Ref: fm-alarm-v1
-X-Binding-Version: v0.94
+X-OQL-Version: 1.0
+X-Binding-Version: 1.0
+X-Binding-Revision: 20260728-00015
 ```
 
-### 入参 1：OQL
-
-```json
-{
-  "version": "2.0",
-  "operation": "QUERY",
-  "objects": [{ "objectType": "Alarm", "alias": "a" }],
-  "conditions": {
-    "kind": "GROUP", "relation": "AND",
-    "children": [
-      { "kind": "PREDICATE", "ref": "a", "field": "severity", "operator": "EQ", "values": ["critical"] },
-      { "kind": "PREDICATE", "ref": "a", "field": "occurTime", "operator": "GTE", "values": ["2026-01-01T00:00:00Z"] }
-    ]
-  },
-  "returns": [
-    { "kind": "FIELDS", "ref": "a", "fields": ["alarmId", "alarmName", "severity", "resourceId"] }
-  ],
-  "orders": [{ "ref": "a", "field": "occurTime", "direction": "DESC" }],
-  "maxResults": { "limit": 100, "offset": 0 }
-}
-```
-
-### 入参 2：Binding
-
-```json
-{
-  "a": {
-    "objectTypeContext": {
-      "objectTypeId": "obj_alarm", "name": "Alarm", "primaryKeys": ["alarmId"],
-      "bindings": [{
-        "assetId": "asset_fm_alarm",
-        "assetIds": ["asset_fm_mysql", "asset_fm_schema", "asset_fm_alarm"],
-        "field_ids": ["field_alarm_id", "field_alarm_name", "field_severity", "field_resource_id", "field_occur_time"]
-      }]
-    },
-    "propertyBindings": [
-      { "propertyId": "prop_alarm_id", "propertyName": "alarmId", "dataType": "STRING",
-        "bindings": [{ "bindingId": "pb_001", "assetId": "asset_fm_alarm", "groupId": "default",
-          "assetIds": ["asset_fm_alarm"], "field_ids": ["field_alarm_id"] }] },
-      { "propertyId": "prop_alarm_name", "propertyName": "alarmName", "dataType": "STRING",
-        "bindings": [{ "bindingId": "pb_002", "assetId": "asset_fm_alarm", "groupId": "default",
-          "assetIds": ["asset_fm_alarm"], "field_ids": ["field_alarm_name"] }] },
-      { "propertyId": "prop_severity", "propertyName": "severity", "dataType": "STRING",
-        "bindings": [{ "bindingId": "pb_003", "assetId": "asset_fm_alarm", "groupId": "default",
-          "assetIds": ["asset_fm_alarm"], "field_ids": ["field_severity"] }] },
-      { "propertyId": "prop_resource_id", "propertyName": "resourceId", "dataType": "STRING",
-        "bindings": [{ "bindingId": "pb_004", "assetId": "asset_fm_alarm", "groupId": "default",
-          "assetIds": ["asset_fm_alarm"], "field_ids": ["field_resource_id"] }] },
-      { "propertyId": "prop_occur_time", "propertyName": "occurTime", "dataType": "DATETIME",
-        "bindings": [{ "bindingId": "pb_005", "assetId": "asset_fm_alarm", "groupId": "default",
-          "assetIds": ["asset_fm_alarm"], "field_ids": ["field_occur_time"] }] }
-    ],
-    "catalogContext": {
-      "dataSources": [
-        { "id": "asset_fm_mysql", "parentAssetId": "", "displayName": "FM MySQL", "datasourceType": "rdb" }
-      ],
-      "schemas": [
-        { "id": "asset_fm_schema", "parentAssetId": "asset_fm_mysql", "name": "fm_alarm_db" }
-      ],
-      "datasets": [
-        { "id": "asset_fm_alarm", "parentAssetId": "asset_fm_schema", "name": "t_alarm", "storageType": "ROW", "primaryKeys": "alarm_id" }
-      ],
-      "fields": [
-        { "id": "field_alarm_id", "parentAssetId": "asset_fm_alarm", "name": "alarm_id", "dataType": "VARCHAR(64)" },
-        { "id": "field_alarm_name", "parentAssetId": "asset_fm_alarm", "name": "alarm_name", "dataType": "VARCHAR(128)" },
-        { "id": "field_severity", "parentAssetId": "asset_fm_alarm", "name": "severity", "dataType": "VARCHAR(32)" },
-        { "id": "field_resource_id", "parentAssetId": "asset_fm_alarm", "name": "resource_id", "dataType": "VARCHAR(64)" },
-        { "id": "field_occur_time", "parentAssetId": "asset_fm_alarm", "name": "occur_time", "dataType": "DATETIME" }
-      ]
-    }
-  }
-}
-```
-
-### 翻译输出
-
-```sql
-SELECT alarm_id AS alarmId, alarm_name AS alarmName, severity AS severity, resource_id AS resourceId
-FROM fm_alarm_db.t_alarm a
-WHERE (a.severity = ? AND a.occur_time >= ?)
-ORDER BY a.occur_time DESC
-LIMIT 100
-```
-
-参数：`["critical", "2026-01-01T00:00:00Z"]`
+OQL 和 Binding 参见第 7 章示例。
 
 ---
 
-## 参考规范
+## 16. 参考规范
 
 | 规范 | 说明 |
-|------|------|
-| OAC 业务本体访问接口规范 | OAC→业务服务接口契约 |
-| 数据模型对接本体知识平台规范 v0.94 | Binding 数据结构和建模对接方式 |
-| 本体对象操作语言（OQL）DSL 规范 | OQL 语法完整定义 |
+|---|---|
+| 数据模型对接本体知识平台规范 1.0 | OMS Canonical Binding 查询结构与建模对接方式 |
+| 本体对象操作语言（OQL）DSL 规范 1.0 | OQL 完整语法 |
+| OAC 业务三方定制接口开发规范 1.0 | OAC 到业务服务的 Runtime 接口契约 |
