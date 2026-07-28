@@ -76,15 +76,16 @@ OAC
 POST /ontology-access/v1/execute
 Content-Type: application/json
 ```
+注：接口可以通过模型注册到datasources，覆盖上述的默认路径
 
 ### 2.2 请求头
 
-| Header | 必填 | 说明 |
-|---|:---:|---|
-| `Content-Type` | 是 | 固定为 `application/json` |
-| `X-Request-Id` | 是 | 全链路唯一请求标识 |
-| `X-Tenant-Id` | 条件必填 | 多租户场景必填 |
-| `X-Timeout-Ms` | 否 | 本次执行超时时间，单位毫秒 |
+| Header | 必填 | 说明                                       |
+|---|:---:|------------------------------------------|
+| `Content-Type` | 是 | 固定为 `application/json`                   |
+| `X-Request-Id` | 是 | 全链路唯一请求标识，用于调用链                         |
+| `X-Tenant-Id` | 条件必填 | 多租户场景必填                                  |
+| `X-Timeout-Ms` | 否 | 本次执行超时时间，单位毫秒                            |
 | `Idempotency-Key` | 写操作必填 | `CREATE`、`UPDATE`、`DELETE`、`UPSERT` 的幂等键 |
 
 执行请求版本只由 `request.version` 表达，不增加重复版本 Header。
@@ -153,20 +154,7 @@ Content-Type: application/json
 | `options` | object | 否 | 执行选项 |
 | `extensions` | object | 否 | 已治理扩展；无明确约定时省略 |
 
-禁止字段：
-
-```text
-strict
-schemaRef
-linkQuery
-having
-```
-
-禁止 operation：
-
-```text
-LINK_QUERY
-```
+注：当前阶段先实现**查询**操作
 
 ### 3.2 objects
 
@@ -438,7 +426,7 @@ ID/NAME 字段类型指定函数：
 }
 ```
 
-`limit > 0`，`offset >= 0`；未指定时由 OAC 使用平台默认值。
+`limit > 0`，`offset >= 0`；未指定时由 OAC 使用平台默认值，可以不传limit和offset参数。
 
 ### 3.9 mutation
 
