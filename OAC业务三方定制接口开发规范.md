@@ -1270,7 +1270,6 @@ result=SUCCESS
 
 - OQL 协议版本固定为 `1.0`；
 - Runtime Binding 协议版本固定为 `1.0`；
-- 本版本不定义历史版本迁移、字段转换或双协议并行机制；
 - OAC、OMS 和业务三方服务必须直接按照本规范 1.0 实现；
 - 服务注册中的 `oqlVersions` 和 `bindingVersions` 当前只允许声明 `1.0`。
 
@@ -1288,7 +1287,7 @@ X-Binding-Version == 1.0
 1. 缺少版本 Header 时拒绝请求；
 2. OQL Body 与 Header 版本不一致时返回 `OQL-VERSION-001`；
 3. 不支持的 Binding 版本返回 `BIND-VERSION-001`；
-4. 不允许自动降级、字段别名转换或隐式协议推断；
+4. 不允许字段别名转换或隐式协议推断；
 5. Binding 内容修订通过 `X-Binding-Revision` 标识，不改变协议版本。
 
 ### 14.3 后续版本演进原则
@@ -1319,7 +1318,7 @@ X-Schema-Ref
 + alias
 ```
 
-当 `X-Binding-Revision` 变化时，必须使对应旧缓存失效。
+当 `X-Binding-Revision` 变化时，必须使对应缓存失效。
 
 ---
 
