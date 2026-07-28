@@ -59,7 +59,7 @@ OAC 平台
 5. **物理标识受控**：物理标识只能来自 Binding，禁止从用户输入或 OQL values 构造。
 6. **参数化执行**：条件值必须使用参数绑定，不得直接拼接。
 7. **隐藏技术字段不泄露**：主键、Join 键、分区键等可参与执行，但未在 `returns` 中声明时不得返回。
-8. **前向兼容**：新增字段必须默认为可选；业务方反序列化时必须忽略未知字段。
+8. **扩展字段受控**：1.0 基线之外的新增字段必须为可选字段；业务方反序列化时应忽略未知可选字段。
 9. **结构化字段使用原生 JSON 类型**：数组、对象不得编码成 JSON 字符串。
 10. **敏感配置不透传**：Binding 不携带数据库密码、Token、私钥等敏感连接信息。
 
@@ -331,7 +331,7 @@ OAC 必须在下发业务服务前完成：
 2. 多 Binding 唯一选择；
 3. 本次操作所需属性计算；
 4. Catalog 资产闭包裁剪；
-5. 旧字段归一化；
+5. 结构与类型校验；
 6. 敏感信息剔除。
 
 ### 4.2 顶层结构
@@ -419,7 +419,7 @@ Binding 顶层 Key 为 OQL alias。
 | `propertyId` | 是 | 本体属性 ID |
 | `propertyName` | 是 | 本体属性名，翻译时的关键索引 |
 | `dataType` | 是 | 本体逻辑数据类型 |
-| `bindings` | 是 | 归一化后的物理绑定；无绑定时为 `[]` |
+| `bindings` | 是 | 标准物理绑定；无绑定时为 `[]` |
 | `bindings[].bindingId` | 否 | Binding 记录 ID，用于诊断 |
 | `bindings[].assetId` | 条件 | 单物理字段映射，指向 Field |
 | `bindings[].assetIds` | 条件 | 多物理字段映射，按表达式参数顺序排列 |
@@ -434,7 +434,6 @@ Binding 顶层 Key 为 OQL alias。
 - Catalog 层级路径必须通过 `parentAssetId` 追溯；
 - Runtime Binding 中每个属性必须只有一个有效 `PhysicalBinding`；
 - 无法唯一选择时 OAC 返回 `BIND-AMBIGUOUS-001`；
-- 新协议不得输出 `field_ids`；
 - 业务侧不得按 `bindings[0]` 猜测优先级，只能在数组长度为 1 时使用。
 
 ### 4.5 relationshipContext
@@ -541,7 +540,7 @@ Catalog 统一使用以下层级：
 DataSource → Schema → Dataset → Field
 ```
 
-统一通过 `parentAssetId` 表达父子关系，不使用 `datasourceId`、`schemaId`、`datasetId` 等层级专用父字段。
+统一通过 `parentAssetId` 表达父子关系，不使用层级专用父字段。
 
 #### DataSource
 
@@ -632,7 +631,7 @@ sourceQuery
 4. **按关系裁剪**：只保留当前关系 alias 唯一选中的 `relationBinding`；
 5. **Catalog 闭包裁剪**：保留所引用 Field、Dataset、Schema、DataSource 及完整祖先链；
 6. **敏感字段剔除**：删除明文凭据和非白名单扩展；
-7. **结构归一化**：统一 `parentAssetId`、数组和对象类型；
+7. **结构校验**：校验统一字段名称、JSON 类型和 `parentAssetId` 链；
 8. **唯一性校验**：对象 PRIMARY Dataset、属性 Binding、关系 Binding 均必须唯一。
 
 主键、Join 键等隐藏技术字段可加入物理 SELECT，但最终响应只输出 `returns` 显式声明的属性。
@@ -1136,7 +1135,6 @@ params.add(value);
 | `BIND-REL-001` | 400 | 关系 Binding 缺失 |
 | `BIND-AMBIGUOUS-001` | 400 | 多 Binding 无法唯一选择 |
 | `BIND-ASSET-001` | 400 | Catalog 资产闭包不完整 |
-| `BIND-LEGACY-001` | 400 | 历史字段无法归一化 |
 | `TRANS-001` | 500 | OQL 到物理查询转换失败 |
 | `EXEC-001` | 500 | 物理查询执行失败 |
 | `EXEC-TIMEOUT-001` | 504 | 查询超时 |
@@ -1204,7 +1202,7 @@ result=SUCCESS
 | 安全 | SQL 注入、标识符注入、敏感连接信息 |
 | 写操作 | 幂等、范围限制、无条件删除拦截 |
 | 性能 | 大属性对象裁剪、Catalog 去重、批量请求 |
-| 兼容 | 历史字段读取、未知可选字段忽略 |
+| 扩展性 | 未知可选字段忽略、未知枚举安全处理 |
 
 ### 12.3 黄金语句
 
@@ -1236,7 +1234,6 @@ result=SUCCESS
 - [ ] 属性 Binding 唯一
 - [ ] 关系 Binding 唯一
 - [ ] 使用 `assetId/assetIds`
-- [ ] 不依赖 `field_ids`
 - [ ] 使用 `parentAssetId` 追溯 Catalog
 - [ ] 主键、Join 键、时序字段已补齐
 - [ ] 明文连接配置未透传
@@ -1261,53 +1258,59 @@ result=SUCCESS
 - [ ] 黄金语句测试通过
 - [ ] 注入防御测试通过
 - [ ] 写操作安全测试通过
-- [ ] 历史字段兼容测试通过
+- [ ] 未知可选字段和未知枚举测试通过
 
 ---
 
-## 14. 兼容性与平滑升级
+## 14. 版本基线与演进约束
 
-### 14.1 版本策略
+### 14.1 初始版本基线
 
-- 当前 OQL 协议版本固定为 `1.0`；
-- 当前 Binding 协议版本固定为 `1.0`；
-- 小版本演进只允许增加可选字段或新增枚举值；
-- 字段改名、类型变化或语义变化必须升级主版本；
-- OAC 不得向业务服务下发其未注册支持的版本。
+本规范的 `1.0` 是 OAC 业务三方定制接口的首次正式版本，也是当前唯一有效基线：
 
-### 14.2 双读单写
+- OQL 协议版本固定为 `1.0`；
+- Runtime Binding 协议版本固定为 `1.0`；
+- 不存在历史版本迁移、旧字段转换或双协议并行处理；
+- OAC、OMS 和业务三方服务必须直接按照本规范 1.0 实现；
+- 服务注册中的 `oqlVersions` 和 `bindingVersions` 当前只允许声明 `1.0`。
 
-迁移期允许业务方读取历史字段，但新协议只输出规范字段：
+### 14.2 版本一致性校验
 
-| 历史输入 | 归一化结果 |
-|---|---|
-| `field_ids: ["field_1"]` | `assetId: "field_1"` |
-| `field_ids: ["field_1", "field_2"]` | `assetIds: ["field_1", "field_2"]` |
-| `datasourceId/schemaId/datasetId` | `parentAssetId` |
-| JSON 字符串形式 `primaryKeys` | JSON Array |
-| JSON 字符串形式 `junctionConfig` | JSON Object |
-| JSON 字符串形式 `relationProperties` | JSON Array |
-| `datasourceType: rdb` | 根据注册信息映射为具体产品类型 |
-| `datasourceType: graph` | 根据注册信息映射为具体产品类型 |
+业务服务必须校验以下版本信息一致：
 
-约束：
+```text
+OQL.version == X-OQL-Version == 1.0
+X-Binding-Version == 1.0
+```
 
-1. OAC 兼容读取历史 Canonical Binding；
-2. OAC 统一转换为 Runtime Binding 1.0；
-3. OAC 对业务服务只输出 Runtime Binding 1.0；
-4. 业务服务可临时保留历史字段反序列化别名，但不得继续生成历史字段；
-5. 历史字段无法唯一转换时返回 `BIND-LEGACY-001`，不得静默猜测。
+校验规则：
 
-### 14.3 未知字段和枚举
+1. 缺少版本 Header 时拒绝请求；
+2. OQL Body 与 Header 版本不一致时返回 `OQL-VERSION-001`；
+3. 不支持的 Binding 版本返回 `BIND-VERSION-001`；
+4. 不允许自动降级、字段别名转换或隐式协议推断；
+5. Binding 内容修订通过 `X-Binding-Revision` 标识，不改变协议版本。
 
-- 未知可选字段：忽略并记录 debug 日志；
-- 未知必需语义：返回明确错误；
-- 未知枚举：反序列化为 `UNKNOWN`，由业务校验决定是否支持；
-- 不得因为新增展示字段导致旧业务服务不可用。
+### 14.3 后续版本演进原则
 
-### 14.4 Binding 缓存
+后续如需演进协议，应遵循以下规则：
 
-业务服务可使用以下组合缓存解析结果：
+- 在不改变既有字段语义的前提下，可增加可选字段或新增枚举值；
+- 字段改名、字段类型变化、必填性变化或语义变化属于破坏性变更，必须发布新的主版本规范；
+- 新版本必须通过服务注册显式声明支持范围；
+- OAC 只能向业务服务下发双方均明确支持的版本；
+- 不得在 1.0 报文中混入其他版本专属字段并依赖业务侧猜测处理。
+
+### 14.4 未知字段和枚举处理
+
+- 未知可选字段：忽略，并可记录 debug 日志；
+- 未知必需语义：返回明确的结构或版本错误；
+- 未知枚举：反序列化为 `UNKNOWN`，随后由业务能力校验决定是否拒绝；
+- 不得因为新增展示性可选字段导致反序列化失败。
+
+### 14.5 Binding 缓存
+
+业务服务可使用以下组合缓存 Binding 解析结果：
 
 ```text
 X-Schema-Ref
@@ -1316,7 +1319,7 @@ X-Schema-Ref
 + alias
 ```
 
-当 `X-Binding-Revision` 变化时必须使旧缓存失效。
+当 `X-Binding-Revision` 变化时，必须使对应旧缓存失效。
 
 ---
 
