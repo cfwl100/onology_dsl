@@ -66,6 +66,59 @@ OAC
 物理查询翻译、参数化执行、结果组装
 ```
 
+### 1.5 模块交互时序图
+
+下图说明 Agent、OAC、OMS/本体知识平台、业务三方服务和物理数据源之间的一次完整调用顺序。图中只表达模块职责和调用关系，具体字段约束以正文定义为准。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Agent / 上层应用
+    participant O as OAC
+    participant M as OMS / 本体知识平台
+    participant T as 业务三方服务
+    participant D as 物理数据源
+
+    A->>O: 提交面向 Agent 的标准请求
+    O->>O: 校验语义、引用和 operation
+    O->>M: 查询对象类型 Binding
+    M-->>O: 返回 objectTypes Binding 和 Catalog
+    opt 请求包含 relationships
+        O->>M: 查询关系类型 Binding
+        M-->>O: 返回 relationTypes Binding 和 Catalog
+    end
+    O->>O: 归一化 Catalog 并裁剪最小闭包
+    O->>T: POST /ontology-access/v1/execute，携带 request 和 bindings
+    T->>T: 校验 ExecutionRequest 与 Binding
+    T->>T: 翻译为 SQL / GQL / TQL 等物理语句
+    T->>D: 参数化执行物理查询
+    D-->>T: 返回物理结果
+    T->>T: 按本体属性和 alias 组装结果
+    T-->>O: 返回统一执行结果
+    O-->>A: 返回对象、关系、元数据和错误信息
+```
+
+### 1.6 三方执行流程图
+
+下图说明业务三方服务接收到 `{ request, bindings }` 后的内部处理流程以及主要失败分支。
+
+```mermaid
+flowchart TD
+    A[接收 request 与 bindings] --> B{请求结构和版本校验}
+    B -- 失败 --> E1[返回 REQUEST 类错误]
+    B -- 通过 --> C[建立对象、关系和属性引用闭包]
+    C --> D{Binding 与 Catalog 完整性校验}
+    D -- 失败 --> E2[返回 Binding 或 Catalog 错误]
+    D -- 通过 --> F[选择数据源适配器]
+    F --> G[生成参数化 SQL / GQL / TQL]
+    G --> H{物理执行}
+    H -- 超时或失败 --> E3[返回执行超时或执行错误]
+    H -- 成功 --> I[结果映射与隐藏字段裁剪]
+    I --> J{结果组装}
+    J -- 失败 --> E4[返回结果映射错误]
+    J -- 成功 --> K[返回统一成功响应]
+```
+
 ---
 
 ## 2. 接口定义
