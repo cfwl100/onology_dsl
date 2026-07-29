@@ -88,7 +88,7 @@ sequenceDiagram
         M-->>O: 返回 relationTypes Binding 和 Catalog
     end
     O->>O: 归一化 Catalog 并裁剪最小闭包
-    O->>T: POST /ontology-access/v1/execute<br/>{ request, bindings }
+    O->>T: POST /ontology-access/v1/execute，携带 request 和 bindings
     T->>T: 校验 ExecutionRequest 与 Binding
     T->>T: 翻译为 SQL / GQL / TQL 等物理语句
     T->>D: 参数化执行物理查询
@@ -105,17 +105,17 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     A[接收 request 与 bindings] --> B{请求结构和版本校验}
-    B -- 失败 --> E1[返回 REQUEST_* 错误]
+    B -- 失败 --> E1[返回 REQUEST 类错误]
     B -- 通过 --> C[建立对象、关系和属性引用闭包]
     C --> D{Binding 与 Catalog 完整性校验}
-    D -- 失败 --> E2[返回 BINDING_* 或 CATALOG_NORMALIZE_ERROR]
+    D -- 失败 --> E2[返回 Binding 或 Catalog 错误]
     D -- 通过 --> F[选择数据源适配器]
     F --> G[生成参数化 SQL / GQL / TQL]
     G --> H{物理执行}
-    H -- 超时或失败 --> E3[返回 EXECUTION_TIMEOUT 或 EXECUTION_ERROR]
+    H -- 超时或失败 --> E3[返回执行超时或执行错误]
     H -- 成功 --> I[结果映射与隐藏字段裁剪]
     I --> J{结果组装}
-    J -- 失败 --> E4[返回 RESULT_MAPPING_ERROR]
+    J -- 失败 --> E4[返回结果映射错误]
     J -- 成功 --> K[返回统一成功响应]
 ```
 
