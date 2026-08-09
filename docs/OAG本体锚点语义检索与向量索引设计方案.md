@@ -1,6 +1,6 @@
 # OAG 面向本体锚点的语义检索、混合排序与本体子图构建设计方案
 
-> 版本：V5.0  
+> 版本：V5.1  
 > 目标：在保留既有 OAG 索引设计、Anchor/Evidence 模型、DataSync 分工、混合召回、RRF、LLM 精排和三类子图策略的基础上，结合当前代码真实实现，形成一份可直接指导研发落地、灰度演进、性能评测和下游 Cypher 生成的完整方案。  
 > 设计原则：**Anchor First，Evidence for Anchor，Evidence for Cypher，Core Graph 与 Semantic Extension 分离，兼容现状、渐进增强。**
 
@@ -204,7 +204,6 @@ Enum Value
 Enum Alias
 Enum Description
 Instance Value
-Instance Value Alias
 业务黑话
 ```
 
@@ -302,7 +301,6 @@ aliases     = ObjectType / Property 同义词
 | `ENUM_VALUE` | 枚举真实值 | Property |
 | `ENUM_ALIAS` | 枚举值同义词 | Property |
 | `INSTANCE_VALUE` | 语义实例列值 | Property |
-| `INSTANCE_ALIAS` | 实例值同义词 | Property |
 
 所有 Evidence 至少保存：
 
@@ -316,7 +314,7 @@ anchor_name
 parent_name
 evidence_value
 canonical_value
-aliases
+aliases  # 仅 Metadata Evidence 使用；Instance Evidence 不使用
 ```
 
 ---
@@ -336,7 +334,7 @@ Evidence
 |---|---|---|---|
 | `{ontology_id}_anchor` | OAG | ObjectType / Property | 万～百万 |
 | `{ontology_id}_metadata_evidence` | OAG | Alias / Enum | 万～百万 |
-| `{ontology_id}_instance_evidence` | DataSync | Instance Value / Alias | 百万～千万/亿 |
+| `{ontology_id}_instance_evidence` | DataSync | Instance Value | 百万～千万/亿 |
 
 这一设计同时保留历史逻辑通道：
 
@@ -346,7 +344,6 @@ Object / Property synonym
 Enum value
 Enum synonym
 Instance semantic value
-Instance value synonym
 ```
 
 但不再为每一种逻辑通道创建一张独立物理表。
@@ -394,9 +391,14 @@ DataSync 负责：
 读取 is_semantic=true Property
 访问实际数据源
 DISTINCT / 标准化实例值
-实例值同义词
 写 Instance Evidence
 ```
+
+约束：
+
+> **Instance Evidence 仅保存真实 DISTINCT 实例值，不设计 Alias 类型。**
+
+实例值的语义改写由 Query Understanding、Embedding 与全文检索承担，不额外构造实例 Alias 资产。
 
 流程：
 
@@ -765,7 +767,7 @@ Owner：DataSync。
 |---|---|
 | `vector` | 实例语义向量 |
 | `evidence_ID` | 稳定唯一键 |
-| `evidence_type` | INSTANCE_VALUE / INSTANCE_ALIAS |
+| `evidence_type` | 固定 `INSTANCE_VALUE` |
 | `anchor_ID` | Property ID |
 | `anchor_type` | 固定 1 |
 | `parent_ID` | ObjectType ID |
@@ -774,13 +776,20 @@ Owner：DataSync。
 | `evidence_value` | 实际 DISTINCT Value |
 | `normalized_value` | 标准化值 |
 | `canonical_value` | 默认等于真实 Value |
-| `aliases` | 实例值同义词 |
 | `term_language` | 语言 Hint |
 | `content` | Embedding 文本 |
 | `content_hash` | 增量判断 |
 | `data_version` | 数据同步版本 |
 
 Instance 与 Metadata Evidence 字段逻辑一致，但物理表必须分开。
+
+与 Metadata Evidence 不同，Instance Evidence **不存在 Alias 子类型**：
+
+```text
+evidence_type = INSTANCE_VALUE
+```
+
+同一个 `normalized_value` 在同一 `anchor_ID` 下只保留一条 DISTINCT Evidence。
 
 ---
 
@@ -857,7 +866,6 @@ Document / RAG Index
 
 ```text
 {instance_value}
-{instance_aliases}
 {optional property display}
 {optional property description}
 ```
@@ -1009,7 +1017,6 @@ DataSync 额外检查：
 distinct_count
 高基数
 无意义随机串
-Instance Alias 冲突
 ```
 
 ---
@@ -2453,7 +2460,7 @@ Semantic Extensions：
 ObjectType → Alias
 Property → Alias
 Property → Enum Value / Alias
-Property → matched Instance Value / Alias
+Property → matched Instance Value
 ```
 
 它们不参与图算法。
@@ -3222,6 +3229,7 @@ legacy / fallback / reuse implementation
 
 ---
 
+
 # 81. 图遍历方向与边类型策略
 
 子图“连通性搜索”和最终 Cypher “关系方向”是两个不同问题，必须分开处理。
@@ -3355,6 +3363,7 @@ LLM 每个 Unit 最多选择 3~5
 ---
 
 # 84. 设计中不应出现的误区
+
 
 ## 误区1
 
