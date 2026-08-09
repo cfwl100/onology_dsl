@@ -1,6 +1,6 @@
 # OAG 面向本体锚点的语义检索与混合索引设计方案
 
-> 版本：V3  
+> 版本：V3.1  
 > 核心目标：所有检索能力最终服务于 **ObjectType / Property 本体元数据锚点的精准识别**，并同时保留同义词、枚举值、实例值与锚点之间的映射，为后续本体子图构建和 Cypher 生成提供充分依据。
 
 ---
@@ -1918,30 +1918,249 @@ canonical_value
 
 ---
 
-# 38. TopK 策略
+# 38. TopK 与 similarityThreshold 分表配置策略
 
-不建议：
+## 38.1 结论
+
+`topK` 与 `similarityThreshold` **需要按物理表 / 检索通道独立可配置**，不建议对以下三类索引长期共用一套固定参数：
+
+```text
+Anchor
+Metadata Evidence
+Instance Evidence
+```
+
+原因是三类数据的：
+
+```text
+数据规模
+文本长度
+语义密度
+歧义程度
+向量距离分布
+ANN 索引类型
+误召回成本
+```
+
+均不同。尤其 Instance Evidence 可能达到千万 / 亿级，其相似度分布和性能约束与元数据表明显不同。
+
+因此不推荐：
+
+```text
+所有表统一：
+topK = 3
+similarityThreshold = 0.6
+```
+
+更推荐：
+
+```text
+每张表独立配置
++
+系统级默认值作为兼容兜底
+```
+
+## 38.2 为什么 topK 必须分表
+
+### Anchor
+
+Anchor 的最终目标是召回 ObjectType / Property。一个业务短语本身就可能对应多个合理 Property，例如“发生时间”可能同时命中多个时间属性，因此需要优先保证 Recall。
+
+如果固定：
 
 ```text
 topK = 3
 ```
 
-作为粗排固定值。
+可能在图连通性和 Rerank 之前就过早丢掉正确 Anchor。
 
-建议初始基线：
+### Metadata Evidence
+
+Alias / Enum 数量通常比 Anchor 多，而且同一个短语可能通过多个 Evidence 映射到同一个 Anchor，因此粗排阶段也需要保留足够候选，然后再：
 
 ```text
-每个 Semantic Unit / Channel：
-TopK = 10 ~ 20
-
-Anchor 聚合后：
-20 ~ 50
-
-Rerank 后：
-3 ~ 10
+Evidence
+ → anchor_ID
+ → GROUP BY anchor_ID
 ```
 
-实际值通过评测确定。
+### Instance Evidence
+
+Instance Evidence 数据量可能达到千万 / 亿级，若 TopK 过大，会明显增加：
+
+```text
+ANN 查询成本
+网络传输
+Anchor 聚合数量
+Rerank Token
+误召回噪声
+```
+
+因此 Instance Evidence 的 TopK 通常应比 Anchor / Metadata Evidence 更保守，或者在已有 `anchor_ID / parent_ID` Hint 时优先做过滤后的二阶段检索。
+
+## 38.3 为什么 similarityThreshold 必须分表
+
+Cosine Similarity 的分数不能理解成跨数据集统一概率。
+
+即使都使用相同 Embedding 模型，不同表的 Content 结构不同：
+
+```text
+Anchor：name + display + alias + description
+Metadata Evidence：value + alias + description + 弱 Property Context
+Instance Evidence：大量短 Value / Alias + 可选 Property Context
+```
+
+因此不同表的正样本 / 负样本相似度分布可能明显不同。
+
+例如统一使用：
+
+```text
+similarityThreshold = 0.6
+```
+
+可能出现：
+
+```text
+Anchor：阈值过高 → 漏掉业务改写后的正确 Property
+Metadata Evidence：基本合适
+Instance Evidence：阈值过低 → 超大规模实例值产生大量噪声
+```
+
+所以 `0.6` 可以作为第一版兼容默认值，但不能作为三类表长期共用的固定最优阈值。
+
+## 38.4 推荐配置模型
+
+建议配置结构：
+
+```yaml
+semanticRetrieval:
+  defaults:
+    topK: 3
+    similarityThreshold: 0.6
+
+  anchor:
+    topK: 10
+    similarityThreshold: 0.6
+
+  metadataEvidence:
+    topK: 10
+    similarityThreshold: 0.6
+
+  instanceEvidence:
+    topK: 5
+    similarityThreshold: 0.6
+```
+
+说明：
+
+- `defaults`：兼容当前代码默认值，表级未配置时继承；
+- `anchor.topK=10`：第一阶段优先保 Anchor Recall；
+- `metadataEvidence.topK=10`：允许多个 Evidence 回收到 Anchor 后再聚合；
+- `instanceEvidence.topK=5`：先控制超大实例索引的噪声和性能；
+- 三类 `similarityThreshold` 初始仍可统一使用 `0.6`，但必须支持独立覆盖。
+
+以上数值只是**第一版工程起始值，不是模型固定最优值**。最终参数必须由评测集确定。
+
+## 38.5 similarityThreshold 的应用顺序
+
+推荐执行顺序：
+
+```text
+ANN TopK Recall
+    ↓
+按当前表 similarityThreshold 过滤
+    ↓
+Evidence → anchor_ID
+    ↓
+Anchor 聚合
+    ↓
+Rerank
+```
+
+注意 Exact / Keyword 命中不应该受到 Dense `similarityThreshold` 限制：
+
+```text
+Exact Hit
+ → 强候选
+
+Dense Hit
+ → similarityThreshold Filter
+```
+
+否则用户直接输入真实 ObjectType、Property、Enum Value 或实例值时，可能因为向量分数不足被错误过滤。
+
+## 38.6 参数作用域
+
+推荐参数优先级：
+
+```text
+请求级 Override
+    > 表级配置
+        > 系统 defaults
+```
+
+但不建议继续让 LLM 直接输出底层 `slot_top_k_overrides`。
+
+如确有业务场景需要动态调大候选，可由 OAG 根据：
+
+```text
+Semantic Unit importance
+Query 是否多对象
+是否已有 ObjectType Hint
+是否存在 Exact Hit
+当前索引规模
+```
+
+选择预定义的检索 Profile，例如：
+
+```text
+NORMAL
+HIGH_RECALL
+INSTANCE_RESTRICTED
+```
+
+而不是让 LLM 任意控制具体 TopK 数字。
+
+## 38.7 阈值校准方法
+
+对三类表分别准备正负样本：
+
+```text
+Query → 正确 Anchor / Evidence
+Query → 困难负样本
+```
+
+分别统计：
+
+```text
+正样本 cosine score 分布
+负样本 cosine score 分布
+Recall@K
+Precision@K
+MRR
+最终 Anchor Recall
+```
+
+阈值选择应优先服务最终目标：
+
+> **正确 ObjectType / Property Anchor 是否进入 Rerank 候选集。**
+
+而不是追求三张表使用相同的 cosine 分数标准。
+
+建议至少维护：
+
+```text
+anchor.topK
+anchor.similarityThreshold
+
+metadataEvidence.topK
+metadataEvidence.similarityThreshold
+
+instanceEvidence.topK
+instanceEvidence.similarityThreshold
+```
+
+并把最终配置纳入性能与准确率基线测试。
 
 ---
 
@@ -2215,6 +2434,7 @@ CypherValueMappingAccuracy
 18. **Relation / junctionConfig 在本体子图阶段提供，不需要塞进向量表。**
 19. **seedNodes 建议增加 Parent ObjectType 和 Evidence Mapping。**
 20. **最终提供 Anchor + Evidence + Relation 三类上下文给 LLM 生成 Cypher。**
+21. **`topK` 与 `similarityThreshold` 按 Anchor / Metadata Evidence / Instance Evidence 独立可配置；系统 `3 / 0.6` 仅作为兼容默认值，最终参数通过各表评测集独立校准。**
 
 ---
 
