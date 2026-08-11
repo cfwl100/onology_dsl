@@ -1,208 +1,151 @@
-# OAG 面向本体锚点的语义检索、混合排序与本体子图构建设计方案
+# OAG 面向本体种子节点的语义检索、混合排序与本体子图构建设计方案
 
-> 版本：V5.3  
-> 目标：在保留既有 OAG 索引设计、Anchor/Evidence 模型、DataSync 分工、混合召回、RRF、LLM 精排、三类子图策略和 Bulk Import 设计的基础上，统一“最终检索目标”语义：ObjectType、Property、同义词、枚举值、实例列值均可作为最终检索结果，同时携带其 ObjectType / Property 上下文，为子图构建和下游 Cypher 生成提供完整、准确、可解释的语义依据。  
-> 设计原则：**Semantic Match First，Anchor Context Always，Evidence Preserved，RRF Anchor-Group Fusion，Core Graph 与 Semantic Extension 分离，兼容现状、渐进增强。**
+> 版本：V5.4  
+> 目标：在不丢失既有索引、Bulk Import、混合召回、RRF、LLM 精排和子图算法设计的基础上，统一术语、收敛字段、重排章节，并保持与 OAG 现有种子节点表结构兼容。  
+> 核心决策：**ObjectType/Property = 种子节点；Alias/Enum/Instance = 语义元素；所有记录自身主键统一为 `id`；每个 Semantic Unit 默认 6 路一次 Weighted RRF。**
 
 ---
 
-# 1. 文档目标与设计边界
+## 文档结构
 
-OAG 的向量检索、OpenSearch 全文检索、同义词检索、枚举值检索、实例列值检索，以及后续的 RRF、LLM 精排和图算法，需要区分两个概念：
+1. 设计目标、术语与总体架构  
+2. 数据模型与索引结构  
+3. 索引构建与 DataSync Bulk Import  
+4. Query Understanding 与 6 路召回  
+5. LLM 精排与最终检索结果  
+6. 种子节点投影与本体子图构建  
+7. 性能、配置、可观测性、评测与迁移  
+
+> 本次章节整理将原 V5.3 的 116 个一级章节完整归并到以上 7 个主章节；已有 Bulk Import、三类子图算法、GraphTopologyCache、性能/评测/灰度等信息均保留，只做术语、字段和执行顺序上的收敛。
+
+---
+
+# 1. 设计目标、术语与总体架构
+
+
+## 1.1 设计目标与边界
+
+OAG 同时承担三类能力：索引构建、语义检索和本体子图构建。为了减少概念数量，本方案统一使用以下三个业务概念：
 
 ```text
-最终检索结果（Retrieval Result）
-        ≠
-子图构建锚点（Graph Anchor）
+种子节点（Seed Node）
+  = ObjectType / Property
+
+语义元素（Semantic Element）
+  = ObjectType/Property 同义词、Enum Value/Alias、Instance Value/Alias
+
+检索结果（Retrieval Result）
+  = 命中的种子节点或语义元素本身 + ObjectType / Property 上下文
 ```
 
-OAG 的最终检索目标包括两类。
+需要明确：
 
-## 1.1 本体结构目标
+```text
+最终检索结果
+        ≠
+图算法输入
+```
+
+最终检索目标包括：
 
 ```text
 ObjectType
 Property
-```
-
-它们本身既是最终检索结果，也是子图构建所使用的 Anchor。
-
-## 1.2 语义值目标
-
-以下对象**本身也是最终检索结果**，不能在命中后只保留 Anchor 而丢弃实际命中项：
-
-```text
-ObjectType Alias / 同义词
-Property Alias / 同义词
+ObjectType Alias
+Property Alias
 Enum Value
-Enum Alias / 枚举值同义词
-Instance Value / 实例列值
-Instance Alias / 实例值同义词
+Enum Alias
+Instance Value
+Instance Alias
 ```
 
-因此，本方案只明确排除以下内容作为最终业务检索结果：
+其中 ObjectType / Property 本身就是种子节点；Alias / Enum / Instance 属于语义元素。语义元素命中后不能只返回其所属 Property，而必须保留语义元素本身。
+
+例如：
 
 ```text
-底层 Vector Document 的物理文档身份
-OpenSearch 内部 Document 身份
-RRF 分数本身
-ANN/BM25 原始 score 本身
-```
-
-这些只是检索实现细节或排序证据。
-
-最终检索结果统一定义为：
-
-> **Matched Semantic Item + ObjectType / Property Anchor Context。**
-
-也就是说，当检索命中 Alias、Enum、Instance Value 时，结果中必须同时保留：
-
-```text
-命中的语义项本身
-item_id / evidence_ID
-item_type / evidence_type
-matched_value
-canonical_value
-aliases（如有）
-
-+
-
-所属 ObjectType
-所属 Property（对象级 Alias 场景可为空）
-anchor_ID
-parent_ID
-```
-
-### ObjectType / Object Alias
-
-```text
-matched item
+用户：正式用户
    ↓
-ObjectType Context
-```
-
-### Property / Property Alias
-
-```text
-matched item
-   ↓
-Property Context
-   ↓
-Parent ObjectType Context
-```
-
-### Enum / Instance Value / Alias
-
-```text
-matched value / alias
-   ↓
-canonical_value
-   ↓
-Property Context
-   ↓
-ObjectType Context
-```
-
-例如用户查询：
-
-```text
-正式用户
-```
-
-最终结果可以是：
-
-```text
-target_type     = ENUM_ALIAS
-matched_value   = FORMAL
+命中：ENUM_ALIAS = FORMAL
 canonical_value = 1
-Property        = Subscriber.subClass
-ObjectType      = Subscriber
+   ↓
+所属 Property：Subscriber.subClass
+所属 ObjectType：Subscriber
 ```
 
-这里 `FORMAL` 本身就是最终检索目标；`Subscriber.subClass` 和 `Subscriber` 是该结果必须携带的本体上下文，同时也是后续子图构建的 Anchor 来源。
+最终返回 `FORMAL` 本身，同时携带 `Subscriber.subClass + Subscriber`。随后子图构建阶段只提取 ObjectType / Property 作为种子节点。
 
-因此完整目标是：
+本方案只排除以下内容作为业务检索结果：
 
-> **准确返回用户真正命中的本体元素或语义值本身，同时携带确定性的 ObjectType / Property 映射；随后仅将 ObjectType / Property 投影为 Graph Anchor 构建本体子图。**
+```text
+底层 Vector 文档物理身份
+OpenSearch 内部 _id
+ANN distance / BM25 _score / RRF score 本身
+```
 
----
+这些只属于检索实现和排序信息。
 
-# 2. 完整端到端架构
+
+## 1.2 端到端总体架构
 
 ```mermaid
 flowchart TD
-    Q[用户原始问题] --> QU[Query Understanding<br/>Semantic Phrase Extraction]
-    QU --> U[Semantic Units]
+    Q[用户原始问题] --> QU[Query Understanding<br/>Semantic Units]
 
-    subgraph RET[阶段1：多路召回]
-      U --> AE[Anchor Exact/BM25]
-      U --> AV[Anchor Dense]
-      U --> ME[Metadata Evidence Exact/BM25]
-      U --> MV[Metadata Evidence Dense]
-      U --> IE[Instance Evidence Exact/BM25]
-      U --> IV[Instance Evidence Dense]
+    subgraph RET[每个 Semantic Unit 的 6 路召回]
+      QU --> SL[种子节点 OpenSearch<br/>Exact/BM25]
+      QU --> SD[种子节点 Dense<br/>GaussVector]
+      QU --> ML[元数据语义元素 OpenSearch<br/>Exact/BM25]
+      QU --> MD[元数据语义元素 Dense<br/>GaussVector]
+      QU --> IL[实例语义元素 OpenSearch<br/>Exact/BM25]
+      QU --> ID[实例语义元素 Dense<br/>GaussVector]
     end
 
-    AE --> N[SemanticCandidateNormalizer<br/>Matched Item + Anchor Context]
-    AV --> N
-    ME --> N
-    MV --> N
-    IE --> N
-    IV --> N
+    SL --> N[SeedCandidateNormalizer]
+    SD --> N
+    ML --> N
+    MD --> N
+    IL --> N
+    ID --> N
 
-    N --> RRF[Aggregator<br/>Weighted RRF by anchor_ID]
-    RRF --> COARSE[Anchor Group 粗排<br/>保留 Matched Items]
+    N --> RRF[Weighted RRF<br/>一次融合 6 条 Ranked List]
+    RRF --> COARSE[种子节点分组粗排<br/>保留具体语义元素]
 
     Q --> RC[RerankContextBuilder]
-    U --> RC
     COARSE --> RC
-    RC --> LLM[LLM Fine Ranker<br/>预置提示词]
-    LLM --> MATCH[Final Semantic Matches<br/>Anchor / Alias / Enum / Instance]
+    QU --> RC
+    RC --> LLM[LLM Fine Ranker]
+    LLM --> RESULT[Final Retrieval Results]
 
-    MATCH --> AP[GraphAnchorProjector<br/>提取 ObjectType / Property]
-    AP --> AN[Anchor Normalization<br/>Property补Parent ObjectType]
-    AN --> SG[SubgraphBuilder]
+    RESULT --> SP[SeedNodeProjector]
+    SP --> SG[SubgraphBuilder]
+    SG --> CORE[Ontology Core Subgraph]
 
-    SG --> MIN[minimal]
-    SG --> KH[khop]
-    SG --> CMP[component]
-
-    MIN --> CORE[Ontology Core Subgraph]
-    KH --> CORE
-    CMP --> CORE
-
-    MATCH --> EXT[ExtensionAssembler]
+    RESULT --> EXT[Semantic Extension Assembler]
     CORE --> EXT
-    EXT --> OUT[Retrieval Results<br/>+ Ontology Subgraph<br/>+ Semantic Extensions]
-    OUT --> CYPHER[下游 LLM / Cypher Generation]
+    EXT --> OUT[检索结果 + 本体子图 + 语义扩展]
+    OUT --> CYPHER[下游 LLM / Cypher]
 ```
 
-运行阶段划分：
+运行阶段统一为：
 
 ```text
 阶段0：索引构建 / Bulk Import
-阶段1：Semantic Unit 多路召回
-阶段2：Matched Item 保留 + Anchor Context 归一化 + RRF 粗排
-阶段3：LLM 精排，得到 Final Semantic Matches
-阶段4：Final Semantic Matches → ObjectType / Property Graph Anchors
-阶段5：Anchor Normalization
-阶段6：本体子图构建
-阶段7：Semantic Extension 上下文扩展
-阶段8：下游 Cypher 生成
+阶段1：Query Understanding / Semantic Units
+阶段2：6 路召回
+阶段3：一次 Weighted RRF 粗排
+阶段4：LLM 精排
+阶段5：检索结果 → 种子节点投影
+阶段6：minimal / khop / component 子图构建
+阶段7：语义扩展与 Cypher 上下文组装
 ```
 
-关键边界：
+核心边界：
 
-```text
-RRF / LLM 的业务输出：语义项本身 + Anchor Context
-Graph Algorithm 的输入：ObjectType / Property Anchor
-```
+> **检索层返回“命中的对象本身”，图算法只消费 ObjectType / Property 种子节点。**
 
-Enum、Alias、Instance Value 可以是最终检索结果，但不直接作为 Core Graph 的路径节点。
 
----
-
-# 3. 与当前 OAG 代码的兼容基线
+## 1.3 与现有 OAG 代码的兼容基线
 
 当前代码已经形成以下主链路：
 
@@ -234,7 +177,7 @@ includeFunctions = 0
 includeActions = 0
 ```
 
-V5.3 不要求一次性替换现有链路，而是在现有类和接口上渐进演进：
+V5.4 不要求一次性替换现有链路，而是在现有类和接口上渐进演进：
 
 ```text
 现有 getSeedIds()
@@ -243,7 +186,7 @@ SearchDispatcher
     ↓
 SemanticCandidateNormalizer
     ↓
-Weighted RRF Anchor Groups
+Weighted RRF 种子节点分组
     ↓
 LLM Fine Ranker
     ↓
@@ -253,12 +196,12 @@ Final Semantic Matches
     ├─ Enum Value / Alias
     └─ Instance Value / Alias
     ↓
-GraphAnchorProjector
+SeedNodeProjector
     ↓
-Final Graph Anchors
+最终图构建种子节点
 ```
 
-现有 `seedIds` / `seedNodes` 仍然可以作为**图构建锚点兼容字段**保留，但不能再代表完整检索结果；完整检索结果由新增的 `retrievalResults` 表达。
+现有 `seedIds` / `seedNodes` 仍然可以作为**图构建种子节点兼容字段**保留，但不能再代表完整检索结果；完整检索结果由新增的 `retrievalResults` 表达。
 
 现有 `subgraphQuery()`：
 
@@ -270,437 +213,252 @@ minimal / khop / component
 内部支持 legacy / enhanced 两套算法
 ```
 
-因此本次调整不改变三种图算法的边界，只改变“检索输出是什么”以及“何时投影成 Anchor”。
+因此本次调整不改变三种图算法的边界，只改变“检索输出是什么”以及“何时投影成 种子节点”。
 
 ---
 
-# 4. 核心设计原则
 
-## 4.1 Semantic Match First，Anchor Context Always
+## 1.4 核心设计原则
 
-最终检索结果的主身份不再统一强制为 `anchor_ID`。
+### 设计原则 1：种子节点是图构建语义，不是所有检索结果的唯一身份
 
-推荐统一定义：
+ObjectType / Property 统一称为**种子节点**。Alias / Enum / Instance 统一称为**语义元素**。
+
+所有物理表的 `id` 都表示“当前记录自身的 ID”：
 
 ```text
-直接命中 ObjectType / Property：
-item_id = anchor_ID
-
-命中 Alias / Enum / Instance：
-item_id = evidence_ID
+种子节点表：id = ObjectType / Property 的本体 ID
+元数据表：id = Alias / Enum 元素自身 ID
+实例表：id = Instance Value / Alias 元素自身 ID
 ```
 
-但是所有结果必须携带稳定的 Anchor Context：
+语义元素通过：
 
 ```text
-anchor_ID
-anchor_type
-parent_ID
-ObjectType Context
-Property Context（适用时）
+parent_id
 ```
 
-因此：
+指向所属种子节点。
+
+### 设计原则 2：Matched Item 必须保留
+
+语义元素命中后：
 
 ```text
-anchor_ID
+不能：语义元素 → Property → 丢弃语义元素
 ```
 
-继续作为：
+必须返回：
 
 ```text
-RRF 聚合组键
-跨通道去重键
-本体映射键
-Graph Anchor 投影键
-```
-
-但不再是所有最终检索结果唯一的业务主键。
-
-## 4.2 Evidence 既是检索目标，也是 Anchor 映射载体
-
-以下信息统一属于 Evidence：
-
-```text
-ObjectType Alias
-Property Alias
-Enum Value
-Enum Alias
-Enum Description
-Instance Value
-Instance Alias
-业务黑话
-```
-
-Evidence 命中后必须同时满足两个要求：
-
-```text
-1. Evidence 本身可作为最终检索结果返回
-2. Evidence 必须能确定性反向定位 ObjectType / Property Anchor
-```
-
-不能再采用：
-
-```text
-Evidence 命中
- → 映射 Anchor
- → 丢弃 Evidence 本身
-```
-
-## 4.3 Evidence for Cypher
-
-Evidence 命中不能在映射为 Anchor 后被丢弃。
-
-下游还需要：
-
-```text
-evidence_ID
-evidence_type
-evidence_value
-canonical_value
-aliases
-enum_ref
-matched_phrase
-ObjectType Context
-Property Context
-```
-
-其中：
-
-```text
-Enum / Instance Alias → canonical_value
-```
-
-直接决定下游过滤条件是否能使用真实业务值。
-
-## 4.4 Core Graph 与 Semantic Match 分离
-
-真实本体拓扑中参与最短路径 / K-hop / 连通分量的节点主要是：
-
-```text
-ObjectType
-Property
-Relation
-以及按配置扩展的 Function / Action
-```
-
-而：
-
-```text
-FORMAL
-VIP
-Mobile Number
-Subscriber category
-```
-
-可以是最终检索结果，但**不作为 Core Graph 的最短路径节点**。
-
-它们通过：
-
-```text
-Final Semantic Match
-   ↓ Anchor Projector
-ObjectType / Property
-```
-
-进入图算法。
-
-## 4.5 召回保 Recall，RRF 保组级公平，精排保语义目标准确，子图保最小充分
-
-```text
-多路召回：宁可多召回真实语义项
-RRF：按 Anchor Group 跨通道稳健融合，避免 Evidence 数量偏置
-LLM：选择真正命中的具体语义项，并验证 Anchor Context
-Graph：仅使用投影后的 ObjectType / Property 构图
-```
-
-## 4.6 同一结果同时服务“检索解释”和“图构建”
-
-最终命中：
-
-```text
-matched item
+语义元素自身 id/type/name/canonical_value
 +
-ObjectType / Property context
+所属 Property / ObjectType 上下文
 ```
 
-既可以告诉上层“到底命中了什么”，又可以直接给 GraphAnchorProjector 提供确定性的构图入口。
+### 设计原则 3：RRF 按种子节点分组，组内保留具体元素
 
----
+RRF 的公平性单位是种子节点：
 
-# 5. Anchor 与 Evidence 逻辑模型
+```text
+种子节点命中：分组 ID = hit.id
+语义元素命中：分组 ID = hit.parent_id
+```
 
-## 5.1 Anchor
+这样同一个 Property 即使拥有大量 Alias / Enum / Instance，也不会因为元素数量多而被重复加分。
 
-当前 Anchor 类型：
+### 设计原则 4：Core Graph 与语义元素分离
+
+```text
+图算法：ObjectType / Property / Relation
+语义扩展：Alias / Enum / Instance
+```
+
+语义元素可以是最终检索结果，但不直接作为最短路径、K-hop、Connected Component 的拓扑节点。
+
+### 设计原则 5：召回保 Recall，RRF 保公平，LLM 保 Precision，Graph 保最小充分
+
+```text
+多路召回：宁可多召回
+RRF：稳定融合不同引擎排序
+LLM：结合原始问题和上下文做语义裁决
+Graph：只返回支持推理/Cypher 的必要拓扑
+```
+
+
+# 2. 数据模型与索引结构
+
+
+## 2.1 种子节点与语义元素模型
+
+### 种子节点
+
+当前种子节点只包括：
 
 ```text
 type = 0：ObjectType
 type = 1：Property
 ```
 
-未来可扩展：
+Relation / Function / Action / Metric 仍保留为未来可扩展类型，但**当前不进入种子节点主表的 0/1 类型定义**；Function/Action 继续按后文扩展能力返回。
+
+种子节点物理记录统一使用现有 OAG 字段：
 
 ```text
-Relation
-Function
-Action
-Metric
+vector
+type
+id
+name
+display_zh
+display_en
+description_zh
+description_en
 ```
 
-当前索引主表仍保持 `0/1`，避免破坏既有实现。
-
-Anchor 字段语义：
+其中：
 
 ```text
-ID          = 本体元素全局唯一 ID，即 anchor_ID
-type        = 0 ObjectType / 1 Property
-parent_ID   = Property 所属 ObjectType ID
-name        = 本体真实名称
-display_*   = 多语言显示名
-description_*= 多语言描述
-aliases     = ObjectType / Property 同义词
+id = 本体元素全局唯一 ID
 ```
 
-直接命中 Anchor 时：
+不再引入另一套种子节点/语义元素主键概念，统一使用 `id`。
+
+### 语义元素
+
+语义元素包括：
+
+| 类型 | 含义 | parent_id 指向 |
+|---|---|---|
+| `OBJECT_ALIAS` | ObjectType 同义词 | ObjectType 种子节点 |
+| `PROPERTY_ALIAS` | Property 同义词 | Property 种子节点 |
+| `ENUM_VALUE` | 枚举真实值 | Property 种子节点 |
+| `ENUM_ALIAS` | 枚举值同义词 | Property 种子节点 |
+| `INSTANCE_VALUE` | 实例列值 | Property 种子节点 |
+| `INSTANCE_ALIAS` | 实例值同义词 | Property 种子节点 |
+
+语义元素不再使用旧的多组 ID/Type 映射字段。字段统一简化为：
 
 ```text
-item_id   = ID
-item_type = OBJECT_TYPE / PROPERTY
+id          当前语义元素自身 ID
+type        当前语义元素类型
+parent_id   所属种子节点 ID
+name        当前可检索字符串
+canonical_value 真实业务值，可空
 ```
 
-## 5.2 Evidence
+### 统一检索结果
 
-推荐 `evidence_type`：
-
-| evidence_type | 含义 | 最终检索类型 | Anchor Context |
-|---|---|---|---|
-| `OBJECT_ALIAS` | ObjectType 同义词 | `OBJECT_ALIAS` | ObjectType |
-| `PROPERTY_ALIAS` | Property 同义词 | `PROPERTY_ALIAS` | Property + ObjectType |
-| `ENUM_VALUE` | 枚举真实值 | `ENUM_VALUE` | Property + ObjectType |
-| `ENUM_ALIAS` | 枚举值同义词 | `ENUM_ALIAS` | Property + ObjectType |
-| `INSTANCE_VALUE` | 语义实例列值 | `INSTANCE_VALUE` | Property + ObjectType |
-| `INSTANCE_ALIAS` | 实例值同义词 | `INSTANCE_ALIAS` | Property + ObjectType |
-
-所有 Evidence 至少保存：
-
-```text
-evidence_ID
-evidence_type
-anchor_ID
-anchor_type
-parent_ID
-anchor_name
-parent_name
-evidence_value
-canonical_value
-aliases
-```
-
-Evidence 的 `anchor_ID` 表示所属 ObjectType / Property，不表示 Evidence 自身被 Anchor 替代。
-
-## 5.3 Final Retrieval Item
-
-统一的最终检索结果建议使用以下逻辑模型：
+OAG 对上层统一返回：
 
 ```json
 {
-  "semanticUnitId": "u1",
-  "itemId": "evidence-or-anchor-id",
-  "targetType": "ENUM_ALIAS",
-  "matchedValue": "FORMAL",
-  "canonicalValue": "1",
+  "id": "enum-alias-id",
+  "type": "ENUM_ALIAS",
+  "name": "FORMAL",
+  "canonical_value": "1",
   "objectType": {
-    "ID": "subscriber-object-id",
+    "id": "subscriber-object-id",
     "name": "Subscriber"
   },
   "property": {
-    "ID": "subClass-property-id",
+    "id": "subClass-property-id",
     "name": "subClass"
   },
-  "anchor_ID": "subClass-property-id",
-  "rrfScore": 0.071,
-  "rerankScore": 0.97,
-  "matchSource": "METADATA_EVIDENCE"
+  "source": "METADATA",
+  "rrf_score": 0.071,
+  "rerank_score": 0.97
 }
 ```
 
-字段约束：
+ObjectType / Object Alias 场景 `property` 可为空；其余 Property/Enum/Instance 场景必须补齐 Property + ObjectType。
+
+`type` 的使用约定：
 
 ```text
-OBJECT_TYPE / OBJECT_ALIAS
-  → objectType 必填，property 可空
-
-PROPERTY / PROPERTY_ALIAS / ENUM_* / INSTANCE_*
-  → objectType 必填，property 必填
+物理表：使用 INT 枚举，保证现有表结构和存储效率
+OAG API：适配为 OBJECT_TYPE / PROPERTY / ENUM_ALIAS 等字符串，提升可读性
 ```
 
-这样上层不需要再次根据 `evidence_ID` 查询才能知道该值属于哪个对象和属性。
+因此不再增加多套平行的类型字段；物理表只保留一个 `type`。
 
----
 
-# 6. 物理索引划分
+## 2.2 三类物理索引划分
 
-逻辑上是：
+逻辑上只保留三类数据：
 
 ```text
-Anchor
-Evidence
+种子节点
+元数据语义元素
+实例语义元素
 ```
 
-物理上拆成三类：
+物理上继续三表/三索引隔离：
 
-| 物理表 / Index | Owner | 数据 | 典型规模 |
-|---|---|---|---|
-| `{ontology_id}_anchor` | OAG | ObjectType / Property | 万～百万 |
-| `{ontology_id}_metadata_evidence` | OAG | Alias / Enum | 万～百万 |
-| `{ontology_id}_instance_evidence` | OAG（DataSync 提供数据） | Instance Value / Alias | 百万～千万/亿 |
+| 逻辑类型 | 推荐物理表/Index | Owner | 数据 | 典型规模 |
+|---|---|---|---|---|
+| 种子节点 | `{ontology_id}_anchor`（现有物理名可继续兼容） | OAG | ObjectType / Property | 万～百万 |
+| 元数据语义元素 | `{ontology_id}_metadata_evidence`（现有物理名可继续兼容） | OAG | Alias / Enum | 万～百万 |
+| 实例语义元素 | `{ontology_id}_instance_evidence`（现有物理名可继续兼容） | OAG，DataSync 提供数据 | Instance Value / Alias | 百万～千万/亿 |
 
-这一设计同时保留历史逻辑通道：
+> 文档语义统一使用“种子节点/元数据语义元素/实例语义元素”；现有物理表名为了兼容代码和存量索引可以暂不修改。
+
+三类数据保持物理隔离的原因：
 
 ```text
-Object / Property canonical
-Object / Property synonym
-Enum value
-Enum synonym
-Instance semantic value
-Instance value synonym
+规模差异
+更新频率差异
+ANN 算法差异
+数据 Owner 差异
+检索 TopK / 阈值差异
 ```
 
-但不再为每一种逻辑通道创建一张独立物理表。
 
----
+## 2.3 GaussVector 种子节点表结构
 
-# 7. OAG 与 DataSync 分工
-
-## 7.1 OAG：元数据层
-
-OAG 负责：
-
-```text
-ObjectType
-Property
-ObjectType Alias
-Property Alias
-Enum Type
-Enum Value
-Enum Alias
-多语言 display / description
-```
-
-流程：
-
-```text
-OMS / 本体模型
-  ↓
-OAG Metadata Reader
-  ↓
-Anchor Builder
-  ├─ GaussVector Anchor
-  └─ OpenSearch Anchor
-
-Metadata Evidence Builder
-  ├─ GaussVector Metadata Evidence
-  └─ OpenSearch Metadata Evidence
-```
-
-## 7.2 DataSync：实例数据生产层
-
-DataSync 负责：
-
-```text
-读取 is_semantic=true Property
-访问实际数据源
-DISTINCT / 基础标准化实例值
-整理真实业务存在的实例值同义词
-建立实例数据与本体 Property / ObjectType 的映射
-生成 Import Package（Manifest + Data Files）
-通过 File / MinIO 交付 OAG
-```
-
-DataSync 不负责：
-
-```text
-Embedding
-GaussVector / OpenSearch 物理索引写入
-ANN 索引构建
-Evidence 物理表结构
-索引 Generation 发布
-```
-
-`INSTANCE_VALUE` 与 `INSTANCE_ALIAS` 均是合法的 Instance Evidence，并且两者本身都可以成为最终 `retrievalResults`。
-
-流程：
-
-```text
-Property Metadata
-  ↓
-is_semantic eligibility
-  ↓
-Data Source
-  ↓
-DISTINCT / Normalize / Alias整理 / Statistics
-  ↓
-Import Package
-  ↓ File / MinIO
-OAG BulkImportService
-  ↓
-Instance Evidence Builder
-  ↓
-Embedding
-  ├─ GaussVector
-  └─ OpenSearch
-```
-
-## 7.3 统一关联键
-
-```text
-ontology_id
-anchor_ID  = Property ID
-parent_ID  = ObjectType ID
-```
-
-DataSync 不维护独立的本体语义主键体系。
-
----
-
-# 8. GaussVector Anchor 表结构
-
-推荐表：
+推荐沿用现有 OAG 种子节点表结构，不扩展无必要字段：
 
 ```text
 {ontology_id}_anchor
 ```
 
-| # | 字段名称 | 字段类型 | 是否非空 | 说明 |
-|---|---|---|---|---|
-| 1 | `vector` | `DOUBLE[]` | ✔ | 本体元素向量 |
-| 2 | `type` | `INT` | ✔ | 0 ObjectType，1 Property |
-| 3 | `ID` | `VARCHAR(256 CHAR)` | ✔ | 本体元素全局唯一 ID |
-| 4 | `parent_ID` | `VARCHAR(256 CHAR)` |  | type=1 时记录父 ObjectType ID |
-| 5 | `name` | `VARCHAR(256 CHAR)` | ✔ | 本体真实名称 |
-| 6 | `display_en` | `VARCHAR(512 CHAR)` |  | 英文显示名 |
-| 7 | `display_zh` | `VARCHAR(512 CHAR)` |  | 中文显示名 |
-| 8 | `description_en` | `VARCHAR(1024 CHAR)` |  | 英文描述 |
-| 9 | `description_zh` | `VARCHAR(1024 CHAR)` |  | 中文描述 |
-| 10 | `aliases` | `TEXT` |  | 同义词 JSON Array |
-| 11 | `i18n_content` | `TEXT` |  | 西语等扩展语言 |
-| 12 | `content` | `TEXT` | ✔ | 实际 Embedding 文本 |
-| 13 | `normalized_name` | `VARCHAR(512 CHAR)` |  | 规范化 name |
-| 14 | `content_hash` | `VARCHAR(64 CHAR)` |  | 判断内容是否变化 |
-| 15 | `model_version` | `VARCHAR(128 CHAR)` |  | Embedding 模型版本 |
-| 16 | `source_version` | `VARCHAR(128 CHAR)` |  | 本体版本 |
-| 17 | `updated_at` | `BIGINT` |  | 更新时间 |
+| 字段 | 类型 | 非空 | 说明 |
+|---|---|---|---|
+| `vector` | `DOUBLE[]` | ✔ | 1024 维向量 |
+| `type` | `INT` | ✔ | 0 ObjectType，1 Property |
+| `id` | `VARCHAR(256 CHAR)` | ✔ | 本体元素全局唯一 ID |
+| `name` | `VARCHAR(256 CHAR)` | ✔ | 本体真实名称 |
+| `display_zh` | `VARCHAR(512 CHAR)` |  | 中文显示名 |
+| `display_en` | `VARCHAR(512 CHAR)` |  | 英文显示名 |
+| `description_zh` | `VARCHAR(1024 CHAR)` |  | 中文描述 |
+| `description_en` | `VARCHAR(1024 CHAR)` |  | 英文描述 |
 
-关键约束：
+示例：
 
-> `ID` 就是 `anchor_ID`，不做 Hash。
+| vector | type | id | name | display_zh | display_en | description_zh | description_en |
+|---|---|---|---|---|---|---|---|
+| `[0.123, -0.456, ...]` | 0 | `dtmi:com:huawei:ict:Cell:1.0` | `Cell` | 无线小区 | Cell | 通信网络中的小区实体 | Cell in communication network |
+| `[0.789, 0.234, ...]` | 1 | `dtmi:com:huawei:ict:throughput:1.0` | `throughput` | 吞吐量 | Throughput | 小区吞吐量指标 | Cell throughput metric |
 
----
+明确去除以下种子节点表字段：
 
-# 9. Anchor Vector 内容
+```text
+normalized_name
+content_hash
+model_version
+source_version
+updated_at
+parent_id
+aliases
+i18n_content
+content
+```
 
-当前代码基础结构：
+Property → ObjectType 映射由本体 `has_property` 关系和 `GraphTopologyCache` 提供，不在种子节点向量表重复存储。
+
+
+## 2.4 种子节点 Vector 内容
+
+种子节点向量只表达种子节点自身语义，Embedding 输入在 OAG 内存中临时组装，不要求持久化 `content` 字段：
 
 ```text
 {name}
@@ -710,319 +468,239 @@ DataSync 不维护独立的本体语义主键体系。
 {description_en}
 ```
 
-V5.3 保持兼容并增强为：
-
-```text
-{name}
-{display_zh}
-{display_en}
-{aliases}
-{description_zh}
-{description_en}
-{other_i18n_display_description}
-```
-
-当前 BGE-M3 向量维度沿用：
+当前 BGE-M3 向量维度继续沿用：
 
 ```text
 1024
 ```
 
-当前代码 Embedding 批处理和失败重试机制可以继续保留，例如：
+同义词已经作为独立的元数据语义元素建索引，因此不再把全部 Alias 拼进种子节点向量，避免同一个检索目标在两类索引中重复表达。
+
+Embedding 批大小、重试次数属于 OAG 工程配置，不进入物理表 Schema。
+
+
+## 2.5 多语言向量设计
+
+当前核心物理表仅保留中英文显示名和描述：
 
 ```text
-batch size = 30
-retry = 3
+display_zh / display_en
+description_zh / description_en
 ```
 
-具体数值作为工程配置，不作为协议约束。
-
----
-
-# 10. 多语言向量设计
-
-## 10.1 默认策略：同一语义目标，多语言共用一个 Vector
-
-若以下内容描述同一个 Anchor：
+同一记录默认生成一个多语言向量：
 
 ```text
-中文名称
-英文名称
-西语名称
-中文描述
-英文描述
-西语描述
-多语言 Alias
+name + 中文 + 英文
 ```
 
-默认构成一个 Global Multilingual Semantic Profile。
+不按语言拆成多条种子节点记录，避免同一 `id` 占用多个 TopK 位置。
 
-例如：
+如果未来评测证明某语言 Recall 明显不足，可以增加 Shadow Vector，但必须满足：
 
 ```text
-Subscriber
-用户
-Subscriber
-Mobile Number; Number; Mobile Phone
-用户实体，代表服务的实际使用者...
-Subscriber entity representing...
-Suscriptor ...
+Shadow Vector 只是内部索引副本
+最终仍按同一记录 id 去重
+不改变业务返回结构
 ```
 
-只生成一个 Anchor Vector。
+其他语言可在后续 Schema 版本中扩展，不在当前兼容表中增加 `i18n_content`。
 
-判断标准不是：
+
+## 2.6 Property Vector 是否带 ObjectType
+
+Property Dense 向量默认不增加 ObjectType 名称前缀：
 
 ```text
-有多少语言
-```
-
-而是：
-
-> **是否描述同一个 Anchor / Evidence。**
-
-## 10.2 不允许跨目标拼接
-
-不推荐：
-
-```text
-Property
-+ 全部 Enum
-+ 全部 Instance
-+ 其他 Property
-```
-
-因为语义目标已经改变。
-
-## 10.3 Shadow Vector
-
-只有评测证明某语言 Recall 明显下降时，才允许可选增加：
-
-```text
-global vector
-zh shadow vector
-en shadow vector
-es shadow vector
-```
-
-Shadow Vector 必须最终 GROUP BY 同一 `anchor_ID`，避免 TopK 被同一 Anchor 多语言副本占满。
-
----
-
-# 11. Property Vector 是否带 ObjectType
-
-默认：
-
-> **Property Vector 第一行只使用 Property 自身 name，不把 ObjectType 名称作为固定前缀。**
-
 推荐：
-
-```text
-subClass
-用户类别
-Subscriber category
-...
+throughput
+吞吐量
+Throughput
+小区吞吐量指标
+Cell throughput metric
 ```
 
 不推荐默认：
 
 ```text
-Subscriber
-subClass
+Cell
+throughput
 ...
 ```
 
 原因：
 
-1. 用户经常只表达 Property 概念；
-2. ObjectType 前缀会改变主向量语义重心；
-3. 同名 Property 的消歧应交给 `parent_ID + Query Context + Rerank + Graph`；
-4. 当前实际子图中同一自然语言短语可以对应多个不同对象下的同名/近义 Property，应该允许 Recall 后再消歧。
+1. 用户经常只表达属性概念；
+2. ObjectType 前缀容易改变向量语义重心；
+3. 同名 Property 的消歧由原始问题、其他 Semantic Units、LLM 精排和本体关系完成；
+4. Property → ObjectType 映射由拓扑缓存提供，不需要依赖向量文本恢复。
 
-若评测显示同名 Property 冲突严重，可增加可选 Shadow Vector：
+如果评测显示同名 Property 冲突严重，可增加内部 Shadow Vector，但最终仍回到同一 Property `id`。
 
-```text
-主向量：
-Property自身语义
 
-上下文Shadow：
-Property + Parent ObjectType
-```
+## 2.7 OpenSearch 种子节点索引
 
----
-
-# 12. OpenSearch Anchor 索引
-
-推荐 Index：
+推荐 OpenSearch 种子节点 Index 与 GaussVector 核心字段保持一致：
 
 ```text
 {ontology_id}_anchor
 ```
 
-| # | 字段 | 类型 | 非空 | 说明 |
-|---|---|---|---|---|
-| 1 | `content` | `text` | ✔ | 与 Vector content 一致 |
-| 2 | `type` | `integer` | ✔ | 0 ObjectType / 1 Property |
-| 3 | `ID` | `keyword` | ✔ | 本体全局 ID |
-| 4 | `parent_ID` | `keyword` |  | 父 ObjectType |
-| 5 | `name` | `keyword` | ✔ | 本体真实名称 |
-| 6 | `display_en` | `keyword` |  | 英文显示名 |
-| 7 | `display_zh` | `keyword` |  | 中文显示名 |
-| 8 | `description_en` | `keyword` + `text` |  | 英文描述 |
-| 9 | `description_zh` | `keyword` + `text` |  | 中文描述 |
-| 10 | `aliases` | `keyword` + `text` |  | 同义词 |
-| 11 | `normalized_name` | `keyword` |  | 规范化名称 |
-| 12 | `i18n_content` | `text` |  | 扩展语言 |
-| 13 | `source_version` | `keyword` |  | 本体版本 |
+| 字段 | OpenSearch 类型 | 说明 |
+|---|---|---|
+| `type` | `integer` | 0 ObjectType / 1 Property |
+| `id` | `keyword` | 本体元素 ID |
+| `name` | `keyword` + `text` | 真实名称，支持 Exact/BM25 |
+| `display_zh` | `keyword` + `text` | 中文显示名 |
+| `display_en` | `keyword` + `text` | 英文显示名 |
+| `description_zh` | `text` | 中文描述 |
+| `description_en` | `text` | 英文描述 |
 
-职责优先级：
+明确不保留：
 
 ```text
-ID/name/alias exact
-> phrase/BM25
-> content fallback
+normalized_name
+source_version
+content
+i18n_content
 ```
 
----
+检索优先级建议：
 
-# 13. Metadata Evidence 表结构
+```text
+id/name/display exact
+> name/display phrase/BM25
+> description BM25
+```
 
-推荐：
+字段规范化由 OpenSearch normalizer/analyzer 完成，不额外增加 `normalized_name`。
+
+
+## 2.8 元数据语义元素表结构
+
+元数据语义元素包括：ObjectType/Property 同义词、Enum Value、Enum Alias。
+
+推荐物理表保持简单：
 
 ```text
 {ontology_id}_metadata_evidence
 ```
 
-| # | 字段 | 类型 | 非空 | 说明 |
-|---|---|---|---|---|
-| 1 | `vector` | `DOUBLE[]` | ✔ | Evidence 向量 |
-| 2 | `evidence_ID` | `VARCHAR(512 CHAR)` | ✔ | Evidence 唯一键 |
-| 3 | `evidence_type` | `INT` | ✔ | Alias / Enum 类型 |
-| 4 | `anchor_ID` | `VARCHAR(256 CHAR)` | ✔ | 映射 ObjectType / Property |
-| 5 | `anchor_type` | `INT` | ✔ | 0 ObjectType / 1 Property |
-| 6 | `parent_ID` | `VARCHAR(256 CHAR)` |  | Property 所属 ObjectType |
-| 7 | `anchor_name` | `VARCHAR(256 CHAR)` | ✔ | Property/ObjectType 真实 name |
-| 8 | `parent_name` | `VARCHAR(256 CHAR)` |  | ObjectType name |
-| 9 | `evidence_value` | `VARCHAR(4096 CHAR)` | ✔ | 当前可检索字符串 |
-| 10 | `normalized_value` | `VARCHAR(4096 CHAR)` |  | 规范化值 |
-| 11 | `canonical_value` | `VARCHAR(4096 CHAR)` |  | 枚举真实值 |
-| 12 | `aliases` | `TEXT` |  | Alias 集合 |
-| 13 | `enum_ref` | `VARCHAR(256 CHAR)` |  | 枚举引用 |
-| 14 | `description` | `TEXT` |  | 多语言描述 |
-| 15 | `term_language` | `VARCHAR(16 CHAR)` |  | zh/en/es/mixed/und |
-| 16 | `content` | `TEXT` | ✔ | Embedding 文本 |
-| 17 | `content_hash` | `VARCHAR(64 CHAR)` |  | 内容变化检测 |
-| 18 | `source_version` | `VARCHAR(128 CHAR)` |  | 本体版本 |
+| 字段 | 类型 | 非空 | 说明 |
+|---|---|---|---|
+| `vector` | `DOUBLE[]` | ✔ | 语义元素向量 |
+| `type` | `INT` | ✔ | 0 OBJECT_ALIAS，1 PROPERTY_ALIAS，2 ENUM_VALUE，3 ENUM_ALIAS |
+| `id` | `VARCHAR(512 CHAR)` | ✔ | 当前具体元素自身 ID |
+| `parent_id` | `VARCHAR(256 CHAR)` | ✔ | 所属种子节点 ID |
+| `name` | `VARCHAR(4096 CHAR)` | ✔ | 当前可检索字符串 |
+| `canonical_value` | `VARCHAR(4096 CHAR)` |  | Enum Alias 对应真实值；非枚举可空 |
+| `description_zh` | `TEXT` |  | 中文描述 |
+| `description_en` | `TEXT` |  | 英文描述 |
 
----
-
-# 14. Metadata Evidence Vector 规则
-
-Enum / Alias 主向量：
+相比旧模型，明确删除重复/冗余概念：
 
 ```text
-{value}
-{aliases}
-{description_zh/en/es}
-{optional property display/description}
+多组 ID/Type 映射字段
+父级名称冗余字段
+normalized_value
+content_hash
+source_version
 ```
 
-原则：
-
-> **Value First，Property Context Last，Mapping in Metadata。**
-
-不默认以：
+映射规则：
 
 ```text
-ObjectType: ...
-Property: ...
+OBJECT_ALIAS.parent_id   → ObjectType.id
+PROPERTY_ALIAS.parent_id → Property.id
+ENUM_VALUE.parent_id     → Property.id
+ENUM_ALIAS.parent_id     → Property.id
 ```
 
-作为向量开头。
+Enum 定义引用不再作为向量表必备字段；如精排/Cypher 需要完整 EnumType 信息，OAG 根据当前语义元素 `id + parent_id` 从 OMS 元数据缓存补充，避免在每条向量记录重复保存 `enum_ref`。
 
-### Enum 被多个 Property 复用
+ObjectType 上下文在运行时通过 Property → ObjectType 拓扑补齐。
 
-若一个 EnumType 被多个 Property 引用，不能只创建：
+
+## 2.9 元数据语义元素 Vector 规则
+
+元数据语义元素 Dense 内容坚持“元素本身优先”：
 
 ```text
-enum_id + enum_value
+{name}
+{canonical_value（适用时）}
+{description_zh}
+{description_en}
 ```
 
-一个全局语义文档。
+不默认在向量开头拼接 ObjectType / Property 名称，避免父级上下文压过实际 Alias/Enum 语义。
 
-必须建立**Property Context Mapping**：
+如果同一个 Enum 被多个 Property 复用，应为每个 Property 建立独立语义元素记录：
 
 ```text
-shared enum value
-    ↓
-Property A anchor_ID
-Property B anchor_ID
-...
+id 唯一
+parent_id = 对应 Property.id
 ```
 
-可共享 `enum_value_source_id`，但 Evidence 文档的 Anchor Mapping 必须是 Property-specific。
+这样相同枚举值可以在不同 Property 上分别召回和精排，而不会丢失 Property 归属。
 
----
 
-# 15. evidence_ID 设计
+## 2.10 统一 id 设计
 
-`anchor_ID` 直接使用本体 ID。
+所有记录统一使用字段名 `id`，不再引入其他平行 ID 字段。
 
-`evidence_ID` 若源模型有唯一 ID，直接复用。
-
-若没有唯一 ID，推荐稳定构造：
+ID 规则：
 
 ```text
-{anchor_ID}::{evidence_type}::{source_key}
+种子节点：直接使用 OMS 中 ObjectType / Property 全局 ID
+元数据语义元素：优先使用源模型中该 Alias/Enum 元素的稳定 ID
+实例语义元素：优先使用 DataSync 提供的稳定元素 ID
+```
+
+如果源数据没有独立 ID，则由 OAG 稳定构造：
+
+```text
+{parent_id}::{type}::{source_key}
 ```
 
 例如：
 
 ```text
-PropertyID::ENUM_VALUE::SubClass::1
-PropertyID::ENUM_ALIAS::SubClass::1::FORMAL
+PropertyId::ENUM_VALUE::SubClass::1
+PropertyId::ENUM_ALIAS::SubClass::1::FORMAL
+PropertyId::INSTANCE_VALUE::VIP
+PropertyId::INSTANCE_ALIAS::VIP::高价值客户
 ```
 
-只有 `source_key` 过长或含数据库不适合作为 Key 的字符时，可对 `source_key` 局部 Hash。
+只允许在 `source_key` 过长时局部 Hash，不对种子节点 `id` 做 Hash。
 
-禁止对 `anchor_ID` 再 Hash。
 
----
+## 2.11 实例语义元素表结构
 
-# 16. Instance Evidence 表
-
-推荐：
+实例语义元素物理表：
 
 ```text
 {ontology_id}_instance_evidence
 ```
 
-Owner：OAG（DataSync 通过 Bulk Import 提供实例数据与本体映射）。
+Owner：OAG；DataSync 通过 Bulk Import 提供数据。
 
-| 字段 | 说明 |
-|---|---|
-| `vector` | 实例语义向量 |
-| `evidence_ID` | 稳定唯一键 |
-| `evidence_type` | INSTANCE_VALUE / INSTANCE_ALIAS |
-| `anchor_ID` | Property ID |
-| `anchor_type` | 固定 1 |
-| `parent_ID` | ObjectType ID |
-| `anchor_name` | Property name |
-| `parent_name` | ObjectType name |
-| `evidence_value` | 实际 DISTINCT Value |
-| `normalized_value` | 标准化值 |
-| `canonical_value` | 默认等于真实 Value |
-| `aliases` | 实例值同义词 |
-| `term_language` | 语言 Hint |
-| `content` | Embedding 文本 |
-| `content_hash` | 增量判断 |
-| `data_version` | 数据同步版本 |
+推荐与元数据语义元素保持同构：
 
-Instance 与 Metadata Evidence 字段逻辑一致，但物理表必须分开。
+| 字段 | 类型 | 非空 | 说明 |
+|---|---|---|---|
+| `vector` | `DOUBLE[]` | ✔ | 实例语义向量 |
+| `type` | `INT` | ✔ | 0 INSTANCE_VALUE，1 INSTANCE_ALIAS |
+| `id` | `VARCHAR(512 CHAR)` | ✔ | 当前具体元素自身 ID |
+| `parent_id` | `VARCHAR(256 CHAR)` | ✔ | 所属 Property.id |
+| `name` | `VARCHAR(4096 CHAR)` | ✔ | 实例值或实例同义词 |
+| `canonical_value` | `VARCHAR(4096 CHAR)` | ✔ | 真实业务值；INSTANCE_VALUE 时通常等于 name |
+| `description_zh` | `TEXT` |  | 可选业务描述 |
+| `description_en` | `TEXT` |  | 可选业务描述 |
 
----
+`INSTANCE_ALIAS` 保留真实业务支持。Alias 本身是独立检索目标，通过 `canonical_value` 映射到真实实例值。
 
-# 17. Instance Value 向量准入规则
+
+## 2.12 Instance Value 向量准入规则
 
 `is_semantic=true` 是必要条件，不是充分条件。
 
@@ -1036,7 +714,7 @@ semantic_enabled =
   AND cardinality_eligible
 ```
 
-## 17.1 只索引 DISTINCT Value
+### 只索引 DISTINCT Value
 
 例如：
 
@@ -1045,9 +723,9 @@ semantic_enabled =
 subLevel 只有 VIP/GOLD/SILVER/NORMAL
 ```
 
-只生成 4 组 Value Evidence，而不是 5000 万个向量。
+只生成 4 组 Value 语义元素，而不是 5000 万个向量。
 
-## 17.2 默认不向量化
+### 默认不向量化
 
 以下值通常不进入 Dense：
 
@@ -1063,7 +741,7 @@ UUID
 
 它们仍可在 OpenSearch keyword / 数据源查询中精确处理。
 
-## 17.3 适合向量化
+### 适合向量化
 
 ```text
 产品名称
@@ -1075,9 +753,9 @@ UUID
 人可理解业务分类
 ```
 
-## 17.4 高基数自由文本
+### 高基数自由文本
 
-高基数自然语言长文本不应无限进入 Instance Evidence。
+高基数自然语言长文本不应无限进入 Instance 语义元素。
 
 建议进入单独的：
 
@@ -1085,137 +763,109 @@ UUID
 Document / RAG Index
 ```
 
-而不是本体 Anchor Resolver 的 Instance Value Index。
+而不是本体 种子节点 Resolver 的 Instance Value Index。
 
 ---
 
-# 18. Instance Vector 内容
 
-推荐：
+## 2.13 实例语义元素 Vector 内容
+
+实例语义元素 Dense 内容：
 
 ```text
-{instance_value}
-{instance_aliases}
-{optional property display}
-{optional property description}
+{name}
+{canonical_value}
+{description_zh}
+{description_en}
 ```
 
-仍然坚持：
+坚持：
 
-> **Value First，Property Context Last。**
+> **Value First，Property Context 不写入向量主文本。**
 
-Property/ObjectType 映射完全依赖：
+Property 归属使用 `parent_id` 确定，ObjectType 归属由本体拓扑补齐，而不是从向量文本解析。
 
-```text
-anchor_ID
-parent_ID
-```
 
-而不是依赖向量文本解析。
+## 2.14 OpenSearch 语义元素索引
 
----
-
-# 19. OpenSearch Evidence Index
-
-Metadata / Instance 两个物理 Index 均建议：
+Metadata / Instance 两个 OpenSearch Index 使用与对应 GaussVector 表一致的业务字段：
 
 ```text
-content           text
-evidence_ID       keyword
-evidence_type     integer
-anchor_ID         keyword
-anchor_type       integer
-parent_ID         keyword
-anchor_name       keyword
-parent_name       keyword
-evidence_value    keyword + text
-normalized_value  keyword
-canonical_value   keyword
-aliases           keyword + text
-enum_ref          keyword
-description       text
-term_language     keyword
-source_version    keyword
+type             integer
+id               keyword
+parent_id        keyword
+name             keyword + text
+canonical_value  keyword + text
+description_zh   text
+description_en   text
 ```
 
 Exact Priority：
 
 ```text
-evidence_value.keyword
-normalized_value
-canonical_value
-aliases.keyword
-anchor_name
+id
+name.keyword
+canonical_value.keyword
 ```
 
----
-
-# 20. 规范化规则
-
-所有可检索字符串保留原值，并额外生成：
+BM25：
 
 ```text
-normalized_name
-normalized_value
+name
+description_zh
+description_en
 ```
 
-推荐标准化：
+不再保留：
+
+```text
+normalized_value
+source_version
+content
+aliases 数组
+```
+
+Alias 已经作为独立语义元素记录，不需要再在同一文档中重复存一个 Alias 数组。
+
+
+## 2.15 规范化规则
+
+规范化属于索引构建/查询处理逻辑，不增加额外持久化字段。
+
+推荐在写入和查询侧使用一致规则：
 
 ```text
 trim
 Unicode normalize
-casefold（仅用于 normalized field）
+casefold（适用语言）
 连续空白归一
 全半角归一
 ```
 
-禁止直接覆盖原始值，因为 Cypher 和业务展示仍需要原始 Canonical Value。
+原始 `name` 和 `canonical_value` 始终保留；OpenSearch 通过 normalizer/analyzer 实现 Exact/BM25 规范化，GaussVector 在生成 Embedding 文本前使用相同基础规范化。
 
----
 
-# 21. term_language 与 language_hint
+## 2.16 language_hint 与语言处理
 
-对于：
+为了减少持久化字段，当前物理表**不保存 `term_language`**。
 
-```text
-FORMAL
-IOT_FORMAL
-Subscriber
-subClass
-A001
-```
-
-无法可靠归类为自然语言的 Token：
+查询理解阶段可以输出：
 
 ```text
-term_language = und
+language_hint = zh / en / mixed / und
 ```
 
-对于混合短语：
+它只用于：
 
 ```text
-FORMAL用户
+OpenSearch analyzer 选择/Boost
+可观测性
+LLM Context
 ```
 
-可标：
+Dense 检索不使用语言强过滤。对于 `FORMAL / IOT_FORMAL / A001` 等无法可靠判断语言的 Token，统一视为 `und`，不增加持久化字段。
 
-```text
-mixed
-```
-
-Language 仅作为：
-
-```text
-可观测
-Analyzer Hint
-Ranking Boost
-```
-
-不作为 Dense 强过滤条件。
-
----
-
-# 22. 数据质量治理
+## 2.17 数据质量治理
 
 OAG 元数据同步阶段必须检查：
 
@@ -1223,7 +873,7 @@ OAG 元数据同步阶段必须检查：
 Alias 与 Canonical 重复
 Alias 重复
 同一 ObjectType 下 Property Alias 冲突
-一个 Alias 映射多个不相关 Anchor
+一个 Alias 映射多个不相关 种子节点
 Enum Ref 不存在
 Enum Value 重复
 Enum Alias 冲突
@@ -1236,7 +886,7 @@ Parent ObjectType 缺失
 ```text
 不能静默覆盖
 必须可观测
-必要时阻断当前 Evidence 入库
+必要时阻断当前 语义元素 入库
 ```
 
 DataSync 额外检查：
@@ -1252,9 +902,17 @@ Instance Alias 冲突
 
 ---
 
-# 23. 增量索引与幂等
 
-Anchor / Evidence 建议维护：
+## 2.18 增量索引与幂等
+
+所有表以 `id` 做幂等 UPSERT / DELETE 主键。
+
+```text
+同 id UPSERT → 覆盖当前记录
+同 id DELETE → 删除 GaussVector + OpenSearch 对应记录
+```
+
+不在记录中保留：
 
 ```text
 content_hash
@@ -1263,29 +921,23 @@ source_version
 updated_at
 ```
 
-更新策略：
+版本和构建信息统一放到 OAG 的 Import Job / Generation 元数据，不进入每条向量记录。
+
+Embedding 模型升级时：
 
 ```text
-content 无变化
- → 不重新 Embedding
-
-仅 Metadata 非向量字段变化
- → 只更新 Metadata
-
-Embedding 模型变化
- → 按 model_version 重建 Vector
-
-本体删除
- → 删除 Anchor + 对应 Metadata Evidence
- → OAG 清理对应 Instance Evidence / Generation
- → 必要时通知 DataSync 停止后续该 Property 数据同步
+创建新的 Generation
+→ 全量重新 Embedding
+→ Verify
+→ 原子发布
 ```
 
----
+如果未来需要“内容未变化则跳过 Embedding”，可以作为 OAG 内部缓存优化实现，但不扩展业务表 Schema。
 
-# 24. GaussVector 索引算法
 
-Anchor / Metadata Evidence：
+## 2.19 GaussVector 索引算法
+
+种子节点 / Metadata 语义元素：
 
 ```text
 GsIVFFLAT
@@ -1310,7 +962,7 @@ IVF_NLIST = 4 * sqrt(N)
 N = 当前物理表实际记录数
 ```
 
-Instance Evidence：
+Instance 语义元素：
 
 ```text
 中小规模 → GsIVFFLAT
@@ -1321,3045 +973,148 @@ Metadata 与 Instance 分表的一个核心原因就是允许 ANN 算法独立�
 
 ---
 
-# 25. Query Understanding：LLM 不是普通分词器
 
-LLM 应执行：
+# 3. 索引构建与 DataSync Bulk Import
 
-> **Semantic Phrase Extraction**
 
-而不是按词法逐词拆分。
+## 3.1 OAG 与 DataSync 职责边界
 
-错误：
+### OAG
 
-```text
-FORMAL
-用户
-Mobile
-Number
-```
-
-推荐主单元：
-
-```text
-FORMAL用户
-Mobile Number
-```
-
-必要时可同时保留辅助短语：
-
-```text
-FORMAL用户
-FORMAL
-用户
-Mobile Number
-```
-
-但完整业务短语优先。
-
----
-
-# 26. Query Understanding 推荐结构
-
-兼容现有：
-
-```json
-{
-  "main_object": "Cell",
-  "aggregation": "sum",
-  "objectType": ["Type1"],
-  "property": ["prop1"],
-  "concepts": ["concept1"],
-  "essential_ids": ["id1"],
-  "slot_top_k_overrides": {
-    "slot1": 5
-  }
-}
-```
-
-目标结构：
-
-```json
-{
-  "main_object_hint": "Cell",
-  "aggregation": {
-    "operator": "sum",
-    "target": null
-  },
-  "semantic_units": [
-    {
-      "id": "u1",
-      "text": "影响业务的活跃告警",
-      "role_hint": "unknown",
-      "language_hint": "zh",
-      "importance": "required"
-    },
-    {
-      "id": "u2",
-      "text": "发生时间",
-      "role_hint": "property_or_value",
-      "language_hint": "zh",
-      "importance": "required"
-    }
-  ],
-  "object_type_hints": ["Cell"],
-  "constraints": [],
-  "output_intent": "ontology_subgraph"
-}
-```
-
-`role_hint` 可取：
-
-```text
-object
-property
-value
-object_or_property
-property_or_value
-object_or_property_or_value
-unknown
-```
-
-只用于 Boost，不关闭其他检索通道。
-
----
-
-# 27. 为什么不建议 LLM 直接输出 slot_top_k_overrides
-
-TopK 属于检索系统策略，应由：
-
-```text
-表规模
-索引类型
-召回评测
-延迟预算
-查询 Profile
-```
-
-控制。
-
-LLM 可以输出：
-
-```text
-importance = required / optional
-```
-
-系统映射：
-
-```text
-required → high_recall profile
-optional → normal profile
-```
-
-避免让 LLM 直接决定底层性能参数。
-
----
-
-# 28. 多路检索通道
-
-每个 Semantic Unit 同时执行：
-
-```text
-Anchor Exact/BM25
-Anchor Dense
-
-Metadata Evidence Exact/BM25
-Metadata Evidence Dense
-
-Instance Evidence Exact/BM25
-Instance Evidence Dense
-```
-
-运行时不要求提前判断：
-
-```text
-FORMAL 是 enum？
-VIP 是 instance？
-Cell 是 object？
-name 是 property？
-```
-
-未知字符串统一进入多路检索。
-
----
-
-# 29. Exact 与 Dense 阈值的关系
-
-Exact / Keyword 命中：
-
-```text
-不受 similarityThreshold 限制
-```
-
-Dense：
-
-```text
-ANN TopK
-  ↓
-similarityThreshold
-```
-
-原因：
-
-```text
-Exact 是确定性字符串证据
-Dense threshold 只表示向量相似度过滤
-```
-
-不能用 Dense 阈值删除已经精确命中的真实名称或 Value。
-
----
-
-# 30. topK / similarityThreshold 分表配置
-
-三类物理表必须支持独立配置。
-
-```yaml
-semanticRetrieval:
-  defaults:
-    topK: 3
-    similarityThreshold: 0.6
-
-  anchor:
-    topK: 10
-    similarityThreshold: 0.6
-
-  metadataEvidence:
-    topK: 10
-    similarityThreshold: 0.6
-
-  instanceEvidence:
-    topK: 5
-    similarityThreshold: 0.6
-```
-
-说明：
-
-- `3 / 0.6` 为历史兼容默认值；
-- Anchor 优先 Recall；
-- Metadata Evidence 允许多个 Evidence 命中并保留具体 Matched Item，RRF 再按 Anchor Group 融合；
-- Instance Evidence 数据巨大，TopK 初始更保守；
-- `0.6` 可作为共同起始值，但必须独立校准。
-
-参数优先级：
-
-```text
-Request Retrieval Profile
-    >
-Table-level Config
-    >
-System Defaults
-```
-
----
-
-# 31. legacy GraphSearchRequest.topK 的兼容语义
-
-当前 `GraphSearchRequest.topK=3` 不应继续被简单复用于所有内部物理表。
-
-V5.3 建议：
-
-```text
-legacy topK
- → 最终 Semantic Match / Seed 投影输出上限的兼容值
-```
-
-内部召回使用：
-
-```text
-anchor.topK
-metadataEvidence.topK
-instanceEvidence.topK
-```
-
-若旧调用方只传 `topK`：
-
-```text
-内部仍使用表级默认召回
-最终精排输出数量受 legacy topK 限制
-```
-
-避免：
-
-```text
-内部每个通道都只取3
-```
-
-导致 Recall 在 RRF 前丢失。
-
----
-
-# 32. seedRetrievalMode 兼容
-
-现有：
-
-```text
-vector
-```
-
-目标支持：
-
-```text
-vector
-keyword
-hybrid
-```
-
-推荐目标模式：
-
-```text
-hybrid
-```
-
-但为了兼容，接口默认值可暂时维持现有行为，通过配置灰度切换。
-
-语义：
-
-```text
-vector → Dense only
-keyword → Exact/BM25
-hybrid → Exact/BM25/Dense + Evidence + RRF
-```
-
----
-
-# 33. SemanticCandidateNormalizer（兼容 AnchorCandidateNormalizer）
-
-现有类名可以暂时保留 `AnchorCandidateNormalizer` 以降低改造成本，但目标语义应升级为：
-
-> **把所有通道结果统一成“Matched Semantic Item + Anchor Context”，而不是把 Evidence 压扁成只有 Anchor 的候选。**
-
-Evidence 示例：
-
-```text
-“正式用户”
-  ↓
-ENUM_ALIAS: FORMAL
-  ↓
-canonical_value = 1
-  ↓
-Property = Subscriber.subClass
-  ↓
-ObjectType = Subscriber
-```
-
-Normalized Candidate：
-
-```json
-{
-  "semantic_unit_id": "u1",
-  "item_id": "subClass-property-id::ENUM_ALIAS::1::FORMAL",
-  "item_type": "ENUM_ALIAS",
-  "evidence_ID": "subClass-property-id::ENUM_ALIAS::1::FORMAL",
-  "matched_value": "FORMAL",
-  "canonical_value": "1",
-  "anchor_ID": "subClass-property-id",
-  "anchor_type": 1,
-  "object_type": {
-    "ID": "subscriber-object-id",
-    "name": "Subscriber"
-  },
-  "property": {
-    "ID": "subClass-property-id",
-    "name": "subClass"
-  },
-  "source_channel": "metadata_vector",
-  "source_rank": 2,
-  "source_score": 0.81
-}
-```
-
-直接 Anchor 命中：
-
-```text
-item_id   = anchor_ID
-item_type = OBJECT_TYPE / PROPERTY
-```
-
-Evidence 命中：
-
-```text
-item_id   = evidence_ID
-item_type = OBJECT_ALIAS / PROPERTY_ALIAS / ENUM_VALUE / ENUM_ALIAS / INSTANCE_VALUE / INSTANCE_ALIAS
-```
-
-后续 RRF 可以按 `anchor_ID` 聚合，但 `item_id/item_type/matched_value/canonical_value` 必须保留到最终精排和响应。
-
----
-
-# 34. 通道内 Anchor Group 去重，但保留 Matched Items
-
-同一 Property 可能同时命中很多：
-
-```text
-Property 自身
-Property Alias
-Enum Value
-Enum Alias
-Instance Value
-Instance Alias
-```
-
-如果这些 Evidence 全部各占一个 RRF 排名位置，会导致 Evidence 数量越多的 Property 被不公平抬高。
-
-因此 RRF 前仍然执行：
-
-```text
-GROUP BY semantic_unit_id + channel + anchor_ID
-```
-
-但是**只去重 RRF Group，不删除具体命中项**。
-
-每个 Anchor Group 保留：
-
-```text
-primary_hit
-matched_items top N
-supporting_evidence top N
-evidence_hit_count
-best_exact_rank
-best_dense_rank
-```
-
-其中 `matched_items` 每项至少包含：
-
-```text
-item_id
-item_type
-matched_value
-canonical_value
-source_rank
-source_score
-```
-
-例如：
-
-```text
-Property: Subscriber.subClass
-  ├─ PROPERTY_ALIAS: 用户类别
-  ├─ ENUM_ALIAS: FORMAL → 1
-  └─ INSTANCE_VALUE: VIP → VIP
-```
-
-它们在 RRF 中只形成一个 `anchor_ID=subClass` 的组级候选，但 LLM 精排仍可以选择 `FORMAL`、`VIP` 或 Property 本身作为最终语义目标。
-
-对于一个 Semantic Unit 明确包含多个值的情况，例如：
-
-```text
-VIP 或 GOLD 用户
-```
-
-`matched_items` 允许保留同一 Property 下多个不同 `canonical_value`，不能只保留一个 primary hit。
-
----
-
-# 35. Aggregator：Weighted RRF
-
-RRF 的融合单位继续保持：
-
-> **anchor_ID Group**
-
-而不是：
-
-```text
-evidence_ID
-item_id
-```
-
-公式：
-
-```text
-RRF(anchor_group) = Σ weight(channel) / (rrf_k + rank_channel(anchor_group))
-```
-
-推荐起始配置：
-
-```yaml
-rrf:
-  k: 60
-  coarseTopKPerSemanticUnit: 20
-  maxGlobalCandidates: 50
-  maxMatchedItemsPerAnchorGroup: 5
-  channelWeights:
-    anchorExact: 1.5
-    anchorBm25: 1.1
-    anchorVector: 1.0
-    metadataExact: 1.4
-    metadataBm25: 1.0
-    metadataVector: 1.0
-    instanceExact: 1.2
-    instanceBm25: 0.8
-    instanceVector: 0.8
-```
-
-这样做的原因：
-
-```text
-RRF 解决不同检索通道排序不可比问题
-anchor_ID Group 防止 Evidence 数量造成排名偏置
-matched_items 保证 Alias / Enum / Instance 本身不会丢失
-```
-
-因此 RRF 的职责不是决定最终具体值，而是：
-
-```text
-先选出值得进入 LLM 精排的 Anchor Groups
-+
-为每个 Group 携带最相关的 Matched Items
-```
-
-最终具体返回哪个 Alias / Enum / Instance Value，由 LLM Fine Ranking 在原始问题上下文中裁决。
-
-RRF 的优势仍然是：
-
-```text
-不要求 BM25、Cosine、Exact 的原始 score 在同一数值空间
-主要利用 rank
-降低跨检索引擎 score 不可比问题
-```
-
-这也意味着此前“不做 Anchor / Metadata / Instance 两级 RRF”的结论保持不变：所有 Channel 统一归一化后做一次 Weighted RRF 即可。
-
----
-
-# 36. Exact 不是绝对锁定
-
-Exact 是强证据，但：
-
-```text
-name
-status
-active
-1
-A
-VIP
-```
-
-可能跨对象、跨属性或跨 Evidence 重复。
-
-因此：
-
-```text
-Exact Matched Item
- → 高权重进入对应 Anchor Group
- → RRF
- → LLM Rerank
- → Final Semantic Match
-```
-
-而不是无条件：
-
-```text
-Exact Evidence → 直接 Final
-```
-
-只有：
-
-```text
-本体全局唯一 ID exact
-```
-
-可以视为强确定性 ObjectType / Property Anchor。
-
-对于 Alias / Enum / Instance 的 exact 命中，即使字符串完全相同，也仍需要结合：
-
-```text
-Property
-ObjectType
-其他 Semantic Unit
-原始问题
-```
-
-判断它属于哪个业务上下文。
-
----
-
-# 37. RRF 粗排输出
-
-RRF 输出的是 Anchor Group 排名，但每个组中完整保留真实 Matched Items。
-
-```json
-{
-  "semantic_unit_id": "u4",
-  "semantic_unit": "正式用户",
-  "candidates": [
-    {
-      "anchor_ID": "subClass-property-id",
-      "anchor_type": 1,
-      "object_type": {
-        "ID": "subscriber-object-id",
-        "name": "Subscriber"
-      },
-      "property": {
-        "ID": "subClass-property-id",
-        "name": "subClass"
-      },
-      "rrf_score": 0.071,
-      "channel_hits": [
-        {"channel": "metadata_exact", "rank": 1},
-        {"channel": "metadata_vector", "rank": 2}
-      ],
-      "matched_items": [
-        {
-          "item_id": "subClass-property-id::ENUM_ALIAS::1::FORMAL",
-          "item_type": "ENUM_ALIAS",
-          "matched_value": "FORMAL",
-          "canonical_value": "1",
-          "source_channel": "metadata_exact",
-          "source_rank": 1
-        }
-      ]
-    }
-  ]
-}
-```
-
-如果直接命中 Property 本身，则 `matched_items` 中可包含：
-
-```json
-{
-  "item_id": "subClass-property-id",
-  "item_type": "PROPERTY",
-  "matched_value": "subClass"
-}
-```
-
-因此粗排阶段已经同时具备：
-
-```text
-Anchor Group 排名
-+
-具体语义目标候选
-```
-
-而不是只有 Anchor。
-
----
-
-# 38. LLM Fine Ranking 目标
-
-LLM 使用预置提示词，输入：
-
-```text
-原始问题
-Semantic Units
-RRF 粗排 Anchor Groups
-每个 Group 的 Matched Items
-Anchor Metadata
-Parent ObjectType
-Matched Evidence
-Canonical Value
-轻量 Graph Hint
-```
-
-任务：
-
-```text
-深度语义理解
-业务限定词校验
-对象/属性上下文对齐
-判断最终目标是 Anchor 本身还是 Alias / Enum / Instance
-枚举/实例值到属性的映射验证
-具体 matched_value / canonical_value 选择
-多候选消歧
-必要语义目标完整性检查
-```
-
-输出分成两层：
-
-```text
-Final Semantic Matches
-  ├─ ObjectType / Property
-  ├─ Object/Property Alias
-  ├─ Enum Value / Alias
-  └─ Instance Value / Alias
-
-Graph Anchor Projection
-  └─ ObjectType / Property IDs
-```
-
-LLM 的直接业务输出是准确的 **Semantic Match**，而不是只有 ObjectType / Property Anchor。
-
----
-
-# 39. 为什么精排必须使用原始问题
-
-例如：
-
-```text
-Semantic Unit = 发生时间
-```
-
-可能匹配：
-
-```text
-update_time
-firstoccurrence
-lastoccurrence
-```
-
-原始问题：
-
-```text
-查询站点上影响业务的活跃告警首次发生时间
-```
-
-能进一步确定：
-
-```text
-AP_ALARM_LIVE.firstoccurrence
-```
-
-因此 LLM 不得只使用拆词结果。
-
----
-
-# 40. Rerank Context
-
-推荐：
-
-```json
-{
-  "original_query": "查询正式用户的手机号",
-  "semantic_units": [...],
-  "candidate_groups": [
-    {
-      "anchor_ID": "subClass-property-id",
-      "anchor_type": 1,
-      "rrf_score": 0.071,
-      "object_type": {
-        "ID": "subscriber-object-id",
-        "name": "Subscriber",
-        "display": "用户"
-      },
-      "property": {
-        "ID": "subClass-property-id",
-        "name": "subClass",
-        "display": "用户类别"
-      },
-      "matched_items": [
-        {
-          "item_id": "...FORMAL",
-          "item_type": "ENUM_ALIAS",
-          "matched_value": "FORMAL",
-          "canonical_value": "1",
-          "channels": ["metadata_exact", "metadata_vector"]
-        }
-      ],
-      "graph_hint": {
-        "neighbor_object_types": ["Offering"],
-        "relation_names": ["SUBSCRIBE_TO"]
-      }
-    }
-  ]
-}
-```
-
-对于 Anchor 直接命中，同样作为 `matched_items` 传入：
-
-```text
-item_type = OBJECT_TYPE / PROPERTY
-item_id   = anchor_ID
-```
-
-Graph Hint 只取一跳或轻量摘要，不在精排前构建完整子图。
-
-精排 Prompt 不要求 LLM 从 Evidence 文本重新推断所属对象/属性，因为这些映射已经由索引元数据确定性提供。
-
----
-
-# 41. LLM 精排 Prompt 约束
-
-System Prompt：
-
-```text
-Role:
-你是 OAG 本体语义目标精排器。
-
-Objective:
-根据原始问题、语义单元、候选 Anchor Group、具体 Matched Item、ObjectType / Property 元数据、
-canonical value 和轻量本体关系上下文，选出真正表达用户意图的最终语义目标。
-
-Rules:
-1. 最终目标可以是 ObjectType、Property、Alias、Enum Value/Alias、Instance Value/Alias。
-2. 只能选择输入 candidate_groups / matched_items 中存在的 item_id，不得创造不存在的目标。
-3. 直接 Anchor 命中时，item_id=anchor_ID；Evidence 命中时，item_id=evidence_ID。
-4. Evidence 被选中时，必须原样保留 item_type、matched_value、canonical_value 及其 ObjectType/Property Context。
-5. Property、Property Alias、Enum、Instance 必须结合 Parent ObjectType 判断。
-6. Exact/BM25/Vector/RRF 分数只是证据，不等价于最终业务语义正确。
-7. 必须结合原始问题和其他 Semantic Unit 做跨单元一致性判断。
-8. 一个 Semantic Unit 可以选择多个必要 Semantic Match，例如同一 Property 下多个值。
-9. 全部不匹配允许 no_match=true。
-10. 输出简洁 reason，不输出内部详细思维过程。
-11. 严格输出 JSON Schema。
-```
-
-特别禁止：
-
-```text
-命中 Evidence 后只输出 anchor_ID，导致真实命中的 Alias / Enum / Instance 消失
-```
-
-Anchor Context 是必须携带的上下文，不是 Evidence 的替代品。
-
----
-
-# 42. 精排输出与 0/1/N
-
-允许：
-
-```text
-0：全部不匹配
-1：唯一准确 Semantic Match
-N：多个业务上同时必要的 Semantic Match
-```
-
-这里的 Match 可以是：
-
-```text
-Anchor
-Alias
-Enum
-Instance Value
-```
-
-示例一：`发生时间` 最终选中 Property 本身：
-
-```json
-{
-  "semantic_unit_id": "u2",
-  "selected_matches": [
-    {
-      "item_id": "property-first-id",
-      "target_type": "PROPERTY",
-      "matched_value": "firstoccurrence",
-      "object_type": {
-        "ID": "alarm-object-id",
-        "name": "AP_ALARM_LIVE"
-      },
-      "property": {
-        "ID": "property-first-id",
-        "name": "firstoccurrence"
-      },
-      "rank_score": 0.96,
-      "reason": "与原始问题中的首次发生时间一致"
-    }
-  ],
-  "no_match": false
-}
-```
-
-示例二：`正式用户` 最终选中枚举别名本身：
-
-```json
-{
-  "semantic_unit_id": "u4",
-  "selected_matches": [
-    {
-      "item_id": "subClass-property-id::ENUM_ALIAS::1::FORMAL",
-      "target_type": "ENUM_ALIAS",
-      "matched_value": "FORMAL",
-      "canonical_value": "1",
-      "object_type": {
-        "ID": "subscriber-object-id",
-        "name": "Subscriber"
-      },
-      "property": {
-        "ID": "subClass-property-id",
-        "name": "subClass"
-      },
-      "rank_score": 0.97,
-      "reason": "正式用户与FORMAL语义一致，真实过滤值为1"
-    }
-  ],
-  "no_match": false
-}
-```
-
-所有 Semantic Unit 精排完成后再生成：
-
-```json
-{
-  "final_anchor_ids": [
-    "subscriber-object-id",
-    "subClass-property-id"
-  ]
-}
-```
-
-`final_anchor_ids` 是 GraphAnchorProjector 的派生结果，不替代 `selected_matches`。
-
----
-
-# 43. LLM 精排可靠性与降级
-
-程序校验：
-
-```text
-JSON Schema
-item_id ∈ Input Anchor / Matched Item
-item_type 与输入一致
-Evidence 的 anchor_ID / property / objectType 映射不可被 LLM 改写
-canonical_value 必须来自输入候选
-rank_score 合法
-去重
-数量上限
-```
-
-异常：
-
-```text
-LLM Timeout / JSON错误
- → 重试1次
- → 仍失败
- → fallback=RRF
- → 对每个 RRF Anchor Group 选择 primary_hit 作为 Final Semantic Match
- → rerank_status=DEGRADED
-```
-
-降级时也不能只返回 `anchor_ID`；如果 primary hit 是 Alias / Enum / Instance，仍应保留该 Matched Item。
-
-正常 `no_match` 不属于异常。
-
----
-
-# 44. Final Semantic Match → Graph Anchor Normalization
-
-图算法前增加明确的：
-
-```text
-GraphAnchorProjector
-```
-
-它只负责从最终语义命中中提取 ObjectType / Property，不改变或删除最终检索结果。
-
-映射规则：
-
-| Final target_type | Graph Anchor 投影 |
-|---|---|
-| `OBJECT_TYPE` | 当前 ObjectType |
-| `OBJECT_ALIAS` | Alias 所属 ObjectType |
-| `PROPERTY` | 当前 Property + Parent ObjectType |
-| `PROPERTY_ALIAS` | Alias 所属 Property + Parent ObjectType |
-| `ENUM_VALUE` | Enum 所属 Property + Parent ObjectType |
-| `ENUM_ALIAS` | Enum Alias 所属 Property + Parent ObjectType |
-| `INSTANCE_VALUE` | Instance Value 所属 Property + Parent ObjectType |
-| `INSTANCE_ALIAS` | Instance Alias 所属 Property + Parent ObjectType |
-
-Property 类目标统一形成：
-
-```text
-explicit_property_anchors
-object_terminals
-mandatory_has_property_edges
-```
-
-ObjectType 类目标：
-
-```text
-直接进入 object_terminals
-```
-
-最终图算法跨对象连接时主要处理：
-
-```text
-object_terminals
-```
-
-Property 通过强制 `has_property` 挂回。
-
-这样既满足：
-
-```text
-最终检索返回 Alias / Enum / Instance 本身
-```
-
-又保证：
-
-```text
-图算法只处理合法本体拓扑
-```
-
-并显著减少：
-
-```text
-Seed Pair 数
-最短路径组合数
-```
-
-注意：
-
-> **Evidence → Anchor 在这里表示“为构图投影 Anchor”，不是“把 Evidence 转换后丢弃”。**
-
----
-
-# 45. Property → ObjectType 扩展：优先 parent_ID
-
-当前代码存在：
-
-```text
-MATCH (n)-[:has_property]->(nodes)
-WHERE id(nodes) IN [...]
-RETURN distinct n
-```
-
-运行时根据 Property ID 查父 ObjectType。
-
-V5.0 推荐优先：
-
-```text
-Anchor.parent_ID
-```
-
-因为索引阶段已经记录该映射。
-
-流程：
-
-```text
-Property Anchor
-  ↓
-parent_ID available?
-  ├─ yes → 直接补 Parent ObjectType
-  └─ no  → 调用现有 GQL addObjectTypeByProperty() 兼容兜底
-```
-
-并可使用本体图 `has_property` 做一致性校验。
-
-这样既保留现有实现，又减少每次查询额外 GQL。
-
----
-
-# 46. 当前三种子图策略：必须区分“接口语义”与“实际算法”
-
-外部策略名：
-
-```text
-minimal
-khop
-component
-```
-
-保持不变。
-
-但当前实现事实是：
-
-| Strategy | 当前真实实现 | 不是严格意义上的 |
-|---|---|---|
-| minimal | Seed 两两最短路径 → 按路径长度排序 → 贪心加入直到连通 | 标准 MST / 最优 Steiner Tree |
-| khop | Seed 两两组合 → `FIND ALL PATH ... UPTO k STEPS` | 真正 Multi-Source BFS |
-| component | Seed 两两 `FIND ALL PATH ... UPTO 10 STEPS` | 真正无界 Connected Component |
-
-文档和代码必须明确这一点。
-
----
-
-# 47. minimal：当前实现分析
-
-当前流程：
-
-```text
-Seeds
- ↓
-computePairwiseShortestPaths
- ↓
-Pair Paths
- ↓
-按 Path Length 排序
- ↓
-逐条 collectFromPath
- ↓
-DisjointSet 判断所有 Seed 是否连通
- ↓
-addMissingEdgesFromObjects
- ↓
-removeEdgesWithMismatchedId
-```
-
-其优点：
-
-```text
-实现简单
-可复用现有最短路径能力
-输出通常比较紧凑
-已有线上代码基础
-```
-
-限制：
-
-1. 路径按长度贪心加入，不等价于先构造 Terminal Metric Closure 再做标准 MST；
-2. 不保证得到全局最小 Steiner Tree；
-3. 多条等长最短路径的业务语义优先级没有充分表达；
-4. Seed 数增大后两两最短路径数量 O(S²)；
-5. Property Seed 没先折叠 Parent ObjectType 时会增加 Pair 数。
-
----
-
-# 48. minimal：增强方案
-
-建议保留：
-
-```text
-minimal.algorithm = legacy_greedy
-```
-
-并增加：
-
-```text
-minimal.algorithm = metric_closure_mst
-```
-
-目标实现：
-
-```text
-1. Property → Parent ObjectType
-2. 得到 object_terminals
-3. 计算 terminal pair shortest path
-4. 构造 Metric Closure
-5. Metric Closure 上做 MST
-6. 将 MST virtual edge 展开回原始 shortest path
-7. 合并节点 / 边
-8. 加回 Property + has_property
-9. 剪除非 Anchor 的无意义叶子
-```
-
-这是更规范的：
-
-```text
-Shortest Path + MST Steiner Approximation
-```
-
-但仍然不是严格 NP-hard Steiner Tree 的最优解，应在文档中称：
-
-```text
-Steiner Tree Approximation
-```
-
----
-
-# 49. minimal 路径选择增强
-
-当前最短路径主要按 Hop 数。
-
-如果多个等长路径，可按稳定 tie-break：
-
-```text
-1. 与 Query / 已命中 relation hint 语义更匹配
-2. active relation 优先
-3. 中间 ObjectType 更少
-4. junction/backing 复杂度更低
-5. relationship priority
-6. 稳定 ID 排序
-```
-
-建议配置：
-
-```yaml
-subgraph:
-  minimal:
-    pathCostMode: hop_count
-    tieBreak:
-      semanticRelation: true
-      preferActive: true
-      preferLowerJunctionComplexity: true
-```
-
-第一阶段保持 `hop_count` 兼容，后续可灰度 `semantic_weighted`。
-
----
-
-# 50. khop：当前实现分析
-
-当前 `khop` 实际：
-
-```text
-getPairs(seedIds)
- ↓
-parallelStream
- ↓
-每个 src/dst
- ↓
-FIND ALL PATH FROM src TO dst OVER * UPTO k STEPS
- ↓
-收集所有 PathInfo
-```
-
-优点：
-
-```text
-能显式获得 Seed 间多条 k-hop 路径
-实现基于现有 NebulaGraph GQL
-```
-
-核心风险：
-
-1. 不是 Multi-Source BFS；
-2. Seed 数为 S 时 Pair 数 O(S²)；
-3. `FIND ALL PATH` 的路径数量在稠密图中可能组合爆炸，复杂度不能简单理解成 O(S²×k)；
-4. 大量路径在后续又会共享相同节点和边，存在重复 IO / 解析；
-5. `parallelStream` 会把路径爆炸转化成更高瞬时 GraphDB 压力；
-6. 默认 k=3 通常可控，但仍需要 Path/Node/Time 上限。
-
----
-
-# 51. khop：兼容模式与增强模式
-
-保留：
-
-```text
-khop.algorithm = pairwise_all_path
-```
-
-作为现有兼容实现。
-
-增加：
-
-```text
-khop.algorithm = multi_source_bfs
-```
-
-目标行为：
-
-```text
-所有 object_terminals 同时入队
-visited[node] = min_hop
-reachable_from[node] = anchor_set
-frontier 按层批量扩展
-达到 hop_limit 停止
-```
-
-目标输出：
-
-```text
-node.min_hop
-node.reachable_from_anchor_ids
-edge.discovery_hop
-```
-
-优势：
-
-```text
-避免 Seed Pair 两两重复
-避免枚举所有路径
-更适合“邻域扩展”语义
-更容易 maxNodes/maxEdges 截断
-```
-
----
-
-# 52. Multi-Source BFS 实现建议
-
-若图数据库没有直接满足需求的多源 API，可在 OAG 层做分层 frontier：
-
-```text
-frontier[0] = all terminals
-for depth = 1..k:
-    batch query neighbors(frontier[depth-1])
-    remove visited
-    add frontier[depth]
-    update reached_from
-```
-
-关键：
-
-```text
-批量查询
-visited 去重
-edge type filter
-active filter
-maxNodes/maxEdges
-timeout
-```
-
-不需要枚举所有简单路径。
-
----
-
-# 53. legacy khop 必须增加防爆参数
-
-在完全替换为 Multi-Source BFS 前，现有 `FIND ALL PATH` 模式至少增加：
-
-```yaml
-subgraph:
-  khop:
-    hopLimit: 3
-    maxPathsPerPair: 20
-    maxTotalPaths: 200
-    maxNodes: 100
-    maxEdges: 200
-    queryTimeoutMs: 2000
-    pairConcurrency: 8
-```
-
-并记录：
-
-```text
-path_truncated
-timeout_pairs
-total_path_count
-```
-
----
-
-# 54. component：当前实现分析
-
-当前代码：
-
-```text
-component
- → computePairwiseNumPaths(seedIds, 10)
- → FIND ALL PATH ... UPTO 10 STEPS
-```
-
-这是：
-
-> **有界 10-hop 连通近似**
-
-并不是真正的 Graph Connected Component。
-
-风险：
-
-1. 两个节点可能实际同一连通分量，但最短路径 > 10，因此被错误判定不连通；
-2. 仍然枚举 `ALL PATH`，大分量中成本高；
-3. `10` 是工程上“大值”，不是图论意义的全连通；
-4. component 语义和实现语义存在偏差。
-
----
-
-# 55. component：增强为真实 Connected Component
-
-当前 OAG 已有：
-
-```text
-loadAllEdges()
-DisjointSet
-buildDsuFromNodesAndEdges()
-```
-
-因此最优增强不是继续扩大：
-
-```text
-UPTO 10 → UPTO 20
-```
-
-而是：
-
-```text
-本体版本加载/变更时
-  ↓
-加载 active ontology core edges
-  ↓
-构建 DSU / Connected Component Index
-  ↓
-component_id[node]
-```
-
-请求时：
-
-```text
-Final Anchor
-  ↓
-component_id
-  ↓
-直接取相关 connected component
-```
-
-这样得到真正的 Connected Component 语义。
-
----
+OAG 是统一索引构建和检索引擎，负责：
 
-# 56. Component Cache
-
-建议新增：
-
-```text
-GraphTopologyCache
-```
-
-按：
-
-```text
-ontology_id + source_version
-```
-
-缓存：
-
-```text
-adjacency
-active_edges
-component_id
-object_type metadata
-property parent mapping
-relation metadata
-```
-
-优势：
-
-```text
-避免每次 loadAllEdges
-Component O(1) 判断
-支持 Multi-Source BFS
-支持本地快速连通性校验
-```
-
-本体版本变化后整体失效重建。
-
----
-
-# 57. `component` API 兼容策略
-
-外部仍使用：
-
-```text
-graphExpansionStrategy=component
-```
-
-内部配置：
-
-```yaml
-component:
-  algorithm: dsu_cached
-  legacyHopLimit: 10
-```
-
-灰度阶段：
-
-```text
-shadow execute:
- legacy bounded-component
- enhanced dsu-component
-
-比较:
- connectivity
- nodes
- latency
-```
-
-验证后切换默认。
-
----
-
-# 58. 三种策略最终定义
-
-| Strategy | 最终推荐算法 | 默认用途 | 输出规模 |
-|---|---|---|---|
-| `minimal` | Metric Closure + MST Approximation | Cypher / 确定性问数 | 最小 |
-| `khop` | Multi-Source BFS | 探索、补桥、邻域 | 中 |
-| `component` | DSU / BFS 真连通分量 | 模型诊断、全局探索 | 最大 |
-
-同时保留 legacy implementation 供灰度。
-
----
-
-# 59. auto 策略
-
-推荐：
-
-```text
-auto
-```
-
-但为了兼容现有 `GraphSearchRequest`，可先作为新值引入。
-
-流程：
-
-```text
-Final Anchors
-  ↓
-minimal
-  ↓
-全部连通?
-  ├─ yes → 返回 minimal
-  └─ no
-       ↓
-     khop multi-source BFS(k=3)
-       ↓
-     发现合理桥接?
-       ├─ yes → 返回 enhanced khop result
-       └─ no
-            ↓
-          connected_groups
-          + unresolved anchors
-```
-
-不默认自动进入完整 component，避免上下文爆炸。
-
----
-
-# 60. 子图构建中的 Anchor Terminal 设计
-
-LLM 最终 Anchor 可能包含：
-
-```text
-ObjectType
-Property
-```
-
-构图时：
-
-```text
-ObjectType → Terminal
-Property → parent ObjectType 作为 Terminal
-```
-
-Property 自身作为：
-
-```text
-mandatory leaf
-```
-
-即：
-
-```text
-Parent ObjectType
-  └─ has_property
-      └─ Property
-```
-
-这能减少：
-
-```text
-Terminal count
-Pairwise shortest path count
-路径搜索成本
-```
-
----
-
-# 61. 本体图中关系的作用
-
-核心本体子图需要保留：
-
-```text
-has_property
-defines_relation
-relation node / metadata
-junction mapping
-businessSemanticType
-cardinality
-linkType
-```
-
-下游 Cypher 真正的关系连接依据来自本体图，而不是 Vector。
-
-例如：
-
-```text
-SITE_TO_ALARM
-NE_TO_SITE
-NE_TO_2G
-```
-
-及其：
-
-```text
-junctionConfig
-sourceName
-targetName
-```
-
-必须在最终 Core Graph / Relation Metadata 中保留。
-
----
-
-# 62. Relation 路径选择
-
-当一个 Anchor Pair 存在多条路径：
-
-```text
-A → B
-A → C → B
-A → D → B
-```
-
-不应仅依据向量分数。
-
-推荐 Path Score：
-
-```text
-PathCost =
-  hop_cost
-  + relation_complexity_penalty
-  + inactive_penalty
-  - semantic_relation_bonus
-```
-
-第一版可只做 tie-break，不改变现有 shortest-hop 主语义。
-
----
-
-# 63. includeFunctions / includeActions
-
-现有请求已经支持：
-
-```text
-includeFunctions
-includeActions
-```
-
-V5.0 保留。
-
-推荐处理阶段：
-
-```text
-Final Core Subgraph
-  ↓
-CapabilityExtensionAssembler
-  ├─ includeFunctions=1 → 扩展相关 Function
-  └─ includeActions=1   → 扩展相关 Action
-```
-
-Function/Action 默认不进入 Anchor RRF 主排序，除非未来明确把它们升级为 Anchor 类型。
-
-最终输出可独立：
-
-```json
-{
-  "capabilityExtensions": {
-    "functions": [],
-    "actions": []
-  }
-}
-```
-
-避免 Function/Action 干扰 ObjectType/Property 核心拓扑。
-
----
-
-# 64. Retrieval Results 与 Semantic Extensions
-
-最终响应需要明确区分三层：
-
-```text
-retrievalResults
-ontologySubgraph
-semanticExtensions
-```
-
-## retrievalResults
-
-表示 LLM 精排后真正命中的语义目标：
-
-```text
-ObjectType / Property
-ObjectType / Property Alias
-Enum Value / Alias
-Instance Value / Alias
-```
-
-这些是**最终检索结果本身**。
-
-## ontologySubgraph
-
-只包含通过 Final Semantic Matches 投影出的 ObjectType / Property Anchor 以及图算法扩展出来的真实本体拓扑。
-
-## semanticExtensions
-
-是在最终命中基础上追加的上下文，例如：
-
-```text
-ObjectType → 其他 Alias
-Property → 其他 Alias
-Property → Enum sibling values / aliases
-Property → matched/topN Instance Value / Alias
-```
-
-因此：
-
-```text
-retrievalResults = 用户真正命中的目标
-semanticExtensions = 为 LLM / Cypher 补充的附加语义上下文
-```
-
-两者不能混为一谈。
-
-Alias、Enum、Instance 不参与图算法，但它们可以作为 `retrievalResults` 的一等结果存在。
-
----
-
-# 65. Enum Retrieval Result 与 Extension 返回模式
-
-如果最终精排选中：
-
-```text
-ENUM_VALUE
-ENUM_ALIAS
-```
-
-该命中项必须无条件出现在：
-
-```text
-retrievalResults
-```
-
-例如：
-
-```text
-FORMAL → canonical_value=1
-```
-
-不能因为 `enumMode=matched_only` 而只返回 Property Anchor。
-
-`semanticExtensions.enumMode` 控制的是**额外枚举域上下文**：
-
-```text
-matched_only
-all_values
-```
-
-推荐默认：
-
-```text
-matched_only
-```
-
-含义：
-
-```text
-retrievalResults：始终返回真正命中的 Enum Item
-semanticExtensions：默认只附带已命中的 Enum；显式 all_values 时再返回完整枚举域
-```
-
-这样既保证检索结果准确，又避免把完整枚举列表无条件塞给下游。
-
----
-
-# 66. Instance Retrieval Result 与 Extension 返回模式
-
-Instance 可能百万/千万/亿，但最终命中的单个或少量实例值本身仍然是合法检索目标。
-
-如果 LLM 最终选中：
-
-```text
-INSTANCE_VALUE
-INSTANCE_ALIAS
-```
-
-必须出现在：
-
-```text
-retrievalResults
-```
-
-禁止的是：
-
-```text
-因为命中了某 Property，就返回该 Property 的所有 Instance Value
-```
-
-而不是禁止返回实际命中的 Instance Value。
-
-`semanticExtensions.instanceMode` 只控制额外上下文：
-
-```text
-matched_only
-matched + topN
-```
-
-例如：
-
-```yaml
-extension:
-  instanceMode: matched_only
-  maxInstanceEvidencePerProperty: 10
-```
-
-含义：
-
 ```text
-retrievalResults：保留 LLM 最终选中的 Instance Value / Alias
-semanticExtensions：默认只附带 matched items；需要时最多额外 topN
+OMS 元数据读取
+种子节点索引
+元数据语义元素索引
+实例语义元素 Bulk Import
+Embedding
+GaussVector / OpenSearch 写入
+ANN/全文索引构建
+Generation 发布
+在线检索
 ```
 
-这样不会因为实例库规模巨大而污染响应，同时保证“实例列值本身是最终检索目标”。
+### DataSync
 
----
+DataSync 负责：
 
-# 67. retrievalResults 与 seedNodes 结构
-
-`seedNodes` 继续兼容现有调用方，但必须明确：
-
-> **seedNodes 是 Graph Anchor Projection，不再等同于完整检索结果。**
-
-## 67.1 retrievalResults
-
-Evidence 最终命中示例：
-
-```json
-{
-  "semanticUnitId": "u4",
-  "llmDrawEntityName": "正式用户",
-  "matches": [
-    {
-      "itemId": "subClass-property-id::ENUM_ALIAS::1::FORMAL",
-      "targetType": "ENUM_ALIAS",
-      "matchedValue": "FORMAL",
-      "canonicalValue": "1",
-      "objectType": {
-        "ID": "subscriber-object-id",
-        "name": "Subscriber"
-      },
-      "property": {
-        "ID": "subClass-property-id",
-        "name": "subClass"
-      },
-      "rrfScore": 0.071,
-      "rerankScore": 0.97,
-      "matchSource": "METADATA_EVIDENCE"
-    }
-  ]
-}
-```
-
-Property 本身命中示例：
-
-```json
-{
-  "itemId": "property-first-id",
-  "targetType": "PROPERTY",
-  "matchedValue": "firstoccurrence",
-  "objectType": {
-    "ID": "alarm-object-id",
-    "name": "AP_ALARM_LIVE"
-  },
-  "property": {
-    "ID": "property-first-id",
-    "name": "firstoccurrence"
-  }
-}
-```
-
-## 67.2 seedNodes
-
-由 `retrievalResults` 投影生成：
-
-```json
-{
-  "semanticUnitId": "u4",
-  "llmDrawEntityName": "正式用户",
-  "anchors": [
-    {
-      "ID": "subClass-property-id",
-      "type": 1,
-      "name": "subClass",
-      "parent_ID": "subscriber-object-id",
-      "parent_name": "Subscriber",
-      "derivedFromItemId": "subClass-property-id::ENUM_ALIAS::1::FORMAL"
-    }
-  ]
-}
-```
-
-这样兼容现有子图代码，同时不会丢失最终命中的具体语义项。
-
----
-
-# 68. Final Response 数据结构
-
-推荐：
-
-```json
-{
-  "message_type": "message_ontology_subgraph",
-  "content": {
-    "retrievalResults": [
-      {
-        "semanticUnitId": "u4",
-        "matches": [
-          {
-            "itemId": "...",
-            "targetType": "ENUM_ALIAS",
-            "matchedValue": "FORMAL",
-            "canonicalValue": "1",
-            "objectType": {
-              "ID": "subscriber-object-id",
-              "name": "Subscriber"
-            },
-            "property": {
-              "ID": "subClass-property-id",
-              "name": "subClass"
-            },
-            "rrfScore": 0.071,
-            "rerankScore": 0.97
-          }
-        ]
-      }
-    ],
-    "seedNodes": [],
-    "nodes": [],
-    "edges": [],
-    "semanticExtensions": {
-      "anchors": []
-    },
-    "capabilityExtensions": {
-      "functions": [],
-      "actions": []
-    },
-    "metadata": {
-      "retrievalMode": "hybrid",
-      "rerankStatus": "SUCCESS",
-      "graphStrategy": "minimal",
-      "graphAlgorithm": "metric_closure_mst",
-      "connected": true,
-      "truncated": false,
-      "unresolvedSemanticUnits": [],
-      "unconnectedAnchorIds": []
-    }
-  }
-}
-```
-
-保持：
-
-```text
-nodes
-edges
-seedNodes
-```
-
-兼容已有调用方。
-
-新增：
-
-```text
-retrievalResults
-```
-
-作为**完整最终检索结果的权威字段**。
-
-`seedNodes` 仅用于兼容图构建锚点语义，不能代替 `retrievalResults`。新增字段均可通过版本化接口/兼容开关渐进发布。
-
----
-
-# 69. Cypher 生成最小充分上下文
-
-## Final Retrieval Context
-
-```text
-item_id
-target_type
-matched phrase / matched_value
-canonical_value
-match source
-```
-
-这是告诉 LLM“用户真正命中了什么”的直接依据。
-
-## Anchor Context
-
-```text
-ObjectType ID / name
-Property ID / name
-Property parent_ID
-```
-
-这是告诉 LLM“该语义项属于哪个本体对象和属性”的确定性映射。
-
-## Evidence Context
-
-```text
-evidence_ID
-evidence type
-evidence value
-canonical value
-aliases
-enum_ref
-```
-
-## Relation Context
-
 ```text
-relation id / name
-businessSemanticType
-cardinality
-linkType
-junctionConfig
-source/target mapping
+读取 is_semantic=true Property
+访问实际数据源
+DISTINCT / 基础标准化
+整理 INSTANCE_VALUE / INSTANCE_ALIAS
+建立实例数据与 Property 的映射
+生成 Manifest + Data Files
+通过 File / MinIO 交付 OAG
 ```
 
-例如：
+DataSync 不负责：
 
 ```text
-retrieval target = ENUM_ALIAS: FORMAL
-canonical_value  = 1
-Property         = Subscriber.subClass
-ObjectType       = Subscriber
+Embedding
+GaussVector / OpenSearch Client
+ANN 参数
+物理表结构
+索引发布
 ```
 
-LLM 生成 Cypher 时不再需要猜：
+统一关联方式：
 
 ```text
-FORMAL 是最终命中的 Alias 还是 Property 名称
-FORMAL 对应的真实值是什么
-Property 属于哪个 ObjectType
-两个 ObjectType 用什么字段关联
+DataSync Manifest.propertyId
+   ↓
+OAG 校验 Property
+   ↓
+实例语义元素 parent_id = Property.id
 ```
-
-因此准确的 Cypher 上下文是：
-
-> **Final Semantic Match + Anchor Context + Relation Context。**
-
----
-
-# 70. 完整运行时序
-
-```mermaid
-sequenceDiagram
-    participant U as User/Agent
-    participant QU as QueryUnderstanding
-    participant D as SearchDispatcher
-    participant GV as GaussVector
-    participant OS as OpenSearch
-    participant N as SemanticCandidateNormalizer
-    participant R as RRF Aggregator
-    participant C as RerankContextBuilder
-    participant L as LLM Fine Ranker
-    participant P as GraphAnchorProjector
-    participant G as GraphTopology/SubgraphBuilder
-    participant E as ExtensionAssembler
-
-    U->>QU: 原始问题
-    QU-->>D: Semantic Units
-
-    par Anchor
-      D->>GV: Anchor Dense
-      D->>OS: Anchor Exact/BM25
-    and Metadata Evidence
-      D->>GV: Metadata Dense
-      D->>OS: Metadata Exact/BM25
-    and Instance Evidence
-      D->>GV: Instance Dense
-      D->>OS: Instance Exact/BM25
-    end
-
-    D->>N: 所有 Channel Results
-    N->>N: 保留 Matched Item + Anchor Context
-    N->>N: channel 内按 anchor_ID Group 去重
-    N->>R: Ranked Anchor Groups + Matched Items
-    R-->>C: RRF Coarse Groups
-
-    U->>C: Original Query
-    QU->>C: Semantic Units
-    C->>C: Metadata/Evidence/Graph Hint
-    C->>L: Prebuilt Rerank Prompt
-    L-->>P: Final Semantic Matches
-
-    P->>P: Match → ObjectType / Property Anchors
-    P-->>G: Final Graph Anchors
-    G->>G: Property→Parent normalization
-    G->>G: minimal/khop/component
-    G-->>E: Ontology Core Subgraph
-
-    L-->>E: Final Semantic Matches
-    E->>E: Extra Alias/Enum/Matched Instance Context
-    E->>E: Function/Action optional
-    E-->>U: retrievalResults + Final Subgraph Response
-```
-
-这里最关键的边界是：
-
-```text
-LLM Fine Ranker 输出具体 Semantic Match
-GraphAnchorProjector 才负责把它投影成子图 Seed
-```
-
-因此 Evidence 不会在 RRF 或 LLM 后被提前丢弃。
 
----
+ObjectType 上下文不要求 DataSync 每行重复传输，由 OAG 通过本体拓扑缓存补齐。
 
-# 71. 索引构建流程
 
-V5.3 统一采用“**OAG 负责索引构建，DataSync 负责实例数据生产**”的职责边界：
+## 3.2 完整索引构建流程
 
 ```mermaid
 flowchart LR
-    subgraph OMS[本体模型]
+    subgraph OMS[OMS 本体模型]
       OT[ObjectType]
       P[Property]
-      A[Alias]
-      EN[Enum]
+      OA[Object/Property Alias]
+      EN[Enum Value/Alias]
     end
 
     subgraph DS[DataSync]
-      SC[读取 is_semantic Property]
-      SRC[(业务数据源)]
-      DV[DISTINCT / Normalize / Alias整理]
-      PKG[Import Package<br/>Manifest + Data Files]
+      SC[is_semantic Property]
+      DV[DISTINCT Instance Value/Alias]
+      PKG[Manifest + Data Files]
     end
 
-    subgraph TRANS[批量数据面]
-      FS[(File / Shared Storage)]
-      MI[(MinIO)]
-    end
-
-    subgraph OAG[OAG]
-      AB[Anchor Builder]
-      MB[Metadata Evidence Builder]
-      BI[BulkImportService]
-      IB[Instance Evidence Builder]
+    subgraph OAG[OAG Index Engine]
+      SB[Seed Builder]
+      MB[Metadata Element Builder]
+      IB[Instance Element Builder]
       EMB[Embedding]
     end
 
     subgraph GV[GaussVector]
-      GA[Anchor]
-      GM[Metadata Evidence]
-      GI[Instance Evidence]
+      GS[Seed]
+      GM[Metadata]
+      GI[Instance]
     end
 
     subgraph OS[OpenSearch]
-      OA[Anchor]
-      OM[Metadata Evidence]
-      OI[Instance Evidence]
+      OS1[Seed]
+      OM[Metadata]
+      OI[Instance]
     end
 
-    OT --> AB
-    P --> AB
-    A --> AB
-    A --> MB
+    OT --> SB
+    P --> SB
+    OA --> MB
     EN --> MB
 
-    AB --> GA
-    AB --> OA
-    MB --> GM
-    MB --> OM
-
-    P --> SC
-    SRC --> DV
     SC --> DV
     DV --> PKG
-    PKG --> FS
-    PKG --> MI
-    FS --> BI
-    MI --> BI
-    BI --> IB
+    PKG -->|File/MinIO| IB
+
+    SB --> EMB
+    MB --> EMB
     IB --> EMB
+
+    EMB --> GS
+    EMB --> GM
     EMB --> GI
-    EMB --> OI
+    SB --> OS1
+    MB --> OM
+    IB --> OI
 ```
 
-职责约束：
+种子节点表保持现有 8 字段；语义元素用 `id + type + parent_id + name + canonical_value` 建模。
 
-```text
-DataSync：不生成 Vector，不直接写 GaussVector/OpenSearch
-OAG：统一 Evidence 构造、Embedding、双写、ANN/全文索引构建和 Generation 发布
-```
-
-`INSTANCE_VALUE / INSTANCE_ALIAS` 在此流程中既是 Instance Evidence 索引数据，也是后续可直接返回的最终 `retrievalResults`。
-
----
-
-# 72. GraphTopologyCache
-
-由于当前子图代码存在：
-
-```text
-loadAllEdges()
-```
-
-建议将静态本体拓扑按版本缓存：
-
-```text
-Key = ontology_id + source_version
-```
-
-Value：
-
-```text
-nodesById
-edgesById
-adjacency
-reverseAdjacency
-propertyParentMap
-componentId
-relationMetadata
-```
-
-失效条件：
-
-```text
-本体版本变化
-Relation变更
-ObjectType/Property删除
-```
-
-收益：
-
-```text
-降低重复 loadAllEdges
-加速 component
-加速 one-hop graph hint
-支持 Multi-Source BFS
-支持 Rerank Context
-```
-
----
-
-# 73. 性能风险控制
-
-## Retrieval
-
-```text
-table-level TopK
-similarityThreshold
-timeout
-并行通道隔离
-Instance Evidence 限流
-```
-
-## Candidate Normalize / RRF
-
-```text
-channel 内 anchor_ID Group 去重
-maxMatchedItemsPerAnchorGroup
-coarseTopKPerSemanticUnit
-maxGlobalCandidates
-```
-
-这里必须同时控制：
-
-```text
-Anchor Group 数量
-每个 Group 内 Matched Item 数量
-```
-
-否则虽然 RRF Group 数量可控，但某个高频 Property 仍可能携带过多 Enum/Instance Evidence 进入 Prompt。
-
-## LLM
-
-```text
-maxCandidateGroupsPerSemanticUnit
-maxMatchedItemsPerAnchorGroup
-maxGlobalCandidates
-maxSelectedSemanticMatchesPerUnit
-Prompt token budget
-retry=1
-fallback=RRF primary_hit
-```
-
-## Graph
-
-```text
-maxObjectTerminals
-maxPairShortestPathQueries
-maxPathsPerPair
-maxTotalPaths
-hopLimit
-maxNodes
-maxEdges
-timeout
-```
-
-Final Semantic Matches 可以多于最终 Graph Anchor 数，因为多个值可能映射到同一个 Property。
-
----
-
-# 74. 推荐配置
-
-```yaml
-oag:
-  semanticRetrieval:
-    defaults:
-      topK: 3
-      similarityThreshold: 0.6
-
-    anchor:
-      topK: 10
-      similarityThreshold: 0.6
-
-    metadataEvidence:
-      topK: 10
-      similarityThreshold: 0.6
-
-    instanceEvidence:
-      topK: 5
-      similarityThreshold: 0.6
-
-  rrf:
-    k: 60
-    coarseTopKPerSemanticUnit: 20
-    maxGlobalCandidates: 50
-    maxMatchedItemsPerAnchorGroup: 5
-    channelWeights:
-      anchorExact: 1.5
-      anchorBm25: 1.1
-      anchorVector: 1.0
-      metadataExact: 1.4
-      metadataBm25: 1.0
-      metadataVector: 1.0
-      instanceExact: 1.2
-      instanceBm25: 0.8
-      instanceVector: 0.8
-
-  rerank:
-    enabled: true
-    promptName: ontology_anchor_rerank
-    temperature: 0.0
-    maxCandidatesPerSemanticUnit: 20
-    maxGlobalCandidates: 50
-    maxSelectedPerSemanticUnit: 5
-    maxSelectedSemanticMatchesPerUnit: 5
-    retryCount: 1
-    fallback: RRF
-
-  graph:
-    topologyCache: true
-
-    strategy:
-      default: auto
-
-    minimal:
-      algorithm: metric_closure_mst
-      fallbackAlgorithm: legacy_greedy
-      maxPathLength: 6
-      pathCostMode: hop_count
-
-    khop:
-      algorithm: multi_source_bfs
-      fallbackAlgorithm: pairwise_all_path
-      hopLimit: 3
-      maxPathsPerPair: 20
-      maxTotalPaths: 200
-      pairConcurrency: 8
-
-    component:
-      algorithm: dsu_cached
-      legacyHopLimit: 10
-
-    limits:
-      maxNodes: 100
-      maxEdges: 200
-      timeoutMs: 3000
-      includeInactive: false
-
-  extension:
-    includeObjectAliases: true
-    includePropertyAliases: true
-    enumMode: matched_only
-    instanceMode: matched_only
-    maxInstanceEvidencePerProperty: 10
-
-  capabilityExtension:
-    includeFunctionsDefault: false
-    includeActionsDefault: false
-```
-
-所有数值都是起始值，必须通过真实数据评测调整。
-
----
-
-# 75. 异常与降级
-
-| 异常 | 降级 |
-|---|---|
-| 单个检索通道失败 | 其他通道继续 |
-| Instance Evidence 超时 | 不阻塞 Anchor/Metadata |
-| RRF 无候选 | unresolved unit |
-| LLM 超时/JSON错误 | 重试1次 → RRF fallback |
-| LLM 返回不存在 ID | 丢弃并记录 |
-| parent_ID 缺失 | 调用现有 `addObjectTypeByProperty()` |
-| enhanced minimal 失败 | fallback legacy_greedy |
-| multi-source BFS 不可用 | fallback pairwise_all_path |
-| DSU component cache 不可用 | fallback legacy hop=10 |
-| K-hop 路径过多 | 截断，`truncated=true` |
-| Final Anchor 不连通 | 返回 connected_groups |
-| Instance Extension 过大 | matched/topN |
-
----
-
-# 76. 可观测性
-
-## Retrieval
-
-```text
-semantic_unit_count
-channel_latency
-channel_return_count
-threshold_filtered_count
-exact_hit_count
-evidence_hit_count
-target_type_count{type}
-```
-
-## Candidate Normalize / RRF
-
-```text
-before_dedup_count
-after_anchor_group_dedup_count
-rrf_anchor_group_count
-matched_items_retained_count
-matched_items_truncated_count
-channel_contribution
-```
-
-## Rerank
-
-```text
-candidate_group_count
-candidate_item_count
-input_tokens
-output_tokens
-latency
-rerank_status
-selected_semantic_match_count
-selected_target_type_count{type}
-selected_anchor_count
-no_match_count
-```
-
-## Graph Projection
-
-```text
-semantic_match_count
-graph_anchor_count
-match_to_anchor_projection_count
-projection_error_count
-```
-
-## Graph
-
-```text
-strategy
-algorithm
-object_terminal_count
-pair_count
-path_query_count
-path_count
-node_count
-edge_count
-connected_groups
-unconnected_anchor_ids
-truncated
-graph_cache_hit
-```
-
-可观测性必须能回答两个不同问题：
-
-```text
-1. 用户最终命中了什么语义项？
-2. 这些语义项最终投影成了哪些图 Anchor？
-```
-
----
-
-# 77. 评测体系
-
-## 77.1 Final Semantic Target
-
-```text
-SemanticTargetRecall@1/3/10
-SemanticTargetPrecision@1/3/10
-TargetTypeAccuracy
-MatchedValueAccuracy
-```
-
-分别统计：
-
-```text
-ObjectTypeTargetAccuracy
-PropertyTargetAccuracy
-ObjectAliasTargetAccuracy
-PropertyAliasTargetAccuracy
-EnumValueTargetAccuracy
-EnumAliasTargetAccuracy
-InstanceValueTargetAccuracy
-InstanceAliasTargetAccuracy
-```
-
-## 77.2 Anchor Context
-
-```text
-ObjectAnchorRecall@1/3/10
-PropertyAnchorRecall@1/3/10
-TargetToObjectTypeAccuracy
-TargetToPropertyAccuracy
-TargetToAnchorContextAccuracy
-AnchorMRR
-AnchorNDCG
-```
-
-## 77.3 Evidence / Canonical Value
-
-```text
-AliasHit@K
-EnumResolveAccuracy
-InstanceValueToPropertyAccuracy
-EvidenceToAnchorAccuracy
-CanonicalValueAccuracy
-MatchedItemRetentionRate
-```
-
-## 77.4 多语言
-
-```text
-CrossLanguageRecall
-MixedLanguageRecall
-CrossLanguageTargetAccuracy
-```
-
-## 77.5 RRF
-
-```text
-RRFAnchorGroupRecall@10/20
-RRFMRR
-ChannelContributionRate
-MatchedItemRetentionAfterRRF
-```
-
-RRF 的评测不仅看 Anchor Group 是否召回，还要看正确的 Alias/Enum/Instance Item 是否仍保留在该 Group 内。
-
-## 77.6 LLM 精排
-
-```text
-SemanticMatchPrecision@K
-SemanticMatchRecall@K
-TargetTypeAccuracy
-MatchedValueAccuracy
-CanonicalValueAccuracy
-AnchorContextAccuracy
-WrongMatchDropRate
-RequiredSemanticUnitCoverage
-NoMatchAccuracy
-P50/P95/P99
-Tokens
-```
-
-## 77.7 子图
-
-```text
-AnchorConnectivityRate
-SubgraphNodePrecision
-SubgraphEdgePrecision
-MinimalSubgraphSize
-BridgeNodeCount
-KhopExpansionSize
-DisconnectedAnchorRate
-ComponentAccuracy
-GraphLatency
-PathExplosionRate
-```
-
-## 77.8 Cypher
-
-```text
-CypherSemanticTargetAccuracy
-CypherAnchorAccuracy
-CypherRelationAccuracy
-CypherCanonicalValueAccuracy
-CypherExecutableRate
-EndToEndQueryAccuracy
-```
-
-最终端到端准确率必须同时覆盖：
-
-```text
-是否找对具体语义项
-+
-是否携带正确 ObjectType / Property
-+
-是否生成正确关系与 canonical value
-```
-
----
-
-# 78. 子图算法专项对比测试
-
-同一组 Query 同时执行：
-
-```text
-minimal legacy_greedy
-minimal metric_closure_mst
-
-khop pairwise_all_path
-khop multi_source_bfs
-
-component bounded_hop_10
-component dsu_cached
-```
-
-比较：
-
-```text
-节点数
-边数
-Anchor连通率
-是否缺失正确路径
-NebulaGraph查询次数
-返回Path数量
-P95延迟
-CPU
-内存
-结果稳定性
-Cypher准确率
-```
-
----
-
-# 79. 迁移与灰度
-
-## Phase 0：指标基线
-
-记录当前：
-
-```text
-vector/es seed recall
-minimal/khop/component latency
-subgraph size
-Cypher accuracy
-```
-
-## Phase 1：索引 V2
-
-```text
-Anchor
-Metadata Evidence
-Instance Evidence
-```
-
-双写，旧检索保持。
-
-## Phase 2：Hybrid + RRF
-
-影子执行：
-
-```text
-legacy getSeedIds
-vs
-hybrid/RRF
-```
-
-## Phase 3：LLM Rerank
-
-灰度启用，保留 RRF fallback。
-
-## Phase 4：Graph Enhanced
-
-逐策略灰度：
-
-```text
-minimal enhanced
-khop enhanced
-component enhanced
-```
-
-## Phase 5：切换默认
-
-数据证明：
-
-```text
-Recall提升
-Cypher准确率提升
-Latency可控
-```
-
-后再切换。
-
----
-
-# 80. 与现有类的建议映射
-
-```text
-GraphSearchHelper
-  └─ 保留总编排入口
-
-LlmQueryInterpreter
-  └─ 升级 Semantic Unit 输出
-
-getSeedIds()
-  └─ SearchDispatcher
-
-HybridRecallHelper
-  └─ 扩展多物理表、多通道召回
-
-AnchorCandidateNormalizer（兼容类名）
-  └─ 语义升级为 SemanticCandidateNormalizer
-      ├─ 保留 Matched Item
-      ├─ 补齐 ObjectType / Property Context
-      └─ 形成 Anchor Group
-
-WeightedRrfAggregator
-  └─ 按 anchor_ID Group 融合，保留 matched_items
-
-OntologyAnchorRanker（兼容类名）
-  └─ 目标升级为 SemanticMatchRanker
-      └─ 输出 Final Semantic Matches
-
-新增：
-  SemanticCandidateNormalizer
-  WeightedRrfAggregator
-  RerankContextBuilder
-  SemanticMatchRanker
-  GraphAnchorProjector
-  GraphTopologyCache
-  EnhancedSubgraphBuilder
-  ExtensionAssembler
-```
-
-现有：
-
-```text
-computePairwiseShortestPaths
-computePairwiseNumPaths
-findAllPath
-buildMstSubgraph
-DisjointSet
-addObjectTypeByProperty
-```
-
-全部保留，作为：
-
-```text
-legacy / fallback / reuse implementation
-```
-
-核心改造点不是推翻图代码，而是在图代码之前新增清晰的：
-
-```text
-Final Semantic Matches
-        ↓
-GraphAnchorProjector
-        ↓
-现有/增强 SubgraphBuilder
-```
-
----
-
-# 81. 图遍历方向与边类型策略
-
-子图“连通性搜索”和最终 Cypher “关系方向”是两个不同问题，必须分开处理。
-
-推荐建立 **Topology Projection**：
-
-```text
-用于连通性/最短路径的投影图
-  ├─ ObjectType nodes
-  ├─ defines_relation 等允许的对象关系
-  └─ 可配置是否按无向方式参与 connectivity
-
-最终输出图
-  └─ 始终保留原始 sourceId / targetId / direction / relation metadata
-```
-
-Property：
-
-```text
-不作为跨对象桥接节点
-通过 mandatory has_property 挂载
-```
-
-避免出现：
-
-```text
-ObjectA → PropertyA → ... → PropertyB → ObjectB
-```
-
-这种不符合本体业务关系语义的“属性桥接”。
-
-推荐配置：
-
-```yaml
-graph:
-  traversal:
-    bridgeEdgeTypes:
-      - defines_relation
-    propertyEdgeType: has_property
-    connectivityDirection: configurable
-    preserveOriginalDirection: true
-```
-
-如果现网当前路径查询严格按有向边运行，灰度初期保持同样语义；只有经过用例验证后才允许使用 undirected connectivity projection。
-
----
-
-# 82. RRF 与 LLM 的分组层级
-
-RRF 建议首先按：
-
-```text
-semantic_unit_id
-```
-
-独立融合。
-
-每个 Semantic Unit 内部流程：
-
-```text
-各 Channel Raw Hits
-  ↓
-保留具体 Matched Item
-  ↓
-按 channel + anchor_ID 形成 Anchor Groups
-  ↓
-Weighted RRF
-  ↓
-Top Anchor Groups + matched_items
-```
-
-原因：
-
-```text
-“站点”
-“活跃告警”
-“首次发生时间”
-“正式用户”
-```
-
-是不同语义目标，不能在粗排阶段被一个高频 Anchor 的得分互相覆盖。
-
-同时，RRF 不直接对 `evidence_ID` 做全局排名，因为：
-
-```text
-同一个 Property 拥有大量 Alias / Enum / Instance
-```
-
-会造成 Evidence 数量偏置。
-
-因此：
-
-```text
-RRF 排 Anchor Group
-但 Group 内保留具体 Matched Items
-```
-
-随后 LLM 精排输入所有 Semantic Unit 的 Group + Item 候选，执行两类判断：
-
-```text
-1. 跨单元 Anchor Context 一致性
-2. 当前 Semantic Unit 最终命中的具体 Item 是什么
-```
-
-例如：
-
-```text
-“正式用户”
-   ↓
-Anchor Group = Subscriber.subClass
-   ↓
-Matched Item = ENUM_ALIAS: FORMAL
-   ↓
-LLM 最终选择 FORMAL 本身
-   ↓
-GraphAnchorProjector 仍提取 Subscriber.subClass
-```
-
-因此：
-
-```text
-RRF：局部高 Recall + Anchor Group 公平
-LLM：具体 Semantic Item 精确选择 + 全局上下文一致性
-GraphAnchorProjector：把最终 Match 转成构图 Anchor
-```
-
-候选裁剪推荐：
-
-```text
-RRF Top 10~20 Anchor Groups / Semantic Unit
-每 Group 保留 top 3~5 Matched Items
-全局 Anchor Group 去重后 30~50
-LLM 每个 Unit 最多选择 3~5 Semantic Matches
-```
-
-`LLM rank_score` 是精排语义分，不与 Cosine `similarityThreshold` 共用阈值，也不应直接与 RRF score 相加。
-
----
-
-# 83. 现有方法级增强映射
-
-| 当前方法/结构 | 当前职责 | V5.3 增强 |
-|---|---|---|
-| `interpretQueryIntent()` | LLM 意图解析 | 输出 Semantic Units / hints |
-| `getSeedIds()` | Vector/ES 获取 Seed | 多物理表、多通道 Dispatcher；输出 Raw Semantic Hits |
-| `hybridRecall()` | 混合召回 | SemanticCandidateNormalizer + Weighted RRF |
-| `AnchorCandidateNormalizer` | Evidence→Anchor | 保留 Evidence Item，并构造 Anchor Group + ObjectType/Property Context |
-| `OntologyAnchorRanker` | Anchor 精排 | 升级为 Final Semantic Match 精排 |
-| 新增 `GraphAnchorProjector` | 无 | Final Match → ObjectType/Property Graph Anchors |
-| `addObjectTypeByProperty()` | Property 查父对象 | `parent_ID` 优先，GQL fallback |
-| `loadAllEdges()` | 请求时加载拓扑 | `GraphTopologyCache` 按版本缓存 |
-| `computePairwiseShortestPaths()` | minimal 最短路径 | 可复用为 Metric Closure 输入 |
-| `buildMstSubgraph()` | Greedy path union | 保留 legacy；新增标准 MST approximation |
-| `computePairwiseNumPaths()` | khop/component | 保留 legacy fallback |
-| `findAllPath()` | 枚举 k-hop 路径 | 仅 legacy 模式使用并增加防爆限制 |
-| `DisjointSet` | 子图连通性判断 | 扩展到全图 component cache |
-| `collectFromPath()` | 收集 Path 节点/边 | 继续复用 |
-| `addMissingEdgesFromObjects()` | 边补齐 | 继续复用并增加 edge-type 校验 |
-| `removeEdgesWithMismatchedId()` | 清理异常边 | 继续作为输出校验 |
-
-这样可以做到：
-
-> **检索结果语义升级，但图算法最大程度复用当前稳定代码，不要求推倒重写。**
-
----
-
-# 84. 设计中不应出现的误区
-
-## 误区1
-
-```text
-把所有 Enum/Instance 拼进 Property Vector
-```
-
-错误：混淆 Anchor 语义，仍应保持独立 Evidence 索引。
-
-## 误区2
-
-```text
-Enum/Instance 不能成为最终检索结果
-```
-
-错误。Enum Value/Alias、Instance Value/Alias 都可以是最终 `retrievalResults`；错误的是把它们直接当成 Core Graph 路径节点。
-
-正确边界：
-
-```text
-Enum/Instance = Final Semantic Match
-       ↓
-GraphAnchorProjector
-       ↓
-Property + ObjectType = Graph Anchors
-```
-
-## 误区3
-
-```text
-RRF 对 evidence_ID 独立排名
-```
-
-错误：Evidence 多的属性会被人为抬高。RRF 应按 `anchor_ID` Group 聚合，同时保留 Group 内 `matched_items`。
-
-## 误区4
-
-```text
-Evidence 映射到 Anchor 后即可丢弃 Evidence
-```
-
-错误。Evidence 本身可能就是用户最终要检索的同义词、枚举值或实例值。
-
-## 误区5
-
-```text
-LLM 精排必须选一个
-```
-
-错误：一个语义单元可命中多个必要值，也可以 no_match。
-
-## 误区6
-
-```text
-khop 当前就是 Multi-Source BFS
-```
-
-错误：当前是 Pairwise FIND ALL PATH。
-
-## 误区7
-
-```text
-component 当前就是全连通分量
-```
-
-错误：当前是 10-hop 近似。
-
-## 误区8
-
-```text
-Property 一定要把 ObjectType 放在向量开头
-```
-
-不推荐。Parent Context 应在 Metadata/Rerank 中使用。
-
-## 误区9
-
-```text
-所有表用 topK=3 / threshold=0.6
-```
-
-不推荐。必须支持独立配置。
-
-## 误区10
-
-```text
-seedNodes 就是最终检索结果
-```
-
-错误。`seedNodes` 是构图 Anchor Projection；完整最终检索结果必须看 `retrievalResults`。
-
----
-
-# 85. 最终设计决策
-
-1. **最终检索对象不再只有 ObjectType / Property；ObjectType、Property、Object/Property Alias、Enum Value/Alias、Instance Value/Alias 均可作为最终检索结果。**
-2. **最终检索结果统一表达为 Matched Semantic Item + ObjectType / Property Anchor Context。**
-3. **Alias / Enum / Instance 命中后必须保留其自身 `item_id/evidence_ID、target_type、matched_value、canonical_value`，不能映射 Anchor 后丢弃。**
-4. **ObjectType / Object Alias 至少携带 ObjectType Context；Property / Property Alias / Enum / Instance 必须同时携带 Property + Parent ObjectType Context。**
-5. **Anchor ID 直接使用本体元素全局唯一 ID，不 Hash。**
-6. **Property 保存 parent_ID。**
-7. **Alias / Enum / Instance 仍统一建模为 Evidence，但 Evidence 同时是一等检索目标。**
-8. **Anchor / Metadata Evidence / Instance Evidence 物理隔离。**
-9. **OAG 管元数据索引；DataSync 生产实例数据，V5.2 起通过 Bulk Import 由 OAG 统一完成 Instance Evidence 索引构建。**
-10. **Instance 只索引符合语义规则的 DISTINCT Value；INSTANCE_ALIAS 保留真实业务支持。**
-11. **高基数自由文本进入独立 RAG，不污染本体实例 Evidence。**
-12. **同一 Anchor 的多语言描述默认放入一个 Vector。**
-13. **Property Vector 默认不以 ObjectType 开头。**
-14. **Enum/Instance Vector 坚持 Value First。**
-15. **未知字符串无需预分类，统一走 Anchor / Metadata / Instance 多路检索。**
-16. **Exact 不受 Dense similarityThreshold 限制。**
-17. **每张物理表独立 topK / similarityThreshold。**
-18. **CandidateNormalizer 必须先保留具体 Matched Item，再补齐 Anchor Context。**
-19. **RRF Key 仍为 anchor_ID Group，而不是 evidence_ID，防止 Evidence 数量偏置。**
-20. **同一通道先按 Anchor Group 去重，但 Group 内保留 topN Matched Items。**
-21. **不需要 Anchor / Metadata / Instance 两级 RRF；所有 Channel 一次 Weighted RRF 即可。**
-22. **LLM 使用原始问题 + Anchor Group + Matched Items + 多维上下文精排。**
-23. **LLM 精排输出 Final Semantic Matches，允许 0/1/N，并支持 RRF primary-hit 降级。**
-24. **新增 GraphAnchorProjector，将 Final Semantic Matches 投影为 ObjectType / Property Graph Anchors。**
-25. **Enum / Alias / Instance 可以是最终 retrievalResults，但不直接参与 Core Graph 图算法。**
-26. **Property 构图前优先通过 parent_ID 补 Parent ObjectType。**
-27. **当前 minimal 是 greedy path union，应保留兼容并增强为 Metric Closure MST Approximation。**
-28. **当前 khop 是 pairwise FIND ALL PATH，应增强为真正 Multi-Source BFS。**
-29. **当前 component 是 hop=10 近似，应增强为 DSU/BFS 真 Connected Component。**
-30. **loadAllEdges 相关拓扑建议按 ontology version 缓存。**
-31. **图算法只处理真实本体拓扑。**
-32. **retrievalResults 表达最终命中；semanticExtensions 只表达额外语义上下文，两者分离。**
-33. **Function / Action 按 includeFlags 在 Core Graph 后扩展。**
-34. **所有 enhanced 算法必须有 legacy fallback 和灰度评测。**
-35. **最终优化目标是 Semantic Target + ObjectType/Property Context + Relation + Canonical Value + Cypher 端到端正确性。**
-
----
-
-# 86. 一句话总结
-
-> **OAG 最终应成为一个“Semantic Target Resolver + Ontology Anchor Projector + Subgraph Constructor”：先利用 Anchor、同义词、Enum、Instance 等多源索引，通过 Exact/BM25/Dense 多路召回、Matched Item 保留、按 anchor_ID 的 Weighted RRF 和 LLM 精排，准确返回用户真正命中的 ObjectType、Property、Alias、Enum Value/Alias 或 Instance Value/Alias 本身，并为每个结果携带确定性的 ObjectType / Property Context；随后通过 GraphAnchorProjector 只抽取 ObjectType / Property 进入 minimal/khop/component 子图算法，再将关系、扩展语义和 canonical value 一并提供给下游 Cypher，从而同时保证“值检索准确”和“本体拓扑构建正确”。**
-
----
 
-# 87. OAG 实例数据 Bulk Import 总体设计
+## 3.3 OAG 实例数据 Bulk Import 总体设计
 
-> 本节是对第 6、7、16、71 节中“DataSync 直接构建/写入 Instance Evidence 索引”描述的职责边界升级。历史内容保留用于说明方案演进；**从 V5.2 起，以本节定义为准：DataSync 是实例数据生产方，OAG 是统一索引构建、向量化、OpenSearch/GaussVector 写入和检索引擎。**
+本节定义 OAG 的大规模实例语义元素导入能力。
 
-新的职责边界：
+职责边界：
 
 ```text
 DataSync
-  负责：数据源访问 / DISTINCT / 基础标准化 / 实例值与本体 Property 映射 / 文件生成
-  不负责：Embedding / Vector表结构 / ANN索引 / OpenSearch Mapping / 双写一致性
+  负责：数据源访问 / DISTINCT / 基础标准化 / 实例值与 Property 映射 / 文件生成
 
 OAG
-  负责：导入任务管理 / 映射校验 / Evidence构造 / 向量化 / OpenSearch全文索引
-       / GaussVector写入与ANN构建 / 版本发布 / 在线检索
+  负责：导入任务 / Mapping 校验 / 语义元素构造 / Embedding
+       / GaussVector / OpenSearch / ANN / Generation 发布 / 在线检索
 ```
 
 核心原则：
 
-> **DataSync 交付“业务数据 + 本体映射”，OAG 负责把它转换为可检索的 Instance Evidence。**
+> **DataSync 交付“实例数据 + Property 映射”，OAG 把它转换为实例语义元素索引。**
 
-不建议大批量数据通过同步 JSON Body 直接调用 OAG 入库。大规模实例索引使用：
+大数据不通过同步 JSON Body 直接灌入 OAG。生产默认使用 MinIO，兼容 File/Shared Storage；REST API 只负责创建任务、状态查询、重试、取消和错误报告。
 
-```text
-File / Shared Storage
-或
-MinIO Object Storage
-```
 
-作为数据面，HTTP API 只承担控制面：创建任务、提交 Manifest、查询状态、重试、取消和获取错误报告。
-
----
-
-# 88. Bulk Import 总体架构
+## 3.4 Bulk Import 总体架构
 
 ```mermaid
 flowchart LR
@@ -4379,7 +1134,7 @@ flowchart LR
 
     IMP --> VAL[Manifest / Mapping / Checksum校验]
     VAL --> PARSE[File Reader / Chunker]
-    PARSE --> NORM[Evidence Normalize / Dedup]
+    PARSE --> NORM[语义元素 Normalize / Dedup]
     NORM --> EMB[Embedding Worker]
 
     EMB --> VW[GaussVector Bulk Writer]
@@ -4407,7 +1162,8 @@ flowchart LR
 
 ---
 
-# 89. 为什么采用 File / MinIO 中转
+
+## 3.5 为什么采用 File / MinIO 中转
 
 不推荐：
 
@@ -4461,11 +1217,12 @@ DataSync/OAG无需共享本地磁盘
 
 ---
 
-# 90. 导入模式
+
+## 3.6 导入模式
 
 支持两类主模式：
 
-## 90.1 FULL_REPLACE
+### FULL_REPLACE
 
 表示 DataSync 提交某个导入 Scope 的完整实例语义快照。
 
@@ -4494,7 +1251,7 @@ Embedding模型升级后的重建
 实例语义索引整体修复
 ```
 
-## 90.2 INCREMENTAL
+### INCREMENTAL
 
 每条记录携带：
 
@@ -4503,7 +1260,7 @@ UPSERT
 DELETE
 ```
 
-按照稳定 `evidence_ID` 幂等修改当前 active generation。
+按照稳定 `id` 幂等修改当前 active generation。
 
 适合：
 
@@ -4527,7 +1284,8 @@ PROPERTY
 
 ---
 
-# 91. Import Package 结构
+
+## 3.7 Import Package 结构
 
 一个 Import Package 由：
 
@@ -4558,10 +1316,10 @@ N 个 data file
 | NDJSON + gzip | 支持 | 兼容、调试、流式生成 |
 | CSV | 不推荐作为主格式 | Alias数组、转义、多语言复杂 |
 
-推荐一个文件只承载一个 Property Anchor 的实例 Evidence；这样：
+推荐一个文件只承载一个 Property 种子节点 的实例 语义元素；这样：
 
 ```text
-anchor_ID / parent_ID / property mapping
+id / parent_id / property mapping
 ```
 
 可以放在 Manifest 中，不必在每行重复，能明显减少数据体积。
@@ -4576,9 +1334,10 @@ mappingMode = PER_RECORD
 
 ---
 
-# 92. Manifest 设计
 
-示例：
+## 3.8 Manifest 设计
+
+Manifest 示例：
 
 ```json
 {
@@ -4586,29 +1345,26 @@ mappingMode = PER_RECORD
   "ontologyId": "dtmi.ontology.xxx.1",
   "dataVersion": "20260811-001",
   "requestId": "datasync-20260811-000001",
-  "importMode": "FULL_REPLACE",
-  "scope": "PROPERTY_SET",
   "generatedAt": "2026-08-11T08:20:00+08:00",
   "sourceSystem": "datasync",
+  "importMode": "FULL_REPLACE",
+  "scope": "PROPERTY_SET",
   "files": [
     {
-      "uri": "minio://oag-import/dtmi.ontology.xxx.1/20260811-001/subclass/part-00000.parquet",
+      "uri": "minio://oag-import/.../subclass/part-00000.parquet",
       "format": "PARQUET",
       "compression": "SNAPPY",
       "sizeBytes": 268435456,
       "rowCount": 1200000,
       "sha256": "...",
       "mapping": {
-        "objectTypeId": "subscriber-object-id",
-        "objectTypeName": "Subscriber",
         "propertyId": "subClass-property-id",
         "propertyName": "subClass",
         "isSemantic": true,
-        "valueColumn": "value",
-        "evidenceTypeColumn": "evidence_type",
+        "idColumn": "id",
+        "typeColumn": "type",
+        "nameColumn": "name",
         "canonicalValueColumn": "canonical_value",
-        "aliasesColumn": "aliases",
-        "sourceKeyColumn": "source_key",
         "operationColumn": "op"
       }
     }
@@ -4616,44 +1372,35 @@ mappingMode = PER_RECORD
 }
 ```
 
-Manifest 是导入协议的一部分，必须做版本化：
+一个文件推荐只承载一个 Property 的实例语义元素，因此 `parent_id` 不必在每行重复；OAG 根据 Manifest.propertyId 写入 `parent_id`。
 
-```text
-schemaVersion
-```
+Manifest 必须使用 `schemaVersion` 做协议版本化。
 
-以后增加字段时保持向后兼容。
 
----
+## 3.9 Data File Record 设计
 
-# 93. Data File Record 设计
+Property 固定映射模式下，每行只传语义元素自身信息。
 
-Property 固定映射模式下，每行只需要业务 Evidence 数据。
-
-## INSTANCE_VALUE
+#### INSTANCE_VALUE
 
 ```json
 {
-  "source_key": "VIP",
-  "evidence_type": "INSTANCE_VALUE",
-  "value": "VIP",
+  "id": "subscriber-subClass::INSTANCE_VALUE::VIP",
+  "type": "INSTANCE_VALUE",
+  "name": "VIP",
   "canonical_value": "VIP",
-  "aliases": ["高价值客户", "重要客户"],
   "op": "UPSERT"
 }
 ```
 
-## INSTANCE_ALIAS
-
-真实业务存在实例值同义词时，可以显式传入 Alias Evidence：
+#### INSTANCE_ALIAS
 
 ```json
 {
-  "source_key": "VIP::高价值客户",
-  "evidence_type": "INSTANCE_ALIAS",
-  "value": "高价值客户",
+  "id": "subscriber-subClass::INSTANCE_ALIAS::VIP::高价值客户",
+  "type": "INSTANCE_ALIAS",
+  "name": "高价值客户",
   "canonical_value": "VIP",
-  "aliases": [],
   "op": "UPSERT"
 }
 ```
@@ -4662,78 +1409,61 @@ OAG 内部转换：
 
 ```text
 Manifest.propertyId
-       +
-Record.evidence_type/value/canonical_value
-       ↓
-Evidence Builder
-       ↓
-anchor_ID / parent_ID / evidence_ID / normalized_value / content
++
+Record.id/type/name/canonical_value
+   ↓
+parent_id = Property.id
+   ↓
+Embedding + GaussVector/OpenSearch
 ```
 
-DataSync **不发送**：
+DataSync 不发送：
 
 ```text
 vector
-embedding model version
+Embedding模型版本
 OpenSearch document
-GaussVector physical table name
-ANN index parameter
+GaussVector物理表名
+ANN参数
 ```
 
-这些全部属于 OAG 内部实现。
 
----
+## 3.10 id 生成与幂等
 
-# 94. evidence_ID 生成与幂等
+所有语义元素直接使用 `id` 作为幂等键。
 
-沿用 V5.0 既有规则：
-
-```text
-{anchor_ID}::{evidence_type}::{source_key}
-```
-
-若 DataSync 已提供全局稳定 ID，可直接作为 `source_key`。
-
-幂等键：
+优先级：
 
 ```text
-ontology_id
-+
-data_version / active_generation
-+
-evidence_ID
+DataSync 提供稳定 id
+>
+OAG 根据 parent_id + type + source_key 稳定构造
 ```
 
 同一个 Job/Chunk 重试：
 
 ```text
-UPSERT 同 evidence_ID
- → 覆盖/无变化
- → 不产生重复记录
+UPSERT 同 id → 覆盖/无变化，不产生重复
+DELETE 同 id → 删除 GaussVector + OpenSearch
 ```
 
-DELETE：
+幂等作用域：
 
 ```text
-按 evidence_ID 删除 GaussVector + OpenSearch
+ontology_id + generation + id
 ```
 
-如果 `content_hash` 未变化：
+不再引入单独的语义元素 ID 字段，统一使用记录自身 `id`。
 
-```text
-不重新调用 Embedding
-```
 
----
-
-# 95. OAG Import API
+## 3.11 OAG Import API
 
 接口采用异步 Job 模型。
 
-## 95.1 创建导入任务
+### 创建导入任务
 
 ```http
-POST /v1/ontologies/{ontologyId}/instance-evidence/import-jobs
+POST /v1/ontologies/{ontologyId}/instance-elements/import-jobs
 Content-Type: application/json
 ```
 
@@ -4771,10 +1501,10 @@ HTTP/1.1 202 Accepted
 
 `requestId` 必须幂等：同一个 DataSync requestId 重复提交时返回原 Job，而不是重新执行。
 
-## 95.2 查询任务
+### 查询任务
 
 ```http
-GET /v1/ontologies/{ontologyId}/instance-evidence/import-jobs/{jobId}
+GET /v1/ontologies/{ontologyId}/instance-elements/import-jobs/{jobId}
 ```
 
 返回：
@@ -4800,10 +1530,10 @@ GET /v1/ontologies/{ontologyId}/instance-evidence/import-jobs/{jobId}
 }
 ```
 
-## 95.3 重试
+### 重试
 
 ```http
-POST /v1/ontologies/{ontologyId}/instance-evidence/import-jobs/{jobId}:retry
+POST /v1/ontologies/{ontologyId}/instance-elements/import-jobs/{jobId}:retry
 ```
 
 仅重跑：
@@ -4814,10 +1544,10 @@ FAILED / RETRYABLE chunks
 
 不从文件头全部重来。
 
-## 95.4 取消
+### 取消
 
 ```http
-POST /v1/ontologies/{ontologyId}/instance-evidence/import-jobs/{jobId}:cancel
+POST /v1/ontologies/{ontologyId}/instance-elements/import-jobs/{jobId}:cancel
 ```
 
 取消后：
@@ -4828,10 +1558,10 @@ POST /v1/ontologies/{ontologyId}/instance-evidence/import-jobs/{jobId}:cancel
 staging generation 不发布
 ```
 
-## 95.5 错误报告
+### 错误报告
 
 ```http
-GET /v1/ontologies/{ontologyId}/instance-evidence/import-jobs/{jobId}/errors
+GET /v1/ontologies/{ontologyId}/instance-elements/import-jobs/{jobId}/errors
 ```
 
 大错误报告建议返回：
@@ -4846,11 +1576,12 @@ GET /v1/ontologies/{ontologyId}/instance-evidence/import-jobs/{jobId}/errors
 
 ---
 
-# 96. File 模式接口
+
+## 3.12 File 模式接口
 
 File 模式支持两种部署形态。
 
-## 96.1 Shared Path
+### Shared Path
 
 DataSync 与 OAG 能访问同一共享文件系统：
 
@@ -4871,12 +1602,12 @@ OAG 必须限制允许的根目录：
 
 禁止任意文件系统路径访问。
 
-## 96.2 OAG Staging Upload
+### OAG Staging Upload
 
 无共享盘但文件不太大时，可先上传 OAG staging：
 
 ```http
-POST /v1/ontologies/{ontologyId}/instance-evidence/staging-files
+POST /v1/ontologies/{ontologyId}/instance-elements/staging-files
 Content-Type: multipart/form-data
 ```
 
@@ -4892,7 +1623,8 @@ staging://{uploadId}/manifest.json
 
 ---
 
-# 97. MinIO 模式设计
+
+## 3.13 MinIO 模式设计
 
 推荐生产默认模式：
 
@@ -4932,7 +1664,8 @@ part_number
 
 ---
 
-# 98. Import Job 状态机
+
+## 3.14 Import Job 状态机
 
 ```mermaid
 stateDiagram-v2
@@ -4972,7 +1705,8 @@ stateDiagram-v2
 
 ---
 
-# 99. OAG 内部处理流水线
+
+## 3.15 OAG 内部处理流水线
 
 ```text
 ImportJobService
@@ -4987,11 +1721,11 @@ ChunkPlanner
    ↓
 RecordParser
    ↓
-EvidenceNormalizer
+SemanticElementNormalizer
    ↓
-Deduplicator
+Deduplicator(id)
    ↓
-ContentBuilder
+EmbeddingTextBuilder
    ↓
 EmbeddingBatcher
    ↓
@@ -5008,21 +1742,18 @@ IndexBuilder / Verifier
 GenerationPublisher
 ```
 
-OAG 复用前文已有：
+OAG 统一复用：
 
 ```text
-normalized_value
-content_hash
-evidence_ID
-Value First vector content
-BGE-M3 1024 dimension
+id/type/parent_id/name/canonical_value
+Value First 向量规则
+1024维 Embedding
 ```
 
-DataSync 不复制这些规则，避免两套实现长期漂移。
+DataSync 不复制索引和 Embedding 逻辑。
 
----
 
-# 100. Chunk 与断点续传
+## 3.16 Chunk 与断点续传
 
 导入不能以整个文件作为一个事务单元。
 
@@ -5078,11 +1809,12 @@ Worker 崩溃后：
 重新领取未 COMMITTED Chunk
 ```
 
-已 COMMITTED Chunk 不重复执行；即使重复执行，稳定 evidence_ID 仍保证幂等。
+已 COMMITTED Chunk 不重复执行；即使重复执行，稳定 id 仍保证幂等。
 
 ---
 
-# 101. GaussVector 与 OpenSearch 双写一致性
+
+## 3.17 GaussVector 与 OpenSearch 双写一致性
 
 OAG 不是使用分布式事务强行绑定两种存储，而采用：
 
@@ -5107,7 +1839,7 @@ OpenSearch成功
 GaussVector失败
 ```
 
-Chunk 状态仍为 FAILED/RETRYABLE，重试时按照 `evidence_ID` 幂等补写 GaussVector。
+Chunk 状态仍为 FAILED/RETRYABLE，重试时按照 `id` 幂等补写 GaussVector。
 
 反之同理。
 
@@ -5121,7 +1853,8 @@ FULL_REPLACE 在所有 Chunk COMMITTED 前：
 
 ---
 
-# 102. Full Import 的版本化发布
+
+## 3.18 Full Import 的版本化发布
 
 为了避免：
 
@@ -5136,7 +1869,7 @@ FULL_REPLACE 必须采用 Generation 模型。
 ```text
 ontology_id
   ↓
-instance_evidence_generation = g123
+instance_generation = g123
 ```
 
 OpenSearch：
@@ -5169,7 +1902,8 @@ active_generation g122 → g123
 
 ---
 
-# 103. Incremental Import 一致性
+
+## 3.19 Incremental Import 一致性
 
 INCREMENTAL 不创建完整新 generation，而对 active generation 做幂等变更。
 
@@ -5204,37 +1938,31 @@ source_update_version / event_time
 
 ---
 
-# 104. 本体映射校验
 
-OAG 收到 DataSync 的 Mapping 后必须基于当前本体元数据验证：
+## 3.20 本体映射校验
+
+OAG 收到 Manifest Mapping 后必须验证：
 
 ```text
 ontologyId 存在
-ObjectType ID 存在
 Property ID 存在
-Property.parent_ID == ObjectType ID
 Property.is_semantic == true
 Property未删除/未失效
-Alias/Instance Alias映射到合法canonical value
+记录 type ∈ INSTANCE_VALUE / INSTANCE_ALIAS
+记录 id 唯一/格式合法
+INSTANCE_ALIAS.canonical_value 合法
 ```
 
-不允许 DataSync 传一个不存在的 `anchor_ID` 后由 OAG 静默建索引。
+ObjectType 通过本体 `has_property` 关系推导，不要求 DataSync 重复传输 `objectTypeId`。
 
-Mapping 错误属于：
+Mapping 错误属于 `JOB_FATAL`，必须在大规模 Embedding 前失败。
 
-```text
-JOB_FATAL
-```
 
-应在 VALIDATING 阶段直接失败，不进入大规模 Embedding。
-
----
-
-# 105. 行级错误与隔离
+## 3.21 行级错误与隔离
 
 错误分两类。
 
-## 105.1 Job Fatal
+### Job Fatal
 
 ```text
 Manifest不可解析
@@ -5247,14 +1975,14 @@ Embedding模型不可用
 
 直接停止 Job。
 
-## 105.2 Row Rejectable
+### Row Rejectable
 
 ```text
 空Value
 Value超长
 非法UTF-8
 Alias格式错误
-不支持的evidence_type
+不支持的type
 单条标准化失败
 ```
 
@@ -5280,9 +2008,10 @@ SUCCEEDED_WITH_WARNINGS
 
 ---
 
-# 106. 大数据量性能设计
 
-## 106.1 DataSync 侧
+## 3.22 大数据量性能设计
+
+### DataSync 侧
 
 尽量提前：
 
@@ -5298,7 +2027,7 @@ DISTINCT
 
 OAG仍执行轻量二次去重作为防御。
 
-## 106.2 文件大小
+### 文件大小
 
 建议起始值：
 
@@ -5313,7 +2042,7 @@ OAG仍执行轻量二次去重作为防御。
 数百万小文件 → 对象存储/List开销过大
 ```
 
-## 106.3 Pipeline 并发隔离
+### Pipeline 并发隔离
 
 分别配置：
 
@@ -5335,7 +2064,7 @@ Reader快于Embedding
 
 禁止无限堆积内存。
 
-## 106.4 Embedding Batch
+### Embedding Batch
 
 建议按模型吞吐评测配置，例如：
 
@@ -5345,7 +2074,7 @@ Reader快于Embedding
 
 不是协议固定值。
 
-## 106.5 OpenSearch Bulk
+### OpenSearch Bulk
 
 建议同时以：
 
@@ -5363,7 +2092,7 @@ bulk bytes
 
 FULL_REPLACE 的 staging index 可降低 refresh 频率，批量完成后再恢复并 refresh。
 
-## 106.6 GaussVector Bulk
+### GaussVector Bulk
 
 优先批量写入，再在 FULL_REPLACE 数据加载完成后统一：
 
@@ -5373,7 +2102,7 @@ Build/Rebuild ANN Index
 
 避免每写一条记录都维护高成本 ANN 结构。
 
-大规模 Instance Evidence 根据前文规模策略选择：
+大规模 Instance 语义元素 根据前文规模策略选择：
 
 ```text
 GsIVFFLAT
@@ -5383,7 +2112,8 @@ GsDiskANN
 
 ---
 
-# 107. 在线检索与导入资源隔离
+
+## 3.23 在线检索与导入资源隔离
 
 OAG 同时承担：
 
@@ -5425,7 +2155,8 @@ FULL_REPLACE 默认最多1个运行任务
 
 ---
 
-# 108. MinIO / File 安全与可靠性边界
+
+## 3.24 MinIO / File 安全与可靠性边界
 
 虽然本方案重点是性能和可靠性，接口仍需满足基础边界：
 
@@ -5450,11 +2181,12 @@ Import Job 只允许访问：
 
 ---
 
-# 109. Import Metadata 表
+
+## 3.25 Import Metadata 表
 
 建议 OAG 持久化四类任务元数据。
 
-## import_job
+### import_job
 
 ```text
 job_id
@@ -5476,7 +2208,7 @@ finished_at
 last_error
 ```
 
-## import_file
+### import_file
 
 ```text
 job_id
@@ -5489,7 +2221,7 @@ property_id
 status
 ```
 
-## import_chunk
+### import_chunk
 
 ```text
 job_id
@@ -5505,7 +2237,7 @@ retry_count
 last_error
 ```
 
-## import_generation
+### import_generation
 
 ```text
 ontology_id
@@ -5522,7 +2254,8 @@ published_at
 
 ---
 
-# 110. 可观测性
+
+## 3.26 Import 可观测性
 
 新增 Import 指标：
 
@@ -5557,12 +2290,13 @@ property_id
 日志中禁止打印完整海量业务值，只记录：
 
 ```text
-source_key / evidence_ID / truncated value / error code
+source_key / id / truncated value / error code
 ```
 
 ---
 
-# 111. 错误码建议
+
+## 3.27 错误码建议
 
 | 错误码 | 含义 | 是否可重试 |
 |---|---|---|
@@ -5589,7 +2323,8 @@ source_key / evidence_ID / truncated value / error code
 
 ---
 
-# 112. 配置建议
+
+## 3.28 Import 配置建议
 
 ```yaml
 oag:
@@ -5654,7 +2389,8 @@ OAG CPU/内存
 
 ---
 
-# 113. DataSync → OAG 完整时序
+
+## 3.29 DataSync → OAG 完整时序
 
 ```mermaid
 sequenceDiagram
@@ -5681,7 +2417,7 @@ sequenceDiagram
 
     loop Chunk
         J->>M: Stream读取Chunk
-        J->>J: Normalize/Dedup/Build Evidence
+        J->>J: Normalize/Dedup/Build 语义元素
         J->>E: Batch Embedding
         E-->>J: vectors
         par 双写
@@ -5702,104 +2438,2503 @@ sequenceDiagram
 
 ---
 
-# 114. 与现有索引设计的衔接
 
-本导入模块不改变 Instance Evidence 的物理隔离、Value First 和 Property Mapping 设计，只改变“谁负责真正构建索引”的职责边界，并在 V5.3 明确：
+## 3.30 与索引设计的衔接
 
-> **Instance Evidence 不仅用于反向发现 Property Anchor，INSTANCE_VALUE / INSTANCE_ALIAS 本身也是最终检索目标。**
+Bulk Import 不改变三类检索数据模型，只明确索引构建职责：
 
-保持不变：
+```text
+种子节点：OMS → OAG
+元数据语义元素：OMS → OAG
+实例语义元素：DataSync → File/MinIO → OAG
+```
+
+实例元素保持：
+
+```text
+INSTANCE_VALUE / INSTANCE_ALIAS
+id = 当前元素自身 ID
+parent_id = Property.id
+Value First
+```
+
+DataSync 不再依赖 Embedding SDK、GaussVector Client、OpenSearch Client、具体 Mapping 或 ANN 参数。
+
+
+## 3.31 导入接口最终设计决策
+
+1. **OAG 是三类语义索引的统一构建和检索引擎。**
+2. **DataSync 是实例数据生产方，不直接写 GaussVector/OpenSearch。**
+3. **大数据量采用异步 Import Job + File/MinIO 数据面。**
+4. **生产环境优先 MinIO；File 仅用于兼容部署。**
+5. **Data Package = Manifest + 不可变数据分片。**
+6. **Parquet 是大规模场景首选格式。**
+7. **推荐按 Property 分区，Property 映射放 Manifest。**
+8. **每条实例语义元素使用 id/type/name/canonical_value。**
+9. **OAG 写入 parent_id = Property.id，并通过拓扑补 ObjectType。**
+10. **INSTANCE_VALUE / INSTANCE_ALIAS 均支持。**
+11. **id 稳定且 Chunk 重试幂等。**
+12. **Parquet RowGroup / NDJSON Offset 作为 Checkpoint。**
+13. **GaussVector/OpenSearch 使用 Chunk 级双写协调和最终一致。**
+14. **FULL_REPLACE 使用 staging generation 原子发布。**
+15. **INCREMENTAL 使用 UPSERT/DELETE + dataVersion。**
+16. **在线检索优先于 Bulk Import，必须独立线程池/限流。**
+17. **失败行进入 Reject/DLQ，Job Fatal 与 Row Rejectable 分级。**
+18. **任务、文件、Chunk、Generation 状态持久化，支持重启续传。**
+
+
+## 3.32 索引构建职责一句话总结
+
+> **DataSync 负责把底层真实实例数据加工成按 Property 分区的 Import Package；OAG 以异步、可断点、可重试、可版本发布的 Bulk Import Pipeline，把 `id/type/name/canonical_value` 实例元素转成 `parent_id=Property.id` 的实例语义索引，并统一完成 Embedding、GaussVector/OpenSearch 写入和发布。**
+
+
+# 4. Query Understanding 与 6 路召回
+
+
+## 4.1 Query Understanding：Semantic Phrase Extraction
+
+LLM 应执行：
+
+> **Semantic Phrase Extraction**
+
+而不是按词法逐词拆分。
+
+错误：
+
+```text
+FORMAL
+用户
+Mobile
+Number
+```
+
+推荐主单元：
+
+```text
+FORMAL用户
+Mobile Number
+```
+
+必要时可同时保留辅助短语：
+
+```text
+FORMAL用户
+FORMAL
+用户
+Mobile Number
+```
+
+但完整业务短语优先。
+
+---
+
+
+## 4.2 Query Understanding 推荐结构
+
+兼容现有：
+
+```json
+{
+  "main_object": "Cell",
+  "aggregation": "sum",
+  "objectType": ["Type1"],
+  "property": ["prop1"],
+  "concepts": ["concept1"],
+  "essential_ids": ["id1"],
+  "slot_top_k_overrides": {
+    "slot1": 5
+  }
+}
+```
+
+目标结构：
+
+```json
+{
+  "main_object_hint": "Cell",
+  "aggregation": {
+    "operator": "sum",
+    "target": null
+  },
+  "semantic_units": [
+    {
+      "id": "u1",
+      "text": "影响业务的活跃告警",
+      "role_hint": "unknown",
+      "language_hint": "zh",
+      "importance": "required"
+    },
+    {
+      "id": "u2",
+      "text": "发生时间",
+      "role_hint": "property_or_value",
+      "language_hint": "zh",
+      "importance": "required"
+    }
+  ],
+  "object_type_hints": ["Cell"],
+  "constraints": [],
+  "output_intent": "ontology_subgraph"
+}
+```
+
+`role_hint` 可取：
+
+```text
+object
+property
+value
+object_or_property
+property_or_value
+object_or_property_or_value
+unknown
+```
+
+只用于 Boost，不关闭其他检索通道。
+
+---
+
+
+## 4.3 为什么不建议 LLM 直接输出底层 TopK
+
+TopK 属于检索系统策略，应由：
+
+```text
+表规模
+索引类型
+召回评测
+延迟预算
+查询 Profile
+```
+
+控制。
+
+LLM 可以输出：
+
+```text
+importance = required / optional
+```
+
+系统映射：
+
+```text
+required → high_recall profile
+optional → normal profile
+```
+
+避免让 LLM 直接决定底层性能参数。
+
+---
+
+
+## 4.4 6 路检索通道
+
+每个 Semantic Unit 同时进入三类数据、两种检索方式，共 **6 条 Ranked List**：
+
+| 数据类型 | OpenSearch | GaussVector |
+|---|---|---|
+| 种子节点 | Exact/BM25 | Dense |
+| 元数据语义元素 | Exact/BM25 | Dense |
+| 实例语义元素 | Exact/BM25 | Dense |
+
+即：
+
+```text
+1. seed_lexical
+2. seed_dense
+3. metadata_lexical
+4. metadata_dense
+5. instance_lexical
+6. instance_dense
+```
+
+其中 OpenSearch 的 Exact 与 BM25 默认在同一查询中通过字段 Boost / `should` 子句形成一条 lexical 排名列表，例如：
+
+```text
+keyword exact（最高 boost）
++ name/display phrase
++ name/display/description BM25
+→ 1 条 lexical ranked list
+```
+
+这样 Exact 是 lexical 内的强证据，而不是额外引入一层融合。
+
+如果后续工程上将 Exact 和 BM25 拆成两条独立 Ranked List，则总通道数变成：
+
+```text
+3 类数据 × Exact/BM25/Dense = 9 路
+```
+
+此时仍建议一次性进入 Weighted RRF，而不是先做类内 RRF。
+
+
+## 4.5 Exact/BM25 与 Dense 阈值关系
+
+Exact/BM25 与 Dense 的分数空间不同：
+
+```text
+Exact：确定性字符串命中
+BM25：全文相关度
+Dense：向量相似度
+```
+
+因此：
+
+```text
+Dense：ANN TopK → similarityThreshold
+Exact/BM25：不使用 Dense similarityThreshold 过滤
+```
+
+Exact 命中仍不是绝对最终结果，因为 `name/status/active/1` 等值可能跨对象重复；它应获得较高 RRF 权重并进入 LLM 精排。
+
+
+## 4.6 topK / similarityThreshold 分表配置
+
+三类物理索引独立配置召回参数：
+
+```yaml
+semanticRetrieval:
+  defaults:
+    topK: 3
+    similarityThreshold: 0.6
+
+  seed:
+    topK: 10
+    similarityThreshold: 0.6
+
+  metadata:
+    topK: 10
+    similarityThreshold: 0.6
+
+  instance:
+    topK: 5
+    similarityThreshold: 0.6
+```
+
+说明：
+
+- `3 / 0.6` 只作为历史兼容默认值；
+- 种子节点优先 Recall；
+- 元数据语义元素允许多个 Alias/Enum 命中同一种子节点；
+- 实例数据量最大，TopK 初始更保守；
+- 三类 Dense 分数分布不同，阈值必须可独立校准。
+
+配置优先级：
+
+```text
+Request Retrieval Profile
+>
+Table-level Config
+>
+System Defaults
+```
+
+
+## 4.7 legacy GraphSearchRequest.topK 兼容语义
+
+现有 `GraphSearchRequest.topK=3` 不应被复用于所有内部通道。
+
+建议兼容语义：
+
+```text
+legacy topK
+→ 最终每个 Semantic Unit 输出数量上限
+```
+
+内部召回仍使用：
+
+```text
+seed.topK
+metadata.topK
+instance.topK
+```
+
+避免所有通道只取 3 条，导致正确候选在 RRF 之前被裁掉。
+
+
+## 4.8 seedRetrievalMode 兼容
+
+现有：
+
+```text
+vector
+```
+
+目标支持：
+
+```text
+vector
+keyword
+hybrid
+```
+
+推荐目标模式：
+
+```text
+hybrid
+```
+
+但为了兼容，接口默认值可暂时维持现有行为，通过配置灰度切换。
+
+语义：
+
+```text
+vector → Dense only
+keyword → Exact/BM25
+hybrid → Exact/BM25/Dense + 语义元素 + RRF
+```
+
+---
+
+
+## 4.9 GaussVector / OpenSearch 返回结构与结果标准化
+
+RRF 前，OAG 将 GaussVector / OpenSearch 的结果统一成简单 SearchHit。以下结构定义的是 **OAG Search Adapter 输出**，不直接向上层透出 GaussVector SQL 行格式或 OpenSearch 原生 `_source/_score` 包装。
+
+### GaussVector 种子节点返回结构
+
+```json
+{
+  "id": "dtmi:com:huawei:ict:Cell:1.0",
+  "type": 0,
+  "name": "Cell",
+  "display_zh": "无线小区",
+  "display_en": "Cell",
+  "description_zh": "通信网络中的小区实体",
+  "description_en": "Cell in communication network",
+  "distance": 0.18,
+  "score": 0.82,
+  "source": "SEED_DENSE"
+}
+```
+
+`score` 由 OAG 统一换算成“越大越相关”的展示分，仅用于诊断；RRF 主要使用 `rank`。
+
+### OpenSearch 种子节点返回结构
+
+```json
+{
+  "id": "dtmi:com:huawei:ict:Cell:1.0",
+  "type": 0,
+  "name": "Cell",
+  "display_zh": "无线小区",
+  "display_en": "Cell",
+  "description_zh": "通信网络中的小区实体",
+  "description_en": "Cell in communication network",
+  "score": 12.37,
+  "match_mode": "EXACT_BM25",
+  "source": "SEED_LEXICAL"
+}
+```
+
+### GaussVector 元数据/实例语义元素返回结构
+
+```json
+{
+  "id": "property-id::ENUM_ALIAS::1::FORMAL",
+  "type": "ENUM_ALIAS",
+  "parent_id": "property-id",
+  "name": "FORMAL",
+  "canonical_value": "1",
+  "description_zh": "正式用户",
+  "description_en": "Formal subscriber",
+  "distance": 0.09,
+  "score": 0.91,
+  "source": "METADATA_DENSE"
+}
+```
+
+### OpenSearch 元数据/实例语义元素返回结构
+
+```json
+{
+  "id": "property-id::ENUM_ALIAS::1::FORMAL",
+  "type": "ENUM_ALIAS",
+  "parent_id": "property-id",
+  "name": "FORMAL",
+  "canonical_value": "1",
+  "description_zh": "正式用户",
+  "description_en": "Formal subscriber",
+  "score": 18.42,
+  "match_mode": "EXACT_BM25",
+  "source": "METADATA_LEXICAL"
+}
+```
+
+随后 OAG 通过 `parent_id` 补齐 Property/ObjectType 上下文。
+
+### 统一规则
+
+```text
+种子节点 hit：RRF 分组种子节点 id = hit.id
+语义元素 hit：RRF 分组种子节点 id = hit.parent_id
+```
+
+同时保留具体 hit 的 `id/type/name/canonical_value`，不能只剩种子节点。
+
+
+## 4.10 通道内按种子节点去重并保留语义元素
+
+同一通道内，同一个种子节点可能被多个语义元素命中，例如：
+
+```text
+subClass
+  ├─ 正式用户
+  ├─ FORMAL
+  ├─ VIP
+  └─ 高价值客户
+```
+
+RRF 前必须先按：
+
+```text
+semantic_unit_id + channel + 种子节点 id
+```
+
+去重，使一个种子节点在单通道只占一个排名位置。
+
+组内保留：
+
+```text
+primary_hit
+top 3~5 semantic_hits
+hit_count
+```
+
+这样既避免“元素越多越容易加分”，又保留最终精排需要的具体 Alias/Enum/Instance。
+
+
+## 4.11 RRF Aggregator：一次 Weighted RRF
+
+### 推荐：一次 Weighted RRF，不做两级 RRF
+
+用户提出的方案可以实现为：
+
+```text
+每类内部：Lexical + Dense → RRF
+再将三类结果 → 第二次 RRF
+```
+
+需要先澄清一个层级关系：如果第一层已经把每类的 `Lexical + Dense` 融合，那么第二层实际输入是 **3 条类级 Ranked List**，而不是 6 条；如果第二层仍然接收 6 条原始路径，则第一层 RRF 没有形成真正的分层收益。
+
+因此**不建议作为默认方案**。
+
+主要原因：
+
+1. 第一层 RRF 会把原始 6 条 Ranked List 压缩成 3 条列表，丢失通道级 rank 信息；
+2. 第一层 TopK 截断可能提前丢掉只在某一路召回较靠后的正确候选；
+3. 两次 rank 变换会让权重更难解释和校准；
+4. 排障时难回答“最终候选到底由哪一路贡献”；
+5. 6 路本身规模有限，一次 RRF 已足够解决 BM25/Dense score 不可比问题。
+
+因此推荐：
+
+```text
+Semantic Unit
+  ↓
+6 条 Ranked List
+  ↓
+每通道按种子节点 id 去重
+  ↓
+一次 Weighted RRF
+  ↓
+种子节点分组粗排 + 具体 semantic_hits
+```
+
+公式：
+
+```text
+RRF(seed) = Σ weight(channel) / (rrf_k + rank_channel(seed))
+```
+
+推荐初始权重：
+
+```yaml
+rrf:
+  k: 60
+  coarseTopKPerSemanticUnit: 20
+  maxGlobalCandidates: 50
+  channelWeights:
+    seedLexical: 1.3
+    seedDense: 1.0
+    metadataLexical: 1.2
+    metadataDense: 1.0
+    instanceLexical: 1.0
+    instanceDense: 0.8
+```
+
+若 Exact 与 BM25 拆成独立列表，则直接增加对应 channel weight，形成 9 路一次融合。
+
+#### 何时才考虑两级 RRF
+
+仅当评测证明三类数据规模/噪声差异极大，并且一次 Weighted RRF 无法通过权重校准稳定控制某一类来源时，才把“两级 RRF”作为实验 Profile。必须用同一评测集比较：
+
+```text
+SeedRecall@K
+SemanticResultRecall@K
+MRR/NDCG
+ChannelContributionRate
+LLM最终准确率
+P95 latency
+```
+
+没有数据证明前，不增加第二层融合复杂度。
+
+
+## 4.12 Exact 不是绝对锁定
+
+Exact 是强证据，但不是无条件最终锁定：
+
+```text
+name
+status
+active
+1
+A
+```
+
+都可能在多个种子节点或多个语义元素中重复。
+
+推荐流程：
+
+```text
+Exact/BM25
+→ 高权重进入一次 RRF
+→ LLM 结合原始问题消歧
+```
+
+只有全局唯一 `id` 的直接查询才可以绕过语义消歧。
+
+
+## 4.13 RRF 粗排输出
+
+RRF 粗排按 Semantic Unit 输出种子节点分组，同时保留具体语义元素：
+
+```json
+{
+  "semantic_unit_id": "u4",
+  "text": "正式用户",
+  "groups": [
+    {
+      "seedNode": {
+        "id": "subClass-property-id",
+        "type": 1,
+        "name": "subClass"
+      },
+      "rrf_score": 0.071,
+      "channel_hits": [
+        {"channel": "metadataLexical", "rank": 1},
+        {"channel": "metadataDense", "rank": 2}
+      ],
+      "semantic_hits": [
+        {
+          "id": "subClass-property-id::ENUM_ALIAS::1::FORMAL",
+          "type": "ENUM_ALIAS",
+          "name": "FORMAL",
+          "canonical_value": "1"
+        }
+      ]
+    }
+  ]
+}
+```
+
+LLM 精排面对的是“种子节点分组 + 组内具体语义元素”，而不是只看到 Property。
+
+
+## 4.14 RRF 与 LLM 的分组层级
+
+RRF 首先按 `semantic_unit_id` 独立执行，避免不同语义目标互相挤压。
+
+每个 Semantic Unit 内：
+
+```text
+6 路 Raw Hits
+  ↓
+每路按种子节点 id 去重
+  ↓
+保留组内具体语义元素
+  ↓
+一次 Weighted RRF
+  ↓
+Top 种子节点分组
+```
+
+这里的“种子节点 id”按来源确定：
+
+```text
+种子节点 hit：hit.id
+语义元素 hit：hit.parent_id
+```
+
+不直接对每个 Alias/Enum/Instance `id` 做 RRF，否则语义元素数量多的 Property 会被抬高。
+
+LLM 随后完成两件事：
+
+```text
+1. 在组内选择真正命中的语义元素/种子节点
+2. 在所有 Semantic Units 之间检查 ObjectType/Property 上下文一致性
+```
+
+推荐候选裁剪：
+
+```text
+RRF Top 10~20 种子节点分组 / Semantic Unit
+每组 top 3~5 具体语义元素
+全局分组去重后 30~50
+LLM 每个 Unit 选择 0~5 个最终结果
+```
+
+默认不使用“类内 RRF → 总 RRF”的两级方案，除非离线评测证明有稳定收益。
+
+
+# 5. LLM 精排与最终检索结果
+
+
+## 5.1 LLM Fine Ranking 目标
+
+LLM Fine Ranking 的目标是从 RRF 粗排结果中选出用户真正命中的检索结果，并验证其种子节点上下文。
+
+输入：
+
+```text
+原始问题
+Semantic Units
+RRF 种子节点分组
+种子节点名称/描述
+组内 semantic_hits
+canonical_value
+ObjectType / Property 上下文
+轻量一跳 Graph Hint
+```
+
+输出可以是：
+
+```text
+ObjectType
+Property
+Object/Property Alias
+Enum Value/Alias
+Instance Value/Alias
+```
+
+LLM 的精排任务包括：
+
+```text
+深度语义理解
+业务限定词校验
+ObjectType / Property 上下文对齐
+Alias/Enum/Instance → canonical_value 映射验证
+多候选消歧
+必要结果完整性检查
+```
+
+LLM 不负责创造新的 `id`，只能从候选中选择。
+
+
+## 5.2 为什么精排必须使用原始问题
+
+例如：
+
+```text
+Semantic Unit = 发生时间
+```
+
+可能匹配：
+
+```text
+update_time
+firstoccurrence
+lastoccurrence
+```
+
+原始问题：
+
+```text
+查询站点上影响业务的活跃告警首次发生时间
+```
+
+能进一步确定：
+
+```text
+AP_ALARM_LIVE.firstoccurrence
+```
+
+因此 LLM 不得只使用拆词结果。
+
+---
+
+
+## 5.3 Rerank Context
+
+推荐 Rerank Context：
+
+```json
+{
+  "original_query": "查询正式用户的套餐",
+  "semantic_units": [...],
+  "groups": [
+    {
+      "seedNode": {
+        "id": "subClass-property-id",
+        "type": 1,
+        "name": "subClass"
+      },
+      "objectType": {
+        "id": "subscriber-object-id",
+        "name": "Subscriber"
+      },
+      "rrf_score": 0.071,
+      "semantic_hits": [
+        {
+          "id": "...FORMAL",
+          "type": "ENUM_ALIAS",
+          "name": "FORMAL",
+          "canonical_value": "1"
+        }
+      ],
+      "graph_hint": {
+        "neighbor_object_types": ["Offering"],
+        "relation_names": ["SUBSCRIBE_TO"]
+      }
+    }
+  ]
+}
+```
+
+Graph Hint 只取一跳或轻量摘要，不在 LLM 精排前构建完整 K-hop 子图。
+
+
+## 5.4 LLM 精排 Prompt 约束
+
+System Prompt 约束建议：
+
+```text
+Role:
+你是 OAG 语义检索精排器。
+
+Objective:
+根据原始问题、Semantic Units、种子节点分组、具体语义元素和轻量本体关系，选择真正表达用户意图的检索结果。
+
+Rules:
+1. 只能返回输入候选中存在的 id。
+2. 必须结合原始问题，不得仅依据名称相似。
+3. Property 及其 Alias/Enum/Instance 必须结合所属 ObjectType 判断。
+4. 语义元素命中时必须校验 parent_id → Property/ObjectType 映射。
+5. Exact/BM25/Dense/RRF 分数只是证据。
+6. 必须考虑其他 Semantic Unit 的上下文一致性。
+7. 每个 Semantic Unit 可以返回 0/1/N 个结果。
+8. 全部不匹配允许 no_match=true。
+9. 不创造不存在的 id/canonical_value。
+10. 仅输出简短 reason，不输出详细思维过程。
+11. 严格输出 JSON Schema。
+```
+
+
+## 5.5 精排输出与 0/1/N
+
+精排允许：
+
+```text
+0：无匹配
+1：唯一结果
+N：多个业务上同时必要的结果
+```
+
+示例：
+
+```json
+{
+  "semantic_unit_results": [
+    {
+      "semantic_unit_id": "u4",
+      "selected": [
+        {
+          "id": "subClass-property-id::ENUM_ALIAS::1::FORMAL",
+          "type": "ENUM_ALIAS",
+          "name": "FORMAL",
+          "canonical_value": "1",
+          "rerank_score": 0.97,
+          "reason": "与正式用户语义一致"
+        }
+      ],
+      "no_match": false
+    }
+  ],
+  "unresolved_units": []
+}
+```
+
+具体 ObjectType / Property 上下文由 OAG 根据候选中的 `parent_id` 和拓扑缓存补齐，不要求 LLM 自己生成。
+
+
+## 5.6 LLM 精排可靠性与降级
+
+程序必须校验：
+
+```text
+JSON Schema
+id ∈ Input Candidate
+rerank_score 合法
+结果去重
+数量上限
+```
+
+异常：
+
+```text
+LLM Timeout / JSON错误
+→ 重试1次
+→ 仍失败
+→ fallback = RRF 分组 primary_hit
+→ rerank_status = DEGRADED
+```
+
+正常 `no_match` 不属于异常。
+
+
+## 5.7 Retrieval Results 与 Semantic Extensions
+
+最终响应分成三个清晰层次：
+
+```text
+retrievalResults
+  = 用户真正命中的种子节点/语义元素
+
+ontologySubgraph
+  = 从 retrievalResults 投影种子节点后构建的本体核心图
+
+semanticExtensions
+  = 为结果补充的相关 Alias / Enum / Instance 上下文
+```
+
+三者不能混为同一个数组。
+
+语义元素可以是最终检索结果，但不直接进入 Core Graph 路径算法。
+
+
+## 5.8 Enum Retrieval Result 与 Extension 返回模式
+
+如果最终精排选中：
+
+```text
+ENUM_VALUE
+ENUM_ALIAS
+```
+
+该命中项必须无条件出现在：
+
+```text
+retrievalResults
+```
+
+例如：
+
+```text
+FORMAL → canonical_value=1
+```
+
+不能因为 `enumMode=matched_only` 而只返回 Property 种子节点。
+
+`semanticExtensions.enumMode` 控制的是**额外枚举域上下文**：
+
+```text
+matched_only
+all_values
+```
+
+推荐默认：
+
+```text
+matched_only
+```
+
+含义：
+
+```text
+retrievalResults：始终返回真正命中的 Enum Item
+semanticExtensions：默认只附带已命中的 Enum；显式 all_values 时再返回完整枚举域
+```
+
+这样既保证检索结果准确，又避免把完整枚举列表无条件塞给下游。
+
+---
+
+
+## 5.9 Instance Retrieval Result 与 Extension 返回模式
+
+Instance 可能百万/千万/亿，但最终命中的单个或少量实例值本身仍然是合法检索目标。
+
+如果 LLM 最终选中：
 
 ```text
 INSTANCE_VALUE
 INSTANCE_ALIAS
-anchor_ID = Property ID
-parent_ID = ObjectType ID
-Value First
-Property Context Last
-Instance Evidence 与 Metadata Evidence 物理隔离
 ```
 
-语义更新为：
+必须出现在：
 
 ```text
-旧理解：
-Evidence → Anchor → Final Anchor
-
-V5.3：
-Evidence → 保留 Final Semantic Item
-        + 确定性 Anchor Context
-        ↓
-GraphAnchorProjector
-        ↓
-Property / ObjectType Graph Anchors
+retrievalResults
 ```
 
-因此 DataSync 导入的：
+禁止的是：
 
 ```text
-value
-evidence_type
+因为命中了某 Property，就返回该 Property 的所有 Instance Value
+```
+
+而不是禁止返回实际命中的 Instance Value。
+
+`semanticExtensions.instanceMode` 只控制额外上下文：
+
+```text
+matched_only
+matched + topN
+```
+
+例如：
+
+```yaml
+extension:
+  instanceMode: matched_only
+  maxInstanceElementsPerProperty: 10
+```
+
+含义：
+
+```text
+retrievalResults：保留 LLM 最终选中的 Instance Value / Alias
+semanticExtensions：默认只附带 matched items；需要时最多额外 topN
+```
+
+这样不会因为实例库规模巨大而污染响应，同时保证“实例列值本身是最终检索目标”。
+
+---
+
+
+## 5.10 retrievalResults 与 seedNodes
+
+### retrievalResults
+
+```json
+{
+  "semanticUnitId": "u4",
+  "text": "正式用户",
+  "results": [
+    {
+      "id": "subClass-property-id::ENUM_ALIAS::1::FORMAL",
+      "type": "ENUM_ALIAS",
+      "name": "FORMAL",
+      "canonical_value": "1",
+      "objectType": {
+        "id": "subscriber-object-id",
+        "name": "Subscriber"
+      },
+      "property": {
+        "id": "subClass-property-id",
+        "name": "subClass"
+      },
+      "source": "METADATA",
+      "rrf_score": 0.071,
+      "rerank_score": 0.97
+    }
+  ]
+}
+```
+
+### seedNodes
+
+由 `retrievalResults` 投影生成，只用于图构建兼容：
+
+```json
+{
+  "semanticUnitId": "u4",
+  "seedNodes": [
+    {
+      "id": "subClass-property-id",
+      "type": 1,
+      "name": "subClass"
+    }
+  ]
+}
+```
+
+同一个语义结果可能投影出 Property + ObjectType；ObjectType 是否放入 `seedNodes` 由现有子图接口兼容策略决定。
+
+
+## 5.11 Final Response 数据结构
+
+推荐最终响应：
+
+```json
+{
+  "message_type": "message_ontology_subgraph",
+  "content": {
+    "retrievalResults": [],
+    "seedNodes": [],
+    "nodes": [],
+    "edges": [],
+    "semanticExtensions": {},
+    "capabilityExtensions": {
+      "functions": [],
+      "actions": []
+    },
+    "metadata": {
+      "retrievalMode": "hybrid",
+      "rerankStatus": "SUCCESS",
+      "graphStrategy": "minimal",
+      "graphAlgorithm": "metric_closure_mst",
+      "connected": true,
+      "truncated": false,
+      "unresolvedSemanticUnits": [],
+      "unconnectedSeedNodeIds": []
+    }
+  }
+}
+```
+
+兼容字段继续保留：
+
+```text
+seedNodes
+nodes
+edges
+```
+
+新增 `retrievalResults` 是完整最终检索结果的权威字段。
+
+
+## 5.12 Cypher 生成最小充分上下文
+
+下游 Cypher 的最小充分上下文由三部分组成。
+
+### 检索结果
+
+```text
+id
+type
+name
 canonical_value
-aliases
-source_key
-Property Mapping
+source
 ```
 
-都必须被 OAG 保留到检索结果模型中，而不是仅服务于向量化后丢弃。
-
-职责仍然是：
+### 种子节点上下文
 
 ```text
-旧描述：
-DataSync → Instance Evidence Builder → GaussVector/OpenSearch
-
-V5.2 / V5.3：
-DataSync → Import Package → OAG BulkImportService
-                         → Instance Evidence Builder
-                         → Embedding
-                         → GaussVector/OpenSearch
+ObjectType id / name
+Property id / name
 ```
 
-DataSync 不再依赖：
+### 关系上下文
 
 ```text
-Embedding SDK
-GaussVector Client
-OpenSearch Client
-具体Index Mapping
-ANN索引参数
+relation id / name
+businessSemanticType
+cardinality
+linkType
+junctionConfig
+source/target mapping
 ```
 
-所有索引实现统一封装在 OAG 内部；所有 Evidence→ObjectType/Property Context 映射也由 OAG 在检索结果中统一输出。
+例如：
+
+```text
+result.type        = ENUM_ALIAS
+result.name        = FORMAL
+canonical_value    = 1
+Property           = Subscriber.subClass
+ObjectType         = Subscriber
+```
+
+LLM 因此不再需要猜：
+
+```text
+FORMAL 是属性名还是枚举同义词
+真实过滤值是什么
+属于哪个 Property/ObjectType
+对象之间如何关联
+```
+
+即：
+
+> **检索结果 + 种子节点上下文 + Relation Context。**
+
+
+## 5.13 完整检索运行时序
+
+```mermaid
+sequenceDiagram
+    participant U as User/Agent
+    participant QU as QueryUnderstanding
+    participant D as SearchDispatcher
+    participant GV as GaussVector
+    participant OS as OpenSearch
+    participant N as SeedCandidateNormalizer
+    participant R as RRF Aggregator
+    participant L as LLM Fine Ranker
+    participant P as SeedNodeProjector
+    participant G as SubgraphBuilder
+
+    U->>QU: 原始问题
+    QU-->>D: Semantic Units
+
+    par 种子节点
+      D->>OS: Exact/BM25
+      D->>GV: Dense
+    and 元数据语义元素
+      D->>OS: Exact/BM25
+      D->>GV: Dense
+    and 实例语义元素
+      D->>OS: Exact/BM25
+      D->>GV: Dense
+    end
+
+    D->>N: 6路 Raw Hits
+    N->>N: 通道内按种子节点 id 去重并保留具体元素
+    N->>R: 6条 Ranked Lists
+    R-->>L: 种子节点分组粗排 + semantic_hits
+    U->>L: Original Query
+    L-->>P: Final Retrieval Results
+    P->>P: 投影 ObjectType / Property 种子节点
+    P->>G: seedNodes
+    G->>G: minimal/khop/component
+    G-->>U: retrievalResults + ontologySubgraph
+```
+
+
+# 6. 种子节点投影与本体子图构建
+
+
+## 6.1 检索结果 → 种子节点投影
+
+LLM 精排完成后，使用 `SeedNodeProjector` 将最终检索结果转换为子图算法输入。
+
+规则：
+
+| 最终结果类型 | 投影出的种子节点 |
+|---|---|
+| ObjectType | 当前 `id` |
+| ObjectType Alias | `parent_id` 对应 ObjectType |
+| Property | 当前 `id` |
+| Property Alias | `parent_id` 对应 Property |
+| Enum Value/Alias | `parent_id` 对应 Property |
+| Instance Value/Alias | `parent_id` 对应 Property |
+
+Property 种子节点还需要补齐其父 ObjectType：
+
+```text
+Property.id
+  ↓ GraphTopologyCache.propertyToObject
+ObjectType.id
+```
+
+形成：
+
+```text
+explicit_property_seed_nodes
+object_terminals
+mandatory_has_property_edges
+```
+
+检索结果本身仍保留在 `retrievalResults`，不会因为投影而丢失。
+
+
+## 6.2 Property → ObjectType：Topology Cache 优先
+
+当前种子节点向量表为了兼容现有 OAG Schema，不保存 `parent_id`。
+
+因此 Property → ObjectType 的推荐实现为：
+
+```text
+GraphTopologyCache.propertyToObject
+```
+
+缓存来源：
+
+```text
+本体 has_property 关系
+```
+
+流程：
+
+```text
+Property 种子节点 id
+  ↓
+Topology Cache hit?
+  ├─ yes → 直接得到 ObjectType id
+  └─ no  → 调用现有 addObjectTypeByProperty() GQL 兜底
+```
+
+这样既保持 8 字段种子节点表兼容，又避免每次查询都访问图数据库。
+
+
+## 6.3 当前三种子图策略：接口语义与真实算法
+
+外部策略名：
+
+```text
+minimal
+khop
+component
+```
+
+保持不变。
+
+但当前实现事实是：
+
+| Strategy | 当前真实实现 | 不是严格意义上的 |
+|---|---|---|
+| minimal | Seed 两两最短路径 → 按路径长度排序 → 贪心加入直到连通 | 标准 MST / 最优 Steiner Tree |
+| khop | Seed 两两组合 → `FIND ALL PATH ... UPTO k STEPS` | 真正 Multi-Source BFS |
+| component | Seed 两两 `FIND ALL PATH ... UPTO 10 STEPS` | 真正无界 Connected Component |
+
+文档和代码必须明确这一点。
 
 ---
 
-# 115. 导入接口最终设计决策
 
-1. **OAG 是 Instance Evidence 索引的唯一构建和检索引擎。**
-2. **DataSync 是实例数据生产方，负责数据源读取、DISTINCT、基础标准化和本体映射。**
-3. **DataSync 不生成 vector，也不直接写 GaussVector/OpenSearch。**
-4. **大数据量导入采用异步 Job，不使用同步海量 JSON API。**
-5. **生产环境优先 MinIO，中小部署支持受控 File/Shared Path。**
-6. **Data Package = Manifest + 不可变数据分片。**
-7. **Parquet 是大规模场景首选格式。**
-8. **推荐按 Property 分区/分片，Mapping 放 Manifest，减少每行重复字段。**
-9. **OAG 必须校验 Property/Parent ObjectType/is_semantic 映射。**
-10. **OAG 复用统一 Evidence Builder、Normalize、Embedding Content 规则。**
-11. **INSTANCE_VALUE 与 INSTANCE_ALIAS 均通过同一导入协议支持，并且两者本身均可作为最终 retrievalResults 返回。**
-12. **evidence_ID 稳定生成，Chunk 重试必须幂等。**
-13. **Parquet RowGroup / NDJSON Offset 作为断点 Checkpoint。**
-14. **GaussVector/OpenSearch 使用 Chunk 级双写协调和最终一致。**
-15. **FULL_REPLACE 使用 staging generation，全部成功后原子发布。**
-16. **INCREMENTAL 使用 UPSERT/DELETE + dataVersion 防止旧数据覆盖。**
-17. **OAG 在线查询资源优先于 Bulk Import，必须独立线程池和限流。**
-18. **失败行进入 Reject/DLQ File，Job Fatal 与 Row Rejectable 分级处理。**
-19. **任务、文件、Chunk、Generation 状态全部持久化，支持重启续传。**
-20. **最终目标是在不牺牲在线检索 SLA 的前提下，支持千万/亿级实例 Evidence 稳定导入，并确保命中的实例值/实例同义词可携带 Property + ObjectType Context 直接作为最终检索结果。**
+## 6.4 minimal：当前实现分析
+
+当前流程：
+
+```text
+Seeds
+ ↓
+computePairwiseShortestPaths
+ ↓
+Pair Paths
+ ↓
+按 Path Length 排序
+ ↓
+逐条 collectFromPath
+ ↓
+DisjointSet 判断所有 Seed 是否连通
+ ↓
+addMissingEdgesFromObjects
+ ↓
+removeEdgesWithMismatchedId
+```
+
+其优点：
+
+```text
+实现简单
+可复用现有最短路径能力
+输出通常比较紧凑
+已有线上代码基础
+```
+
+限制：
+
+1. 路径按长度贪心加入，不等价于先构造 Terminal Metric Closure 再做标准 MST；
+2. 不保证得到全局最小 Steiner Tree；
+3. 多条等长最短路径的业务语义优先级没有充分表达；
+4. Seed 数增大后两两最短路径数量 O(S²)；
+5. Property Seed 没先折叠 Parent ObjectType 时会增加 Pair 数。
 
 ---
 
-# 116. 更新后的索引构建职责一句话总结
 
-> **DataSync 负责把“底层真实实例数据”加工成带本体 Property 映射的批量 Import Package，并通过 File/MinIO 交付给 OAG；OAG 作为唯一索引引擎，以异步、可断点、可重试、可版本发布的 Bulk Import Pipeline 统一完成 Evidence 构造、Embedding、GaussVector 与 OpenSearch 双写和索引发布，并在检索时将命中的 INSTANCE_VALUE / INSTANCE_ALIAS 本身连同 Property + ObjectType Context 返回，从而把大规模数据同步链路与在线本体检索能力稳定解耦。**
+## 6.5 minimal：增强方案
+
+建议保留：
+
+```text
+minimal.algorithm = legacy_greedy
+```
+
+并增加：
+
+```text
+minimal.algorithm = metric_closure_mst
+```
+
+目标实现：
+
+```text
+1. Property → Parent ObjectType
+2. 得到 object_terminals
+3. 计算 terminal pair shortest path
+4. 构造 Metric Closure
+5. Metric Closure 上做 MST
+6. 将 MST virtual edge 展开回原始 shortest path
+7. 合并节点 / 边
+8. 加回 Property + has_property
+9. 剪除非 种子节点 的无意义叶子
+```
+
+这是更规范的：
+
+```text
+Shortest Path + MST Steiner Approximation
+```
+
+但仍然不是严格 NP-hard Steiner Tree 的最优解，应在文档中称：
+
+```text
+Steiner Tree Approximation
+```
+
+---
+
+
+## 6.6 minimal 路径选择增强
+
+当前最短路径主要按 Hop 数。
+
+如果多个等长路径，可按稳定 tie-break：
+
+```text
+1. 与 Query / 已命中 relation hint 语义更匹配
+2. active relation 优先
+3. 中间 ObjectType 更少
+4. junction/backing 复杂度更低
+5. relationship priority
+6. 稳定 ID 排序
+```
+
+建议配置：
+
+```yaml
+subgraph:
+  minimal:
+    pathCostMode: hop_count
+    tieBreak:
+      semanticRelation: true
+      preferActive: true
+      preferLowerJunctionComplexity: true
+```
+
+第一阶段保持 `hop_count` 兼容，后续可灰度 `semantic_weighted`。
+
+---
+
+
+## 6.7 khop：当前实现分析
+
+当前 `khop` 实际：
+
+```text
+getPairs(seedIds)
+ ↓
+parallelStream
+ ↓
+每个 src/dst
+ ↓
+FIND ALL PATH FROM src TO dst OVER * UPTO k STEPS
+ ↓
+收集所有 PathInfo
+```
+
+优点：
+
+```text
+能显式获得 Seed 间多条 k-hop 路径
+实现基于现有 NebulaGraph GQL
+```
+
+核心风险：
+
+1. 不是 Multi-Source BFS；
+2. Seed 数为 S 时 Pair 数 O(S²)；
+3. `FIND ALL PATH` 的路径数量在稠密图中可能组合爆炸，复杂度不能简单理解成 O(S²×k)；
+4. 大量路径在后续又会共享相同节点和边，存在重复 IO / 解析；
+5. `parallelStream` 会把路径爆炸转化成更高瞬时 GraphDB 压力；
+6. 默认 k=3 通常可控，但仍需要 Path/Node/Time 上限。
+
+---
+
+
+## 6.8 khop：兼容模式与增强模式
+
+保留：
+
+```text
+khop.algorithm = pairwise_all_path
+```
+
+作为现有兼容实现。
+
+增加：
+
+```text
+khop.algorithm = multi_source_bfs
+```
+
+目标行为：
+
+```text
+所有 object_terminals 同时入队
+visited[node] = min_hop
+reachable_from[node] = seed_set
+frontier 按层批量扩展
+达到 hop_limit 停止
+```
+
+目标输出：
+
+```text
+node.min_hop
+node.reachable_from_seed_ids
+edge.discovery_hop
+```
+
+优势：
+
+```text
+避免 Seed Pair 两两重复
+避免枚举所有路径
+更适合“邻域扩展”语义
+更容易 maxNodes/maxEdges 截断
+```
+
+---
+
+
+## 6.9 Multi-Source BFS 实现建议
+
+若图数据库没有直接满足需求的多源 API，可在 OAG 层做分层 frontier：
+
+```text
+frontier[0] = all terminals
+for depth = 1..k:
+    batch query neighbors(frontier[depth-1])
+    remove visited
+    add frontier[depth]
+    update reached_from
+```
+
+关键：
+
+```text
+批量查询
+visited 去重
+edge type filter
+active filter
+maxNodes/maxEdges
+timeout
+```
+
+不需要枚举所有简单路径。
+
+---
+
+
+## 6.10 legacy khop 防爆参数
+
+在完全替换为 Multi-Source BFS 前，现有 `FIND ALL PATH` 模式至少增加：
+
+```yaml
+subgraph:
+  khop:
+    hopLimit: 3
+    maxPathsPerPair: 20
+    maxTotalPaths: 200
+    maxNodes: 100
+    maxEdges: 200
+    queryTimeoutMs: 2000
+    pairConcurrency: 8
+```
+
+并记录：
+
+```text
+path_truncated
+timeout_pairs
+total_path_count
+```
+
+---
+
+
+## 6.11 component：当前实现分析
+
+当前代码：
+
+```text
+component
+ → computePairwiseNumPaths(seedIds, 10)
+ → FIND ALL PATH ... UPTO 10 STEPS
+```
+
+这是：
+
+> **有界 10-hop 连通近似**
+
+并不是真正的 Graph Connected Component。
+
+风险：
+
+1. 两个节点可能实际同一连通分量，但最短路径 > 10，因此被错误判定不连通；
+2. 仍然枚举 `ALL PATH`，大分量中成本高；
+3. `10` 是工程上“大值”，不是图论意义的全连通；
+4. component 语义和实现语义存在偏差。
+
+---
+
+
+## 6.12 component：增强为真实 Connected Component
+
+当前 OAG 已有：
+
+```text
+loadAllEdges()
+DisjointSet
+buildDsuFromNodesAndEdges()
+```
+
+因此最优增强不是继续扩大：
+
+```text
+UPTO 10 → UPTO 20
+```
+
+而是：
+
+```text
+本体版本加载/变更时
+  ↓
+加载 active ontology core edges
+  ↓
+构建 DSU / Connected Component Index
+  ↓
+component_id[node]
+```
+
+请求时：
+
+```text
+最终种子节点
+  ↓
+component_id
+  ↓
+直接取相关 connected component
+```
+
+这样得到真正的 Connected Component 语义。
+
+---
+
+
+## 6.13 GraphTopologyCache / Component Cache
+
+建议新增：
+
+```text
+GraphTopologyCache
+```
+
+按：
+
+```text
+ontology_id + ontology_version
+```
+
+缓存：
+
+```text
+adjacency
+active_edges
+component_id
+object_type metadata
+property parent mapping
+relation metadata
+```
+
+优势：
+
+```text
+避免每次 loadAllEdges
+Component O(1) 判断
+支持 Multi-Source BFS
+支持本地快速连通性校验
+```
+
+本体版本变化后整体失效重建。
+
+---
+
+
+## 6.14 component API 兼容策略
+
+外部仍使用：
+
+```text
+graphExpansionStrategy=component
+```
+
+内部配置：
+
+```yaml
+component:
+  algorithm: dsu_cached
+  legacyHopLimit: 10
+```
+
+灰度阶段：
+
+```text
+shadow execute:
+ legacy bounded-component
+ enhanced dsu-component
+
+比较:
+ connectivity
+ nodes
+ latency
+```
+
+验证后切换默认。
+
+---
+
+
+## 6.15 三种策略最终定义
+
+| Strategy | 最终推荐算法 | 默认用途 | 输出规模 |
+|---|---|---|---|
+| `minimal` | Metric Closure + MST Approximation | Cypher / 确定性问数 | 最小 |
+| `khop` | Multi-Source BFS | 探索、补桥、邻域 | 中 |
+| `component` | DSU / BFS 真连通分量 | 模型诊断、全局探索 | 最大 |
+
+同时保留 legacy implementation 供灰度。
+
+---
+
+
+## 6.16 auto 策略
+
+推荐：
+
+```text
+auto
+```
+
+但为了兼容现有 `GraphSearchRequest`，可先作为新值引入。
+
+流程：
+
+```text
+最终种子节点
+  ↓
+minimal
+  ↓
+全部连通?
+  ├─ yes → 返回 minimal
+  └─ no
+       ↓
+     khop multi-source BFS(k=3)
+       ↓
+     发现合理桥接?
+       ├─ yes → 返回 enhanced khop result
+       └─ no
+            ↓
+          connected_groups
+          + unresolved seed nodes
+```
+
+不默认自动进入完整 component，避免上下文爆炸。
+
+---
+
+
+## 6.17 子图构建中的种子节点 Terminal
+
+LLM 最终 种子节点 可能包含：
+
+```text
+ObjectType
+Property
+```
+
+构图时：
+
+```text
+ObjectType → Terminal
+Property → parent ObjectType 作为 Terminal
+```
+
+Property 自身作为：
+
+```text
+mandatory leaf
+```
+
+即：
+
+```text
+Parent ObjectType
+  └─ has_property
+      └─ Property
+```
+
+这能减少：
+
+```text
+Terminal count
+Pairwise shortest path count
+路径搜索成本
+```
+
+---
+
+
+## 6.18 本体图中关系的作用
+
+核心本体子图需要保留：
+
+```text
+has_property
+defines_relation
+relation node / metadata
+junction mapping
+businessSemanticType
+cardinality
+linkType
+```
+
+下游 Cypher 真正的关系连接依据来自本体图，而不是 Vector。
+
+例如：
+
+```text
+SITE_TO_ALARM
+NE_TO_SITE
+NE_TO_2G
+```
+
+及其：
+
+```text
+junctionConfig
+sourceName
+targetName
+```
+
+必须在最终 Core Graph / Relation Metadata 中保留。
+
+---
+
+
+## 6.19 Relation 路径选择
+
+当一个 种子节点 Pair 存在多条路径：
+
+```text
+A → B
+A → C → B
+A → D → B
+```
+
+不应仅依据向量分数。
+
+推荐 Path Score：
+
+```text
+PathCost =
+  hop_cost
+  + relation_complexity_penalty
+  + inactive_penalty
+  - semantic_relation_bonus
+```
+
+第一版可只做 tie-break，不改变现有 shortest-hop 主语义。
+
+---
+
+
+## 6.20 includeFunctions / includeActions
+
+现有请求已经支持：
+
+```text
+includeFunctions
+includeActions
+```
+
+V5.4 保留。
+
+推荐处理阶段：
+
+```text
+Final Core Subgraph
+  ↓
+CapabilityExtensionAssembler
+  ├─ includeFunctions=1 → 扩展相关 Function
+  └─ includeActions=1   → 扩展相关 Action
+```
+
+Function/Action 默认不进入 种子节点 RRF 主排序，除非未来明确把它们升级为 种子节点 类型。
+
+最终输出可独立：
+
+```json
+{
+  "capabilityExtensions": {
+    "functions": [],
+    "actions": []
+  }
+}
+```
+
+避免 Function/Action 干扰 ObjectType/Property 核心拓扑。
+
+---
+
+
+## 6.21 GraphTopologyCache
+
+由于当前子图代码存在：
+
+```text
+loadAllEdges()
+```
+
+建议将静态本体拓扑按版本缓存：
+
+```text
+Key = ontology_id + ontology_version
+```
+
+Value：
+
+```text
+nodesById
+edgesById
+adjacency
+reverseAdjacency
+propertyParentMap
+componentId
+relationMetadata
+```
+
+失效条件：
+
+```text
+本体版本变化
+Relation变更
+ObjectType/Property删除
+```
+
+收益：
+
+```text
+降低重复 loadAllEdges
+加速 component
+加速 one-hop graph hint
+支持 Multi-Source BFS
+支持 Rerank Context
+```
+
+---
+
+
+## 6.22 图遍历方向与边类型策略
+
+子图“连通性搜索”和最终 Cypher “关系方向”是两个不同问题，必须分开处理。
+
+推荐建立 **Topology Projection**：
+
+```text
+用于连通性/最短路径的投影图
+  ├─ ObjectType nodes
+  ├─ defines_relation 等允许的对象关系
+  └─ 可配置是否按无向方式参与 connectivity
+
+最终输出图
+  └─ 始终保留原始 sourceId / targetId / direction / relation metadata
+```
+
+Property：
+
+```text
+不作为跨对象桥接节点
+通过 mandatory has_property 挂载
+```
+
+避免出现：
+
+```text
+ObjectA → PropertyA → ... → PropertyB → ObjectB
+```
+
+这种不符合本体业务关系语义的“属性桥接”。
+
+推荐配置：
+
+```yaml
+graph:
+  traversal:
+    bridgeEdgeTypes:
+      - defines_relation
+    propertyEdgeType: has_property
+    connectivityDirection: configurable
+    preserveOriginalDirection: true
+```
+
+如果现网当前路径查询严格按有向边运行，灰度初期保持同样语义；只有经过用例验证后才允许使用 undirected connectivity projection。
+
+---
+
+
+# 7. 性能、配置、可观测性、评测与迁移
+
+
+## 7.1 性能风险控制
+
+### Retrieval
+
+```text
+table-level TopK
+similarityThreshold
+timeout
+并行通道隔离
+Instance 语义元素 限流
+```
+
+### Candidate Normalize / RRF
+
+```text
+channel 内 id Group 去重
+maxMatchedItemsPerSeedGroup
+coarseTopKPerSemanticUnit
+maxGlobalCandidates
+```
+
+这里必须同时控制：
+
+```text
+种子节点分组 数量
+每个 Group 内 Matched Item 数量
+```
+
+否则虽然 RRF Group 数量可控，但某个高频 Property 仍可能携带过多 Enum/Instance 语义元素 进入 Prompt。
+
+### LLM
+
+```text
+maxCandidateGroupsPerSemanticUnit
+maxMatchedItemsPerSeedGroup
+maxGlobalCandidates
+maxSelectedSemanticMatchesPerUnit
+Prompt token budget
+retry=1
+fallback=RRF primary_hit
+```
+
+### Graph
+
+```text
+maxObjectTerminals
+maxPairShortestPathQueries
+maxPathsPerPair
+maxTotalPaths
+hopLimit
+maxNodes
+maxEdges
+timeout
+```
+
+Final Semantic Matches 可以多于最终图构建种子节点数，因为多个值可能映射到同一个 Property。
+
+---
+
+
+## 7.2 推荐配置
+
+```yaml
+oag:
+  semanticRetrieval:
+    defaults:
+      topK: 3
+      similarityThreshold: 0.6
+
+    seed:
+      topK: 10
+      similarityThreshold: 0.6
+
+    metadata:
+      topK: 10
+      similarityThreshold: 0.6
+
+    instance:
+      topK: 5
+      similarityThreshold: 0.6
+
+  rrf:
+    k: 60
+    coarseTopKPerSemanticUnit: 20
+    maxGlobalCandidates: 50
+    maxMatchedItemsPerSeedGroup: 5
+    channelWeights:
+      seedLexical: 1.3
+      seedDense: 1.0
+      metadataLexical: 1.2
+      metadataDense: 1.0
+      instanceLexical: 1.0
+      instanceDense: 0.8
+
+  rerank:
+    enabled: true
+    promptName: ontology_semantic_rerank
+    temperature: 0.0
+    maxCandidatesPerSemanticUnit: 20
+    maxGlobalCandidates: 50
+    maxSelectedPerSemanticUnit: 5
+    maxSelectedSemanticMatchesPerUnit: 5
+    retryCount: 1
+    fallback: RRF
+
+  graph:
+    topologyCache: true
+
+    strategy:
+      default: auto
+
+    minimal:
+      algorithm: metric_closure_mst
+      fallbackAlgorithm: legacy_greedy
+      maxPathLength: 6
+      pathCostMode: hop_count
+
+    khop:
+      algorithm: multi_source_bfs
+      fallbackAlgorithm: pairwise_all_path
+      hopLimit: 3
+      maxPathsPerPair: 20
+      maxTotalPaths: 200
+      pairConcurrency: 8
+
+    component:
+      algorithm: dsu_cached
+      legacyHopLimit: 10
+
+    limits:
+      maxNodes: 100
+      maxEdges: 200
+      timeoutMs: 3000
+      includeInactive: false
+
+  extension:
+    includeObjectAliases: true
+    includePropertyAliases: true
+    enumMode: matched_only
+    instanceMode: matched_only
+    maxInstanceElementsPerProperty: 10
+
+  capabilityExtension:
+    includeFunctionsDefault: false
+    includeActionsDefault: false
+```
+
+所有数值都是起始值，必须通过真实数据评测调整。
+
+---
+
+
+## 7.3 异常与降级
+
+| 异常 | 降级 |
+|---|---|
+| 单个检索通道失败 | 其他通道继续 |
+| Instance 语义元素 超时 | 不阻塞 种子节点/Metadata |
+| RRF 无候选 | unresolved unit |
+| LLM 超时/JSON错误 | 重试1次 → RRF fallback |
+| LLM 返回不存在 ID | 丢弃并记录 |
+| Property→ObjectType 缓存未命中 | 调用现有 `addObjectTypeByProperty()` GQL 兜底 |
+| enhanced minimal 失败 | fallback legacy_greedy |
+| multi-source BFS 不可用 | fallback pairwise_all_path |
+| DSU component cache 不可用 | fallback legacy hop=10 |
+| K-hop 路径过多 | 截断，`truncated=true` |
+| 最终种子节点 不连通 | 返回 connected_groups |
+| Instance Extension 过大 | matched/topN |
+
+---
+
+
+## 7.4 可观测性
+
+### Retrieval
+
+```text
+semantic_unit_count
+channel_latency
+channel_return_count
+threshold_filtered_count
+exact_hit_count
+semantic_element_hit_count
+type_count{type}
+```
+
+### Candidate Normalize / RRF
+
+```text
+before_dedup_count
+after_seed_group_dedup_count
+rrf_seed_group_count
+matched_items_retained_count
+matched_items_truncated_count
+channel_contribution
+```
+
+### Rerank
+
+```text
+candidate_group_count
+candidate_item_count
+input_tokens
+output_tokens
+latency
+rerank_status
+selected_semantic_match_count
+selected_type_count{type}
+selected_seed_count
+no_match_count
+```
+
+### Graph Projection
+
+```text
+semantic_match_count
+graph_seed_count
+match_to_seed_projection_count
+projection_error_count
+```
+
+### Graph
+
+```text
+strategy
+algorithm
+object_terminal_count
+pair_count
+path_query_count
+path_count
+node_count
+edge_count
+connected_groups
+unconnected_seed_ids
+truncated
+graph_cache_hit
+```
+
+可观测性必须能回答两个不同问题：
+
+```text
+1. 用户最终命中了什么语义项？
+2. 这些语义项最终投影成了哪些图构建种子节点？
+```
+
+---
+
+
+## 7.5 评测体系
+
+### Final Semantic Target
+
+```text
+SemanticTargetRecall@1/3/10
+SemanticTargetPrecision@1/3/10
+TargetTypeAccuracy
+MatchedValueAccuracy
+```
+
+分别统计：
+
+```text
+ObjectTypeTargetAccuracy
+PropertyTargetAccuracy
+ObjectAliasTargetAccuracy
+PropertyAliasTargetAccuracy
+EnumValueTargetAccuracy
+EnumAliasTargetAccuracy
+InstanceValueTargetAccuracy
+InstanceAliasTargetAccuracy
+```
+
+### 种子节点上下文
+
+```text
+ObjectSeedRecall@1/3/10
+PropertySeedRecall@1/3/10
+TargetToObjectTypeAccuracy
+TargetToPropertyAccuracy
+TargetToSeedContextAccuracy
+SeedMRR
+SeedNDCG
+```
+
+### 语义元素 / Canonical Value
+
+```text
+AliasHit@K
+EnumResolveAccuracy
+InstanceValueToPropertyAccuracy
+SemanticElementToSeedAccuracy
+CanonicalValueAccuracy
+MatchedItemRetentionRate
+```
+
+### 多语言
+
+```text
+CrossLanguageRecall
+MixedLanguageRecall
+CrossLanguageTargetAccuracy
+```
+
+### RRF
+
+```text
+RRFSeedGroupRecall@10/20
+RRFMRR
+ChannelContributionRate
+MatchedItemRetentionAfterRRF
+```
+
+RRF 的评测不仅看 种子节点分组是否召回，还要看正确的 Alias/Enum/Instance Item 是否仍保留在该 Group 内。
+
+### LLM 精排
+
+```text
+SemanticMatchPrecision@K
+SemanticMatchRecall@K
+TargetTypeAccuracy
+MatchedValueAccuracy
+CanonicalValueAccuracy
+SeedContextAccuracy
+WrongMatchDropRate
+RequiredSemanticUnitCoverage
+NoMatchAccuracy
+P50/P95/P99
+Tokens
+```
+
+### 子图
+
+```text
+SeedConnectivityRate
+SubgraphNodePrecision
+SubgraphEdgePrecision
+MinimalSubgraphSize
+BridgeNodeCount
+KhopExpansionSize
+DisconnectedSeedRate
+ComponentAccuracy
+GraphLatency
+PathExplosionRate
+```
+
+### Cypher
+
+```text
+CypherSemanticTargetAccuracy
+CypherSeedAccuracy
+CypherRelationAccuracy
+CypherCanonicalValueAccuracy
+CypherExecutableRate
+EndToEndQueryAccuracy
+```
+
+最终端到端准确率必须同时覆盖：
+
+```text
+是否找对具体语义项
++
+是否携带正确 ObjectType / Property
++
+是否生成正确关系与 canonical value
+```
+
+---
+
+
+## 7.6 子图算法专项对比测试
+
+同一组 Query 同时执行：
+
+```text
+minimal legacy_greedy
+minimal metric_closure_mst
+
+khop pairwise_all_path
+khop multi_source_bfs
+
+component bounded_hop_10
+component dsu_cached
+```
+
+比较：
+
+```text
+节点数
+边数
+种子节点连通率
+是否缺失正确路径
+NebulaGraph查询次数
+返回Path数量
+P95延迟
+CPU
+内存
+结果稳定性
+Cypher准确率
+```
+
+---
+
+
+## 7.7 迁移与灰度
+
+### Phase 0：指标基线
+
+记录当前：
+
+```text
+vector/es seed recall
+minimal/khop/component latency
+subgraph size
+Cypher accuracy
+```
+
+### Phase 1：索引 V2
+
+```text
+种子节点
+Metadata 语义元素
+Instance 语义元素
+```
+
+双写，旧检索保持。
+
+### Phase 2：Hybrid + RRF
+
+影子执行：
+
+```text
+legacy getSeedIds
+vs
+hybrid/RRF
+```
+
+### Phase 3：LLM Rerank
+
+灰度启用，保留 RRF fallback。
+
+### Phase 4：Graph Enhanced
+
+逐策略灰度：
+
+```text
+minimal enhanced
+khop enhanced
+component enhanced
+```
+
+### Phase 5：切换默认
+
+数据证明：
+
+```text
+Recall提升
+Cypher准确率提升
+Latency可控
+```
+
+后再切换。
+
+---
+
+
+## 7.8 代码迁移总体原则
+
+现有图算法实现不推倒重写，迁移重点放在图算法之前：
+
+```text
+getSeedIds / hybridRecall
+  ↓
+6 路 SearchDispatcher + 一次 Weighted RRF
+  ↓
+SemanticResultRanker
+  ↓
+SeedNodeProjector
+  ↓
+现有/增强 SubgraphBuilder
+```
+
+现有 Java 类名如果包含历史 `Anchor` 字样，可以在代码兼容期继续存在；文档、接口字段和新增类统一使用“种子节点/Seed”语义。详细方法级映射见下一节。
+
+## 7.9 现有方法级增强映射
+
+| 当前方法/结构 | 当前职责 | V5.4 建议 |
+|---|---|---|
+| `interpretQueryIntent()` | LLM 意图解析 | 输出 Semantic Units / hints |
+| `getSeedIds()` | Vector/ES 获取 Seed | 升级为 6 路 SearchDispatcher |
+| `hybridRecall()` | 混合召回 | 一次 Weighted RRF |
+| `AnchorCandidateNormalizer`（现有类名） | 旧 语义元素→种子节点 | 逻辑升级为 `SeedCandidateNormalizer`：保留语义元素并按种子节点分组 |
+| `OntologyAnchorRanker`（现有类名） | 旧 种子节点 精排 | 逻辑升级为 `SemanticResultRanker` |
+| 新增 `SeedNodeProjector` | 无 | Final Retrieval Result → ObjectType/Property 种子节点 |
+| `addObjectTypeByProperty()` | Property 查父对象 | Topology Cache 优先，GQL fallback |
+| `loadAllEdges()` | 请求时加载拓扑 | `GraphTopologyCache` 按本体版本缓存 |
+| `computePairwiseShortestPaths()` | minimal 最短路径 | 复用为 Metric Closure 输入 |
+| `buildMstSubgraph()` | Greedy path union | 保留 legacy；新增 MST approximation |
+| `computePairwiseNumPaths()` | khop/component | 保留 legacy fallback |
+| `findAllPath()` | 枚举 k-hop 路径 | 仅 legacy 使用并增加防爆限制 |
+| `DisjointSet` | 子图连通性 | 扩展到 component cache |
+
+> 现有 Java 类名可以在代码迁移阶段保留，文档业务术语统一使用“种子节点”，避免继续扩散旧的 Anchor 术语。
+
+
+## 7.10 设计中不应出现的误区
+
+需要避免以下误区：
+
+1. **把 Alias/Enum/Instance 拼进种子节点 Vector。** 应保持独立语义元素索引。
+2. **认为 Alias/Enum/Instance 不能成为最终结果。** 它们可以成为 `retrievalResults`，只是不能直接作为 Core Graph 路径节点。
+3. **直接对语义元素 id 做 RRF。** 会造成元素数量偏置；应按所属种子节点分组。
+4. **语义元素映射到 Property 后丢弃自身。** 会丢失用户真正命中的值/同义词。
+5. **默认做两级 RRF。** 会二次压缩 rank，默认采用 6 路一次 Weighted RRF。
+6. **LLM 精排必须选一个。** 应允许 0/1/N。
+7. **认为 khop 已经是 Multi-Source BFS。** 当前 legacy 是 pairwise `FIND ALL PATH`。
+8. **认为 component 已经是真 Connected Component。** 当前 legacy 是 hop=10 近似。
+9. **Property Vector 必须加 ObjectType 前缀。** 默认不推荐。
+10. **所有表统一 topK=3 / threshold=0.6。** 三类 Dense 应独立配置。
+11. **seedNodes 就是完整检索结果。** `seedNodes` 是图算法输入，`retrievalResults` 才是最终语义结果。
+12. **为每条向量记录增加大量版本/Hash字段。** 版本与构建状态应放到 Import Job / Generation 元数据。
+
+
+## 7.11 最终设计决策
+
+1. **ObjectType / Property 统一称为“种子节点”。**
+2. **Alias / Enum / Instance 统一称为“语义元素”。**
+3. **最终检索结果可以是种子节点，也可以是语义元素本身。**
+4. **所有物理记录自身主键统一叫 `id`。**
+5. **不再使用多组重复的 ID/Type 映射字段；记录自身统一为 `id/type`。**
+6. **语义元素使用 `parent_id` 指向所属种子节点。**
+7. **种子节点表严格兼容现有 8 字段：vector/type/id/name/display_zh/display_en/description_zh/description_en。**
+8. **种子节点表不保留 normalized_name/content_hash/model_version/source_version/updated_at/parent_id/content 等扩展字段。**
+9. **OpenSearch 种子节点 Index 不保留 source_version。**
+10. **Property → ObjectType 使用 GraphTopologyCache/has_property 关系，不依赖种子节点表 parent 字段。**
+11. **元数据/实例语义元素字段收敛为 vector/type/id/parent_id/name/canonical_value/description_zh/description_en。**
+12. **INSTANCE_ALIAS 保留。**
+13. **三类数据物理隔离：种子节点、元数据语义元素、实例语义元素。**
+14. **每个 Semantic Unit 默认形成 6 条 Ranked List。**
+15. **默认采用 6 路一次 Weighted RRF，不采用两级 RRF。**
+16. **如果 Exact 与 BM25 拆成独立列表，直接扩为 9 路一次 RRF。**
+17. **RRF 每通道先按所属种子节点 id 去重，组内保留具体语义元素。**
+18. **LLM 使用原始问题 + 种子节点分组 + 具体语义元素 + Graph Hint 精排。**
+19. **精排允许 0/1/N，并可降级到 RRF primary hit。**
+20. **SeedNodeProjector 将最终检索结果投影为图构建种子节点。**
+21. **Enum/Alias/Instance 可以是最终结果，但不直接参与 Core Graph 路径算法。**
+22. **minimal 保留 legacy 并增强为 Metric Closure MST Approximation。**
+23. **khop 从 pairwise ALL PATH 演进到 Multi-Source BFS。**
+24. **component 从 hop=10 近似演进到 DSU/BFS 真 Connected Component。**
+25. **GraphTopologyCache 同时服务 Property→ObjectType、Graph Hint、BFS 和 Component。**
+26. **DataSync 只提供实例数据包，OAG 统一完成 Embedding、GaussVector/OpenSearch 和索引发布。**
+27. **FULL_REPLACE 使用 staging generation，INCREMENTAL 使用 idempotent UPSERT/DELETE。**
+28. **最终优化目标是：检索结果准确 + 种子节点上下文准确 + Relation/Canonical Value 准确 + Cypher 端到端准确。**
+
+
+## 7.12 一句话总结
+
+> **OAG 最终是“语义检索 + 种子节点投影 + 本体子图构建”引擎：对每个 Semantic Unit 同时检索种子节点、元数据语义元素和实例语义元素，通过 6 路一次 Weighted RRF 与 LLM 精排准确返回 ObjectType、Property、同义词、枚举值或实例值本身；所有结果使用简单的 `id/type/name` 语义并携带 Property/ObjectType 上下文，再投影为种子节点执行 minimal/khop/component 子图算法。DataSync 通过 File/MinIO 向 OAG 提供实例数据，OAG 统一完成向量化、全文索引和版本发布。**
