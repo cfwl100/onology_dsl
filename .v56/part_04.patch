@@ -1,0 +1,271 @@
++    instanceTable: t_instance_evidence_{ontology_id}
++    additionalLanguages:
++      lang_1: es
++      lang_2: null
++    maxSynonymLanguages: 3
++
+   extension:
+-    includeObjectAliases: true
+-    includePropertyAliases: true
++    includeSynonyms: true
+     enumMode: matched_only
+     instanceMode: matched_only
+     maxInstanceElementsPerProperty: 10
+@@ -5005,17 +4380,22 @@ TargetTypeAccuracy
+ MatchedValueAccuracy
+ ```
+ 
+-分别统计：
++按记录类型分别统计：
+ 
+ ```text
+ ObjectTypeTargetAccuracy
+ PropertyTargetAccuracy
+-ObjectAliasTargetAccuracy
+-PropertyAliasTargetAccuracy
+ EnumValueTargetAccuracy
+-EnumAliasTargetAccuracy
+ InstanceValueTargetAccuracy
+-InstanceAliasTargetAccuracy
++```
++
++Synonym 不再是独立 Target Type，而作为命中字段单独评测：
++
++```text
++SeedSynonymHitAccuracy
++EnumSynonymHitAccuracy
++SynonymMatchedValueAccuracy
++SynonymLanguageAccuracy
+ ```
+ 
+ ### 种子节点上下文
+@@ -5030,29 +4410,42 @@ SeedMRR
+ SeedNDCG
+ ```
+ 
+-### 语义元素 / Canonical Value
++### Enum / Instance / Matched Field
+ 
+ ```text
+-AliasHit@K
+ EnumResolveAccuracy
++EnumValueToPropertyAccuracy
+ InstanceValueToPropertyAccuracy
+-SemanticElementToSeedAccuracy
+-CanonicalValueAccuracy
++MatchedFieldAccuracy
++MatchedValueAccuracy
+ MatchedItemRetentionRate
+ ```
+ 
+ ### 多语言
+ 
++固定评测：
++
++```text
++zh
++en
++lang_1
++lang_2
++```
++
++并根据 ontology 语言槽位映射输出实际语言，例如 `lang_1=es`。
++
++指标：
++
+ ```text
+-LanguageRecall@K{zh/en/es/...}
++LanguageRecall@K
+ CrossLanguageRecall
+ SmallLanguageRecall@K
+ MixedLanguageRecall
+ CrossLanguageTargetAccuracy
+-LanguageMatchedItemRetentionRate
++SynonymLanguageRecall@K
+ ```
+ 
+-至少单独建立西语评测集，并对后续引入的小语种按语言分别统计 Recall/Precision，不能只看总体平均值。
++`synonyms` 最多 3 种语言且语言不固定，因此必须按实际 language key 分桶统计，不能只看 display/description 的四个语言槽位。
+ 
+ ### RRF
+ 
+@@ -5061,9 +4454,10 @@ RRFSeedGroupRecall@10/20
+ RRFMRR
+ ChannelContributionRate
+ MatchedItemRetentionAfterRRF
++SynonymMatchedValueRetentionAfterRRF
+ ```
+ 
+-RRF 的评测不仅看 种子节点分组是否召回，还要看正确的 Alias/Enum/Instance Item 是否仍保留在该 Group 内。
++RRF 不仅看种子节点分组是否召回，还要确认正确的 Enum/Instance 记录以及 synonym `matched_value` 是否保留在 Group 内。
+ 
+ ### LLM 精排
+ 
+@@ -5071,8 +4465,8 @@ RRF 的评测不仅看 种子节点分组是否召回，还要看正确的 Alias
+ SemanticMatchPrecision@K
+ SemanticMatchRecall@K
+ TargetTypeAccuracy
++MatchedFieldAccuracy
+ MatchedValueAccuracy
+-CanonicalValueAccuracy
+ SeedContextAccuracy
+ WrongMatchDropRate
+ RequiredSemanticUnitCoverage
+@@ -5083,41 +4477,19 @@ Tokens
+ 
+ ### 子图
+ 
+-```text
+-SeedConnectivityRate
+-SubgraphNodePrecision
+-SubgraphEdgePrecision
+-MinimalSubgraphSize
+-BridgeNodeCount
+-KhopExpansionSize
+-DisconnectedSeedRate
+-ComponentAccuracy
+-GraphLatency
+-PathExplosionRate
+-```
++继续使用既有：Anchor/Seed Connectivity、Subgraph Node/Edge Precision、MinimalSubgraphSize、BridgeNodeCount、KhopExpansionSize、DisconnectedSeedRate、ComponentAccuracy、GraphLatency、PathExplosionRate 等指标。
+ 
+-### Cypher
++### Cypher / End-to-End
+ 
+ ```text
+-CypherSemanticTargetAccuracy
+ CypherSeedAccuracy
+ CypherRelationAccuracy
+-CypherCanonicalValueAccuracy
++CypherValueAccuracy
+ CypherExecutableRate
+ EndToEndQueryAccuracy
+ ```
+ 
+-最终端到端准确率必须同时覆盖：
+-
+-```text
+-是否找对具体语义项
+-+
+-是否携带正确 ObjectType / Property
+-+
+-是否生成正确关系与 canonical value
+-```
+-
+----
++对于 Enum Value，`CypherValueAccuracy` 直接校验 `values[].value`；不再依赖 ENUM_ALIAS → canonical_value 二次映射。
+ 
+ 
+ ## 7.6 子图算法专项对比测试
+@@ -5236,7 +4608,7 @@ SeedNodeProjector
+ 
+ ## 7.9 现有方法级增强映射
+ 
+-| 当前方法/结构 | 当前职责 | V5.5 建议 |
++| 当前方法/结构 | 当前职责 | V5.6 建议 |
+ |---|---|---|
+ | `interpretQueryIntent()` | LLM 意图解析 | 输出 Semantic Units / hints |
+ | `getSeedIds()` | Vector/ES 获取 Seed | 升级为 6 路 SearchDispatcher |
+@@ -5257,57 +4629,56 @@ SeedNodeProjector
+ 
+ ## 7.10 设计中不应出现的误区
+ 
+-需要避免以下误区：
++需要避免：
+ 
+-1. **把 Alias/Enum/Instance 拼进种子节点 Vector。** 应保持独立语义元素索引。
+-2. **认为 Alias/Enum/Instance 不能成为最终结果。** 它们可以成为 `retrievalResults`，只是不能直接作为 Core Graph 路径节点。
+-3. **直接对语义元素 id 做 RRF。** 会造成元素数量偏置；应按所属种子节点分组。
+-4. **语义元素映射到 Property 后丢弃自身。** 会丢失用户真正命中的值/同义词。
+-5. **默认做两级 RRF。** 会二次压缩 rank，默认采用 6 路一次 Weighted RRF。
+-6. **LLM 精排必须选一个。** 应允许 0/1/N。
+-7. **认为 khop 已经是 Multi-Source BFS。** 当前 legacy 是 pairwise `FIND ALL PATH`。
+-8. **认为 component 已经是真 Connected Component。** 当前 legacy 是 hop=10 近似。
+-9. **Property Vector 必须加 ObjectType 前缀。** 默认不推荐。
+-10. **所有表统一 topK=3 / threshold=0.6。** 三类 Dense 应独立配置。
+-11. **seedNodes 就是完整检索结果。** `seedNodes` 是图算法输入，`retrievalResults` 才是最终语义结果。
+-12. **为每条向量记录增加大量版本/Hash字段。** 版本与构建状态应放到 Import Job / Generation 元数据。
++1. **把 Synonym 建成独立 OBJECT_ALIAS/PROPERTY_ALIAS/ENUM_ALIAS 行。** V5.6 使用所属记录的 `synonyms` 字段。
++2. **为了多语言无限增加 display_xx/description_xx 列。** 固定 zh/en + 最多两个额外语言槽位。
++3. **认为 synonyms 语言必须固定 zh/en/es。** Synonyms 最多 3 种语言，但组合不固定。
++4. **实例值继续维护 INSTANCE_ALIAS。** Instance Evidence 只保存真实 DISTINCT value。
++5. **实例向量拼接 Property/描述/同义词。** Instance Dense 严格只使用 `{value}`。
++6. **Enum synonym 命中后丢失真正过滤值。** 返回 Enum Value 记录的 `value`，同时保留 `matched_field/matched_value`。
++7. **直接按 synonym 数量做 RRF 加分。** Synonym 是记录字段，不产生额外 Ranked Item。
++8. **默认做两级 RRF。** 默认仍采用 6 路一次 Weighted RRF。
++9. **LLM 精排必须选一个。** 应允许 0/1/N。
++10. **Property Vector 必须加 ObjectType 前缀。** 默认不推荐。
++11. **所有表统一 topK=3 / threshold=0.6。** 三类 Dense 应独立配置。
++12. **seedNodes 就是完整检索结果。** `retrievalResults` 才是权威语义结果。
++13. **为每条向量记录增加版本/Hash 等运维字段。** 版本放 Import Job / Generation 元数据。
+ 
+ 
+ ## 7.11 最终设计决策
+ 
+-1. **ObjectType / Property 统一称为“种子节点”。**
+-2. **Alias / Enum / Instance 统一称为“语义元素”。**
+-3. **最终检索结果可以是种子节点，也可以是语义元素本身。**
+-4. **所有物理记录自身主键统一叫 `id`。**
+-5. **不再使用多组重复的 ID/Type 映射字段；记录自身统一为 `id/type`。**
+-6. **语义元素使用 `parent_id` 指向所属种子节点。**
+-7. **种子节点 GaussVector 主表严格兼容现有 8 字段：vector/type/id/name/display_zh/display_en/description_zh/description_en；8 字段兼容不等于只支持中英文。**
+-8. **种子节点表不保留 normalized_name/content_hash/model_version/source_version/updated_at/parent_id/content 等扩展字段。**
+-9. **OpenSearch 种子节点 Index 不保留 source_version。**
+-10. **Property → ObjectType 使用 GraphTopologyCache/has_property 关系，不依赖种子节点表 parent 字段。**
+-11. **元数据/实例语义元素字段保持简洁，并增加 `language` 标识当前 Alias/Enum/Instance 文本语言。**
+-12. **INSTANCE_ALIAS 保留。**
+-13. **三类数据物理隔离：种子节点、元数据语义元素、实例语义元素。**
+-14. **每个 Semantic Unit 默认形成 6 条 Ranked List。**
+-15. **默认采用 6 路一次 Weighted RRF，不采用两级 RRF。**
+-16. **如果 Exact 与 BM25 拆成独立列表，直接扩为 9 路一次 RRF。**
+-17. **RRF 每通道先按所属种子节点 id 去重，组内保留具体语义元素。**
+-18. **LLM 使用原始问题 + 种子节点分组 + 具体语义元素 + Graph Hint 精排。**
+-19. **精排允许 0/1/N，并可降级到 RRF primary hit。**
+-20. **SeedNodeProjector 将最终检索结果投影为图构建种子节点。**
+-21. **Enum/Alias/Instance 可以是最终结果，但不直接参与 Core Graph 路径算法。**
+-22. **minimal 保留 legacy 并增强为 Metric Closure MST Approximation。**
+-23. **khop 从 pairwise ALL PATH 演进到 Multi-Source BFS。**
+-24. **component 从 hop=10 近似演进到 DSU/BFS 真 Connected Component。**
+-25. **GraphTopologyCache 同时服务 Property→ObjectType、Graph Hint、BFS 和 Component。**
+-26. **DataSync 只提供实例数据包，OAG 统一完成 Embedding、GaussVector/OpenSearch 和索引发布。**
+-27. **FULL_REPLACE 使用 staging generation，INCREMENTAL 使用 idempotent UPSERT/DELETE。**
+-28. **多语言能力必须正式保留：种子节点一个 id 默认一个多语言 Vector，OMS/OAG Metadata Cache 保存结构化 i18n，OpenSearch 索引结构化 i18n。**
+-29. **西语及其他小语种与 zh/en 使用相同 6 路召回/RRF/LLM 主链路，Dense 不按语言硬过滤。**
+-30. **语义元素使用 `language` 表示自身语言，查询 `language_hint` 使用 BCP 47 风格语言码，并支持 mixed/und。**
+-31. **最终优化目标是：检索结果准确 + 多语言召回准确 + 种子节点上下文准确 + Relation/Canonical Value 准确 + Cypher 端到端准确。**
++1. **ObjectType / Property 统一称为种子节点。**
++2. **种子节点表统一命名 `t_ontoretrieval_{ontology_id}`。**
++3. **Metadata 表统一命名 `t_metadata_evidence_{ontology_id}`，只承载 Enum Value。**
++4. **Instance 表统一命名 `t_instance_evidence_{ontology_id}`，只承载 Instance Value。**
++5. **所有业务记录主键统一为 `id`；Enum/Instance 使用 `parent_id` 指向 Property。**
++6. **ObjectType/Property 同义词直接写入种子节点 `synonyms` 字段。**
++7. **Enum Value 同义词直接写入 Enum Value 记录 `synonyms` 字段。**
++8. **Synonym 不建立独立 OBJECT_ALIAS/PROPERTY_ALIAS/ENUM_ALIAS/INSTANCE_ALIAS 行。**
++9. **Instance Evidence 明确去除 INSTANCE_ALIAS。**
++10. **种子节点 display/description 固定 zh/en，并额外支持最多 2 个 ontology 级语言槽位 `lang_1/lang_2`。**
++11. **`synonyms` 最多支持 3 种语言，三种语言不固定，每种语言可有多个词。**
++12. **种子节点向量化使用 name + 4语言 display/description + synonyms_value + synonyms_description。**
++13. **Enum Value 向量化使用 value + name + 4语言 display/description + synonyms_value + synonyms_description。**
++14. **Instance Value 向量化严格只使用 `{value}`。**
++15. **Property → ObjectType 使用 GraphTopologyCache/has_property，不在种子节点表增加 parent_id。**
++16. **每个 Semantic Unit 默认形成 6 条 Ranked List：三类数据 × Lexical/Dense。**
++17. **默认采用 6 路一次 Weighted RRF，不采用两级 RRF；Exact/BM25 独立后可扩为 9 路。**
++18. **RRF 每通道先按种子节点 group_id 去重。**
++19. **SearchHit 必须保留 `matched_field/matched_value`，用于解释 synonym/display/value 等具体命中。**
++20. **LLM 使用原始问题 + 种子节点分组 + supporting hits + Graph Hint 精排，允许 0/1/N。**
++21. **SeedNodeProjector 只处理 ObjectType/Property/Enum Value/Instance Value 四类记录。**
++22. **Enum/Instance 可以是最终结果，但不直接参与 Core Graph 路径算法。**
++23. **minimal/khop/component 的 legacy 与 enhanced 算法设计保持不变。**
++24. **GraphTopologyCache 继续服务 Property→ObjectType、Graph Hint、BFS 和 Component。**
++25. **DataSync 只提供真实 DISTINCT 实例值，OAG 统一完成 Embedding、GaussVector/OpenSearch 和索引发布。**
++26. **FULL_REPLACE 使用 staging generation，INCREMENTAL 使用幂等 UPSERT/DELETE。**
++27. **最终优化目标：检索结果准确 + Synonym 命中可解释 + Enum/Instance Value 准确 + 种子节点上下文准确 + Relation 准确 + Cypher 端到端准确。**
+ 
+ 
+ ## 7.12 一句话总结
+ 
+-> **OAG 最终是“多语言语义检索 + 种子节点投影 + 本体子图构建”引擎：对每个 Semantic Unit 同时检索种子节点、元数据语义元素和实例语义元素，通过 6 路一次 Weighted RRF 与 LLM 精排准确返回 ObjectType、Property、同义词、枚举值或实例值本身；中文、英文、西语及其他小语种使用统一的多语言向量和结构化 i18n 检索链路，所有结果使用简单的 `id/type/name/language` 语义并携带 Property/ObjectType 上下文，再投影为种子节点执行 minimal/khop/component 子图算法。DataSync 通过 File/MinIO 向 OAG 提供实例数据，OAG 统一完成向量化、全文索引和版本发布。**
+\ No newline at end of file
++> **OAG 使用三张稳定索引表承载种子节点、Enum Value 和 Instance Value：ObjectType/Property 及 Enum Value 的 Synonym 内嵌在 `synonyms` 字段中，中文/英文之外最多再支持两个 display/description 语言槽位，Synonym 最多三种非固定语言；Seed/Enum 向量包含 name/display/description/synonyms，Instance 向量只包含 value。查询阶段对三类数据执行 6 路一次 Weighted RRF，保留 `matched_field/matched_value` 后进行 LLM 精排，再投影 ObjectType/Property 种子节点构建本体子图。**
++
++
