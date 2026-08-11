@@ -1,0 +1,824 @@
+-
+     OT --> SB
+-    P --> SB
+-    OA --> MB
++    ST --> SB
+     EN --> MB
++    ST --> MB
+ 
+     SC --> DV
+     DV --> PKG
+@@ -1377,15 +1224,18 @@ flowchart LR
+     MB --> EMB
+     IB --> EMB
+ 
+-    EMB --> GS
+-    EMB --> GM
+-    EMB --> GI
+-    SB --> OS1
+-    MB --> OM
+-    IB --> OI
++    EMB --> GV1[t_ontoretrieval]
++    EMB --> GV2[t_metadata_evidence]
++    EMB --> GV3[t_instance_evidence]
+ ```
+ 
+-种子节点表保持现有 8 字段；语义元素用 `id + type + parent_id + name + canonical_value` 建模。
++三类向量化模板：
++
++```text
++Seed：name + 4-language display/description + synonyms
++Enum：value + name + 4-language display/description + synonyms
++Instance：value only
++```
+ 
+ 
+ ## 3.3 OAG 实例数据 Bulk Import 总体设计
+@@ -1417,231 +1267,85 @@ flowchart LR
+     DS[DataSync] --> SRC[(业务数据源)]
+     SRC --> DS
+ 
+-    DS --> DIST[DISTINCT / Normalize / Alias整理]
+-    DIST --> PKG[生成 Import Package<br/>Manifest + Data Files]
++    DS --> DIST[DISTINCT / Normalize]
++    DIST --> PKG[Import Package<br/>Manifest + Instance Value Files]
+ 
+-    PKG -->|方式1| FS[(共享文件/临时文件区)]
+-    PKG -->|方式2 推荐| MINIO[(MinIO)]
++    PKG -->|兼容| FS[(共享文件)]
++    PKG -->|推荐| MINIO[(MinIO)]
+ 
+-    DS --> API[OAG Import API<br/>创建异步任务]
++    DS --> API[OAG Import API]
+     FS --> IMP[OAG BulkImportService]
+     MINIO --> IMP
+     API --> IMP
+ 
+-    IMP --> VAL[Manifest / Mapping / Checksum校验]
+-    VAL --> PARSE[File Reader / Chunker]
+-    PARSE --> NORM[语义元素 Normalize / Dedup]
+-    NORM --> EMB[Embedding Worker]
+-
+-    EMB --> VW[GaussVector Bulk Writer]
+-    EMB --> OW[OpenSearch Bulk Writer]
++    IMP --> VAL[Manifest / Property Mapping / Checksum]
++    VAL --> PARSE[Streaming Reader / Chunker]
++    PARSE --> NORM[Value Normalize / Dedup]
++    NORM --> EMB[Embedding: value only]
+ 
+-    VW --> VIDX[ANN Index Build / Verify]
+-    OW --> OIDX[Full-text Index Verify]
++    EMB --> VW[t_instance_evidence GaussVector]
++    PARSE --> OW[t_instance_evidence OpenSearch]
+ 
+-    VIDX --> PUB[Version Publisher]
++    VW --> VIDX[ANN Verify]
++    OW --> OIDX[Full-text Verify]
++    VIDX --> PUB[Generation Publisher]
+     OIDX --> PUB
+-    PUB --> CAT[OAG Index Catalog<br/>active_version]
+-
+-    CAT --> SEARCH[OAG Retrieval Engine]
++    PUB --> SEARCH[OAG Retrieval Engine]
+ ```
+ 
+-设计上严格分为：
+-
+-```text
+-控制面：REST API + Import Job Metadata
+-数据面：File / MinIO + Streaming Reader
+-计算面：Normalize + Embedding + Bulk Writer
+-存储面：GaussVector + OpenSearch
+-发布面：Version/Generation Switch
+-```
++控制面、数据面、计算面、存储面、发布面的职责边界保持不变。
+ 
+ ---
+ 
+-
+ ## 3.5 为什么采用 File / MinIO 中转
+ 
+-不推荐：
+-
+-```text
+-DataSync
+-  ↓
+-每100/1000条同步HTTP JSON
+-  ↓
+-OAG实时Embedding并写库
+-```
+-
+-原因：
+-
+-1. 大量 HTTP 请求放大序列化、网络和连接开销；
+-2. DataSync 与 OAG 强耦合，OAG短时限流会反压数据同步链路；
+-3. Embedding、GaussVector、OpenSearch 任一阶段抖动都会导致同步调用超时；
+-4. 难以做到断点续传和批次级重试；
+-5. 重试容易造成重复数据；
+-6. 无法方便保存原始输入用于失败复盘；
+-7. 大批量全量重建时需要数十分钟甚至更长，天然不适合同步接口。
+-
+-推荐：
+-
+-```text
+-DataSync 先生成不可变批量文件
+-      ↓
+-OAG 创建异步 Import Job
+-      ↓
+-OAG 自己按可承受速率消费
+-```
++不推荐 DataSync 以数百/数千条为批次持续同步 HTTP JSON 调用 OAG。大批量实例值应先形成不可变文件，再由 OAG 异步消费。
+ 
+-MinIO 模式优先级最高，原因是：
++原因保持不变：降低 HTTP/序列化开销，隔离 Embedding/存储抖动，支持断点续传、幂等重试、失败现场保留和大规模全量重建。
+ 
+-```text
+-支持大文件
+-天然跨Pod/跨节点
+-易于校验checksum
+-易保留失败现场
+-支持生命周期清理
+-DataSync/OAG无需共享本地磁盘
+-```
+-
+-共享文件模式主要作为：
+-
+-```text
+-单机/边缘部署
+-无MinIO环境
+-测试环境
+-兼容模式
+-```
++生产优先 MinIO；共享文件用于单机、边缘、测试或无 MinIO 环境。
+ 
+ ---
+ 
+-
+ ## 3.6 导入模式
+ 
+-支持两类主模式：
+-
+-### FULL_REPLACE
+-
+-表示 DataSync 提交某个导入 Scope 的完整实例语义快照。
+-
+-```text
+-旧 active generation
+-       ↓
+-创建 staging generation
+-       ↓
+-全量导入
+-       ↓
+-构建 ANN / OpenSearch Index
+-       ↓
+-一致性校验
+-       ↓
+-原子发布 active generation
+-       ↓
+-异步清理旧 generation
+-```
+-
+-适合：
+-
+-```text
+-首次建库
+-Embedding模型升级后的重建
+-大规模数据重新同步
+-实例语义索引整体修复
+-```
+-
+-### INCREMENTAL
+-
+-每条记录携带：
++支持：
+ 
+ ```text
+-UPSERT
+-DELETE
++FULL_REPLACE
++INCREMENTAL（UPSERT / DELETE）
+ ```
+ 
+-按照稳定 `id` 幂等修改当前 active generation。
++FULL_REPLACE 使用 staging generation → verify → active generation 原子发布；INCREMENTAL 使用稳定 `id` 幂等修改。
+ 
+-适合：
+-
+-```text
+-日常增量同步
+-新增枚举式实例值
+-实例 Alias 调整
+-数据源删除值
+-```
+-
+-FULL_REPLACE 推荐支持 Scope：
+-
+-```text
+-ONTOLOGY
+-OBJECT_TYPE
+-PROPERTY_SET
+-PROPERTY
+-```
+-
+-大规模场景优先 Property/PropertySet 分区，可减少一次全量重建范围。
++适用范围仍支持 ONTOLOGY / OBJECT_TYPE / PROPERTY_SET / PROPERTY。日常增量场景只处理 Instance Value 的新增、删除或值变化，不再存在“Instance Alias 调整”。
+ 
+ ---
+ 
+-
+ ## 3.7 Import Package 结构
+ 
+-一个 Import Package 由：
+-
+-```text
+-manifest.json
+-+
+-N 个 data file
+-```
+-
+-组成。
+-
+-推荐目录：
+-
+ ```text
+ /oag-import/{ontology_id}/{data_version}/{job_request_id}/
+   manifest.json
+   property_001/part-00000.parquet
+   property_001/part-00001.parquet
+   property_002/part-00000.parquet
+-  ...
+-```
+-
+-推荐文件格式：
+-
+-| 格式 | 建议 | 场景 |
+-|---|---|---|
+-| Parquet + Snappy/ZSTD | **首选** | 千万/亿级、批量、高吞吐 |
+-| NDJSON + gzip | 支持 | 兼容、调试、流式生成 |
+-| CSV | 不推荐作为主格式 | Alias数组、转义、多语言复杂 |
+-
+-推荐一个文件只承载一个 Property 种子节点 的实例 语义元素；这样：
+-
+-```text
+-id / parent_id / property mapping
+ ```
+ 
+-可以放在 Manifest 中，不必在每行重复，能明显减少数据体积。
+-
+-若业务必须混合多个 Property，可启用：
++推荐格式：Parquet + Snappy/ZSTD；NDJSON + gzip 作为兼容；CSV 不作为主格式。
+ 
+-```text
+-mappingMode = PER_RECORD
+-```
+-
+-由每条记录携带 Property ID，但不是默认方案。
++一个文件默认只承载一个 Property 的 DISTINCT Instance Value，从而把 `parent_id/property mapping` 放在 Manifest 中，避免每行重复。
+ 
+ ---
+ 
+-
+ ## 3.8 Manifest 设计
+ 
+-Manifest 示例：
+-
+ ```json
+ {
+-  "schemaVersion": "1.0",
++  "schemaVersion": "1.1",
+   "ontologyId": "dtmi.ontology.xxx.1",
+   "dataVersion": "20260811-001",
+   "requestId": "datasync-20260811-000001",
+-  "generatedAt": "2026-08-11T08:20:00+08:00",
+   "sourceSystem": "datasync",
+   "importMode": "FULL_REPLACE",
+   "scope": "PROPERTY_SET",
+@@ -1650,7 +1354,6 @@ Manifest 示例：
+       "uri": "minio://oag-import/.../subclass/part-00000.parquet",
+       "format": "PARQUET",
+       "compression": "SNAPPY",
+-      "sizeBytes": 268435456,
+       "rowCount": 1200000,
+       "sha256": "...",
+       "mapping": {
+@@ -1658,9 +1361,7 @@ Manifest 示例：
+         "propertyName": "subClass",
+         "isSemantic": true,
+         "idColumn": "id",
+-        "typeColumn": "type",
+-        "nameColumn": "name",
+-        "canonicalValueColumn": "canonical_value",
++        "valueColumn": "value",
+         "languageColumn": "language",
+         "operationColumn": "op"
+       }
+@@ -1669,105 +1370,54 @@ Manifest 示例：
+ }
+ ```
+ 
+-一个文件推荐只承载一个 Property 的实例语义元素，因此 `parent_id` 不必在每行重复；OAG 根据 Manifest.propertyId 写入 `parent_id`。
+-
+-Manifest 必须使用 `schemaVersion` 做协议版本化。
++一个文件对应一个 Property 时，`parent_id` 不在每行重复；OAG 根据 `mapping.propertyId` 写入。
+ 
++---
+ 
+ ## 3.9 Data File Record 设计
+ 
+-Property 固定映射模式下，每行只传语义元素自身信息。
+-
+-#### INSTANCE_VALUE
++每行只传真实实例值：
+ 
+ ```json
+ {
+-  "id": "subscriber-subClass::INSTANCE_VALUE::VIP",
+-  "type": "INSTANCE_VALUE",
+-  "name": "VIP",
+-  "canonical_value": "VIP",
++  "id": "subscriber-subClass::VIP",
++  "value": "VIP",
+   "language": "und",
+   "op": "UPSERT"
+ }
+ ```
+ 
+-#### INSTANCE_ALIAS
+-
+-```json
+-{
+-  "id": "subscriber-subClass::INSTANCE_ALIAS::VIP::高价值客户",
+-  "type": "INSTANCE_ALIAS",
+-  "name": "高价值客户",
+-  "canonical_value": "VIP",
+-  "language": "zh",
+-  "op": "UPSERT"
+-}
+-```
+-
+-西语实例同义词同样使用独立记录：
+-
+-```json
+-{
+-  "id": "subscriber-subClass::INSTANCE_ALIAS::VIP::cliente-de-alto-valor",
+-  "type": "INSTANCE_ALIAS",
+-  "name": "cliente de alto valor",
+-  "canonical_value": "VIP",
+-  "language": "es",
+-  "op": "UPSERT"
+-}
+-```
+-
+ OAG 内部转换：
+ 
+ ```text
+ Manifest.propertyId
+ +
+-Record.id/type/name/canonical_value/language
++Record.id/value/language
+    ↓
+ parent_id = Property.id
+    ↓
+-Embedding + GaussVector/OpenSearch
++EmbeddingInput = value
++   ↓
++t_instance_evidence_{ontology_id}
+ ```
+ 
+-DataSync 不发送：
++DataSync 不发送 vector、Embedding 模型版本、OpenSearch Document、物理表名或 ANN 参数。
+ 
+-```text
+-vector
+-Embedding模型版本
+-OpenSearch document
+-GaussVector物理表名
+-ANN参数
+-```
+-
+-`language` 为可选但推荐字段：DataSync 已知语言时显式填写；未填写时 OAG 自动检测，无法判断则写 `und`。这使实例 Alias 可以直接支持西语等小语种，而不需要为不同语言建立不同物理表。
++`language` 可选；仅用于 Analyzer/观测，不改变 `{value}` 的 Dense 向量化模板。
+ 
++---
+ 
+ ## 3.10 id 生成与幂等
+ 
+-所有语义元素直接使用 `id` 作为幂等键。
+-
+-优先级：
+-
+-```text
+-DataSync 提供稳定 id
+->
+-OAG 根据 parent_id + type + source_key 稳定构造
+-```
+-
+-同一个 Job/Chunk 重试：
++优先使用 DataSync 稳定 `id`；否则 OAG 根据：
+ 
+ ```text
+-UPSERT 同 id → 覆盖/无变化，不产生重复
+-DELETE 同 id → 删除 GaussVector + OpenSearch
++parent_id + normalized(value)
+ ```
+ 
+-幂等作用域：
+-
+-```text
+-ontology_id + generation + id
+-```
++稳定生成。
+ 
+-不再引入单独的语义元素 ID 字段，统一使用记录自身 `id`。
++同一个 Job/Chunk 重试时，同 `id` UPSERT 覆盖而不产生重复；DELETE 删除同一 `id`。
+ 
+ 
+ ## 3.11 OAG Import API
+@@ -2056,11 +1706,11 @@ IndexBuilder / Verifier
+ GenerationPublisher
+ ```
+ 
+-OAG 统一复用：
++OAG 实例导入统一使用：
+ 
+ ```text
+-id/type/parent_id/name/canonical_value
+-Value First 向量规则
++id / type=INSTANCE_VALUE / parent_id / value
++EmbeddingInput = value
+ 1024维 Embedding
+ ```
+ 
+@@ -2190,12 +1840,12 @@ OpenSearch：
+ 
+ ```text
+ 建立 versioned physical index
+-完成后切 Alias
++完成后切 OpenSearch Index Alias
+ ```
+ 
+ GaussVector：
+ 
+-如果底层没有原生 Alias，OAG 维护：
++如果 GaussVector 底层没有原生逻辑别名能力，OAG 维护：
+ 
+ ```text
+ IndexCatalog:
+@@ -2261,12 +1911,13 @@ OAG 收到 Manifest Mapping 后必须验证：
+ ontologyId 存在
+ Property ID 存在
+ Property.is_semantic == true
+-Property未删除/未失效
+-记录 type ∈ INSTANCE_VALUE / INSTANCE_ALIAS
+-记录 id 唯一/格式合法
+-INSTANCE_ALIAS.canonical_value 合法
++Property 未删除/未失效
++记录 id 合法且幂等
++记录 value 非空且格式合法
+ ```
+ 
++实例导入协议不再接收 `INSTANCE_ALIAS`，也不接收 `name/canonical_value/synonyms`。
++
+ ObjectType 通过本体 `has_property` 关系推导，不要求 DataSync 重复传输 `objectTypeId`。
+ 
+ Mapping 错误属于 `JOB_FATAL`，必须在大规模 Embedding 前失败。
+@@ -2274,53 +1925,29 @@ Mapping 错误属于 `JOB_FATAL`，必须在大规模 Embedding 前失败。
+ 
+ ## 3.21 行级错误与隔离
+ 
+-错误分两类。
+-
+ ### Job Fatal
+ 
+ ```text
+-Manifest不可解析
+-Checksum不一致
+-Ontology不存在
+-Property映射非法
+-Embedding模型不可用
++Manifest 不可解析
++Checksum 不一致
++Ontology 不存在
++Property 映射非法
++Embedding 模型不可用
+ 目标索引创建失败
+ ```
+ 
+-直接停止 Job。
+-
+ ### Row Rejectable
+ 
+ ```text
+-空Value
+-Value超长
+-非法UTF-8
+-Alias格式错误
+-不支持的type
++空 value
++value 超长
++非法 UTF-8
++不支持的 op
++id 格式非法
+ 单条标准化失败
+ ```
+ 
+-可写入：
+-
+-```text
+-Reject / DLQ File
+-```
+-
+-推荐阈值：
+-
+-```text
+-rejectRatio <= configured threshold
+-```
+-
+-低于阈值允许任务继续并最终：
+-
+-```text
+-SUCCEEDED_WITH_WARNINGS
+-```
+-
+-超过阈值则 FAILED。
+-
+----
++Rejectable 行写入 Reject/DLQ File；低于配置 rejectRatio 可 `SUCCEEDED_WITH_WARNINGS`，超过阈值则任务 FAILED。
+ 
+ 
+ ## 3.22 大数据量性能设计
+@@ -2717,28 +2344,28 @@ sequenceDiagram
+     participant OS as OpenSearch
+     participant C as IndexCatalog
+ 
+-    DS->>DS: 读取is_semantic Property + 数据源
+-    DS->>DS: DISTINCT / Normalize / Alias整理
+-    DS->>M: 写Manifest + Parquet分片
++    DS->>DS: 读取 is_semantic Property + 数据源
++    DS->>DS: DISTINCT / Normalize Instance Value
++    DS->>M: 写 Manifest + Parquet 分片
+     M-->>DS: URI + checksum
+ 
+     DS->>API: POST import-job(manifestUri,dataVersion)
+-    API->>J: 创建幂等Job
++    API->>J: 创建幂等 Job
+     API-->>DS: 202 + jobId
+ 
+-    J->>M: 校验Manifest/Checksum
+-    J->>J: 校验Ontology/Property Mapping
++    J->>M: 校验 Manifest/Checksum
++    J->>J: 校验 Ontology/Property Mapping
+ 
+     loop Chunk
+-        J->>M: Stream读取Chunk
+-        J->>J: Normalize/Dedup/Build 语义元素
+-        J->>E: Batch Embedding
++        J->>M: Stream 读取 Chunk
++        J->>J: Normalize / Dedup value
++        J->>E: Batch Embedding(value only)
+         E-->>J: vectors
+         par 双写
+-            J->>GV: Bulk UPSERT
+-            J->>OS: Bulk API
++            J->>GV: Bulk UPSERT t_instance_evidence
++            J->>OS: Bulk UPSERT t_instance_evidence
+         end
+-        J->>J: Chunk Commit/Checkpoint
++        J->>J: Chunk Commit / Checkpoint
+     end
+ 
+     J->>GV: Build/Verify ANN
+@@ -2752,54 +2379,51 @@ sequenceDiagram
+ 
+ ---
+ 
+-
+ ## 3.30 与索引设计的衔接
+ 
+-Bulk Import 不改变三类检索数据模型，只明确索引构建职责：
+-
+ ```text
+-种子节点：OMS → OAG
+-元数据语义元素：OMS → OAG
+-实例语义元素：DataSync → File/MinIO → OAG
++种子节点：OMS ObjectType/Property + SynonymType → OAG
++元数据元素：OMS EnumType.values[] + SynonymType → OAG
++实例元素：DataSync DISTINCT Value → File/MinIO → OAG
+ ```
+ 
+-实例元素保持：
++实例记录固定：
+ 
+ ```text
+-INSTANCE_VALUE / INSTANCE_ALIAS
+-id = 当前元素自身 ID
++type = INSTANCE_VALUE
++id = 当前 Value 稳定 ID
+ parent_id = Property.id
+-Value First
++value = 真实列值
++EmbeddingInput = value
+ ```
+ 
+-DataSync 不再依赖 Embedding SDK、GaussVector Client、OpenSearch Client、具体 Mapping 或 ANN 参数。
++DataSync 不依赖 Embedding SDK、GaussVector Client、OpenSearch Client、具体 Mapping 或 ANN 参数。
+ 
+ 
+ ## 3.31 导入接口最终设计决策
+ 
+-1. **OAG 是三类语义索引的统一构建和检索引擎。**
+-2. **DataSync 是实例数据生产方，不直接写 GaussVector/OpenSearch。**
++1. **OAG 是三类索引的统一构建和检索引擎。**
++2. **DataSync 只生产真实实例列值，不生产 INSTANCE_ALIAS。**
+ 3. **大数据量采用异步 Import Job + File/MinIO 数据面。**
+-4. **生产环境优先 MinIO；File 仅用于兼容部署。**
++4. **生产优先 MinIO；File 用于兼容部署。**
+ 5. **Data Package = Manifest + 不可变数据分片。**
+-6. **Parquet 是大规模场景首选格式。**
++6. **Parquet 是大规模场景首选。**
+ 7. **推荐按 Property 分区，Property 映射放 Manifest。**
+-8. **每条实例语义元素使用 id/type/name/canonical_value。**
+-9. **OAG 写入 parent_id = Property.id，并通过拓扑补 ObjectType。**
+-10. **INSTANCE_VALUE / INSTANCE_ALIAS 均支持。**
+-11. **id 稳定且 Chunk 重试幂等。**
+-12. **Parquet RowGroup / NDJSON Offset 作为 Checkpoint。**
+-13. **GaussVector/OpenSearch 使用 Chunk 级双写协调和最终一致。**
+-14. **FULL_REPLACE 使用 staging generation 原子发布。**
+-15. **INCREMENTAL 使用 UPSERT/DELETE + dataVersion。**
+-16. **在线检索优先于 Bulk Import，必须独立线程池/限流。**
+-17. **失败行进入 Reject/DLQ，Job Fatal 与 Row Rejectable 分级。**
+-18. **任务、文件、Chunk、Generation 状态持久化，支持重启续传。**
++8. **每条实例记录使用 `id + value`，OAG 写入 `parent_id=Property.id`。**
++9. **实例向量化只使用 `{value}`。**
++10. **稳定 id 保证 Chunk 重试幂等。**
++11. **Parquet RowGroup / NDJSON Offset 作为 Checkpoint。**
++12. **GaussVector/OpenSearch 使用 Chunk 级双写协调和最终一致。**
++13. **FULL_REPLACE 使用 staging generation 原子发布。**
++14. **INCREMENTAL 使用 UPSERT/DELETE + dataVersion。**
++15. **在线检索优先于 Bulk Import，必须独立线程池/限流。**
++16. **失败行进入 Reject/DLQ，Job Fatal 与 Row Rejectable 分级。**
++17. **任务、文件、Chunk、Generation 状态持久化，支持重启续传。**
+ 
+ 
+ ## 3.32 索引构建职责一句话总结
+ 
+-> **DataSync 负责把底层真实实例数据加工成按 Property 分区的 Import Package；OAG 以异步、可断点、可重试、可版本发布的 Bulk Import Pipeline，把 `id/type/name/canonical_value` 实例元素转成 `parent_id=Property.id` 的实例语义索引，并统一完成 Embedding、GaussVector/OpenSearch 写入和发布。**
++> **DataSync 负责把底层真实 DISTINCT 实例列值加工成按 Property 分区的 Import Package；OAG 以异步、可断点、可重试、可版本发布的 Bulk Import Pipeline，将 `id + value` 转成 `parent_id=Property.id` 的 `t_instance_evidence_{ontology_id}` 记录，并用 `{value}` 生成向量，统一完成 GaussVector/OpenSearch 写入和发布。**
+ 
+ 
+ # 4. Query Understanding 与 6 路召回
+@@ -3037,7 +2661,7 @@ semanticRetrieval:
+ 
+ - `3 / 0.6` 只作为历史兼容默认值；
+ - 种子节点优先 Recall；
+-- 元数据语义元素允许多个 Alias/Enum 命中同一种子节点；
++- Metadata Enum Value 允许多个值或 synonyms 命中同一种子节点；
+ - 实例数据量最大，TopK 初始更保守；
+ - 三类 Dense 分数分布不同，阈值必须可独立校准。
+ 
+@@ -3111,193 +2735,170 @@ hybrid → Exact/BM25/Dense + 语义元素 + RRF
+ 
+ ## 4.9 GaussVector / OpenSearch 返回结构与结果标准化
+ 
+-RRF 前，OAG 将 GaussVector / OpenSearch 的结果统一成简单 SearchHit。以下结构定义的是 **OAG Search Adapter 输出**，不直接向上层透出 GaussVector SQL 行格式或 OpenSearch 原生 `_source/_score` 包装。
+-
+-多语言场景下统一约定：
+-
+-```text
+-resolved_language = 当前用于展示的语言
+-matched_language  = Lexical 实际命中的语言，可空
+-language          = 语义元素自身语言
+-```
++RRF 前，OAG 将三张表的查询结果统一成 SearchHit，不向上层直接透出 GaussVector SQL 行格式或 OpenSearch 原生 `_source/_score` 包装。
+ 
+-### GaussVector 种子节点返回结构
+-
+-GaussVector 主表仍只有兼容 8 字段；Search Adapter 可根据 `id + query language` 从 OMS/OAG 多语言缓存补充本地化展示：
++### 种子节点 Dense SearchHit
+ 
+ ```json
+ {
+   "id": "dtmi:com:huawei:ict:Cell:1.0",
+-  "type": 0,
++  "type": "OBJECT_TYPE",
+   "name": "Cell",
+   "display_zh": "无线小区",
+   "display_en": "Cell",
++  "display_lang_1": "Celda inalámbrica",
++  "display_lang_2": null,
+   "description_zh": "通信网络中的小区实体",
+   "description_en": "Cell in communication network",
+-  "resolved_language": "es",
+-  "display": "Celda inalámbrica",
+-  "description": "Entidad de celda en una red de comunicaciones",
++  "description_lang_1": "Entidad de celda en una red de comunicaciones",
++  "description_lang_2": null,
++  "synonyms": {
++    "zh": ["小区"],
++    "en": ["Cell", "Radio Cell"],
++    "es": ["Celda"]
++  },
++  "matched_field": "DENSE_VECTOR",
++  "matched_value": null,
+   "distance": 0.18,
+   "score": 0.82,
+   "source": "SEED_DENSE"
+ }
+ ```
+ 
+-`score` 由 OAG 统一换算成“越大越相关”的展示分，仅用于诊断；RRF 主要使用 `rank`。
+-
+-### OpenSearch 种子节点返回结构
++### 种子节点 OpenSearch SearchHit
+ 
+ ```json
+ {
+   "id": "dtmi:com:huawei:ict:Cell:1.0",
+-  "type": 0,
++  "type": "OBJECT_TYPE",
+   "name": "Cell",
+-  "display_zh": "无线小区",
+-  "display_en": "Cell",
+-  "description_zh": "通信网络中的小区实体",
+-  "description_en": "Cell in communication network",
+-  "resolved_language": "es",
+-  "display": "Celda inalámbrica",
+-  "description": "Entidad de celda en una red de comunicaciones",
+-  "matched_language": "es",
+-  "matched_field": "i18n.display",
++  "matched_field": "synonyms.zh",
++  "matched_value": "小区",
+   "score": 12.37,
+   "match_mode": "EXACT_BM25",
+   "source": "SEED_LEXICAL"
+ }
+ ```
+ 
+-如调用方显式设置 `includeI18n=true`，可额外返回完整结构化 `i18n`；默认只返回当前 resolved language，避免候选集过大。
+-
+-### GaussVector 元数据/实例语义元素返回结构
++### Metadata Enum Value Dense SearchHit
+ 
+ ```json
+ {
+-  "id": "property-id::ENUM_ALIAS::1::cliente-formal",
+-  "type": "ENUM_ALIAS",
+-  "parent_id": "property-id",
+-  "name": "cliente formal",
+-  "canonical_value": "1",
+-  "language": "es",
+-  "description_zh": "正式用户",
+-  "description_en": "Formal subscriber",
++  "id": "ei.veh12.enum.Col35.val.red8.1",
++  "type": "ENUM_VALUE",
++  "parent_id": "prop:ont:vehicle:sp:bodyColor",
++  "value": "red",
++  "name": "red",
++  "display_zh": "红色",
++  "display_en": "Red",
++  "synonyms": {
++    "zh": ["红", "红色"],
++    "en": ["Red"],
++    "es": ["Rojo"]
++  },
++  "matched_field": "DENSE_VECTOR",
++  "matched_value": null,
+   "distance": 0.09,
+   "score": 0.91,
+   "source": "METADATA_DENSE"
+ }
+ ```
+ 
+-### OpenSearch 元数据/实例语义元素返回结构
++### Metadata Enum Value OpenSearch SearchHit
+ 
+ ```json
+ {
+-  "id": "property-id::ENUM_ALIAS::1::cliente-formal",
+-  "type": "ENUM_ALIAS",
+-  "parent_id": "property-id",
+-  "name": "cliente formal",
+-  "canonical_value": "1",
+-  "language": "es",
+-  "description_zh": "正式用户",
+-  "description_en": "Formal subscriber",
++  "id": "ei.veh12.enum.Col35.val.red8.1",
++  "type": "ENUM_VALUE",
++  "parent_id": "prop:ont:vehicle:sp:bodyColor",
++  "value": "red",
++  "name": "red",
++  "matched_field": "synonyms.es",
++  "matched_value": "Rojo",
+   "score": 18.42,
+-  "matched_language": "es",
+   "match_mode": "EXACT_BM25",
+   "source": "METADATA_LEXICAL"
+ }
+ ```
+ 
+-随后 OAG 通过 `parent_id` 补齐 Property/ObjectType 上下文。
+-
+-### 统一规则
++### Instance Value SearchHit
+ 
+-```text
