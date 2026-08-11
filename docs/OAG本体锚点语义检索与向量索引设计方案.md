@@ -1,8 +1,8 @@
 # OAG 面向本体种子节点的语义检索、混合排序与本体子图构建设计方案
 
-> 版本：V5.4  
-> 目标：在不丢失既有索引、Bulk Import、混合召回、RRF、LLM 精排和子图算法设计的基础上，统一术语、收敛字段、重排章节，并保持与 OAG 现有种子节点表结构兼容。  
-> 核心决策：**ObjectType/Property = 种子节点；Alias/Enum/Instance = 语义元素；所有记录自身主键统一为 `id`；每个 Semantic Unit 默认 6 路一次 Weighted RRF。**
+> 版本：V5.5  
+> 目标：在不丢失既有索引、Bulk Import、混合召回、RRF、LLM 精排和子图算法设计的基础上，统一术语、收敛字段、重排章节，并保持与 OAG 现有种子节点表结构兼容；同时正式保留结构化多语言能力，支持中文、英文、西语及其他小语种。  
+> 核心决策：**ObjectType/Property = 种子节点；Alias/Enum/Instance = 语义元素；所有记录自身主键统一为 `id`；每个 Semantic Unit 默认 6 路一次 Weighted RRF；保留结构化多语言能力，支持中文、英文、西语及其他小语种。**
 
 ---
 
@@ -177,7 +177,7 @@ includeFunctions = 0
 includeActions = 0
 ```
 
-V5.4 不要求一次性替换现有链路，而是在现有类和接口上渐进演进：
+V5.5 不要求一次性替换现有链路，而是在现有类和接口上渐进演进：
 
 ```text
 现有 getSeedIds()
@@ -344,6 +344,7 @@ type        当前语义元素类型
 parent_id   所属种子节点 ID
 name        当前可检索字符串
 canonical_value 真实业务值，可空
+language    当前文本语言，可空；推荐 BCP 47 / mixed / und
 ```
 
 ### 统一检索结果
@@ -356,6 +357,7 @@ OAG 对上层统一返回：
   "type": "ENUM_ALIAS",
   "name": "FORMAL",
   "canonical_value": "1",
+  "language": "es",
   "objectType": {
     "id": "subscriber-object-id",
     "name": "Subscriber"
@@ -481,31 +483,166 @@ Embedding 批大小、重试次数属于 OAG 工程配置，不进入物理表 S
 
 ## 2.5 多语言向量设计
 
-当前核心物理表仅保留中英文显示名和描述：
+多语言能力必须保留，除中文、英文外，需要原生支持西语以及后续其他小语种。这里需要区分：
 
 ```text
-display_zh / display_en
-description_zh / description_en
+GaussVector 核心种子节点表结构兼容
+        ≠
+只支持中英文语义
 ```
 
-同一记录默认生成一个多语言向量：
+### 2.5.1 核心 8 字段保持不变
+
+种子节点 GaussVector 主表仍严格保持现有 8 字段：
 
 ```text
-name + 中文 + 英文
+vector
+type
+id
+name
+display_zh
+display_en
+description_zh
+description_en
 ```
 
-不按语言拆成多条种子节点记录，避免同一 `id` 占用多个 TopK 位置。
+其中 `display_zh/display_en/description_zh/description_en` 是现有兼容字段和常用语言快速字段，**不代表 OAG 只支持 zh/en**。
 
-如果未来评测证明某语言 Recall 明显不足，可以增加 Shadow Vector，但必须满足：
+为了保持现有表结构兼容，不为每一种语言增加：
+
+```text
+display_es
+display_pt
+description_es
+description_pt
+...
+```
+
+也不恢复一个不可结构化检索的 `i18n_content` 大字段到 GaussVector 主表。
+
+### 2.5.2 多语言源数据使用结构化 i18n
+
+OMS / 本体元数据需要保留结构化多语言信息，例如：
+
+```json
+{
+  "id": "dtmi:com:huawei:ict:Cell:1.0",
+  "name": "Cell",
+  "i18n": {
+    "zh": {
+      "display": "无线小区",
+      "description": "通信网络中的小区实体"
+    },
+    "en": {
+      "display": "Cell",
+      "description": "Cell in communication network"
+    },
+    "es": {
+      "display": "Celda inalámbrica",
+      "description": "Entidad de celda en una red de comunicaciones"
+    },
+    "pt-BR": {
+      "display": "Célula sem fio",
+      "description": "Entidade de célula em uma rede de comunicações"
+    }
+  }
+}
+```
+
+语言标识推荐使用 BCP 47 风格：
+
+```text
+zh
+en
+es
+es-MX
+pt-BR
+fr
+de
+ar
+id
+...
+```
+
+同时保留：
+
+```text
+mixed
+und
+```
+
+表示混合语言和无法可靠识别的语言。
+
+### 2.5.3 一个种子节点默认只生成一个多语言 Vector
+
+OAG 的 `EmbeddingInputBuilder` 在构建种子节点向量时，从 OMS 多语言元数据中读取所有可用语言：
+
+```text
+{name}
+[zh] {display_zh} {description_zh}
+[en] {display_en} {description_en}
+[es] {display_es} {description_es}
+[pt-BR] {display_pt_br} {description_pt_br}
+...
+```
+
+最终仍只写入一条：
+
+```text
+id = 同一个 ObjectType / Property id
+vector = 一个多语言语义向量
+```
+
+默认不按语言复制多条种子节点记录，避免：
+
+```text
+同一 id 的 zh/en/es 多个副本同时占用 TopK
+RRF 前重复去重
+向量数量按语言数膨胀
+```
+
+这与 BGE-M3 当前多语言向量能力的使用方式保持一致。
+
+### 2.5.4 多语言信息的存储边界
+
+推荐职责：
+
+```text
+GaussVector 种子节点主表
+  → 继续保持 8 字段，只保存最终 vector 和 zh/en 兼容字段
+
+OMS / OAG Metadata Cache
+  → 保存完整结构化 i18n 元数据
+
+OpenSearch
+  → 保存可全文检索的结构化 i18n 字段
+
+RerankContextBuilder / ResponseAssembler
+  → 按请求语言补充对应 display / description
+```
+
+因此“不把 i18n_content 放入 GaussVector 主表”与“保留多语言能力”并不冲突。
+
+### 2.5.5 Shadow Vector 仅作为评测后的增强
+
+若真实评测发现某个小语种在单个全局多语言 Vector 中 Recall 明显不足，可以增加语言 Shadow Vector，例如：
+
+```text
+global vector
+es shadow vector
+ar shadow vector
+```
+
+但必须满足：
 
 ```text
 Shadow Vector 只是内部索引副本
-最终仍按同一记录 id 去重
-不改变业务返回结构
+最终仍按同一个业务 id 去重
+不改变种子节点业务返回结构
+不让同一 id 的多个语言副本重复进入 RRF 排名
 ```
 
-其他语言可在后续 Schema 版本中扩展，不在当前兼容表中增加 `i18n_content`。
-
+Shadow Vector 不是默认方案，必须通过分语言 Recall 评测证明有收益后再启用。
 
 ## 2.6 Property Vector 是否带 ObjectType
 
@@ -540,11 +677,13 @@ throughput
 
 ## 2.7 OpenSearch 种子节点索引
 
-推荐 OpenSearch 种子节点 Index 与 GaussVector 核心字段保持一致：
+推荐 OpenSearch 种子节点 Index 保持核心字段兼容，同时增加**结构化多语言检索字段**：
 
 ```text
 {ontology_id}_anchor
 ```
+
+核心字段：
 
 | 字段 | OpenSearch 类型 | 说明 |
 |---|---|---|
@@ -556,25 +695,61 @@ throughput
 | `description_zh` | `text` | 中文描述 |
 | `description_en` | `text` | 英文描述 |
 
+多语言扩展字段推荐使用结构化 `i18n`：
+
+```json
+"i18n": [
+  {
+    "language": "es",
+    "display": "Celda inalámbrica",
+    "description": "Entidad de celda en una red de comunicaciones"
+  },
+  {
+    "language": "pt-BR",
+    "display": "Célula sem fio",
+    "description": "Entidade de célula em uma rede de comunicações"
+  }
+]
+```
+
+推荐字段语义：
+
+```text
+i18n.language     keyword
+i18n.display      keyword + text
+i18n.description  text
+```
+
+这样新增西语、葡语、阿语、印尼语等语言时，不需要修改种子节点 GaussVector 表 Schema，也不需要不断增加 `display_xx/description_xx` 列。
+
 明确不保留：
 
 ```text
 normalized_name
 source_version
 content
-i18n_content
+i18n_content   # 不使用扁平大字符串；改为结构化 i18n
 ```
 
 检索优先级建议：
 
 ```text
 id/name/display exact
-> name/display phrase/BM25
-> description BM25
+> i18n.display exact
+> name/display/i18n.display phrase/BM25
+> description/i18n.description BM25
 ```
 
-字段规范化由 OpenSearch normalizer/analyzer 完成，不额外增加 `normalized_name`。
+Analyzer 策略：
 
+```text
+Exact：keyword，不做语言硬过滤
+高频语言：可配置专用 Analyzer（如 zh/en/es）
+其他小语种：使用通用 multilingual/standard Analyzer 兜底
+Dense：不按语言硬过滤
+```
+
+语言只用于 Analyzer 选择、Boost、结果展示和可观测性，不用于关闭其他召回通道。
 
 ## 2.8 元数据语义元素表结构
 
@@ -594,10 +769,21 @@ id/name/display exact
 | `parent_id` | `VARCHAR(256 CHAR)` | ✔ | 所属种子节点 ID |
 | `name` | `VARCHAR(4096 CHAR)` | ✔ | 当前可检索字符串 |
 | `canonical_value` | `VARCHAR(4096 CHAR)` |  | Enum Alias 对应真实值；非枚举可空 |
-| `description_zh` | `TEXT` |  | 中文描述 |
-| `description_en` | `TEXT` |  | 英文描述 |
+| `language` | `VARCHAR(32 CHAR)` |  | BCP 47 语言标识，如 zh/en/es/pt-BR/mixed/und |
+| `description_zh` | `TEXT` |  | 中文兼容描述 |
+| `description_en` | `TEXT` |  | 英文兼容描述 |
 
-相比旧模型，明确删除重复/冗余概念：
+`language` 是为 Alias / Enum 等**当前语义元素本身**提供的简洁语言标识，不恢复旧的 `term_language` 概念名。
+
+例如：
+
+```text
+name = cliente formal
+language = es
+parent_id = Subscriber.subClass Property id
+```
+
+相比旧模型，仍明确删除重复/冗余概念：
 
 ```text
 多组 ID/Type 映射字段
@@ -616,21 +802,32 @@ ENUM_VALUE.parent_id     → Property.id
 ENUM_ALIAS.parent_id     → Property.id
 ```
 
-Enum 定义引用不再作为向量表必备字段；如精排/Cypher 需要完整 EnumType 信息，OAG 根据当前语义元素 `id + parent_id` 从 OMS 元数据缓存补充，避免在每条向量记录重复保存 `enum_ref`。
+Enum 定义引用不作为向量表必备字段；如精排/Cypher 需要完整 EnumType 信息，OAG 根据当前语义元素 `id + parent_id` 从 OMS 元数据缓存补充。
+
+对于额外语言的描述信息，不要求继续向 GaussVector 表增加 `description_es/description_pt/...` 列；OAG 可从 OMS 结构化 i18n 元数据读取，并在构建向量、OpenSearch 文档和 LLM Context 时使用。
 
 ObjectType 上下文在运行时通过 Property → ObjectType 拓扑补齐。
 
-
 ## 2.9 元数据语义元素 Vector 规则
 
-元数据语义元素 Dense 内容坚持“元素本身优先”：
+元数据语义元素 Dense 内容坚持“元素本身优先”，同时保留多语言描述：
 
 ```text
 {name}
 {canonical_value（适用时）}
 {description_zh}
 {description_en}
+{localized_description_es/...（存在时）}
 ```
+
+若当前语义元素本身是西语或其他小语种，例如：
+
+```text
+name = cliente formal
+language = es
+```
+
+则 `name` 本身就是向量的第一语义主体。
 
 不默认在向量开头拼接 ObjectType / Property 名称，避免父级上下文压过实际 Alias/Enum 语义。
 
@@ -639,10 +836,10 @@ ObjectType 上下文在运行时通过 Property → ObjectType 拓扑补齐。
 ```text
 id 唯一
 parent_id = 对应 Property.id
+language = 当前元素语言
 ```
 
-这样相同枚举值可以在不同 Property 上分别召回和精排，而不会丢失 Property 归属。
-
+这样相同枚举值可以在不同 Property、不同语言表达上分别召回和精排，同时不丢失 Property 归属。
 
 ## 2.10 统一 id 设计
 
@@ -694,11 +891,20 @@ Owner：OAG；DataSync 通过 Bulk Import 提供数据。
 | `parent_id` | `VARCHAR(256 CHAR)` | ✔ | 所属 Property.id |
 | `name` | `VARCHAR(4096 CHAR)` | ✔ | 实例值或实例同义词 |
 | `canonical_value` | `VARCHAR(4096 CHAR)` | ✔ | 真实业务值；INSTANCE_VALUE 时通常等于 name |
-| `description_zh` | `TEXT` |  | 可选业务描述 |
-| `description_en` | `TEXT` |  | 可选业务描述 |
+| `language` | `VARCHAR(32 CHAR)` |  | 当前实例值/同义词语言，如 es/zh/en/und |
+| `description_zh` | `TEXT` |  | 中文兼容描述 |
+| `description_en` | `TEXT` |  | 英文兼容描述 |
 
 `INSTANCE_ALIAS` 保留真实业务支持。Alias 本身是独立检索目标，通过 `canonical_value` 映射到真实实例值。
 
+对于自然语言实例值和实例同义词，DataSync 如果已知语言，应显式传 `language`；未知时 OAG 可以检测，仍无法判断则使用 `und`。例如：
+
+```text
+VIP                         → language=und
+高价值客户                   → language=zh
+high-value customer         → language=en
+cliente de alto valor       → language=es
+```
 
 ## 2.12 Instance Value 向量准入规则
 
@@ -788,7 +994,7 @@ Property 归属使用 `parent_id` 确定，ObjectType 归属由本体拓扑补�
 
 ## 2.14 OpenSearch 语义元素索引
 
-Metadata / Instance 两个 OpenSearch Index 使用与对应 GaussVector 表一致的业务字段：
+Metadata / Instance 两个 OpenSearch Index 使用与对应 GaussVector 表一致的核心业务字段，并保留语言信息：
 
 ```text
 type             integer
@@ -796,9 +1002,12 @@ id               keyword
 parent_id        keyword
 name             keyword + text
 canonical_value  keyword + text
+language         keyword
 description_zh   text
 description_en   text
 ```
+
+如 OMS / DataSync 提供额外语言描述，可在 OpenSearch 中使用结构化 `i18n` 扩展，而不向 GaussVector 表增加固定语言列。
 
 Exact Priority：
 
@@ -814,6 +1023,15 @@ BM25：
 name
 description_zh
 description_en
+i18n.display / i18n.description
+```
+
+语言处理：
+
+```text
+language 与 query.language_hint 一致 → 可 Boost
+language 不一致 → 不做硬过滤
+language=und → 正常参与 Exact/BM25/Dense
 ```
 
 不再保留：
@@ -826,7 +1044,6 @@ aliases 数组
 ```
 
 Alias 已经作为独立语义元素记录，不需要再在同一文档中重复存一个 Alias 数组。
-
 
 ## 2.15 规范化规则
 
@@ -847,23 +1064,102 @@ casefold（适用语言）
 
 ## 2.16 language_hint 与语言处理
 
-为了减少持久化字段，当前物理表**不保存 `term_language`**。
+多语言能力作为 OAG 的正式能力保留。
 
-查询理解阶段可以输出：
+### 种子节点与语义元素的语言字段边界
 
 ```text
-language_hint = zh / en / mixed / und
+种子节点 GaussVector 主表
+  → 不新增 language 列；一条记录表示一个多语言语义实体
+  → 完整语言内容来自 OMS i18n 元数据
+
+元数据/实例语义元素
+  → 保存简洁字段 language
+  → 表示当前 Alias/Enum/Instance 文本自身的语言
 ```
 
-它只用于：
+查询理解阶段输出：
 
 ```text
-OpenSearch analyzer 选择/Boost
+language_hint = BCP 47 language tag / mixed / und
+```
+
+示例：
+
+```text
+zh
+en
+es
+es-MX
+pt-BR
+fr
+ar
+id
+mixed
+und
+```
+
+语言识别优先级：
+
+```text
+源数据显式 language
+> OMS / DataSync 已定义 locale
+> OAG 自动检测
+> und
+```
+
+它用于：
+
+```text
+OpenSearch Analyzer 选择
+Lexical Ranking Boost
+返回结果本地化展示
 可观测性
 LLM Context
 ```
 
-Dense 检索不使用语言强过滤。对于 `FORMAL / IOT_FORMAL / A001` 等无法可靠判断语言的 Token，统一视为 `und`，不增加持久化字段。
+Dense 检索**不使用语言强过滤**，因为用户可能使用西语查询，而正确的种子节点只有中文/英文主字段；跨语言 Dense 和多语言 Alias 应继续承担召回。
+
+对于：
+
+```text
+FORMAL
+IOT_FORMAL
+A001
+```
+
+等无法可靠判断自然语言的 Token：
+
+```text
+language = und
+```
+
+对于：
+
+```text
+FORMAL用户
+5G用户
+```
+
+可标：
+
+```text
+language = mixed
+```
+
+### 返回语言回退
+
+当调用方希望以某个语言展示结果时，推荐：
+
+```text
+请求 locale 精确匹配
+> 同主语言匹配（如 es-MX → es）
+> en
+> zh
+> name
+```
+
+回退顺序可配置，不影响底层检索和 RRF。
 
 ## 2.17 数据质量治理
 
@@ -1365,6 +1661,7 @@ Manifest 示例：
         "typeColumn": "type",
         "nameColumn": "name",
         "canonicalValueColumn": "canonical_value",
+        "languageColumn": "language",
         "operationColumn": "op"
       }
     }
@@ -1389,6 +1686,7 @@ Property 固定映射模式下，每行只传语义元素自身信息。
   "type": "INSTANCE_VALUE",
   "name": "VIP",
   "canonical_value": "VIP",
+  "language": "und",
   "op": "UPSERT"
 }
 ```
@@ -1401,6 +1699,20 @@ Property 固定映射模式下，每行只传语义元素自身信息。
   "type": "INSTANCE_ALIAS",
   "name": "高价值客户",
   "canonical_value": "VIP",
+  "language": "zh",
+  "op": "UPSERT"
+}
+```
+
+西语实例同义词同样使用独立记录：
+
+```json
+{
+  "id": "subscriber-subClass::INSTANCE_ALIAS::VIP::cliente-de-alto-valor",
+  "type": "INSTANCE_ALIAS",
+  "name": "cliente de alto valor",
+  "canonical_value": "VIP",
+  "language": "es",
   "op": "UPSERT"
 }
 ```
@@ -1410,7 +1722,7 @@ OAG 内部转换：
 ```text
 Manifest.propertyId
 +
-Record.id/type/name/canonical_value
+Record.id/type/name/canonical_value/language
    ↓
 parent_id = Property.id
    ↓
@@ -1426,6 +1738,8 @@ OpenSearch document
 GaussVector物理表名
 ANN参数
 ```
+
+`language` 为可选但推荐字段：DataSync 已知语言时显式填写；未填写时 OAG 自动检测，无法判断则写 `und`。这使实例 Alias 可以直接支持西语等小语种，而不需要为不同语言建立不同物理表。
 
 
 ## 3.10 id 生成与幂等
@@ -2592,6 +2906,14 @@ unknown
 
 只用于 Boost，不关闭其他检索通道。
 
+`language_hint` 支持 BCP 47 风格语言码，例如：
+
+```text
+zh / en / es / es-MX / pt-BR / fr / ar / id / mixed / und
+```
+
+西语等小语种与中英文一样进入 6 路召回；Dense 不按语言硬过滤，Lexical 根据语言选择 Analyzer 或 Boost。
+
 ---
 
 
@@ -2791,7 +3113,17 @@ hybrid → Exact/BM25/Dense + 语义元素 + RRF
 
 RRF 前，OAG 将 GaussVector / OpenSearch 的结果统一成简单 SearchHit。以下结构定义的是 **OAG Search Adapter 输出**，不直接向上层透出 GaussVector SQL 行格式或 OpenSearch 原生 `_source/_score` 包装。
 
+多语言场景下统一约定：
+
+```text
+resolved_language = 当前用于展示的语言
+matched_language  = Lexical 实际命中的语言，可空
+language          = 语义元素自身语言
+```
+
 ### GaussVector 种子节点返回结构
+
+GaussVector 主表仍只有兼容 8 字段；Search Adapter 可根据 `id + query language` 从 OMS/OAG 多语言缓存补充本地化展示：
 
 ```json
 {
@@ -2802,6 +3134,9 @@ RRF 前，OAG 将 GaussVector / OpenSearch 的结果统一成简单 SearchHit。
   "display_en": "Cell",
   "description_zh": "通信网络中的小区实体",
   "description_en": "Cell in communication network",
+  "resolved_language": "es",
+  "display": "Celda inalámbrica",
+  "description": "Entidad de celda en una red de comunicaciones",
   "distance": 0.18,
   "score": 0.82,
   "source": "SEED_DENSE"
@@ -2821,21 +3156,29 @@ RRF 前，OAG 将 GaussVector / OpenSearch 的结果统一成简单 SearchHit。
   "display_en": "Cell",
   "description_zh": "通信网络中的小区实体",
   "description_en": "Cell in communication network",
+  "resolved_language": "es",
+  "display": "Celda inalámbrica",
+  "description": "Entidad de celda en una red de comunicaciones",
+  "matched_language": "es",
+  "matched_field": "i18n.display",
   "score": 12.37,
   "match_mode": "EXACT_BM25",
   "source": "SEED_LEXICAL"
 }
 ```
 
+如调用方显式设置 `includeI18n=true`，可额外返回完整结构化 `i18n`；默认只返回当前 resolved language，避免候选集过大。
+
 ### GaussVector 元数据/实例语义元素返回结构
 
 ```json
 {
-  "id": "property-id::ENUM_ALIAS::1::FORMAL",
+  "id": "property-id::ENUM_ALIAS::1::cliente-formal",
   "type": "ENUM_ALIAS",
   "parent_id": "property-id",
-  "name": "FORMAL",
+  "name": "cliente formal",
   "canonical_value": "1",
+  "language": "es",
   "description_zh": "正式用户",
   "description_en": "Formal subscriber",
   "distance": 0.09,
@@ -2848,14 +3191,16 @@ RRF 前，OAG 将 GaussVector / OpenSearch 的结果统一成简单 SearchHit。
 
 ```json
 {
-  "id": "property-id::ENUM_ALIAS::1::FORMAL",
+  "id": "property-id::ENUM_ALIAS::1::cliente-formal",
   "type": "ENUM_ALIAS",
   "parent_id": "property-id",
-  "name": "FORMAL",
+  "name": "cliente formal",
   "canonical_value": "1",
+  "language": "es",
   "description_zh": "正式用户",
   "description_en": "Formal subscriber",
   "score": 18.42,
+  "matched_language": "es",
   "match_mode": "EXACT_BM25",
   "source": "METADATA_LEXICAL"
 }
@@ -2870,8 +3215,13 @@ RRF 前，OAG 将 GaussVector / OpenSearch 的结果统一成简单 SearchHit。
 语义元素 hit：RRF 分组种子节点 id = hit.parent_id
 ```
 
-同时保留具体 hit 的 `id/type/name/canonical_value`，不能只剩种子节点。
+同时保留具体 hit 的：
 
+```text
+id/type/name/canonical_value/language
+```
+
+不能只剩种子节点。多语言字段只影响文本召回、展示和精排上下文，不改变 RRF 的种子节点分组键。
 
 ## 4.10 通道内按种子节点去重并保留语义元素
 
@@ -4253,7 +4603,7 @@ includeFunctions
 includeActions
 ```
 
-V5.4 保留。
+V5.5 保留。
 
 推荐处理阶段：
 
@@ -4461,6 +4811,21 @@ oag:
     instance:
       topK: 5
       similarityThreshold: 0.6
+
+  multilingual:
+    enabled: true
+    languageTagStandard: BCP47
+    includeAllLocalizedTextInSeedEmbedding: true
+    denseHardFilterByLanguage: false
+    lexicalLanguageBoost: true
+    responseFallbackLanguages:
+      - en
+      - zh
+    commonLanguages:
+      - zh
+      - en
+      - es
+    smallLanguageFallbackAnalyzer: standard
 
   rrf:
     k: 60
@@ -4679,10 +5044,15 @@ MatchedItemRetentionRate
 ### 多语言
 
 ```text
+LanguageRecall@K{zh/en/es/...}
 CrossLanguageRecall
+SmallLanguageRecall@K
 MixedLanguageRecall
 CrossLanguageTargetAccuracy
+LanguageMatchedItemRetentionRate
 ```
+
+至少单独建立西语评测集，并对后续引入的小语种按语言分别统计 Recall/Precision，不能只看总体平均值。
 
 ### RRF
 
@@ -4866,7 +5236,7 @@ SeedNodeProjector
 
 ## 7.9 现有方法级增强映射
 
-| 当前方法/结构 | 当前职责 | V5.4 建议 |
+| 当前方法/结构 | 当前职责 | V5.5 建议 |
 |---|---|---|
 | `interpretQueryIntent()` | LLM 意图解析 | 输出 Semantic Units / hints |
 | `getSeedIds()` | Vector/ES 获取 Seed | 升级为 6 路 SearchDispatcher |
@@ -4911,11 +5281,11 @@ SeedNodeProjector
 4. **所有物理记录自身主键统一叫 `id`。**
 5. **不再使用多组重复的 ID/Type 映射字段；记录自身统一为 `id/type`。**
 6. **语义元素使用 `parent_id` 指向所属种子节点。**
-7. **种子节点表严格兼容现有 8 字段：vector/type/id/name/display_zh/display_en/description_zh/description_en。**
+7. **种子节点 GaussVector 主表严格兼容现有 8 字段：vector/type/id/name/display_zh/display_en/description_zh/description_en；8 字段兼容不等于只支持中英文。**
 8. **种子节点表不保留 normalized_name/content_hash/model_version/source_version/updated_at/parent_id/content 等扩展字段。**
 9. **OpenSearch 种子节点 Index 不保留 source_version。**
 10. **Property → ObjectType 使用 GraphTopologyCache/has_property 关系，不依赖种子节点表 parent 字段。**
-11. **元数据/实例语义元素字段收敛为 vector/type/id/parent_id/name/canonical_value/description_zh/description_en。**
+11. **元数据/实例语义元素字段保持简洁，并增加 `language` 标识当前 Alias/Enum/Instance 文本语言。**
 12. **INSTANCE_ALIAS 保留。**
 13. **三类数据物理隔离：种子节点、元数据语义元素、实例语义元素。**
 14. **每个 Semantic Unit 默认形成 6 条 Ranked List。**
@@ -4932,9 +5302,12 @@ SeedNodeProjector
 25. **GraphTopologyCache 同时服务 Property→ObjectType、Graph Hint、BFS 和 Component。**
 26. **DataSync 只提供实例数据包，OAG 统一完成 Embedding、GaussVector/OpenSearch 和索引发布。**
 27. **FULL_REPLACE 使用 staging generation，INCREMENTAL 使用 idempotent UPSERT/DELETE。**
-28. **最终优化目标是：检索结果准确 + 种子节点上下文准确 + Relation/Canonical Value 准确 + Cypher 端到端准确。**
+28. **多语言能力必须正式保留：种子节点一个 id 默认一个多语言 Vector，OMS/OAG Metadata Cache 保存结构化 i18n，OpenSearch 索引结构化 i18n。**
+29. **西语及其他小语种与 zh/en 使用相同 6 路召回/RRF/LLM 主链路，Dense 不按语言硬过滤。**
+30. **语义元素使用 `language` 表示自身语言，查询 `language_hint` 使用 BCP 47 风格语言码，并支持 mixed/und。**
+31. **最终优化目标是：检索结果准确 + 多语言召回准确 + 种子节点上下文准确 + Relation/Canonical Value 准确 + Cypher 端到端准确。**
 
 
 ## 7.12 一句话总结
 
-> **OAG 最终是“语义检索 + 种子节点投影 + 本体子图构建”引擎：对每个 Semantic Unit 同时检索种子节点、元数据语义元素和实例语义元素，通过 6 路一次 Weighted RRF 与 LLM 精排准确返回 ObjectType、Property、同义词、枚举值或实例值本身；所有结果使用简单的 `id/type/name` 语义并携带 Property/ObjectType 上下文，再投影为种子节点执行 minimal/khop/component 子图算法。DataSync 通过 File/MinIO 向 OAG 提供实例数据，OAG 统一完成向量化、全文索引和版本发布。**
+> **OAG 最终是“多语言语义检索 + 种子节点投影 + 本体子图构建”引擎：对每个 Semantic Unit 同时检索种子节点、元数据语义元素和实例语义元素，通过 6 路一次 Weighted RRF 与 LLM 精排准确返回 ObjectType、Property、同义词、枚举值或实例值本身；中文、英文、西语及其他小语种使用统一的多语言向量和结构化 i18n 检索链路，所有结果使用简单的 `id/type/name/language` 语义并携带 Property/ObjectType 上下文，再投影为种子节点执行 minimal/khop/component 子图算法。DataSync 通过 File/MinIO 向 OAG 提供实例数据，OAG 统一完成向量化、全文索引和版本发布。**
