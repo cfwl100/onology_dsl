@@ -1,55 +1,129 @@
 # OAG 面向本体锚点的语义检索、混合排序与本体子图构建设计方案
 
-> 版本：V5.2  
-> 目标：在保留既有 OAG 索引设计、Anchor/Evidence 模型、DataSync 分工、混合召回、RRF、LLM 精排和三类子图策略的基础上，结合当前代码真实实现，形成一份可直接指导研发落地、灰度演进、性能评测和下游 Cypher 生成的完整方案。  
-> 设计原则：**Anchor First，Evidence for Anchor，Evidence for Cypher，Core Graph 与 Semantic Extension 分离，兼容现状、渐进增强。**
+> 版本：V5.3  
+> 目标：在保留既有 OAG 索引设计、Anchor/Evidence 模型、DataSync 分工、混合召回、RRF、LLM 精排、三类子图策略和 Bulk Import 设计的基础上，统一“最终检索目标”语义：ObjectType、Property、同义词、枚举值、实例列值均可作为最终检索结果，同时携带其 ObjectType / Property 上下文，为子图构建和下游 Cypher 生成提供完整、准确、可解释的语义依据。  
+> 设计原则：**Semantic Match First，Anchor Context Always，Evidence Preserved，RRF Anchor-Group Fusion，Core Graph 与 Semantic Extension 分离，兼容现状、渐进增强。**
 
 ---
 
 # 1. 文档目标与设计边界
 
-OAG 的向量检索、OpenSearch 全文检索、同义词检索、枚举值检索、实例列值检索，以及后续的 RRF、LLM 精排和图算法，本质上都服务于同一个目标：
-
-> **将用户自然语言问题稳定映射为全局唯一的 ObjectType / Property 本体锚点，保留 Alias、Enum、Instance Value 与锚点的确定性映射，再基于精确锚点构建最小且充分的本体子图，为下游 LLM 生成 Cypher 提供完整、准确、可解释的语义依据。**
-
-本方案不把以下内容作为最终检索目标：
-
-- 向量文档本身；
-- 同义词本身；
-- 枚举值本身；
-- 实例列值本身；
-- RRF 分数本身；
-- 单纯的相似文本。
-
-最终目标始终是：
+OAG 的向量检索、OpenSearch 全文检索、同义词检索、枚举值检索、实例列值检索，以及后续的 RRF、LLM 精排和图算法，需要区分两个概念：
 
 ```text
-ObjectType Anchor
-Property Anchor
+最终检索结果（Retrieval Result）
+        ≠
+子图构建锚点（Graph Anchor）
 ```
 
-同时为了生成 Cypher，还必须保留：
+OAG 的最终检索目标包括两类。
+
+## 1.1 本体结构目标
 
 ```text
-用户原始短语
- → Evidence
- → Property Anchor
- → canonical_value
+ObjectType
+Property
 ```
 
-例如：
+它们本身既是最终检索结果，也是子图构建所使用的 Anchor。
+
+## 1.2 语义值目标
+
+以下对象**本身也是最终检索结果**，不能在命中后只保留 Anchor 而丢弃实际命中项：
 
 ```text
-用户：正式用户
-    ↓
-ENUM_ALIAS: FORMAL
-    ↓
-Property: Subscriber.subClass
-    ↓
+ObjectType Alias / 同义词
+Property Alias / 同义词
+Enum Value
+Enum Alias / 枚举值同义词
+Instance Value / 实例列值
+Instance Alias / 实例值同义词
+```
+
+因此，本方案只明确排除以下内容作为最终业务检索结果：
+
+```text
+底层 Vector Document 的物理文档身份
+OpenSearch 内部 Document 身份
+RRF 分数本身
+ANN/BM25 原始 score 本身
+```
+
+这些只是检索实现细节或排序证据。
+
+最终检索结果统一定义为：
+
+> **Matched Semantic Item + ObjectType / Property Anchor Context。**
+
+也就是说，当检索命中 Alias、Enum、Instance Value 时，结果中必须同时保留：
+
+```text
+命中的语义项本身
+item_id / evidence_ID
+item_type / evidence_type
+matched_value
+canonical_value
+aliases（如有）
+
++
+
+所属 ObjectType
+所属 Property（对象级 Alias 场景可为空）
+anchor_ID
+parent_ID
+```
+
+### ObjectType / Object Alias
+
+```text
+matched item
+   ↓
+ObjectType Context
+```
+
+### Property / Property Alias
+
+```text
+matched item
+   ↓
+Property Context
+   ↓
+Parent ObjectType Context
+```
+
+### Enum / Instance Value / Alias
+
+```text
+matched value / alias
+   ↓
+canonical_value
+   ↓
+Property Context
+   ↓
+ObjectType Context
+```
+
+例如用户查询：
+
+```text
+正式用户
+```
+
+最终结果可以是：
+
+```text
+target_type     = ENUM_ALIAS
+matched_value   = FORMAL
 canonical_value = 1
-    ↓
-WHERE s.subClass = '1'
+Property        = Subscriber.subClass
+ObjectType      = Subscriber
 ```
+
+这里 `FORMAL` 本身就是最终检索目标；`Subscriber.subClass` 和 `Subscriber` 是该结果必须携带的本体上下文，同时也是后续子图构建的 Anchor 来源。
+
+因此完整目标是：
+
+> **准确返回用户真正命中的本体元素或语义值本身，同时携带确定性的 ObjectType / Property 映射；随后仅将 ObjectType / Property 投影为 Graph Anchor 构建本体子图。**
 
 ---
 
@@ -58,10 +132,9 @@ WHERE s.subClass = '1'
 ```mermaid
 flowchart TD
     Q[用户原始问题] --> QU[Query Understanding<br/>Semantic Phrase Extraction]
-
     QU --> U[Semantic Units]
 
-    subgraph RET[阶段1：锚点多路召回]
+    subgraph RET[阶段1：多路召回]
       U --> AE[Anchor Exact/BM25]
       U --> AV[Anchor Dense]
       U --> ME[Metadata Evidence Exact/BM25]
@@ -70,23 +143,24 @@ flowchart TD
       U --> IV[Instance Evidence Dense]
     end
 
-    AE --> N[AnchorCandidateNormalizer]
+    AE --> N[SemanticCandidateNormalizer<br/>Matched Item + Anchor Context]
     AV --> N
     ME --> N
     MV --> N
     IE --> N
     IV --> N
 
-    N --> RRF[Aggregator<br/>Weighted RRF]
-    RRF --> COARSE[Anchor 粗排候选]
+    N --> RRF[Aggregator<br/>Weighted RRF by anchor_ID]
+    RRF --> COARSE[Anchor Group 粗排<br/>保留 Matched Items]
 
     Q --> RC[RerankContextBuilder]
     U --> RC
     COARSE --> RC
     RC --> LLM[LLM Fine Ranker<br/>预置提示词]
-    LLM --> FINAL[Final Accurate Anchors]
+    LLM --> MATCH[Final Semantic Matches<br/>Anchor / Alias / Enum / Instance]
 
-    FINAL --> AN[Anchor Normalization<br/>Property补Parent ObjectType]
+    MATCH --> AP[GraphAnchorProjector<br/>提取 ObjectType / Property]
+    AP --> AN[Anchor Normalization<br/>Property补Parent ObjectType]
     AN --> SG[SubgraphBuilder]
 
     SG --> MIN[minimal]
@@ -97,23 +171,34 @@ flowchart TD
     KH --> CORE
     CMP --> CORE
 
-    CORE --> EXT[ExtensionAssembler]
-    EXT --> OUT[Ontology Subgraph<br/>+ Semantic Extensions]
+    MATCH --> EXT[ExtensionAssembler]
+    CORE --> EXT
+    EXT --> OUT[Retrieval Results<br/>+ Ontology Subgraph<br/>+ Semantic Extensions]
     OUT --> CYPHER[下游 LLM / Cypher Generation]
 ```
 
 运行阶段划分：
 
 ```text
-阶段0：索引构建
+阶段0：索引构建 / Bulk Import
 阶段1：Semantic Unit 多路召回
-阶段2：Evidence → Anchor 归一化 + RRF 粗排
-阶段3：LLM 精排
-阶段4：Anchor Normalization
-阶段5：本体子图构建
-阶段6：Semantic Extension 挂载
-阶段7：下游 Cypher 生成
+阶段2：Matched Item 保留 + Anchor Context 归一化 + RRF 粗排
+阶段3：LLM 精排，得到 Final Semantic Matches
+阶段4：Final Semantic Matches → ObjectType / Property Graph Anchors
+阶段5：Anchor Normalization
+阶段6：本体子图构建
+阶段7：Semantic Extension 上下文扩展
+阶段8：下游 Cypher 生成
 ```
+
+关键边界：
+
+```text
+RRF / LLM 的业务输出：语义项本身 + Anchor Context
+Graph Algorithm 的输入：ObjectType / Property Anchor
+```
+
+Enum、Alias、Instance Value 可以是最终检索结果，但不直接作为 Core Graph 的路径节点。
 
 ---
 
@@ -149,53 +234,92 @@ includeFunctions = 0
 includeActions = 0
 ```
 
-V5.0 方案不要求一次性替换现有链路，而是在现有类和接口上演进：
+V5.3 不要求一次性替换现有链路，而是在现有类和接口上渐进演进：
 
 ```text
 现有 getSeedIds()
     ↓
-升级为 SearchDispatcher + CandidateNormalizer + RRF
-
-现有 seedIds
+SearchDispatcher
     ↓
-升级为 RRF Coarse Anchors
+SemanticCandidateNormalizer
+    ↓
+Weighted RRF Anchor Groups
     ↓
 LLM Fine Ranker
     ↓
-Final Anchors
-
-现有 subgraphQuery()
+Final Semantic Matches
+    ├─ ObjectType / Property
+    ├─ Alias
+    ├─ Enum Value / Alias
+    └─ Instance Value / Alias
     ↓
+GraphAnchorProjector
+    ↓
+Final Graph Anchors
+```
+
+现有 `seedIds` / `seedNodes` 仍然可以作为**图构建锚点兼容字段**保留，但不能再代表完整检索结果；完整检索结果由新增的 `retrievalResults` 表达。
+
+现有 `subgraphQuery()`：
+
+```text
 保留 external strategy 名称
+    ↓
+minimal / khop / component
     ↓
 内部支持 legacy / enhanced 两套算法
 ```
+
+因此本次调整不改变三种图算法的边界，只改变“检索输出是什么”以及“何时投影成 Anchor”。
 
 ---
 
 # 4. 核心设计原则
 
-## 4.1 Anchor First
+## 4.1 Semantic Match First，Anchor Context Always
 
-最终排序、精排、构图的业务主键统一为：
+最终检索结果的主身份不再统一强制为 `anchor_ID`。
+
+推荐统一定义：
+
+```text
+直接命中 ObjectType / Property：
+item_id = anchor_ID
+
+命中 Alias / Enum / Instance：
+item_id = evidence_ID
+```
+
+但是所有结果必须携带稳定的 Anchor Context：
+
+```text
+anchor_ID
+anchor_type
+parent_ID
+ObjectType Context
+Property Context（适用时）
+```
+
+因此：
 
 ```text
 anchor_ID
 ```
 
-而不是：
+继续作为：
 
 ```text
-vector_doc_id
-evidence_ID
-enum value
-instance value
-alias
+RRF 聚合组键
+跨通道去重键
+本体映射键
+Graph Anchor 投影键
 ```
 
-## 4.2 Evidence for Anchor
+但不再是所有最终检索结果唯一的业务主键。
 
-以下信息统一定义为 Evidence：
+## 4.2 Evidence 既是检索目标，也是 Anchor 映射载体
+
+以下信息统一属于 Evidence：
 
 ```text
 ObjectType Alias
@@ -204,11 +328,24 @@ Enum Value
 Enum Alias
 Enum Description
 Instance Value
-Instance Value Alias
+Instance Alias
 业务黑话
 ```
 
-Evidence 必须能反向定位 Anchor。
+Evidence 命中后必须同时满足两个要求：
+
+```text
+1. Evidence 本身可作为最终检索结果返回
+2. Evidence 必须能确定性反向定位 ObjectType / Property Anchor
+```
+
+不能再采用：
+
+```text
+Evidence 命中
+ → 映射 Anchor
+ → 丢弃 Evidence 本身
+```
 
 ## 4.3 Evidence for Cypher
 
@@ -217,14 +354,26 @@ Evidence 命中不能在映射为 Anchor 后被丢弃。
 下游还需要：
 
 ```text
+evidence_ID
+evidence_type
 evidence_value
 canonical_value
 aliases
 enum_ref
 matched_phrase
+ObjectType Context
+Property Context
 ```
 
-## 4.4 Core Graph 与 Evidence 分离
+其中：
+
+```text
+Enum / Instance Alias → canonical_value
+```
+
+直接决定下游过滤条件是否能使用真实业务值。
+
+## 4.4 Core Graph 与 Semantic Match 分离
 
 真实本体拓扑中参与最短路径 / K-hop / 连通分量的节点主要是：
 
@@ -244,16 +393,38 @@ Mobile Number
 Subscriber category
 ```
 
-不作为最短路径图节点。
+可以是最终检索结果，但**不作为 Core Graph 的最短路径节点**。
 
-## 4.5 召回保 Recall，精排保 Precision，子图保最小充分
+它们通过：
 
 ```text
-多路召回：宁可多召回
-RRF：跨通道稳健融合
-LLM：结合完整问题做语义裁决
-Graph：只保留足够支持推理和 Cypher 的结构
+Final Semantic Match
+   ↓ Anchor Projector
+ObjectType / Property
 ```
+
+进入图算法。
+
+## 4.5 召回保 Recall，RRF 保组级公平，精排保语义目标准确，子图保最小充分
+
+```text
+多路召回：宁可多召回真实语义项
+RRF：按 Anchor Group 跨通道稳健融合，避免 Evidence 数量偏置
+LLM：选择真正命中的具体语义项，并验证 Anchor Context
+Graph：仅使用投影后的 ObjectType / Property 构图
+```
+
+## 4.6 同一结果同时服务“检索解释”和“图构建”
+
+最终命中：
+
+```text
+matched item
++
+ObjectType / Property context
+```
+
+既可以告诉上层“到底命中了什么”，又可以直接给 GraphAnchorProjector 提供确定性的构图入口。
 
 ---
 
@@ -277,7 +448,7 @@ Action
 Metric
 ```
 
-但当前索引主表仍保持 `0/1`，避免破坏既有实现。
+当前索引主表仍保持 `0/1`，避免破坏既有实现。
 
 Anchor 字段语义：
 
@@ -291,18 +462,25 @@ description_*= 多语言描述
 aliases     = ObjectType / Property 同义词
 ```
 
+直接命中 Anchor 时：
+
+```text
+item_id   = ID
+item_type = OBJECT_TYPE / PROPERTY
+```
+
 ## 5.2 Evidence
 
 推荐 `evidence_type`：
 
-| evidence_type | 含义 | 最终映射 |
-|---|---|---|
-| `OBJECT_ALIAS` | ObjectType 同义词 | ObjectType |
-| `PROPERTY_ALIAS` | Property 同义词 | Property |
-| `ENUM_VALUE` | 枚举真实值 | Property |
-| `ENUM_ALIAS` | 枚举值同义词 | Property |
-| `INSTANCE_VALUE` | 语义实例列值 | Property |
-| `INSTANCE_ALIAS` | 实例值同义词 | Property |
+| evidence_type | 含义 | 最终检索类型 | Anchor Context |
+|---|---|---|---|
+| `OBJECT_ALIAS` | ObjectType 同义词 | `OBJECT_ALIAS` | ObjectType |
+| `PROPERTY_ALIAS` | Property 同义词 | `PROPERTY_ALIAS` | Property + ObjectType |
+| `ENUM_VALUE` | 枚举真实值 | `ENUM_VALUE` | Property + ObjectType |
+| `ENUM_ALIAS` | 枚举值同义词 | `ENUM_ALIAS` | Property + ObjectType |
+| `INSTANCE_VALUE` | 语义实例列值 | `INSTANCE_VALUE` | Property + ObjectType |
+| `INSTANCE_ALIAS` | 实例值同义词 | `INSTANCE_ALIAS` | Property + ObjectType |
 
 所有 Evidence 至少保存：
 
@@ -318,6 +496,46 @@ evidence_value
 canonical_value
 aliases
 ```
+
+Evidence 的 `anchor_ID` 表示所属 ObjectType / Property，不表示 Evidence 自身被 Anchor 替代。
+
+## 5.3 Final Retrieval Item
+
+统一的最终检索结果建议使用以下逻辑模型：
+
+```json
+{
+  "semanticUnitId": "u1",
+  "itemId": "evidence-or-anchor-id",
+  "targetType": "ENUM_ALIAS",
+  "matchedValue": "FORMAL",
+  "canonicalValue": "1",
+  "objectType": {
+    "ID": "subscriber-object-id",
+    "name": "Subscriber"
+  },
+  "property": {
+    "ID": "subClass-property-id",
+    "name": "subClass"
+  },
+  "anchor_ID": "subClass-property-id",
+  "rrfScore": 0.071,
+  "rerankScore": 0.97,
+  "matchSource": "METADATA_EVIDENCE"
+}
+```
+
+字段约束：
+
+```text
+OBJECT_TYPE / OBJECT_ALIAS
+  → objectType 必填，property 可空
+
+PROPERTY / PROPERTY_ALIAS / ENUM_* / INSTANCE_*
+  → objectType 必填，property 必填
+```
+
+这样上层不需要再次根据 `evidence_ID` 查询才能知道该值属于哪个对象和属性。
 
 ---
 
@@ -336,7 +554,7 @@ Evidence
 |---|---|---|---|
 | `{ontology_id}_anchor` | OAG | ObjectType / Property | 万～百万 |
 | `{ontology_id}_metadata_evidence` | OAG | Alias / Enum | 万～百万 |
-| `{ontology_id}_instance_evidence` | DataSync | Instance Value / Alias | 百万～千万/亿 |
+| `{ontology_id}_instance_evidence` | OAG（DataSync 提供数据） | Instance Value / Alias | 百万～千万/亿 |
 
 这一设计同时保留历史逻辑通道：
 
@@ -386,17 +604,31 @@ Metadata Evidence Builder
   └─ OpenSearch Metadata Evidence
 ```
 
-## 7.2 DataSync：实例层
+## 7.2 DataSync：实例数据生产层
 
 DataSync 负责：
 
 ```text
 读取 is_semantic=true Property
 访问实际数据源
-DISTINCT / 标准化实例值
-实例值同义词
-写 Instance Evidence
+DISTINCT / 基础标准化实例值
+整理真实业务存在的实例值同义词
+建立实例数据与本体 Property / ObjectType 的映射
+生成 Import Package（Manifest + Data Files）
+通过 File / MinIO 交付 OAG
 ```
+
+DataSync 不负责：
+
+```text
+Embedding
+GaussVector / OpenSearch 物理索引写入
+ANN 索引构建
+Evidence 物理表结构
+索引 Generation 发布
+```
+
+`INSTANCE_VALUE` 与 `INSTANCE_ALIAS` 均是合法的 Instance Evidence，并且两者本身都可以成为最终 `retrievalResults`。
 
 流程：
 
@@ -407,9 +639,15 @@ is_semantic eligibility
   ↓
 Data Source
   ↓
-DISTINCT / Normalize / Statistics
+DISTINCT / Normalize / Alias整理 / Statistics
+  ↓
+Import Package
+  ↓ File / MinIO
+OAG BulkImportService
   ↓
 Instance Evidence Builder
+  ↓
+Embedding
   ├─ GaussVector
   └─ OpenSearch
 ```
@@ -472,7 +710,7 @@ DataSync 不维护独立的本体语义主键体系。
 {description_en}
 ```
 
-V5.0 保持兼容并增强为：
+V5.3 保持兼容并增强为：
 
 ```text
 {name}
@@ -759,7 +997,7 @@ PropertyID::ENUM_ALIAS::SubClass::1::FORMAL
 {ontology_id}_instance_evidence
 ```
 
-Owner：DataSync。
+Owner：OAG（DataSync 通过 Bulk Import 提供实例数据与本体映射）。
 
 | 字段 | 说明 |
 |---|---|
@@ -1039,7 +1277,8 @@ Embedding 模型变化
 
 本体删除
  → 删除 Anchor + 对应 Metadata Evidence
- → 通知 DataSync 清理对应 Instance Evidence
+ → OAG 清理对应 Instance Evidence / Generation
+ → 必要时通知 DataSync 停止后续该 Property 数据同步
 ```
 
 ---
@@ -1297,7 +1536,7 @@ semanticRetrieval:
 
 - `3 / 0.6` 为历史兼容默认值；
 - Anchor 优先 Recall；
-- Metadata Evidence 允许多个 Evidence 回收到 Anchor；
+- Metadata Evidence 允许多个 Evidence 命中并保留具体 Matched Item，RRF 再按 Anchor Group 融合；
 - Instance Evidence 数据巨大，TopK 初始更保守；
 - `0.6` 可作为共同起始值，但必须独立校准。
 
@@ -1317,11 +1556,11 @@ System Defaults
 
 当前 `GraphSearchRequest.topK=3` 不应继续被简单复用于所有内部物理表。
 
-V5.0 建议：
+V5.3 建议：
 
 ```text
 legacy topK
- → 最终 Seed / Rerank 输出上限的兼容值
+ → 最终 Semantic Match / Seed 投影输出上限的兼容值
 ```
 
 内部召回使用：
@@ -1383,20 +1622,24 @@ hybrid → Exact/BM25/Dense + Evidence + RRF
 
 ---
 
-# 33. AnchorCandidateNormalizer
+# 33. SemanticCandidateNormalizer（兼容 AnchorCandidateNormalizer）
 
-RRF 前统一把所有结果变成 Anchor Candidate。
+现有类名可以暂时保留 `AnchorCandidateNormalizer` 以降低改造成本，但目标语义应升级为：
+
+> **把所有通道结果统一成“Matched Semantic Item + Anchor Context”，而不是把 Evidence 压扁成只有 Anchor 的候选。**
 
 Evidence 示例：
 
 ```text
 “正式用户”
   ↓
-FORMAL
+ENUM_ALIAS: FORMAL
   ↓
-canonical_value=1
+canonical_value = 1
   ↓
-Subscriber.subClass
+Property = Subscriber.subClass
+  ↓
+ObjectType = Subscriber
 ```
 
 Normalized Candidate：
@@ -1404,65 +1647,128 @@ Normalized Candidate：
 ```json
 {
   "semantic_unit_id": "u1",
-  "anchor_ID": "property-subClass-id",
+  "item_id": "subClass-property-id::ENUM_ALIAS::1::FORMAL",
+  "item_type": "ENUM_ALIAS",
+  "evidence_ID": "subClass-property-id::ENUM_ALIAS::1::FORMAL",
+  "matched_value": "FORMAL",
+  "canonical_value": "1",
+  "anchor_ID": "subClass-property-id",
   "anchor_type": 1,
-  "name": "subClass",
-  "parent_ID": "subscriber-object-id",
-  "parent_name": "Subscriber",
+  "object_type": {
+    "ID": "subscriber-object-id",
+    "name": "Subscriber"
+  },
+  "property": {
+    "ID": "subClass-property-id",
+    "name": "subClass"
+  },
   "source_channel": "metadata_vector",
   "source_rank": 2,
-  "source_score": 0.81,
-  "matched_evidence": {
-    "evidence_type": "ENUM_ALIAS",
-    "evidence_value": "FORMAL",
-    "canonical_value": "1"
-  }
+  "source_score": 0.81
 }
 ```
 
----
-
-# 34. 通道内 Anchor 去重
-
-同一 Property 可能存在很多：
+直接 Anchor 命中：
 
 ```text
-Alias
+item_id   = anchor_ID
+item_type = OBJECT_TYPE / PROPERTY
+```
+
+Evidence 命中：
+
+```text
+item_id   = evidence_ID
+item_type = OBJECT_ALIAS / PROPERTY_ALIAS / ENUM_VALUE / ENUM_ALIAS / INSTANCE_VALUE / INSTANCE_ALIAS
+```
+
+后续 RRF 可以按 `anchor_ID` 聚合，但 `item_id/item_type/matched_value/canonical_value` 必须保留到最终精排和响应。
+
+---
+
+# 34. 通道内 Anchor Group 去重，但保留 Matched Items
+
+同一 Property 可能同时命中很多：
+
+```text
+Property 自身
+Property Alias
 Enum Value
 Enum Alias
 Instance Value
+Instance Alias
 ```
 
-必须：
+如果这些 Evidence 全部各占一个 RRF 排名位置，会导致 Evidence 数量越多的 Property 被不公平抬高。
+
+因此 RRF 前仍然执行：
 
 ```text
 GROUP BY semantic_unit_id + channel + anchor_ID
 ```
 
-单通道一个 Anchor 只占一个排名位置。
+但是**只去重 RRF Group，不删除具体命中项**。
 
-同时保留：
+每个 Anchor Group 保留：
 
 ```text
 primary_hit
-supporting_evidence top 3~5
+matched_items top N
+supporting_evidence top N
 evidence_hit_count
+best_exact_rank
+best_dense_rank
 ```
 
-否则 Evidence 数量越多的 Property 会被不公平抬高。
+其中 `matched_items` 每项至少包含：
+
+```text
+item_id
+item_type
+matched_value
+canonical_value
+source_rank
+source_score
+```
+
+例如：
+
+```text
+Property: Subscriber.subClass
+  ├─ PROPERTY_ALIAS: 用户类别
+  ├─ ENUM_ALIAS: FORMAL → 1
+  └─ INSTANCE_VALUE: VIP → VIP
+```
+
+它们在 RRF 中只形成一个 `anchor_ID=subClass` 的组级候选，但 LLM 精排仍可以选择 `FORMAL`、`VIP` 或 Property 本身作为最终语义目标。
+
+对于一个 Semantic Unit 明确包含多个值的情况，例如：
+
+```text
+VIP 或 GOLD 用户
+```
+
+`matched_items` 允许保留同一 Property 下多个不同 `canonical_value`，不能只保留一个 primary hit。
 
 ---
 
 # 35. Aggregator：Weighted RRF
 
-融合单位：
+RRF 的融合单位继续保持：
 
-> **anchor_ID**
+> **anchor_ID Group**
+
+而不是：
+
+```text
+evidence_ID
+item_id
+```
 
 公式：
 
 ```text
-RRF(anchor) = Σ weight(channel) / (rrf_k + rank_channel(anchor))
+RRF(anchor_group) = Σ weight(channel) / (rrf_k + rank_channel(anchor_group))
 ```
 
 推荐起始配置：
@@ -1472,6 +1778,7 @@ rrf:
   k: 60
   coarseTopKPerSemanticUnit: 20
   maxGlobalCandidates: 50
+  maxMatchedItemsPerAnchorGroup: 5
   channelWeights:
     anchorExact: 1.5
     anchorBm25: 1.1
@@ -1484,15 +1791,33 @@ rrf:
     instanceVector: 0.8
 ```
 
-这些仅是初始值。
+这样做的原因：
 
-RRF 的优势：
+```text
+RRF 解决不同检索通道排序不可比问题
+anchor_ID Group 防止 Evidence 数量造成排名偏置
+matched_items 保证 Alias / Enum / Instance 本身不会丢失
+```
+
+因此 RRF 的职责不是决定最终具体值，而是：
+
+```text
+先选出值得进入 LLM 精排的 Anchor Groups
++
+为每个 Group 携带最相关的 Matched Items
+```
+
+最终具体返回哪个 Alias / Enum / Instance Value，由 LLM Fine Ranking 在原始问题上下文中裁决。
+
+RRF 的优势仍然是：
 
 ```text
 不要求 BM25、Cosine、Exact 的原始 score 在同一数值空间
 主要利用 rank
 降低跨检索引擎 score 不可比问题
 ```
+
+这也意味着此前“不做 Anchor / Metadata / Instance 两级 RRF”的结论保持不变：所有 Channel 统一归一化后做一次 Weighted RRF 即可。
 
 ---
 
@@ -1506,57 +1831,107 @@ status
 active
 1
 A
+VIP
 ```
 
-可能跨对象、跨属性重复。
+可能跨对象、跨属性或跨 Evidence 重复。
 
 因此：
 
 ```text
-Exact
- → 高权重
+Exact Matched Item
+ → 高权重进入对应 Anchor Group
  → RRF
  → LLM Rerank
+ → Final Semantic Match
 ```
 
 而不是无条件：
 
 ```text
-Exact → Final Anchor
+Exact Evidence → 直接 Final
 ```
 
 只有：
 
 ```text
-ID 全局唯一 exact
+本体全局唯一 ID exact
 ```
 
-可以直接视为强确定性锚点。
+可以视为强确定性 ObjectType / Property Anchor。
+
+对于 Alias / Enum / Instance 的 exact 命中，即使字符串完全相同，也仍需要结合：
+
+```text
+Property
+ObjectType
+其他 Semantic Unit
+原始问题
+```
+
+判断它属于哪个业务上下文。
 
 ---
 
 # 37. RRF 粗排输出
 
+RRF 输出的是 Anchor Group 排名，但每个组中完整保留真实 Matched Items。
+
 ```json
 {
-  "semantic_unit_id": "u2",
-  "semantic_unit": "发生时间",
+  "semantic_unit_id": "u4",
+  "semantic_unit": "正式用户",
   "candidates": [
     {
-      "anchor_ID": "property-first-id",
+      "anchor_ID": "subClass-property-id",
       "anchor_type": 1,
-      "name": "firstoccurrence",
-      "parent_ID": "alarm-object-id",
-      "rrf_score": 0.064,
+      "object_type": {
+        "ID": "subscriber-object-id",
+        "name": "Subscriber"
+      },
+      "property": {
+        "ID": "subClass-property-id",
+        "name": "subClass"
+      },
+      "rrf_score": 0.071,
       "channel_hits": [
-        {"channel": "anchor_bm25", "rank": 1},
-        {"channel": "anchor_vector", "rank": 2}
+        {"channel": "metadata_exact", "rank": 1},
+        {"channel": "metadata_vector", "rank": 2}
       ],
-      "supporting_evidence": []
+      "matched_items": [
+        {
+          "item_id": "subClass-property-id::ENUM_ALIAS::1::FORMAL",
+          "item_type": "ENUM_ALIAS",
+          "matched_value": "FORMAL",
+          "canonical_value": "1",
+          "source_channel": "metadata_exact",
+          "source_rank": 1
+        }
+      ]
     }
   ]
 }
 ```
+
+如果直接命中 Property 本身，则 `matched_items` 中可包含：
+
+```json
+{
+  "item_id": "subClass-property-id",
+  "item_type": "PROPERTY",
+  "matched_value": "subClass"
+}
+```
+
+因此粗排阶段已经同时具备：
+
+```text
+Anchor Group 排名
++
+具体语义目标候选
+```
+
+而不是只有 Anchor。
 
 ---
 
@@ -1567,7 +1942,8 @@ LLM 使用预置提示词，输入：
 ```text
 原始问题
 Semantic Units
-RRF 粗排 Anchor
+RRF 粗排 Anchor Groups
+每个 Group 的 Matched Items
 Anchor Metadata
 Parent ObjectType
 Matched Evidence
@@ -1581,16 +1957,27 @@ Canonical Value
 深度语义理解
 业务限定词校验
 对象/属性上下文对齐
+判断最终目标是 Anchor 本身还是 Alias / Enum / Instance
 枚举/实例值到属性的映射验证
+具体 matched_value / canonical_value 选择
 多候选消歧
-必要锚点完整性检查
+必要语义目标完整性检查
 ```
 
-输出：
+输出分成两层：
 
 ```text
-准确 ObjectType / Property Anchor
+Final Semantic Matches
+  ├─ ObjectType / Property
+  ├─ Object/Property Alias
+  ├─ Enum Value / Alias
+  └─ Instance Value / Alias
+
+Graph Anchor Projection
+  └─ ObjectType / Property IDs
 ```
+
+LLM 的直接业务输出是准确的 **Semantic Match**，而不是只有 ObjectType / Property Anchor。
 
 ---
 
@@ -1632,34 +2019,51 @@ AP_ALARM_LIVE.firstoccurrence
 
 ```json
 {
-  "original_query": "...",
+  "original_query": "查询正式用户的手机号",
   "semantic_units": [...],
-  "candidates": [
+  "candidate_groups": [
     {
-      "anchor_ID": "...",
+      "anchor_ID": "subClass-property-id",
       "anchor_type": 1,
-      "name": "firstoccurrence",
-      "display": {"zh": "告警首次发生时间"},
-      "description": {"zh": "..."},
-      "aliases": [],
-      "parent": {
-        "ID": "...",
-        "name": "AP_ALARM_LIVE",
-        "display": "活动告警"
+      "rrf_score": 0.071,
+      "object_type": {
+        "ID": "subscriber-object-id",
+        "name": "Subscriber",
+        "display": "用户"
       },
-      "rrf_score": 0.064,
-      "channel_hits": [],
-      "matched_evidence": [],
+      "property": {
+        "ID": "subClass-property-id",
+        "name": "subClass",
+        "display": "用户类别"
+      },
+      "matched_items": [
+        {
+          "item_id": "...FORMAL",
+          "item_type": "ENUM_ALIAS",
+          "matched_value": "FORMAL",
+          "canonical_value": "1",
+          "channels": ["metadata_exact", "metadata_vector"]
+        }
+      ],
       "graph_hint": {
-        "neighbor_object_types": ["SYS_SITE"],
-        "relation_names": ["SITE_TO_ALARM"]
+        "neighbor_object_types": ["Offering"],
+        "relation_names": ["SUBSCRIBE_TO"]
       }
     }
   ]
 }
 ```
 
+对于 Anchor 直接命中，同样作为 `matched_items` 传入：
+
+```text
+item_type = OBJECT_TYPE / PROPERTY
+item_id   = anchor_ID
+```
+
 Graph Hint 只取一跳或轻量摘要，不在精排前构建完整子图。
+
+精排 Prompt 不要求 LLM 从 Evidence 文本重新推断所属对象/属性，因为这些映射已经由索引元数据确定性提供。
 
 ---
 
@@ -1669,25 +2073,33 @@ System Prompt：
 
 ```text
 Role:
-你是 OAG 本体锚点精排器。
+你是 OAG 本体语义目标精排器。
 
 Objective:
-根据原始问题、语义单元、候选 Anchor 元数据、Evidence 和轻量本体关系上下文，
-选出真正表达用户意图的 ObjectType / Property Anchor。
+根据原始问题、语义单元、候选 Anchor Group、具体 Matched Item、ObjectType / Property 元数据、
+canonical value 和轻量本体关系上下文，选出真正表达用户意图的最终语义目标。
 
 Rules:
-1. 只能返回 candidates 中存在的 anchor_ID。
-2. 必须结合原始问题，不得仅依赖名称相似。
-3. Property 必须结合 Parent ObjectType 判断。
-4. Evidence 命中时必须验证 Evidence → Property 是否合理。
-5. Exact/BM25/Vector/RRF 分数只是证据。
-6. 必须考虑其他 Semantic Unit 已命中锚点的一致性。
-7. 一个 Semantic Unit 可以选择多个必要 Anchor。
-8. 全部不匹配允许 no_match=true。
-9. 不创造不存在的 Anchor。
+1. 最终目标可以是 ObjectType、Property、Alias、Enum Value/Alias、Instance Value/Alias。
+2. 只能选择输入 candidate_groups / matched_items 中存在的 item_id，不得创造不存在的目标。
+3. 直接 Anchor 命中时，item_id=anchor_ID；Evidence 命中时，item_id=evidence_ID。
+4. Evidence 被选中时，必须原样保留 item_type、matched_value、canonical_value 及其 ObjectType/Property Context。
+5. Property、Property Alias、Enum、Instance 必须结合 Parent ObjectType 判断。
+6. Exact/BM25/Vector/RRF 分数只是证据，不等价于最终业务语义正确。
+7. 必须结合原始问题和其他 Semantic Unit 做跨单元一致性判断。
+8. 一个 Semantic Unit 可以选择多个必要 Semantic Match，例如同一 Property 下多个值。
+9. 全部不匹配允许 no_match=true。
 10. 输出简洁 reason，不输出内部详细思维过程。
 11. 严格输出 JSON Schema。
 ```
+
+特别禁止：
+
+```text
+命中 Evidence 后只输出 anchor_ID，导致真实命中的 Alias / Enum / Instance 消失
+```
+
+Anchor Context 是必须携带的上下文，不是 Evidence 的替代品。
 
 ---
 
@@ -1697,43 +2109,84 @@ Rules:
 
 ```text
 0：全部不匹配
-1：唯一准确 Anchor
-N：多个业务上同时必要的 Anchor
+1：唯一准确 Semantic Match
+N：多个业务上同时必要的 Semantic Match
 ```
 
-不采用：
+这里的 Match 可以是：
 
 ```text
-必须返回一个
+Anchor
+Alias
+Enum
+Instance Value
 ```
 
-的数据库选表式强制兜底。
-
-示例：
+示例一：`发生时间` 最终选中 Property 本身：
 
 ```json
 {
-  "semantic_unit_results": [
+  "semantic_unit_id": "u2",
+  "selected_matches": [
     {
-      "semantic_unit_id": "u2",
-      "selected": [
-        {
-          "anchor_ID": "property-first-id",
-          "rank_score": 0.96,
-          "reason": "与原始问题中的首次发生时间一致"
-        }
-      ],
-      "no_match": false
+      "item_id": "property-first-id",
+      "target_type": "PROPERTY",
+      "matched_value": "firstoccurrence",
+      "object_type": {
+        "ID": "alarm-object-id",
+        "name": "AP_ALARM_LIVE"
+      },
+      "property": {
+        "ID": "property-first-id",
+        "name": "firstoccurrence"
+      },
+      "rank_score": 0.96,
+      "reason": "与原始问题中的首次发生时间一致"
     }
   ],
-  "final_anchor_ids": [
-    "object-site-id",
-    "object-alarm-id",
-    "property-first-id"
-  ],
-  "unresolved_units": []
+  "no_match": false
 }
 ```
+
+示例二：`正式用户` 最终选中枚举别名本身：
+
+```json
+{
+  "semantic_unit_id": "u4",
+  "selected_matches": [
+    {
+      "item_id": "subClass-property-id::ENUM_ALIAS::1::FORMAL",
+      "target_type": "ENUM_ALIAS",
+      "matched_value": "FORMAL",
+      "canonical_value": "1",
+      "object_type": {
+        "ID": "subscriber-object-id",
+        "name": "Subscriber"
+      },
+      "property": {
+        "ID": "subClass-property-id",
+        "name": "subClass"
+      },
+      "rank_score": 0.97,
+      "reason": "正式用户与FORMAL语义一致，真实过滤值为1"
+    }
+  ],
+  "no_match": false
+}
+```
+
+所有 Semantic Unit 精排完成后再生成：
+
+```json
+{
+  "final_anchor_ids": [
+    "subscriber-object-id",
+    "subClass-property-id"
+  ]
+}
+```
+
+`final_anchor_ids` 是 GraphAnchorProjector 的派生结果，不替代 `selected_matches`。
 
 ---
 
@@ -1743,7 +2196,10 @@ N：多个业务上同时必要的 Anchor
 
 ```text
 JSON Schema
-anchor_ID ∈ Input Candidate
+item_id ∈ Input Anchor / Matched Item
+item_type 与输入一致
+Evidence 的 anchor_ID / property / objectType 映射不可被 LLM 改写
+canonical_value 必须来自输入候选
 rank_score 合法
 去重
 数量上限
@@ -1756,26 +2212,40 @@ LLM Timeout / JSON错误
  → 重试1次
  → 仍失败
  → fallback=RRF
+ → 对每个 RRF Anchor Group 选择 primary_hit 作为 Final Semantic Match
  → rerank_status=DEGRADED
 ```
+
+降级时也不能只返回 `anchor_ID`；如果 primary hit 是 Alias / Enum / Instance，仍应保留该 Matched Item。
 
 正常 `no_match` 不属于异常。
 
 ---
 
-# 44. Anchor Normalization
+# 44. Final Semantic Match → Graph Anchor Normalization
 
-图算法前必须把 Property Anchor 规范化。
-
-Property：
+图算法前增加明确的：
 
 ```text
-Property ID
-  ↓ parent_ID
-ObjectType ID
+GraphAnchorProjector
 ```
 
-形成：
+它只负责从最终语义命中中提取 ObjectType / Property，不改变或删除最终检索结果。
+
+映射规则：
+
+| Final target_type | Graph Anchor 投影 |
+|---|---|
+| `OBJECT_TYPE` | 当前 ObjectType |
+| `OBJECT_ALIAS` | Alias 所属 ObjectType |
+| `PROPERTY` | 当前 Property + Parent ObjectType |
+| `PROPERTY_ALIAS` | Alias 所属 Property + Parent ObjectType |
+| `ENUM_VALUE` | Enum 所属 Property + Parent ObjectType |
+| `ENUM_ALIAS` | Enum Alias 所属 Property + Parent ObjectType |
+| `INSTANCE_VALUE` | Instance Value 所属 Property + Parent ObjectType |
+| `INSTANCE_ALIAS` | Instance Alias 所属 Property + Parent ObjectType |
+
+Property 类目标统一形成：
 
 ```text
 explicit_property_anchors
@@ -1783,7 +2253,7 @@ object_terminals
 mandatory_has_property_edges
 ```
 
-ObjectType Anchor：
+ObjectType 类目标：
 
 ```text
 直接进入 object_terminals
@@ -1797,12 +2267,28 @@ object_terminals
 
 Property 通过强制 `has_property` 挂回。
 
-这样可显著减少：
+这样既满足：
+
+```text
+最终检索返回 Alias / Enum / Instance 本身
+```
+
+又保证：
+
+```text
+图算法只处理合法本体拓扑
+```
+
+并显著减少：
 
 ```text
 Seed Pair 数
 最短路径组合数
 ```
+
+注意：
+
+> **Evidence → Anchor 在这里表示“为构图投影 Anchor”，不是“把 Evidence 转换后丢弃”。**
 
 ---
 
@@ -2438,31 +2924,81 @@ Function/Action 默认不进入 Anchor RRF 主排序，除非未来明确把它�
 
 ---
 
-# 64. Semantic Extensions
+# 64. Retrieval Results 与 Semantic Extensions
 
-最终返回两层：
+最终响应需要明确区分三层：
 
 ```text
+retrievalResults
 ontologySubgraph
 semanticExtensions
 ```
 
-Semantic Extensions：
+## retrievalResults
+
+表示 LLM 精排后真正命中的语义目标：
 
 ```text
-ObjectType → Alias
-Property → Alias
-Property → Enum Value / Alias
-Property → matched Instance Value / Alias
+ObjectType / Property
+ObjectType / Property Alias
+Enum Value / Alias
+Instance Value / Alias
 ```
 
-它们不参与图算法。
+这些是**最终检索结果本身**。
+
+## ontologySubgraph
+
+只包含通过 Final Semantic Matches 投影出的 ObjectType / Property Anchor 以及图算法扩展出来的真实本体拓扑。
+
+## semanticExtensions
+
+是在最终命中基础上追加的上下文，例如：
+
+```text
+ObjectType → 其他 Alias
+Property → 其他 Alias
+Property → Enum sibling values / aliases
+Property → matched/topN Instance Value / Alias
+```
+
+因此：
+
+```text
+retrievalResults = 用户真正命中的目标
+semanticExtensions = 为 LLM / Cypher 补充的附加语义上下文
+```
+
+两者不能混为一谈。
+
+Alias、Enum、Instance 不参与图算法，但它们可以作为 `retrievalResults` 的一等结果存在。
 
 ---
 
-# 65. Enum Extension 返回模式
+# 65. Enum Retrieval Result 与 Extension 返回模式
 
-Enum 属于元数据，可支持：
+如果最终精排选中：
+
+```text
+ENUM_VALUE
+ENUM_ALIAS
+```
+
+该命中项必须无条件出现在：
+
+```text
+retrievalResults
+```
+
+例如：
+
+```text
+FORMAL → canonical_value=1
+```
+
+不能因为 `enumMode=matched_only` 而只返回 Property Anchor。
+
+`semanticExtensions.enumMode` 控制的是**额外枚举域上下文**：
 
 ```text
 matched_only
@@ -2475,25 +3011,43 @@ all_values
 matched_only
 ```
 
-生成 Cypher 时，若需要让 LLM了解完整枚举域，可以显式请求：
+含义：
 
 ```text
-all_values
+retrievalResults：始终返回真正命中的 Enum Item
+semanticExtensions：默认只附带已命中的 Enum；显式 all_values 时再返回完整枚举域
 ```
+
+这样既保证检索结果准确，又避免把完整枚举列表无条件塞给下游。
 
 ---
 
-# 66. Instance Extension 返回模式
+# 66. Instance Retrieval Result 与 Extension 返回模式
 
-Instance 可能百万/千万/亿。
+Instance 可能百万/千万/亿，但最终命中的单个或少量实例值本身仍然是合法检索目标。
 
-禁止：
+如果 LLM 最终选中：
 
 ```text
-返回 Property 的所有 Instance Value
+INSTANCE_VALUE
+INSTANCE_ALIAS
 ```
 
-允许：
+必须出现在：
+
+```text
+retrievalResults
+```
+
+禁止的是：
+
+```text
+因为命中了某 Property，就返回该 Property 的所有 Instance Value
+```
+
+而不是禁止返回实际命中的 Instance Value。
+
+`semanticExtensions.instanceMode` 只控制额外上下文：
 
 ```text
 matched_only
@@ -2508,35 +3062,74 @@ extension:
   maxInstanceEvidencePerProperty: 10
 ```
 
+含义：
+
+```text
+retrievalResults：保留 LLM 最终选中的 Instance Value / Alias
+semanticExtensions：默认只附带 matched items；需要时最多额外 topN
+```
+
+这样不会因为实例库规模巨大而污染响应，同时保证“实例列值本身是最终检索目标”。
+
 ---
 
-# 67. 最终 seedNodes 结构
+# 67. retrievalResults 与 seedNodes 结构
 
-建议兼容现有 `seedNodes`，并增强：
+`seedNodes` 继续兼容现有调用方，但必须明确：
+
+> **seedNodes 是 Graph Anchor Projection，不再等同于完整检索结果。**
+
+## 67.1 retrievalResults
+
+Evidence 最终命中示例：
 
 ```json
 {
-  "semanticUnitId": "u2",
-  "llmDrawEntityName": "发生时间",
-  "anchors": [
+  "semanticUnitId": "u4",
+  "llmDrawEntityName": "正式用户",
+  "matches": [
     {
-      "ID": "property-first-id",
-      "type": 1,
-      "name": "firstoccurrence",
-      "parent_ID": "alarm-object-id",
-      "parent_name": "AP_ALARM_LIVE",
-      "rrf_score": 0.064,
-      "rerank_score": 0.96,
-      "match": {
-        "source": "ANCHOR",
-        "channels": ["anchor_bm25", "anchor_vector"]
-      }
+      "itemId": "subClass-property-id::ENUM_ALIAS::1::FORMAL",
+      "targetType": "ENUM_ALIAS",
+      "matchedValue": "FORMAL",
+      "canonicalValue": "1",
+      "objectType": {
+        "ID": "subscriber-object-id",
+        "name": "Subscriber"
+      },
+      "property": {
+        "ID": "subClass-property-id",
+        "name": "subClass"
+      },
+      "rrfScore": 0.071,
+      "rerankScore": 0.97,
+      "matchSource": "METADATA_EVIDENCE"
     }
   ]
 }
 ```
 
-Evidence：
+Property 本身命中示例：
+
+```json
+{
+  "itemId": "property-first-id",
+  "targetType": "PROPERTY",
+  "matchedValue": "firstoccurrence",
+  "objectType": {
+    "ID": "alarm-object-id",
+    "name": "AP_ALARM_LIVE"
+  },
+  "property": {
+    "ID": "property-first-id",
+    "name": "firstoccurrence"
+  }
+}
+```
+
+## 67.2 seedNodes
+
+由 `retrievalResults` 投影生成：
 
 ```json
 {
@@ -2548,27 +3141,48 @@ Evidence：
       "type": 1,
       "name": "subClass",
       "parent_ID": "subscriber-object-id",
-      "rrf_score": 0.071,
-      "rerank_score": 0.97,
-      "match": {
-        "source": "METADATA_EVIDENCE",
-        "evidence_type": "ENUM_ALIAS",
-        "evidence_value": "FORMAL",
-        "canonical_value": "1"
-      }
+      "parent_name": "Subscriber",
+      "derivedFromItemId": "subClass-property-id::ENUM_ALIAS::1::FORMAL"
     }
   ]
 }
 ```
 
+这样兼容现有子图代码，同时不会丢失最终命中的具体语义项。
+
 ---
 
 # 68. Final Response 数据结构
+
+推荐：
 
 ```json
 {
   "message_type": "message_ontology_subgraph",
   "content": {
+    "retrievalResults": [
+      {
+        "semanticUnitId": "u4",
+        "matches": [
+          {
+            "itemId": "...",
+            "targetType": "ENUM_ALIAS",
+            "matchedValue": "FORMAL",
+            "canonicalValue": "1",
+            "objectType": {
+              "ID": "subscriber-object-id",
+              "name": "Subscriber"
+            },
+            "property": {
+              "ID": "subClass-property-id",
+              "name": "subClass"
+            },
+            "rrfScore": 0.071,
+            "rerankScore": 0.97
+          }
+        ]
+      }
+    ],
     "seedNodes": [],
     "nodes": [],
     "edges": [],
@@ -2603,11 +3217,31 @@ seedNodes
 
 兼容已有调用方。
 
-新增字段全部可选。
+新增：
+
+```text
+retrievalResults
+```
+
+作为**完整最终检索结果的权威字段**。
+
+`seedNodes` 仅用于兼容图构建锚点语义，不能代替 `retrievalResults`。新增字段均可通过版本化接口/兼容开关渐进发布。
 
 ---
 
 # 69. Cypher 生成最小充分上下文
+
+## Final Retrieval Context
+
+```text
+item_id
+target_type
+matched phrase / matched_value
+canonical_value
+match source
+```
+
+这是告诉 LLM“用户真正命中了什么”的直接依据。
 
 ## Anchor Context
 
@@ -2617,10 +3251,12 @@ Property ID / name
 Property parent_ID
 ```
 
+这是告诉 LLM“该语义项属于哪个本体对象和属性”的确定性映射。
+
 ## Evidence Context
 
 ```text
-matched phrase
+evidence_ID
 evidence type
 evidence value
 canonical value
@@ -2639,13 +3275,27 @@ junctionConfig
 source/target mapping
 ```
 
-LLM 生成 Cypher 时，不再需要猜：
+例如：
 
 ```text
-FORMAL 是真实值还是 alias
+retrieval target = ENUM_ALIAS: FORMAL
+canonical_value  = 1
+Property         = Subscriber.subClass
+ObjectType       = Subscriber
+```
+
+LLM 生成 Cypher 时不再需要猜：
+
+```text
+FORMAL 是最终命中的 Alias 还是 Property 名称
+FORMAL 对应的真实值是什么
 Property 属于哪个 ObjectType
 两个 ObjectType 用什么字段关联
 ```
+
+因此准确的 Cypher 上下文是：
+
+> **Final Semantic Match + Anchor Context + Relation Context。**
 
 ---
 
@@ -2658,10 +3308,11 @@ sequenceDiagram
     participant D as SearchDispatcher
     participant GV as GaussVector
     participant OS as OpenSearch
-    participant N as AnchorCandidateNormalizer
+    participant N as SemanticCandidateNormalizer
     participant R as RRF Aggregator
     participant C as RerankContextBuilder
     participant L as LLM Fine Ranker
+    participant P as GraphAnchorProjector
     participant G as GraphTopology/SubgraphBuilder
     participant E as ExtensionAssembler
 
@@ -2680,28 +3331,43 @@ sequenceDiagram
     end
 
     D->>N: 所有 Channel Results
-    N->>N: Evidence→Anchor + channel dedup
-    N->>R: Ranked Anchor Lists
-    R-->>C: RRF Coarse Anchors
+    N->>N: 保留 Matched Item + Anchor Context
+    N->>N: channel 内按 anchor_ID Group 去重
+    N->>R: Ranked Anchor Groups + Matched Items
+    R-->>C: RRF Coarse Groups
 
     U->>C: Original Query
     QU->>C: Semantic Units
     C->>C: Metadata/Evidence/Graph Hint
     C->>L: Prebuilt Rerank Prompt
-    L-->>G: Final Accurate Anchors
+    L-->>P: Final Semantic Matches
 
+    P->>P: Match → ObjectType / Property Anchors
+    P-->>G: Final Graph Anchors
     G->>G: Property→Parent normalization
     G->>G: minimal/khop/component
     G-->>E: Ontology Core Subgraph
 
-    E->>E: Alias/Enum/Matched Instance
+    L-->>E: Final Semantic Matches
+    E->>E: Extra Alias/Enum/Matched Instance Context
     E->>E: Function/Action optional
-    E-->>U: Final Subgraph Response
+    E-->>U: retrievalResults + Final Subgraph Response
 ```
+
+这里最关键的边界是：
+
+```text
+LLM Fine Ranker 输出具体 Semantic Match
+GraphAnchorProjector 才负责把它投影成子图 Seed
+```
+
+因此 Evidence 不会在 RRF 或 LLM 后被提前丢弃。
 
 ---
 
 # 71. 索引构建流程
+
+V5.3 统一采用“**OAG 负责索引构建，DataSync 负责实例数据生产**”的职责边界：
 
 ```mermaid
 flowchart LR
@@ -2712,15 +3378,24 @@ flowchart LR
       EN[Enum]
     end
 
+    subgraph DS[DataSync]
+      SC[读取 is_semantic Property]
+      SRC[(业务数据源)]
+      DV[DISTINCT / Normalize / Alias整理]
+      PKG[Import Package<br/>Manifest + Data Files]
+    end
+
+    subgraph TRANS[批量数据面]
+      FS[(File / Shared Storage)]
+      MI[(MinIO)]
+    end
+
     subgraph OAG[OAG]
       AB[Anchor Builder]
       MB[Metadata Evidence Builder]
-    end
-
-    subgraph DS[DataSync]
-      SC[is_semantic]
-      DV[DISTINCT Values]
+      BI[BulkImportService]
       IB[Instance Evidence Builder]
+      EMB[Embedding]
     end
 
     subgraph GV[GaussVector]
@@ -2747,11 +3422,27 @@ flowchart LR
     MB --> OM
 
     P --> SC
+    SRC --> DV
     SC --> DV
-    DV --> IB
-    IB --> GI
-    IB --> OI
+    DV --> PKG
+    PKG --> FS
+    PKG --> MI
+    FS --> BI
+    MI --> BI
+    BI --> IB
+    IB --> EMB
+    EMB --> GI
+    EMB --> OI
 ```
+
+职责约束：
+
+```text
+DataSync：不生成 Vector，不直接写 GaussVector/OpenSearch
+OAG：统一 Evidence 构造、Embedding、双写、ANN/全文索引构建和 Generation 发布
+```
+
+`INSTANCE_VALUE / INSTANCE_ALIAS` 在此流程中既是 Instance Evidence 索引数据，也是后续可直接返回的最终 `retrievalResults`。
 
 ---
 
@@ -2813,21 +3504,34 @@ timeout
 Instance Evidence 限流
 ```
 
-## RRF
+## Candidate Normalize / RRF
 
 ```text
+channel 内 anchor_ID Group 去重
+maxMatchedItemsPerAnchorGroup
 coarseTopKPerSemanticUnit
 maxGlobalCandidates
 ```
 
+这里必须同时控制：
+
+```text
+Anchor Group 数量
+每个 Group 内 Matched Item 数量
+```
+
+否则虽然 RRF Group 数量可控，但某个高频 Property 仍可能携带过多 Enum/Instance Evidence 进入 Prompt。
+
 ## LLM
 
 ```text
-maxCandidatesPerSemanticUnit
+maxCandidateGroupsPerSemanticUnit
+maxMatchedItemsPerAnchorGroup
 maxGlobalCandidates
+maxSelectedSemanticMatchesPerUnit
 Prompt token budget
 retry=1
-fallback=RRF
+fallback=RRF primary_hit
 ```
 
 ## Graph
@@ -2842,6 +3546,8 @@ maxNodes
 maxEdges
 timeout
 ```
+
+Final Semantic Matches 可以多于最终 Graph Anchor 数，因为多个值可能映射到同一个 Property。
 
 ---
 
@@ -2870,6 +3576,7 @@ oag:
     k: 60
     coarseTopKPerSemanticUnit: 20
     maxGlobalCandidates: 50
+    maxMatchedItemsPerAnchorGroup: 5
     channelWeights:
       anchorExact: 1.5
       anchorBm25: 1.1
@@ -2888,6 +3595,7 @@ oag:
     maxCandidatesPerSemanticUnit: 20
     maxGlobalCandidates: 50
     maxSelectedPerSemanticUnit: 5
+    maxSelectedSemanticMatchesPerUnit: 5
     retryCount: 1
     fallback: RRF
 
@@ -2966,28 +3674,43 @@ channel_latency
 channel_return_count
 threshold_filtered_count
 exact_hit_count
-Evidence→Anchor count
+evidence_hit_count
+target_type_count{type}
 ```
 
-## RRF
+## Candidate Normalize / RRF
 
 ```text
 before_dedup_count
-after_anchor_dedup_count
-rrf_candidate_count
+after_anchor_group_dedup_count
+rrf_anchor_group_count
+matched_items_retained_count
+matched_items_truncated_count
 channel_contribution
 ```
 
 ## Rerank
 
 ```text
-candidate_count
+candidate_group_count
+candidate_item_count
 input_tokens
 output_tokens
 latency
 rerank_status
+selected_semantic_match_count
+selected_target_type_count{type}
 selected_anchor_count
 no_match_count
+```
+
+## Graph Projection
+
+```text
+semantic_match_count
+graph_anchor_count
+match_to_anchor_projection_count
+projection_error_count
 ```
 
 ## Graph
@@ -3007,20 +3730,52 @@ truncated
 graph_cache_hit
 ```
 
+可观测性必须能回答两个不同问题：
+
+```text
+1. 用户最终命中了什么语义项？
+2. 这些语义项最终投影成了哪些图 Anchor？
+```
+
 ---
 
 # 77. 评测体系
 
-## 77.1 Anchor Recall
+## 77.1 Final Semantic Target
+
+```text
+SemanticTargetRecall@1/3/10
+SemanticTargetPrecision@1/3/10
+TargetTypeAccuracy
+MatchedValueAccuracy
+```
+
+分别统计：
+
+```text
+ObjectTypeTargetAccuracy
+PropertyTargetAccuracy
+ObjectAliasTargetAccuracy
+PropertyAliasTargetAccuracy
+EnumValueTargetAccuracy
+EnumAliasTargetAccuracy
+InstanceValueTargetAccuracy
+InstanceAliasTargetAccuracy
+```
+
+## 77.2 Anchor Context
 
 ```text
 ObjectAnchorRecall@1/3/10
 PropertyAnchorRecall@1/3/10
+TargetToObjectTypeAccuracy
+TargetToPropertyAccuracy
+TargetToAnchorContextAccuracy
 AnchorMRR
 AnchorNDCG
 ```
 
-## 77.2 Evidence
+## 77.3 Evidence / Canonical Value
 
 ```text
 AliasHit@K
@@ -3028,36 +3783,45 @@ EnumResolveAccuracy
 InstanceValueToPropertyAccuracy
 EvidenceToAnchorAccuracy
 CanonicalValueAccuracy
+MatchedItemRetentionRate
 ```
 
-## 77.3 多语言
+## 77.4 多语言
 
 ```text
 CrossLanguageRecall
 MixedLanguageRecall
+CrossLanguageTargetAccuracy
 ```
 
-## 77.4 RRF
+## 77.5 RRF
 
 ```text
-RRFAnchorRecall@10/20
+RRFAnchorGroupRecall@10/20
 RRFMRR
 ChannelContributionRate
+MatchedItemRetentionAfterRRF
 ```
 
-## 77.5 LLM 精排
+RRF 的评测不仅看 Anchor Group 是否召回，还要看正确的 Alias/Enum/Instance Item 是否仍保留在该 Group 内。
+
+## 77.6 LLM 精排
 
 ```text
-RerankPrecision@K
-RerankRecall@K
-WrongAnchorDropRate
+SemanticMatchPrecision@K
+SemanticMatchRecall@K
+TargetTypeAccuracy
+MatchedValueAccuracy
+CanonicalValueAccuracy
+AnchorContextAccuracy
+WrongMatchDropRate
 RequiredSemanticUnitCoverage
 NoMatchAccuracy
 P50/P95/P99
 Tokens
 ```
 
-## 77.6 子图
+## 77.7 子图
 
 ```text
 AnchorConnectivityRate
@@ -3072,14 +3836,25 @@ GraphLatency
 PathExplosionRate
 ```
 
-## 77.7 Cypher
+## 77.8 Cypher
 
 ```text
+CypherSemanticTargetAccuracy
 CypherAnchorAccuracy
 CypherRelationAccuracy
 CypherCanonicalValueAccuracy
 CypherExecutableRate
 EndToEndQueryAccuracy
+```
+
+最终端到端准确率必须同时覆盖：
+
+```text
+是否找对具体语义项
++
+是否携带正确 ObjectType / Property
++
+是否生成正确关系与 canonical value
 ```
 
 ---
@@ -3191,13 +3966,27 @@ getSeedIds()
   └─ SearchDispatcher
 
 HybridRecallHelper
-  └─ 扩展为 AnchorCandidateNormalizer + RRF Aggregator
+  └─ 扩展多物理表、多通道召回
+
+AnchorCandidateNormalizer（兼容类名）
+  └─ 语义升级为 SemanticCandidateNormalizer
+      ├─ 保留 Matched Item
+      ├─ 补齐 ObjectType / Property Context
+      └─ 形成 Anchor Group
+
+WeightedRrfAggregator
+  └─ 按 anchor_ID Group 融合，保留 matched_items
+
+OntologyAnchorRanker（兼容类名）
+  └─ 目标升级为 SemanticMatchRanker
+      └─ 输出 Final Semantic Matches
 
 新增：
-  AnchorCandidateNormalizer
+  SemanticCandidateNormalizer
   WeightedRrfAggregator
   RerankContextBuilder
-  OntologyAnchorRanker
+  SemanticMatchRanker
+  GraphAnchorProjector
   GraphTopologyCache
   EnhancedSubgraphBuilder
   ExtensionAssembler
@@ -3218,6 +4007,16 @@ addObjectTypeByProperty
 
 ```text
 legacy / fallback / reuse implementation
+```
+
+核心改造点不是推翻图代码，而是在图代码之前新增清晰的：
+
+```text
+Final Semantic Matches
+        ↓
+GraphAnchorProjector
+        ↓
+现有/增强 SubgraphBuilder
 ```
 
 ---
@@ -3279,51 +4078,82 @@ semantic_unit_id
 
 独立融合。
 
+每个 Semantic Unit 内部流程：
+
+```text
+各 Channel Raw Hits
+  ↓
+保留具体 Matched Item
+  ↓
+按 channel + anchor_ID 形成 Anchor Groups
+  ↓
+Weighted RRF
+  ↓
+Top Anchor Groups + matched_items
+```
+
 原因：
 
 ```text
 “站点”
 “活跃告警”
 “首次发生时间”
+“正式用户”
 ```
 
-是三个不同语义目标，不能在粗排阶段被一个高频 Anchor 的得分互相覆盖。
+是不同语义目标，不能在粗排阶段被一个高频 Anchor 的得分互相覆盖。
 
-流程：
+同时，RRF 不直接对 `evidence_ID` 做全局排名，因为：
 
 ```text
-每个 Semantic Unit
-  ↓
-各 Channel Ranked Lists
-  ↓
-RRF
-  ↓
-Top Anchors per Unit
+同一个 Property 拥有大量 Alias / Enum / Instance
 ```
 
-随后 LLM 精排输入所有 Semantic Unit 的候选集合，执行**跨单元一致性判断**：
+会造成 Evidence 数量偏置。
+
+因此：
 
 ```text
-站点 Anchor
-  ↓ relation consistency
-活跃告警 Anchor
-  ↓ parent consistency
-首次发生时间 Property
+RRF 排 Anchor Group
+但 Group 内保留具体 Matched Items
+```
+
+随后 LLM 精排输入所有 Semantic Unit 的 Group + Item 候选，执行两类判断：
+
+```text
+1. 跨单元 Anchor Context 一致性
+2. 当前 Semantic Unit 最终命中的具体 Item 是什么
+```
+
+例如：
+
+```text
+“正式用户”
+   ↓
+Anchor Group = Subscriber.subClass
+   ↓
+Matched Item = ENUM_ALIAS: FORMAL
+   ↓
+LLM 最终选择 FORMAL 本身
+   ↓
+GraphAnchorProjector 仍提取 Subscriber.subClass
 ```
 
 因此：
 
 ```text
-RRF：局部高 Recall
-LLM：全局上下文一致性
+RRF：局部高 Recall + Anchor Group 公平
+LLM：具体 Semantic Item 精确选择 + 全局上下文一致性
+GraphAnchorProjector：把最终 Match 转成构图 Anchor
 ```
 
 候选裁剪推荐：
 
 ```text
-RRF Top 10~20 / Semantic Unit
-全局 Anchor 去重后 30~50
-LLM 每个 Unit 最多选择 3~5
+RRF Top 10~20 Anchor Groups / Semantic Unit
+每 Group 保留 top 3~5 Matched Items
+全局 Anchor Group 去重后 30~50
+LLM 每个 Unit 最多选择 3~5 Semantic Matches
 ```
 
 `LLM rank_score` 是精排语义分，不与 Cosine `similarityThreshold` 共用阈值，也不应直接与 RRF score 相加。
@@ -3332,11 +4162,14 @@ LLM 每个 Unit 最多选择 3~5
 
 # 83. 现有方法级增强映射
 
-| 当前方法/结构 | 当前职责 | V5.0 增强 |
+| 当前方法/结构 | 当前职责 | V5.3 增强 |
 |---|---|---|
 | `interpretQueryIntent()` | LLM 意图解析 | 输出 Semantic Units / hints |
-| `getSeedIds()` | Vector/ES 获取 Seed | 多物理表、多通道 Dispatcher |
-| `hybridRecall()` | 混合召回 | AnchorNormalizer + Weighted RRF |
+| `getSeedIds()` | Vector/ES 获取 Seed | 多物理表、多通道 Dispatcher；输出 Raw Semantic Hits |
+| `hybridRecall()` | 混合召回 | SemanticCandidateNormalizer + Weighted RRF |
+| `AnchorCandidateNormalizer` | Evidence→Anchor | 保留 Evidence Item，并构造 Anchor Group + ObjectType/Property Context |
+| `OntologyAnchorRanker` | Anchor 精排 | 升级为 Final Semantic Match 精排 |
+| 新增 `GraphAnchorProjector` | 无 | Final Match → ObjectType/Property Graph Anchors |
 | `addObjectTypeByProperty()` | Property 查父对象 | `parent_ID` 优先，GQL fallback |
 | `loadAllEdges()` | 请求时加载拓扑 | `GraphTopologyCache` 按版本缓存 |
 | `computePairwiseShortestPaths()` | minimal 最短路径 | 可复用为 Metric Closure 输入 |
@@ -3350,7 +4183,7 @@ LLM 每个 Unit 最多选择 3~5
 
 这样可以做到：
 
-> **增强方案最大程度复用当前稳定代码，不要求推倒重写。**
+> **检索结果语义升级，但图算法最大程度复用当前稳定代码，不要求推倒重写。**
 
 ---
 
@@ -3362,33 +4195,51 @@ LLM 每个 Unit 最多选择 3~5
 把所有 Enum/Instance 拼进 Property Vector
 ```
 
-错误：混淆 Anchor 语义。
+错误：混淆 Anchor 语义，仍应保持独立 Evidence 索引。
 
 ## 误区2
 
 ```text
-Enum/Instance 搜到后直接作为最终节点
+Enum/Instance 不能成为最终检索结果
 ```
 
-错误：最终目标是 Property Anchor。
+错误。Enum Value/Alias、Instance Value/Alias 都可以是最终 `retrievalResults`；错误的是把它们直接当成 Core Graph 路径节点。
+
+正确边界：
+
+```text
+Enum/Instance = Final Semantic Match
+       ↓
+GraphAnchorProjector
+       ↓
+Property + ObjectType = Graph Anchors
+```
 
 ## 误区3
 
 ```text
-RRF 对 evidence_ID 排名
+RRF 对 evidence_ID 独立排名
 ```
 
-错误：Evidence 多的属性被人为抬高。
+错误：Evidence 多的属性会被人为抬高。RRF 应按 `anchor_ID` Group 聚合，同时保留 Group 内 `matched_items`。
 
 ## 误区4
+
+```text
+Evidence 映射到 Anchor 后即可丢弃 Evidence
+```
+
+错误。Evidence 本身可能就是用户最终要检索的同义词、枚举值或实例值。
+
+## 误区5
 
 ```text
 LLM 精排必须选一个
 ```
 
-错误：会污染图。
+错误：一个语义单元可命中多个必要值，也可以 no_match。
 
-## 误区5
+## 误区6
 
 ```text
 khop 当前就是 Multi-Source BFS
@@ -3396,7 +4247,7 @@ khop 当前就是 Multi-Source BFS
 
 错误：当前是 Pairwise FIND ALL PATH。
 
-## 误区6
+## 误区7
 
 ```text
 component 当前就是全连通分量
@@ -3404,7 +4255,7 @@ component 当前就是全连通分量
 
 错误：当前是 10-hop 近似。
 
-## 误区7
+## 误区8
 
 ```text
 Property 一定要把 ObjectType 放在向量开头
@@ -3412,7 +4263,7 @@ Property 一定要把 ObjectType 放在向量开头
 
 不推荐。Parent Context 应在 Metadata/Rerank 中使用。
 
-## 误区8
+## 误区9
 
 ```text
 所有表用 topK=3 / threshold=0.6
@@ -3420,46 +4271,59 @@ Property 一定要把 ObjectType 放在向量开头
 
 不推荐。必须支持独立配置。
 
+## 误区10
+
+```text
+seedNodes 就是最终检索结果
+```
+
+错误。`seedNodes` 是构图 Anchor Projection；完整最终检索结果必须看 `retrievalResults`。
+
 ---
 
 # 85. 最终设计决策
 
-1. **最终检索对象始终是 ObjectType / Property Anchor。**
-2. **Anchor ID 直接使用本体元素全局唯一 ID，不 Hash。**
-3. **Property 保存 parent_ID。**
-4. **Alias / Enum / Instance 统一作为 Evidence。**
-5. **Evidence 必须保留 canonical_value 等 Cypher 映射信息。**
-6. **Anchor / Metadata Evidence / Instance Evidence 物理隔离。**
-7. **OAG 管元数据，DataSync 管实例。**
-8. **Instance 只索引符合语义规则的 DISTINCT Value。**
-9. **高基数自由文本进入独立 RAG，不污染本体实例 Evidence。**
-10. **同一 Anchor 的多语言描述默认放入一个 Vector。**
-11. **Property Vector 默认不以 ObjectType 开头。**
-12. **Enum/Instance Vector 坚持 Value First。**
-13. **未知字符串无需预分类，统一走多路检索。**
-14. **Exact 不受 Dense similarityThreshold 限制。**
-15. **每张物理表独立 topK / similarityThreshold。**
-16. **Evidence 先映射 Anchor，再进行 RRF。**
-17. **RRF Key 为 anchor_ID。**
-18. **同一通道先按 Anchor 去重。**
-19. **LLM 使用原始问题 + 多维上下文精排。**
-20. **精排允许 0/1/N Anchor，并支持 RRF 降级。**
-21. **Property 构图前优先通过 parent_ID 补 Parent ObjectType。**
-22. **当前 minimal 是 greedy path union，应保留兼容并增强为 Metric Closure MST Approximation。**
-23. **当前 khop 是 pairwise FIND ALL PATH，应增强为真正 Multi-Source BFS。**
-24. **当前 component 是 hop=10 近似，应增强为 DSU/BFS 真 Connected Component。**
-25. **loadAllEdges 相关拓扑建议按 ontology version 缓存。**
-26. **图算法只处理真实本体拓扑。**
-27. **Alias / Enum / Instance 通过 Semantic Extensions 独立挂载。**
-28. **Function / Action 按 includeFlags 在 Core Graph 后扩展。**
-29. **所有 enhanced 算法必须有 legacy fallback 和灰度评测。**
-30. **最终优化目标是 Anchor + Relation + Canonical Value + Cypher 端到端正确性。**
+1. **最终检索对象不再只有 ObjectType / Property；ObjectType、Property、Object/Property Alias、Enum Value/Alias、Instance Value/Alias 均可作为最终检索结果。**
+2. **最终检索结果统一表达为 Matched Semantic Item + ObjectType / Property Anchor Context。**
+3. **Alias / Enum / Instance 命中后必须保留其自身 `item_id/evidence_ID、target_type、matched_value、canonical_value`，不能映射 Anchor 后丢弃。**
+4. **ObjectType / Object Alias 至少携带 ObjectType Context；Property / Property Alias / Enum / Instance 必须同时携带 Property + Parent ObjectType Context。**
+5. **Anchor ID 直接使用本体元素全局唯一 ID，不 Hash。**
+6. **Property 保存 parent_ID。**
+7. **Alias / Enum / Instance 仍统一建模为 Evidence，但 Evidence 同时是一等检索目标。**
+8. **Anchor / Metadata Evidence / Instance Evidence 物理隔离。**
+9. **OAG 管元数据索引；DataSync 生产实例数据，V5.2 起通过 Bulk Import 由 OAG 统一完成 Instance Evidence 索引构建。**
+10. **Instance 只索引符合语义规则的 DISTINCT Value；INSTANCE_ALIAS 保留真实业务支持。**
+11. **高基数自由文本进入独立 RAG，不污染本体实例 Evidence。**
+12. **同一 Anchor 的多语言描述默认放入一个 Vector。**
+13. **Property Vector 默认不以 ObjectType 开头。**
+14. **Enum/Instance Vector 坚持 Value First。**
+15. **未知字符串无需预分类，统一走 Anchor / Metadata / Instance 多路检索。**
+16. **Exact 不受 Dense similarityThreshold 限制。**
+17. **每张物理表独立 topK / similarityThreshold。**
+18. **CandidateNormalizer 必须先保留具体 Matched Item，再补齐 Anchor Context。**
+19. **RRF Key 仍为 anchor_ID Group，而不是 evidence_ID，防止 Evidence 数量偏置。**
+20. **同一通道先按 Anchor Group 去重，但 Group 内保留 topN Matched Items。**
+21. **不需要 Anchor / Metadata / Instance 两级 RRF；所有 Channel 一次 Weighted RRF 即可。**
+22. **LLM 使用原始问题 + Anchor Group + Matched Items + 多维上下文精排。**
+23. **LLM 精排输出 Final Semantic Matches，允许 0/1/N，并支持 RRF primary-hit 降级。**
+24. **新增 GraphAnchorProjector，将 Final Semantic Matches 投影为 ObjectType / Property Graph Anchors。**
+25. **Enum / Alias / Instance 可以是最终 retrievalResults，但不直接参与 Core Graph 图算法。**
+26. **Property 构图前优先通过 parent_ID 补 Parent ObjectType。**
+27. **当前 minimal 是 greedy path union，应保留兼容并增强为 Metric Closure MST Approximation。**
+28. **当前 khop 是 pairwise FIND ALL PATH，应增强为真正 Multi-Source BFS。**
+29. **当前 component 是 hop=10 近似，应增强为 DSU/BFS 真 Connected Component。**
+30. **loadAllEdges 相关拓扑建议按 ontology version 缓存。**
+31. **图算法只处理真实本体拓扑。**
+32. **retrievalResults 表达最终命中；semanticExtensions 只表达额外语义上下文，两者分离。**
+33. **Function / Action 按 includeFlags 在 Core Graph 后扩展。**
+34. **所有 enhanced 算法必须有 legacy fallback 和灰度评测。**
+35. **最终优化目标是 Semantic Target + ObjectType/Property Context + Relation + Canonical Value + Cypher 端到端正确性。**
 
 ---
 
 # 86. 一句话总结
 
-> **OAG 最终应成为一个“Ontology Anchor Resolver + Subgraph Constructor”：先利用 Anchor、Alias、Enum、Instance 等多源语义证据，通过 Exact/BM25/Dense 多路召回、Anchor 归一化、Weighted RRF 和 LLM 精排得到准确 ObjectType / Property，再基于真实本体拓扑按 minimal/khop/component 构建核心子图，并将 Alias、Enum、Instance、Function、Action 作为独立扩展挂载；同时对当前 pairwise shortest path、FIND ALL PATH、hop=10 component 现状保持兼容，通过 Metric Closure MST、Multi-Source BFS、DSU Connected Component 渐进增强，从而为 Cypher 生成提供最小、准确、完整、可解释且可执行的本体上下文。**
+> **OAG 最终应成为一个“Semantic Target Resolver + Ontology Anchor Projector + Subgraph Constructor”：先利用 Anchor、同义词、Enum、Instance 等多源索引，通过 Exact/BM25/Dense 多路召回、Matched Item 保留、按 anchor_ID 的 Weighted RRF 和 LLM 精排，准确返回用户真正命中的 ObjectType、Property、Alias、Enum Value/Alias 或 Instance Value/Alias 本身，并为每个结果携带确定性的 ObjectType / Property Context；随后通过 GraphAnchorProjector 只抽取 ObjectType / Property 进入 minimal/khop/component 子图算法，再将关系、扩展语义和 canonical value 一并提供给下游 Cypher，从而同时保证“值检索准确”和“本体拓扑构建正确”。**
 
 ---
 
@@ -4840,7 +5704,9 @@ sequenceDiagram
 
 # 114. 与现有索引设计的衔接
 
-本导入模块不改变 V5.0 已确定的 Instance Evidence 语义模型，只改变“谁负责真正构建索引”的职责边界。
+本导入模块不改变 Instance Evidence 的物理隔离、Value First 和 Property Mapping 设计，只改变“谁负责真正构建索引”的职责边界，并在 V5.3 明确：
+
+> **Instance Evidence 不仅用于反向发现 Property Anchor，INSTANCE_VALUE / INSTANCE_ALIAS 本身也是最终检索目标。**
 
 保持不变：
 
@@ -4851,24 +5717,51 @@ anchor_ID = Property ID
 parent_ID = ObjectType ID
 Value First
 Property Context Last
-Evidence → Anchor
 Instance Evidence 与 Metadata Evidence 物理隔离
 ```
 
-职责更新为：
+语义更新为：
+
+```text
+旧理解：
+Evidence → Anchor → Final Anchor
+
+V5.3：
+Evidence → 保留 Final Semantic Item
+        + 确定性 Anchor Context
+        ↓
+GraphAnchorProjector
+        ↓
+Property / ObjectType Graph Anchors
+```
+
+因此 DataSync 导入的：
+
+```text
+value
+evidence_type
+canonical_value
+aliases
+source_key
+Property Mapping
+```
+
+都必须被 OAG 保留到检索结果模型中，而不是仅服务于向量化后丢弃。
+
+职责仍然是：
 
 ```text
 旧描述：
 DataSync → Instance Evidence Builder → GaussVector/OpenSearch
 
-V5.2：
+V5.2 / V5.3：
 DataSync → Import Package → OAG BulkImportService
                          → Instance Evidence Builder
                          → Embedding
                          → GaussVector/OpenSearch
 ```
 
-因此 DataSync 不再依赖：
+DataSync 不再依赖：
 
 ```text
 Embedding SDK
@@ -4878,7 +5771,7 @@ OpenSearch Client
 ANN索引参数
 ```
 
-所有索引实现统一封装在 OAG 内部。
+所有索引实现统一封装在 OAG 内部；所有 Evidence→ObjectType/Property Context 映射也由 OAG 在检索结果中统一输出。
 
 ---
 
@@ -4894,7 +5787,7 @@ ANN索引参数
 8. **推荐按 Property 分区/分片，Mapping 放 Manifest，减少每行重复字段。**
 9. **OAG 必须校验 Property/Parent ObjectType/is_semantic 映射。**
 10. **OAG 复用统一 Evidence Builder、Normalize、Embedding Content 规则。**
-11. **INSTANCE_VALUE 与 INSTANCE_ALIAS 均通过同一导入协议支持。**
+11. **INSTANCE_VALUE 与 INSTANCE_ALIAS 均通过同一导入协议支持，并且两者本身均可作为最终 retrievalResults 返回。**
 12. **evidence_ID 稳定生成，Chunk 重试必须幂等。**
 13. **Parquet RowGroup / NDJSON Offset 作为断点 Checkpoint。**
 14. **GaussVector/OpenSearch 使用 Chunk 级双写协调和最终一致。**
@@ -4903,10 +5796,10 @@ ANN索引参数
 17. **OAG 在线查询资源优先于 Bulk Import，必须独立线程池和限流。**
 18. **失败行进入 Reject/DLQ File，Job Fatal 与 Row Rejectable 分级处理。**
 19. **任务、文件、Chunk、Generation 状态全部持久化，支持重启续传。**
-20. **最终目标是在不牺牲在线检索 SLA 的前提下，支持千万/亿级实例 Evidence 稳定导入。**
+20. **最终目标是在不牺牲在线检索 SLA 的前提下，支持千万/亿级实例 Evidence 稳定导入，并确保命中的实例值/实例同义词可携带 Property + ObjectType Context 直接作为最终检索结果。**
 
 ---
 
 # 116. 更新后的索引构建职责一句话总结
 
-> **DataSync 负责把“底层真实实例数据”加工成带本体 Property 映射的批量 Import Package，并通过 File/MinIO 交付给 OAG；OAG 作为唯一索引引擎，以异步、可断点、可重试、可版本发布的 Bulk Import Pipeline 统一完成 Evidence 构造、Embedding、GaussVector 与 OpenSearch 双写和索引发布，从而把大规模数据同步链路与在线本体检索能力稳定解耦。**
+> **DataSync 负责把“底层真实实例数据”加工成带本体 Property 映射的批量 Import Package，并通过 File/MinIO 交付给 OAG；OAG 作为唯一索引引擎，以异步、可断点、可重试、可版本发布的 Bulk Import Pipeline 统一完成 Evidence 构造、Embedding、GaussVector 与 OpenSearch 双写和索引发布，并在检索时将命中的 INSTANCE_VALUE / INSTANCE_ALIAS 本身连同 Property + ObjectType Context 返回，从而把大规模数据同步链路与在线本体检索能力稳定解耦。**
