@@ -1,0 +1,775 @@
+diff --git "a/docs/OAG\346\234\254\344\275\223\351\224\232\347\202\271\350\257\255\344\271\211\346\243\200\347\264\242\344\270\216\345\220\221\351\207\217\347\264\242\345\274\225\350\256\276\350\256\241\346\226\271\346\241\210.md" "b/docs/OAG\346\234\254\344\275\223\351\224\232\347\202\271\350\257\255\344\271\211\346\243\200\347\264\242\344\270\216\345\220\221\351\207\217\347\264\242\345\274\225\350\256\276\350\256\241\346\226\271\346\241\210.md"
+index 8c553c2d3fbb0912519ea9ca69b3917214f3efe7..2c3d315890210c5fb3731f1762a6716697ad608f 100644
+--- "a/docs/OAG\346\234\254\344\275\223\351\224\232\347\202\271\350\257\255\344\271\211\346\243\200\347\264\242\344\270\216\345\220\221\351\207\217\347\264\242\345\274\225\350\256\276\350\256\241\346\226\271\346\241\210.md"
++++ "b/docs/OAG\346\234\254\344\275\223\351\224\232\347\202\271\350\257\255\344\271\211\346\243\200\347\264\242\344\270\216\345\220\221\351\207\217\347\264\242\345\274\225\350\256\276\350\256\241\346\226\271\346\241\210.md"
+@@ -1,8 +1,8 @@
+ # OAG 面向本体种子节点的语义检索、混合排序与本体子图构建设计方案
+ 
+-> 版本：V5.5  
+-> 目标：在不丢失既有索引、Bulk Import、混合召回、RRF、LLM 精排和子图算法设计的基础上，统一术语、收敛字段、重排章节，并保持与 OAG 现有种子节点表结构兼容；同时正式保留结构化多语言能力，支持中文、英文、西语及其他小语种。  
+-> 核心决策：**ObjectType/Property = 种子节点；Alias/Enum/Instance = 语义元素；所有记录自身主键统一为 `id`；每个 Semantic Unit 默认 6 路一次 Weighted RRF；保留结构化多语言能力，支持中文、英文、西语及其他小语种。**
++> 版本：V5.6  
++> 目标：在不丢失既有 Bulk Import、混合召回、RRF、LLM 精排和子图算法设计的基础上，进一步对齐现有 OMS 本体 JSON 资产：统一三张索引表命名，种子节点和枚举值直接内嵌 `synonyms`，固定支持中文/英文并额外支持最多 2 种语言，实例索引只保存真实列值。  
++> 核心决策：**ObjectType/Property = 种子节点；Synonym 是种子节点或枚举值的结构化字段而非独立物理行；Metadata Evidence 只承载 Enum Value；Instance Evidence 只承载真实 Instance Value；所有记录主键统一为 `id`；每个 Semantic Unit 默认 6 路一次 Weighted RRF。**
+ 
+ ---
+ 
+@@ -25,55 +25,72 @@
+ 
+ ## 1.1 设计目标与边界
+ 
+-OAG 同时承担三类能力：索引构建、语义检索和本体子图构建。为了减少概念数量，本方案统一使用以下三个业务概念：
++OAG 同时承担索引构建、语义检索和本体子图构建三类能力。V5.6 进一步收敛检索数据模型，只保留三个业务层次：
+ 
+ ```text
+ 种子节点（Seed Node）
+   = ObjectType / Property
+ 
+-语义元素（Semantic Element）
+-  = ObjectType/Property 同义词、Enum Value/Alias、Instance Value/Alias
++元数据元素（Metadata Element）
++  = Enum Value
+ 
+-检索结果（Retrieval Result）
+-  = 命中的种子节点或语义元素本身 + ObjectType / Property 上下文
++实例元素（Instance Element）
++  = 真实 Instance Value
+ ```
+ 
+-需要明确：
++同义词统一使用 **Synonym** 概念，并且不再建成独立 `OBJECT_ALIAS / PROPERTY_ALIAS / ENUM_ALIAS / INSTANCE_ALIAS` 物理记录：
+ 
+ ```text
+-最终检索结果
++ObjectType / Property Synonym
++  → 存在种子节点记录的 synonyms 字段
++
++Enum Value Synonym
++  → 存在 Enum Value 记录的 synonyms 字段
++
++Instance Value
++  → 不定义 INSTANCE_ALIAS，只索引真实 value
++```
++
++因此需要区分：
++
++```text
++最终检索命中（Matched Value）
+         ≠
+-图算法输入
++物理索引记录身份（Record ID）
++        ≠
++图算法输入（Seed Node）
+ ```
+ 
+-最终检索目标包括：
++最终检索可以命中：
+ 
+ ```text
+-ObjectType
+-Property
+-ObjectType Alias
+-Property Alias
+-Enum Value
+-Enum Alias
+-Instance Value
+-Instance Alias
++ObjectType / Property 的 name、display、description、synonyms
++Enum Value 的 value、name、display、description、synonyms
++Instance Value 的 value
+ ```
+ 
+-其中 ObjectType / Property 本身就是种子节点；Alias / Enum / Instance 属于语义元素。语义元素命中后不能只返回其所属 Property，而必须保留语义元素本身。
++如果命中的是 synonyms 中的某个词，OAG 必须保留：
++
++```text
++matched_field
++matched_value
++```
++
++但返回记录的 `id` 仍然是该 ObjectType / Property / Enum Value 自身的 `id`，不再为每个同义词制造新的业务 ID。
+ 
+ 例如：
+ 
+ ```text
+-用户：正式用户
++用户：色泽
+    ↓
+-命中：ENUM_ALIAS = FORMAL
+-canonical_value = 1
++命中：Color 相关 synonyms.zh = 色泽
+    ↓
+-所属 Property：Subscriber.subClass
+-所属 ObjectType：Subscriber
++record.id = 对应 ObjectType / Property / Enum Value id
++matched_field = synonyms.zh
++matched_value = 色泽
+ ```
+ 
+-最终返回 `FORMAL` 本身，同时携带 `Subscriber.subClass + Subscriber`。随后子图构建阶段只提取 ObjectType / Property 作为种子节点。
++对于 Enum Value，还必须同时保留真实业务 `value`；对于 Property/Enum/Instance 场景，还要补齐 Property + ObjectType 上下文，供后续子图构建和 Cypher 生成使用。
+ 
+ 本方案只排除以下内容作为业务检索结果：
+ 
+@@ -83,7 +100,7 @@ OpenSearch 内部 _id
+ ANN distance / BM25 _score / RRF score 本身
+ ```
+ 
+-这些只属于检索实现和排序信息。
++这些只属于检索实现和排序证据。
+ 
+ 
+ ## 1.2 端到端总体架构
+@@ -177,7 +194,7 @@ includeFunctions = 0
+ includeActions = 0
+ ```
+ 
+-V5.5 不要求一次性替换现有链路，而是在现有类和接口上渐进演进：
++V5.6 不要求一次性替换现有链路，而是在现有类和接口上渐进演进：
+ 
+ ```text
+ 现有 getSeedIds()
+@@ -191,10 +208,9 @@ Weighted RRF 种子节点分组
+ LLM Fine Ranker
+     ↓
+ Final Semantic Matches
+-    ├─ ObjectType / Property
+-    ├─ Alias
+-    ├─ Enum Value / Alias
+-    └─ Instance Value / Alias
++    ├─ ObjectType / Property（name/display/description/synonyms 命中）
++    ├─ Enum Value（value/name/display/description/synonyms 命中）
++    └─ Instance Value（value 命中）
+     ↓
+ SeedNodeProjector
+     ↓
+@@ -220,191 +236,144 @@ minimal / khop / component
+ 
+ ## 1.4 核心设计原则
+ 
+-### 设计原则 1：种子节点是图构建语义，不是所有检索结果的唯一身份
++### 设计原则 1：三张表分别表达三类稳定实体
+ 
+-ObjectType / Property 统一称为**种子节点**。Alias / Enum / Instance 统一称为**语义元素**。
++```text
++t_ontoretrieval_{ontology_id}
++  → ObjectType / Property
+ 
+-所有物理表的 `id` 都表示“当前记录自身的 ID”：
++t_metadata_evidence_{ontology_id}
++  → Enum Value
+ 
+-```text
+-种子节点表：id = ObjectType / Property 的本体 ID
+-元数据表：id = Alias / Enum 元素自身 ID
+-实例表：id = Instance Value / Alias 元素自身 ID
++t_instance_evidence_{ontology_id}
++  → Instance Value
+ ```
+ 
+-语义元素通过：
++Synonym 只是所属实体的一个可检索字段，不再单独占一行。
++
++### 设计原则 2：所有业务记录统一使用 `id`
+ 
+ ```text
+-parent_id
++种子节点：id = ObjectType / Property 本体 ID
++枚举值：id = values[].id
++实例值：id = DataSync 稳定 ID；没有时由 OAG 稳定生成
+ ```
+ 
+-指向所属种子节点。
++枚举值和实例值通过 `parent_id` 关联 Property 种子节点；ObjectType 上下文由本体拓扑补齐。
+ 
+-### 设计原则 2：Matched Item 必须保留
++### 设计原则 3：Matched Value 必须保留
+ 
+-语义元素命中后：
++无论命中：
+ 
+ ```text
+-不能：语义元素 → Property → 丢弃语义元素
++name
++display
++description
++synonyms
++value
+ ```
+ 
+-必须返回：
++都必须在 SearchHit / RetrievalResult 中保留 `matched_field + matched_value`。特别是 synonym 命中不能只剩所属种子节点或枚举值。
+ 
+-```text
+-语义元素自身 id/type/name/canonical_value
+-+
+-所属 Property / ObjectType 上下文
+-```
++### 设计原则 4：RRF 按种子节点分组，组内保留具体命中
+ 
+-### 设计原则 3：RRF 按种子节点分组，组内保留具体元素
+-
+-RRF 的公平性单位是种子节点：
++RRF 公平性单位仍然是种子节点：
+ 
+ ```text
+-种子节点命中：分组 ID = hit.id
+-语义元素命中：分组 ID = hit.parent_id
++种子节点 hit：group_id = hit.id
++Enum Value / Instance Value hit：group_id = hit.parent_id
+ ```
+ 
+-这样同一个 Property 即使拥有大量 Alias / Enum / Instance，也不会因为元素数量多而被重复加分。
++这样一个 Property 即使有大量枚举值、实例值或同义词，也不会因为记录/字段数量多而重复加分。
+ 
+-### 设计原则 4：Core Graph 与语义元素分离
++### 设计原则 5：Core Graph 与检索字段分离
+ 
+ ```text
+ 图算法：ObjectType / Property / Relation
+-语义扩展：Alias / Enum / Instance
++检索字段：name / display / description / synonyms / enum value / instance value
+ ```
+ 
+-语义元素可以是最终检索结果，但不直接作为最短路径、K-hop、Connected Component 的拓扑节点。
++Enum/Instance 和 synonym 都可以帮助形成最终语义结果，但不直接成为最短路径、K-hop、Connected Component 的拓扑节点。
+ 
+-### 设计原则 5：召回保 Recall，RRF 保公平，LLM 保 Precision，Graph 保最小充分
++### 设计原则 6：召回保 Recall，RRF 保公平，LLM 保 Precision，Graph 保最小充分
+ 
+ ```text
+ 多路召回：宁可多召回
+ RRF：稳定融合不同引擎排序
+-LLM：结合原始问题和上下文做语义裁决
++LLM：结合原始问题、matched_value 和上下文做语义裁决
+ Graph：只返回支持推理/Cypher 的必要拓扑
+ ```
+ 
+-
+ # 2. 数据模型与索引结构
+ 
+ 
+-## 2.1 种子节点与语义元素模型
+-
+-### 种子节点
++## 2.1 数据模型：种子节点、枚举值、实例值与 Synonym
+ 
+-当前种子节点只包括：
+-
+-```text
+-type = 0：ObjectType
+-type = 1：Property
+-```
+-
+-Relation / Function / Action / Metric 仍保留为未来可扩展类型，但**当前不进入种子节点主表的 0/1 类型定义**；Function/Action 继续按后文扩展能力返回。
+-
+-种子节点物理记录统一使用现有 OAG 字段：
+-
+-```text
+-vector
+-type
+-id
+-name
+-display_zh
+-display_en
+-description_zh
+-description_en
+-```
+-
+-其中：
+-
+-```text
+-id = 本体元素全局唯一 ID
+-```
+-
+-不再引入另一套种子节点/语义元素主键概念，统一使用 `id`。
+-
+-### 语义元素
+-
+-语义元素包括：
+-
+-| 类型 | 含义 | parent_id 指向 |
+-|---|---|---|
+-| `OBJECT_ALIAS` | ObjectType 同义词 | ObjectType 种子节点 |
+-| `PROPERTY_ALIAS` | Property 同义词 | Property 种子节点 |
+-| `ENUM_VALUE` | 枚举真实值 | Property 种子节点 |
+-| `ENUM_ALIAS` | 枚举值同义词 | Property 种子节点 |
+-| `INSTANCE_VALUE` | 实例列值 | Property 种子节点 |
+-| `INSTANCE_ALIAS` | 实例值同义词 | Property 种子节点 |
++V5.6 的物理索引模型只保留三类记录：
+ 
+-语义元素不再使用旧的多组 ID/Type 映射字段。字段统一简化为：
+-
+-```text
+-id          当前语义元素自身 ID
+-type        当前语义元素类型
+-parent_id   所属种子节点 ID
+-name        当前可检索字符串
+-canonical_value 真实业务值，可空
+-language    当前文本语言，可空；推荐 BCP 47 / mixed / und
+-```
+-
+-### 统一检索结果
++| 类型 | 物理实体 | Synonym 处理 | parent_id |
++|---|---|---|---|
++| 种子节点 | ObjectType / Property | 内嵌 `synonyms` | 不需要；Property→ObjectType 走拓扑 |
++| 元数据元素 | Enum Value | 内嵌 `synonyms` | 指向 Property.id |
++| 实例元素 | Instance Value | **不支持 INSTANCE_ALIAS** | 指向 Property.id |
+ 
+-OAG 对上层统一返回：
++同义词统一来源于 `synonym-type` 资产，结构固定使用：
+ 
+ ```json
+ {
+-  "id": "enum-alias-id",
+-  "type": "ENUM_ALIAS",
+-  "name": "FORMAL",
+-  "canonical_value": "1",
+-  "language": "es",
+-  "objectType": {
+-    "id": "subscriber-object-id",
+-    "name": "Subscriber"
++  "id": "term-color-synonyms",
++  "name": "color-synonyms",
++  "display": {
++    "zh": "颜色近义词",
++    "en": "Color Synonyms"
+   },
+-  "property": {
+-    "id": "subClass-property-id",
+-    "name": "subClass"
++  "description": {
++    "zh": "颜色相关术语的近义词定义",
++    "en": "Synonyms for color-related terms"
+   },
+-  "source": "METADATA",
+-  "rrf_score": 0.071,
+-  "rerank_score": 0.97
++  "synonyms": {
++    "zh": ["颜色", "色彩", "色泽", "色"],
++    "en": ["Color", "Colour", "Hue", "Tint"]
++  },
++  "status": "ACTIVE"
+ }
+ ```
+ 
+-ObjectType / Object Alias 场景 `property` 可为空；其余 Property/Enum/Instance 场景必须补齐 Property + ObjectType。
+-
+-`type` 的使用约定：
++约束：
+ 
+ ```text
+-物理表：使用 INT 枚举，保证现有表结构和存储效率
+-OAG API：适配为 OBJECT_TYPE / PROPERTY / ENUM_ALIAS 等字符串，提升可读性
++synonyms 最多包含 3 种语言
++3 种语言不固定
++每种语言下面可以有多个同义词
++语言使用 BCP 47 风格，如 zh/en/es/es-MX/pt-BR
+ ```
+ 
+-因此不再增加多套平行的类型字段；物理表只保留一个 `type`。
++对象、属性或枚举值通过 `refSynonymTypeId`（或 OMS 中等价的现有引用关系）关联 SynonymType。OAG 建索引时解析引用，并把最终同义词内容写入索引记录的 `synonyms` 字段。
+ 
++SynonymType 自身不建立独立向量记录；其 `name / description / synonyms` 作为所属业务实体向量化内容的一部分。
+ 
+-## 2.2 三类物理索引划分
+ 
+-逻辑上只保留三类数据：
++## 2.2 三类物理索引与统一命名
+ 
+-```text
+-种子节点
+-元数据语义元素
+-实例语义元素
+-```
++三张 GaussVector 表和对应 OpenSearch Index 统一命名：
+ 
+-物理上继续三表/三索引隔离：
++| 逻辑类型 | 物理表 / Index | Owner | 数据 |
++|---|---|---|---|
++| 种子节点 | `t_ontoretrieval_{ontology_id}` | OAG | ObjectType / Property |
++| 元数据元素 | `t_metadata_evidence_{ontology_id}` | OAG | Enum Value + Synonyms |
++| 实例元素 | `t_instance_evidence_{ontology_id}` | OAG，DataSync 提供数据 | Instance Value |
++
++旧名称：
+ 
+-| 逻辑类型 | 推荐物理表/Index | Owner | 数据 | 典型规模 |
+-|---|---|---|---|---|
+-| 种子节点 | `{ontology_id}_anchor`（现有物理名可继续兼容） | OAG | ObjectType / Property | 万～百万 |
+-| 元数据语义元素 | `{ontology_id}_metadata_evidence`（现有物理名可继续兼容） | OAG | Alias / Enum | 万～百万 |
+-| 实例语义元素 | `{ontology_id}_instance_evidence`（现有物理名可继续兼容） | OAG，DataSync 提供数据 | Instance Value / Alias | 百万～千万/亿 |
++```text
++{ontology_id}_anchor
++{ontology_id}_metadata_evidence
++{ontology_id}_instance_evidence
++```
+ 
+-> 文档语义统一使用“种子节点/元数据语义元素/实例语义元素”；现有物理表名为了兼容代码和存量索引可以暂不修改。
++仅作为历史迁移来源，不再作为目标设计名称。
+ 
+-三类数据保持物理隔离的原因：
++三类数据继续物理隔离，原因不变：
+ 
+ ```text
+ 规模差异
+@@ -415,33 +384,51 @@ ANN 算法差异
+ ```
+ 
+ 
+-## 2.3 GaussVector 种子节点表结构
++## 2.3 `t_ontoretrieval_{ontology_id}` GaussVector 表结构
+ 
+-推荐沿用现有 OAG 种子节点表结构，不扩展无必要字段：
+-
+-```text
+-{ontology_id}_anchor
+-```
++种子节点表增加两个额外语言槽位，并增加 `synonyms`。中文和英文仍保留固定列，另外最多支持 2 种语言：
+ 
+ | 字段 | 类型 | 非空 | 说明 |
+ |---|---|---|---|
+ | `vector` | `DOUBLE[]` | ✔ | 1024 维向量 |
+ | `type` | `INT` | ✔ | 0 ObjectType，1 Property |
+-| `id` | `VARCHAR(256 CHAR)` | ✔ | 本体元素全局唯一 ID |
++| `id` | `VARCHAR(256 CHAR)` | ✔ | ObjectType / Property 全局唯一 ID |
+ | `name` | `VARCHAR(256 CHAR)` | ✔ | 本体真实名称 |
+ | `display_zh` | `VARCHAR(512 CHAR)` |  | 中文显示名 |
+ | `display_en` | `VARCHAR(512 CHAR)` |  | 英文显示名 |
++| `display_lang_1` | `VARCHAR(512 CHAR)` |  | 第 1 个额外语言显示名 |
++| `display_lang_2` | `VARCHAR(512 CHAR)` |  | 第 2 个额外语言显示名 |
+ | `description_zh` | `VARCHAR(1024 CHAR)` |  | 中文描述 |
+ | `description_en` | `VARCHAR(1024 CHAR)` |  | 英文描述 |
++| `description_lang_1` | `VARCHAR(1024 CHAR)` |  | 第 1 个额外语言描述 |
++| `description_lang_2` | `VARCHAR(1024 CHAR)` |  | 第 2 个额外语言描述 |
++| `synonyms` | `TEXT` |  | JSON 序列化的多语言同义词 Map，最多 3 种语言 |
++
++`lang_1/lang_2` 的具体语言不在每行重复存储，而由 ontology/index 级配置绑定，例如：
++
++```yaml
++additionalLanguages:
++  lang_1: es
++  lang_2: pt-BR
++```
++
++因此同一 ontology 内所有记录的 `display_lang_1/description_lang_1` 都表示同一语言。
+ 
+-示例：
++`synonyms` 示例：
+ 
+-| vector | type | id | name | display_zh | display_en | description_zh | description_en |
+-|---|---|---|---|---|---|---|---|
+-| `[0.123, -0.456, ...]` | 0 | `dtmi:com:huawei:ict:Cell:1.0` | `Cell` | 无线小区 | Cell | 通信网络中的小区实体 | Cell in communication network |
+-| `[0.789, 0.234, ...]` | 1 | `dtmi:com:huawei:ict:throughput:1.0` | `throughput` | 吞吐量 | Throughput | 小区吞吐量指标 | Cell throughput metric |
++```json
++{
++  "zh": ["小区", "无线小区"],
++  "en": ["Cell", "Radio Cell"],
++  "es": ["Celda", "Celda de radio"]
++}
++```
+ 
+-明确去除以下种子节点表字段：
++注意：额外 display/description 最多 2 种语言；`synonyms` 最多 3 种语言，且语言组合不固定，两者是两个独立约束。
++
++Property → ObjectType 映射继续由 `has_property` 与 `GraphTopologyCache` 提供，不在本表增加 `parent_id`。
++
++明确不保留：
+ 
+ ```text
+ normalized_name
+@@ -450,467 +437,437 @@ model_version
+ source_version
+ updated_at
+ parent_id
+-aliases
+ i18n_content
+ content
+ ```
+ 
+-Property → ObjectType 映射由本体 `has_property` 关系和 `GraphTopologyCache` 提供，不在种子节点向量表重复存储。
+ 
++## 2.4 种子节点向量化内容
+ 
+-## 2.4 种子节点 Vector 内容
+-
+-种子节点向量只表达种子节点自身语义，Embedding 输入在 OAG 内存中临时组装，不要求持久化 `content` 字段：
++OAG 在内存中解析 ObjectType / Property 及其 SynonymType，按以下顺序构建 Embedding 文本：
+ 
+ ```text
+ {name}
+ {display_zh}
+ {display_en}
++{display_lang_1}
++{display_lang_2}
+ {description_zh}
+ {description_en}
++{description_lang_1}
++{description_lang_2}
++{synonyms_value}
++{synonyms_description}
+ ```
+ 
+-当前 BGE-M3 向量维度继续沿用：
++其中：
+ 
+ ```text
+-1024
++synonyms_value
++  = synonyms 中最多 3 种语言的所有同义词按稳定顺序展开
++
++synonyms_description
++  = 被引用 SynonymType 的 name + description（按存在语言展开）
+ ```
+ 
+-同义词已经作为独立的元数据语义元素建索引，因此不再把全部 Alias 拼进种子节点向量，避免同一个检索目标在两类索引中重复表达。
++因此 SynonymType 的：
+ 
+-Embedding 批大小、重试次数属于 OAG 工程配置，不进入物理表 Schema。
++```text
++name
++description
++synonyms
++```
+ 
++全部参与向量化，但不额外建立 Synonym 向量记录。
+ 
+-## 2.5 多语言向量设计
++空字段直接跳过，不写占位字符串。不要把 ObjectType 名称额外强制拼到 Property 向量开头；Property 自身语义、display、description、synonyms 已足够作为主表达。
+ 
+-多语言能力必须保留，除中文、英文外，需要原生支持西语以及后续其他小语种。这里需要区分：
++当前 BGE-M3 向量维度继续沿用 1024。Embedding 批大小和重试次数属于 OAG 工程配置，不进入表 Schema。
+ 
+-```text
+-GaussVector 核心种子节点表结构兼容
+-        ≠
+-只支持中英文语义
+-```
+ 
+-### 2.5.1 核心 8 字段保持不变
++## 2.5 多语言槽位与 Synonym 语言规则
+ 
+-种子节点 GaussVector 主表仍严格保持现有 8 字段：
++### 2.5.1 Display / Description 最多 4 种语言
+ 
+ ```text
+-vector
+-type
+-id
+-name
+-display_zh
+-display_en
+-description_zh
+-description_en
++固定语言：zh + en
++额外语言：lang_1 + lang_2
++总计最多 4 种
+ ```
+ 
+-其中 `display_zh/display_en/description_zh/description_en` 是现有兼容字段和常用语言快速字段，**不代表 OAG 只支持 zh/en**。
++例如：
++
++```yaml
++additionalLanguages:
++  lang_1: es
++  lang_2: pt-BR
++```
+ 
+-为了保持现有表结构兼容，不为每一种语言增加：
++则：
+ 
+ ```text
+-display_es
+-display_pt
+-description_es
+-description_pt
+-...
++display_lang_1 = 西语 display
++description_lang_1 = 西语 description
++display_lang_2 = 葡萄牙语 display
++description_lang_2 = 葡萄牙语 description
+ ```
+ 
+-也不恢复一个不可结构化检索的 `i18n_content` 大字段到 GaussVector 主表。
++没有配置某个额外语言时，对应列为空。
+ 
+-### 2.5.2 多语言源数据使用结构化 i18n
++### 2.5.2 Synonyms 最多 3 种语言且不固定
+ 
+-OMS / 本体元数据需要保留结构化多语言信息，例如：
++`synonyms` 使用语言 Map，不绑定固定 zh/en：
+ 
+ ```json
+ {
+-  "id": "dtmi:com:huawei:ict:Cell:1.0",
+-  "name": "Cell",
+-  "i18n": {
+-    "zh": {
+-      "display": "无线小区",
+-      "description": "通信网络中的小区实体"
+-    },
+-    "en": {
+-      "display": "Cell",
+-      "description": "Cell in communication network"
+-    },
+-    "es": {
+-      "display": "Celda inalámbrica",
+-      "description": "Entidad de celda en una red de comunicaciones"
+-    },
+-    "pt-BR": {
+-      "display": "Célula sem fio",
+-      "description": "Entidade de célula em uma rede de comunicações"
+-    }
+-  }
++  "en": ["Color", "Colour"],
++  "es": ["Color", "Tono"],
++  "pt-BR": ["Cor", "Tonalidade"]
+ }
+ ```
+ 
+-语言标识推荐使用 BCP 47 风格：
++最多 3 个 language key。这样可以支持：
+ 
+ ```text
+-zh
+-en
+-es
+-es-MX
+-pt-BR
+-fr
+-de
+-ar
+-id
++zh + en + es
++en + es + pt-BR
++zh + ar + fr
+ ...
+ ```
+ 
+-同时保留：
++### 2.5.3 Dense 与 Lexical 的语言处理
+ 
+-```text
+-mixed
+-und
+-```
++Dense 使用完整拼接文本生成一个多语言 Vector，不按语言复制多条记录。
+ 
+-表示混合语言和无法可靠识别的语言。
++OpenSearch 根据 ontology 级 `lang_1/lang_2` 配置为对应 display/description 字段选择 Analyzer；`synonyms` 则按其语言 key 选择对应 Analyzer 或通用 Analyzer。
+ 
+-### 2.5.3 一个种子节点默认只生成一个多语言 Vector
++查询 `language_hint` 用于 Analyzer、Boost、展示和观测，不作为 Dense 硬过滤条件。
+ 
+-OAG 的 `EmbeddingInputBuilder` 在构建种子节点向量时，从 OMS 多语言元数据中读取所有可用语言：
++### 2.5.4 Shadow Vector
+ 
+-```text
+-{name}
+-[zh] {display_zh} {description_zh}
+-[en] {display_en} {description_en}
+-[es] {display_es} {description_es}
+-[pt-BR] {display_pt_br} {description_pt_br}
+-...
+-```
+-
+-最终仍只写入一条：
++若某个额外语言真实 Recall 明显不足，可以实验性增加语言 Shadow Vector，但必须：
+ 
+ ```text
+-id = 同一个 ObjectType / Property id
+-vector = 一个多语言语义向量
++最终按同一个业务 id 去重
++不让语言副本重复进入 RRF
++不改变 API 主记录结构
+ ```
+ 
+-默认不按语言复制多条种子节点记录，避免：
++Shadow Vector 不是默认方案。
+ 
+-```text
+-同一 id 的 zh/en/es 多个副本同时占用 TopK
+-RRF 前重复去重
+-向量数量按语言数膨胀
+-```
+-
+-这与 BGE-M3 当前多语言向量能力的使用方式保持一致。
+-
+-### 2.5.4 多语言信息的存储边界
+-
+-推荐职责：
+-
+-```text
+-GaussVector 种子节点主表
+-  → 继续保持 8 字段，只保存最终 vector 和 zh/en 兼容字段
+-
+-OMS / OAG Metadata Cache
+-  → 保存完整结构化 i18n 元数据
++
++## 2.6 Property Vector 是否带 ObjectType
+ 
+-OpenSearch
+-  → 保存可全文检索的结构化 i18n 字段
++Property Dense 向量默认不增加 ObjectType 名称前缀。原因：
+ 
+-RerankContextBuilder / ResponseAssembler
+-  → 按请求语言补充对应 display / description
+-```
++1. 用户经常只表达属性概念；
++2. ObjectType 前缀可能改变语义重心；
++3. 同名 Property 的消歧由原始问题、其他 Semantic Units、LLM 精排和图关系完成；
++4. Property → ObjectType 由拓扑缓存确定，不依赖向量文本恢复。
+ 
+-因此“不把 i18n_content 放入 GaussVector 主表”与“保留多语言能力”并不冲突。
++如果评测显示同名 Property 冲突严重，可以启用内部 Shadow Vector，但最终仍回到同一 Property `id`。
+ 
+-### 2.5.5 Shadow Vector 仅作为评测后的增强
+ 
+-若真实评测发现某个小语种在单个全局多语言 Vector 中 Recall 明显不足，可以增加语言 Shadow Vector，例如：
++## 2.7 `t_ontoretrieval_{ontology_id}` OpenSearch Index
+ 
+-```text
+-global vector
+-es shadow vector
+-ar shadow vector
+-```
+-
+-但必须满足：
++OpenSearch 与 GaussVector 共享同一业务字段语义：
+ 
+ ```text
+-Shadow Vector 只是内部索引副本
+-最终仍按同一个业务 id 去重
+-不改变种子节点业务返回结构
+-不让同一 id 的多个语言副本重复进入 RRF 排名
++type
++id
++name
++display_zh
++display_en
++display_lang_1
++display_lang_2
++description_zh
++description_en
++description_lang_1
++description_lang_2
++synonyms
+ ```
+ 
+-Shadow Vector 不是默认方案，必须通过分语言 Recall 评测证明有收益后再启用。
++推荐映射：
+ 
+-## 2.6 Property Vector 是否带 ObjectType
++| 字段 | OpenSearch 类型 | 说明 |
++|---|---|---|
++| `type` | `integer` | 0 ObjectType / 1 Property |
++| `id` | `keyword` | 本体 ID |
++| `name` | `keyword` + `text` | Exact / BM25 |
++| `display_*` | `keyword` + `text` | 多语言显示名 |
++| `description_*` | `text` | 多语言描述 |
++| `synonyms` | `object` | language → synonym string array，最多 3 种语言 |
+ 
+-Property Dense 向量默认不增加 ObjectType 名称前缀：
++对 `synonyms.*` 使用 dynamic template 或索引构建时确定的语言映射，使数组内容既可 Exact 也可 BM25。
+ 
+-```text
+-推荐：
