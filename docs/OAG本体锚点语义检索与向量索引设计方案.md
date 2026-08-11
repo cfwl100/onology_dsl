@@ -1,6 +1,6 @@
 # OAG 面向本体锚点的语义检索、混合排序与本体子图构建设计方案
 
-> 版本：V5.0  
+> 版本：V5.2  
 > 目标：在保留既有 OAG 索引设计、Anchor/Evidence 模型、DataSync 分工、混合召回、RRF、LLM 精排和三类子图策略的基础上，结合当前代码真实实现，形成一份可直接指导研发落地、灰度演进、性能评测和下游 Cypher 生成的完整方案。  
 > 设计原则：**Anchor First，Evidence for Anchor，Evidence for Cypher，Core Graph 与 Semantic Extension 分离，兼容现状、渐进增强。**
 
@@ -3460,3 +3460,1453 @@ Property 一定要把 ObjectType 放在向量开头
 # 86. 一句话总结
 
 > **OAG 最终应成为一个“Ontology Anchor Resolver + Subgraph Constructor”：先利用 Anchor、Alias、Enum、Instance 等多源语义证据，通过 Exact/BM25/Dense 多路召回、Anchor 归一化、Weighted RRF 和 LLM 精排得到准确 ObjectType / Property，再基于真实本体拓扑按 minimal/khop/component 构建核心子图，并将 Alias、Enum、Instance、Function、Action 作为独立扩展挂载；同时对当前 pairwise shortest path、FIND ALL PATH、hop=10 component 现状保持兼容，通过 Metric Closure MST、Multi-Source BFS、DSU Connected Component 渐进增强，从而为 Cypher 生成提供最小、准确、完整、可解释且可执行的本体上下文。**
+
+---
+
+# 87. OAG 实例数据 Bulk Import 总体设计
+
+> 本节是对第 6、7、16、71 节中“DataSync 直接构建/写入 Instance Evidence 索引”描述的职责边界升级。历史内容保留用于说明方案演进；**从 V5.2 起，以本节定义为准：DataSync 是实例数据生产方，OAG 是统一索引构建、向量化、OpenSearch/GaussVector 写入和检索引擎。**
+
+新的职责边界：
+
+```text
+DataSync
+  负责：数据源访问 / DISTINCT / 基础标准化 / 实例值与本体 Property 映射 / 文件生成
+  不负责：Embedding / Vector表结构 / ANN索引 / OpenSearch Mapping / 双写一致性
+
+OAG
+  负责：导入任务管理 / 映射校验 / Evidence构造 / 向量化 / OpenSearch全文索引
+       / GaussVector写入与ANN构建 / 版本发布 / 在线检索
+```
+
+核心原则：
+
+> **DataSync 交付“业务数据 + 本体映射”，OAG 负责把它转换为可检索的 Instance Evidence。**
+
+不建议大批量数据通过同步 JSON Body 直接调用 OAG 入库。大规模实例索引使用：
+
+```text
+File / Shared Storage
+或
+MinIO Object Storage
+```
+
+作为数据面，HTTP API 只承担控制面：创建任务、提交 Manifest、查询状态、重试、取消和获取错误报告。
+
+---
+
+# 88. Bulk Import 总体架构
+
+```mermaid
+flowchart LR
+    DS[DataSync] --> SRC[(业务数据源)]
+    SRC --> DS
+
+    DS --> DIST[DISTINCT / Normalize / Alias整理]
+    DIST --> PKG[生成 Import Package<br/>Manifest + Data Files]
+
+    PKG -->|方式1| FS[(共享文件/临时文件区)]
+    PKG -->|方式2 推荐| MINIO[(MinIO)]
+
+    DS --> API[OAG Import API<br/>创建异步任务]
+    FS --> IMP[OAG BulkImportService]
+    MINIO --> IMP
+    API --> IMP
+
+    IMP --> VAL[Manifest / Mapping / Checksum校验]
+    VAL --> PARSE[File Reader / Chunker]
+    PARSE --> NORM[Evidence Normalize / Dedup]
+    NORM --> EMB[Embedding Worker]
+
+    EMB --> VW[GaussVector Bulk Writer]
+    EMB --> OW[OpenSearch Bulk Writer]
+
+    VW --> VIDX[ANN Index Build / Verify]
+    OW --> OIDX[Full-text Index Verify]
+
+    VIDX --> PUB[Version Publisher]
+    OIDX --> PUB
+    PUB --> CAT[OAG Index Catalog<br/>active_version]
+
+    CAT --> SEARCH[OAG Retrieval Engine]
+```
+
+设计上严格分为：
+
+```text
+控制面：REST API + Import Job Metadata
+数据面：File / MinIO + Streaming Reader
+计算面：Normalize + Embedding + Bulk Writer
+存储面：GaussVector + OpenSearch
+发布面：Version/Generation Switch
+```
+
+---
+
+# 89. 为什么采用 File / MinIO 中转
+
+不推荐：
+
+```text
+DataSync
+  ↓
+每100/1000条同步HTTP JSON
+  ↓
+OAG实时Embedding并写库
+```
+
+原因：
+
+1. 大量 HTTP 请求放大序列化、网络和连接开销；
+2. DataSync 与 OAG 强耦合，OAG短时限流会反压数据同步链路；
+3. Embedding、GaussVector、OpenSearch 任一阶段抖动都会导致同步调用超时；
+4. 难以做到断点续传和批次级重试；
+5. 重试容易造成重复数据；
+6. 无法方便保存原始输入用于失败复盘；
+7. 大批量全量重建时需要数十分钟甚至更长，天然不适合同步接口。
+
+推荐：
+
+```text
+DataSync 先生成不可变批量文件
+      ↓
+OAG 创建异步 Import Job
+      ↓
+OAG 自己按可承受速率消费
+```
+
+MinIO 模式优先级最高，原因是：
+
+```text
+支持大文件
+天然跨Pod/跨节点
+易于校验checksum
+易保留失败现场
+支持生命周期清理
+DataSync/OAG无需共享本地磁盘
+```
+
+共享文件模式主要作为：
+
+```text
+单机/边缘部署
+无MinIO环境
+测试环境
+兼容模式
+```
+
+---
+
+# 90. 导入模式
+
+支持两类主模式：
+
+## 90.1 FULL_REPLACE
+
+表示 DataSync 提交某个导入 Scope 的完整实例语义快照。
+
+```text
+旧 active generation
+       ↓
+创建 staging generation
+       ↓
+全量导入
+       ↓
+构建 ANN / OpenSearch Index
+       ↓
+一致性校验
+       ↓
+原子发布 active generation
+       ↓
+异步清理旧 generation
+```
+
+适合：
+
+```text
+首次建库
+Embedding模型升级后的重建
+大规模数据重新同步
+实例语义索引整体修复
+```
+
+## 90.2 INCREMENTAL
+
+每条记录携带：
+
+```text
+UPSERT
+DELETE
+```
+
+按照稳定 `evidence_ID` 幂等修改当前 active generation。
+
+适合：
+
+```text
+日常增量同步
+新增枚举式实例值
+实例 Alias 调整
+数据源删除值
+```
+
+FULL_REPLACE 推荐支持 Scope：
+
+```text
+ONTOLOGY
+OBJECT_TYPE
+PROPERTY_SET
+PROPERTY
+```
+
+大规模场景优先 Property/PropertySet 分区，可减少一次全量重建范围。
+
+---
+
+# 91. Import Package 结构
+
+一个 Import Package 由：
+
+```text
+manifest.json
++
+N 个 data file
+```
+
+组成。
+
+推荐目录：
+
+```text
+/oag-import/{ontology_id}/{data_version}/{job_request_id}/
+  manifest.json
+  property_001/part-00000.parquet
+  property_001/part-00001.parquet
+  property_002/part-00000.parquet
+  ...
+```
+
+推荐文件格式：
+
+| 格式 | 建议 | 场景 |
+|---|---|---|
+| Parquet + Snappy/ZSTD | **首选** | 千万/亿级、批量、高吞吐 |
+| NDJSON + gzip | 支持 | 兼容、调试、流式生成 |
+| CSV | 不推荐作为主格式 | Alias数组、转义、多语言复杂 |
+
+推荐一个文件只承载一个 Property Anchor 的实例 Evidence；这样：
+
+```text
+anchor_ID / parent_ID / property mapping
+```
+
+可以放在 Manifest 中，不必在每行重复，能明显减少数据体积。
+
+若业务必须混合多个 Property，可启用：
+
+```text
+mappingMode = PER_RECORD
+```
+
+由每条记录携带 Property ID，但不是默认方案。
+
+---
+
+# 92. Manifest 设计
+
+示例：
+
+```json
+{
+  "schemaVersion": "1.0",
+  "ontologyId": "dtmi.ontology.xxx.1",
+  "dataVersion": "20260811-001",
+  "requestId": "datasync-20260811-000001",
+  "importMode": "FULL_REPLACE",
+  "scope": "PROPERTY_SET",
+  "generatedAt": "2026-08-11T08:20:00+08:00",
+  "sourceSystem": "datasync",
+  "files": [
+    {
+      "uri": "minio://oag-import/dtmi.ontology.xxx.1/20260811-001/subclass/part-00000.parquet",
+      "format": "PARQUET",
+      "compression": "SNAPPY",
+      "sizeBytes": 268435456,
+      "rowCount": 1200000,
+      "sha256": "...",
+      "mapping": {
+        "objectTypeId": "subscriber-object-id",
+        "objectTypeName": "Subscriber",
+        "propertyId": "subClass-property-id",
+        "propertyName": "subClass",
+        "isSemantic": true,
+        "valueColumn": "value",
+        "evidenceTypeColumn": "evidence_type",
+        "canonicalValueColumn": "canonical_value",
+        "aliasesColumn": "aliases",
+        "sourceKeyColumn": "source_key",
+        "operationColumn": "op"
+      }
+    }
+  ]
+}
+```
+
+Manifest 是导入协议的一部分，必须做版本化：
+
+```text
+schemaVersion
+```
+
+以后增加字段时保持向后兼容。
+
+---
+
+# 93. Data File Record 设计
+
+Property 固定映射模式下，每行只需要业务 Evidence 数据。
+
+## INSTANCE_VALUE
+
+```json
+{
+  "source_key": "VIP",
+  "evidence_type": "INSTANCE_VALUE",
+  "value": "VIP",
+  "canonical_value": "VIP",
+  "aliases": ["高价值客户", "重要客户"],
+  "op": "UPSERT"
+}
+```
+
+## INSTANCE_ALIAS
+
+真实业务存在实例值同义词时，可以显式传入 Alias Evidence：
+
+```json
+{
+  "source_key": "VIP::高价值客户",
+  "evidence_type": "INSTANCE_ALIAS",
+  "value": "高价值客户",
+  "canonical_value": "VIP",
+  "aliases": [],
+  "op": "UPSERT"
+}
+```
+
+OAG 内部转换：
+
+```text
+Manifest.propertyId
+       +
+Record.evidence_type/value/canonical_value
+       ↓
+Evidence Builder
+       ↓
+anchor_ID / parent_ID / evidence_ID / normalized_value / content
+```
+
+DataSync **不发送**：
+
+```text
+vector
+embedding model version
+OpenSearch document
+GaussVector physical table name
+ANN index parameter
+```
+
+这些全部属于 OAG 内部实现。
+
+---
+
+# 94. evidence_ID 生成与幂等
+
+沿用 V5.0 既有规则：
+
+```text
+{anchor_ID}::{evidence_type}::{source_key}
+```
+
+若 DataSync 已提供全局稳定 ID，可直接作为 `source_key`。
+
+幂等键：
+
+```text
+ontology_id
++
+data_version / active_generation
++
+evidence_ID
+```
+
+同一个 Job/Chunk 重试：
+
+```text
+UPSERT 同 evidence_ID
+ → 覆盖/无变化
+ → 不产生重复记录
+```
+
+DELETE：
+
+```text
+按 evidence_ID 删除 GaussVector + OpenSearch
+```
+
+如果 `content_hash` 未变化：
+
+```text
+不重新调用 Embedding
+```
+
+---
+
+# 95. OAG Import API
+
+接口采用异步 Job 模型。
+
+## 95.1 创建导入任务
+
+```http
+POST /v1/ontologies/{ontologyId}/instance-evidence/import-jobs
+Content-Type: application/json
+```
+
+MinIO 请求：
+
+```json
+{
+  "requestId": "datasync-20260811-000001",
+  "dataVersion": "20260811-001",
+  "importMode": "FULL_REPLACE",
+  "transport": {
+    "type": "MINIO",
+    "manifestUri": "minio://oag-import/dtmi.ontology.xxx.1/20260811-001/manifest.json",
+    "connectionRef": "oag-shared-minio"
+  },
+  "validateOnly": false
+}
+```
+
+返回：
+
+```http
+HTTP/1.1 202 Accepted
+```
+
+```json
+{
+  "jobId": "imp-01K2...",
+  "requestId": "datasync-20260811-000001",
+  "status": "SUBMITTED",
+  "ontologyId": "dtmi.ontology.xxx.1",
+  "dataVersion": "20260811-001"
+}
+```
+
+`requestId` 必须幂等：同一个 DataSync requestId 重复提交时返回原 Job，而不是重新执行。
+
+## 95.2 查询任务
+
+```http
+GET /v1/ontologies/{ontologyId}/instance-evidence/import-jobs/{jobId}
+```
+
+返回：
+
+```json
+{
+  "jobId": "imp-01K2...",
+  "status": "RUNNING",
+  "stage": "EMBEDDING",
+  "progress": 0.63,
+  "statistics": {
+    "fileCount": 32,
+    "totalRows": 15000000,
+    "parsedRows": 10000000,
+    "deduplicatedRows": 9500000,
+    "embeddedRows": 9000000,
+    "vectorWrittenRows": 8700000,
+    "openSearchWrittenRows": 8700000,
+    "failedRows": 12
+  },
+  "startedAt": "...",
+  "updatedAt": "..."
+}
+```
+
+## 95.3 重试
+
+```http
+POST /v1/ontologies/{ontologyId}/instance-evidence/import-jobs/{jobId}:retry
+```
+
+仅重跑：
+
+```text
+FAILED / RETRYABLE chunks
+```
+
+不从文件头全部重来。
+
+## 95.4 取消
+
+```http
+POST /v1/ontologies/{ontologyId}/instance-evidence/import-jobs/{jobId}:cancel
+```
+
+取消后：
+
+```text
+停止领取新 Chunk
+正在执行的 Chunk 完成或超时退出
+staging generation 不发布
+```
+
+## 95.5 错误报告
+
+```http
+GET /v1/ontologies/{ontologyId}/instance-evidence/import-jobs/{jobId}/errors
+```
+
+大错误报告建议返回：
+
+```json
+{
+  "errorReportUri": "minio://oag-import-errors/.../errors.parquet"
+}
+```
+
+避免将百万级错误行直接塞进 HTTP Response。
+
+---
+
+# 96. File 模式接口
+
+File 模式支持两种部署形态。
+
+## 96.1 Shared Path
+
+DataSync 与 OAG 能访问同一共享文件系统：
+
+```json
+{
+  "transport": {
+    "type": "FILE",
+    "manifestUri": "file:///oag-import/xxx/manifest.json"
+  }
+}
+```
+
+OAG 必须限制允许的根目录：
+
+```text
+/oag-import
+```
+
+禁止任意文件系统路径访问。
+
+## 96.2 OAG Staging Upload
+
+无共享盘但文件不太大时，可先上传 OAG staging：
+
+```http
+POST /v1/ontologies/{ontologyId}/instance-evidence/staging-files
+Content-Type: multipart/form-data
+```
+
+返回内部：
+
+```text
+staging://{uploadId}/manifest.json
+```
+
+再使用 Import Job API 创建任务。
+
+对于超大文件仍推荐 DataSync 直接上传 MinIO，避免 OAG API Pod 成为文件转发瓶颈。
+
+---
+
+# 97. MinIO 模式设计
+
+推荐生产默认模式：
+
+```text
+DataSync → MinIO → OAG
+```
+
+关键约束：
+
+1. DataSync 上传完成后才提交 Job；
+2. Manifest 和 Data File 在 Job 生命周期中视为 immutable；
+3. OAG 校验 `size + ETag/sha256`；
+4. 文件变化则拒绝继续断点任务；
+5. OAG 使用预配置 `connectionRef` 获取凭据；
+6. API 请求中禁止传长期 `accessKey/secretKey`；
+7. OAG 流式读取 Object，不要求完整下载到本地；
+8. import prefix 配置生命周期，成功后延时清理。
+
+MinIO Object Key 推荐包含：
+
+```text
+ontology_id
+data_version
+request_id
+property_id
+part_number
+```
+
+便于：
+
+```text
+问题定位
+生命周期清理
+权限隔离
+任务重跑
+```
+
+---
+
+# 98. Import Job 状态机
+
+```mermaid
+stateDiagram-v2
+    [*] --> SUBMITTED
+    SUBMITTED --> VALIDATING
+    VALIDATING --> READY
+    VALIDATING --> FAILED
+    READY --> RUNNING
+    RUNNING --> BUILDING_INDEX
+    RUNNING --> FAILED
+    BUILDING_INDEX --> VERIFYING
+    BUILDING_INDEX --> FAILED
+    VERIFYING --> PUBLISHING
+    VERIFYING --> FAILED
+    PUBLISHING --> SUCCEEDED
+    PUBLISHING --> FAILED
+    RUNNING --> CANCELLING
+    CANCELLING --> CANCELLED
+    FAILED --> RETRYING
+    RETRYING --> RUNNING
+```
+
+状态含义：
+
+| 状态 | 含义 |
+|---|---|
+| SUBMITTED | API已接收 |
+| VALIDATING | Manifest、文件、本体映射校验 |
+| READY | 可以开始消费 |
+| RUNNING | Parse/Normalize/Embedding/Bulk Write |
+| BUILDING_INDEX | 构建/刷新ANN和全文索引 |
+| VERIFYING | 双存储数量/checksum抽检 |
+| PUBLISHING | 发布新的 active generation |
+| SUCCEEDED | 成功 |
+| FAILED | 失败，可判断是否可重试 |
+| CANCELLED | 用户取消，未发布 |
+
+---
+
+# 99. OAG 内部处理流水线
+
+```text
+ImportJobService
+   ↓
+ManifestValidator
+   ↓
+OntologyMappingValidator
+   ↓
+ObjectReader(File/MinIO)
+   ↓
+ChunkPlanner
+   ↓
+RecordParser
+   ↓
+EvidenceNormalizer
+   ↓
+Deduplicator
+   ↓
+ContentBuilder
+   ↓
+EmbeddingBatcher
+   ↓
+┌──────────────────────┐
+│                      │
+GaussVectorBulkWriter  OpenSearchBulkWriter
+│                      │
+└──────────┬───────────┘
+           ↓
+ChunkCommitCoordinator
+           ↓
+IndexBuilder / Verifier
+           ↓
+GenerationPublisher
+```
+
+OAG 复用前文已有：
+
+```text
+normalized_value
+content_hash
+evidence_ID
+Value First vector content
+BGE-M3 1024 dimension
+```
+
+DataSync 不复制这些规则，避免两套实现长期漂移。
+
+---
+
+# 100. Chunk 与断点续传
+
+导入不能以整个文件作为一个事务单元。
+
+推荐：
+
+```text
+File
+  ↓
+Chunk
+  ↓
+Embedding Batch
+  ↓
+Storage Bulk Batch
+```
+
+Parquet：
+
+```text
+优先按 row group 切 Chunk
+```
+
+NDJSON：
+
+```text
+按 byte offset + record boundary 切 Chunk
+```
+
+Chunk ID 推荐：
+
+```text
+sha256(file_checksum + start_offset/row_group + end_offset)
+```
+
+每个 Chunk 持久化：
+
+```text
+chunk_id
+file_uri
+range
+input_count
+output_count
+embedding_count
+vector_write_count
+os_write_count
+retry_count
+status
+last_error
+```
+
+Worker 崩溃后：
+
+```text
+重新领取未 COMMITTED Chunk
+```
+
+已 COMMITTED Chunk 不重复执行；即使重复执行，稳定 evidence_ID 仍保证幂等。
+
+---
+
+# 101. GaussVector 与 OpenSearch 双写一致性
+
+OAG 不是使用分布式事务强行绑定两种存储，而采用：
+
+> **Chunk 级幂等 + 状态协调 + 最终一致 + 发布前校验。**
+
+流程：
+
+```text
+Chunk transformed
+  ↓
+GaussVector UPSERT
+  ↓ success
+OpenSearch BULK UPSERT
+  ↓ success
+Chunk = COMMITTED
+```
+
+如果：
+
+```text
+OpenSearch成功
+GaussVector失败
+```
+
+Chunk 状态仍为 FAILED/RETRYABLE，重试时按照 `evidence_ID` 幂等补写 GaussVector。
+
+反之同理。
+
+FULL_REPLACE 在所有 Chunk COMMITTED 前：
+
+```text
+禁止将 staging generation 暴露给在线查询
+```
+
+只有两边均通过 Verify 后才能 PUBLISH。
+
+---
+
+# 102. Full Import 的版本化发布
+
+为了避免：
+
+```text
+全量导入一半时在线查询看到新旧混合数据
+```
+
+FULL_REPLACE 必须采用 Generation 模型。
+
+逻辑：
+
+```text
+ontology_id
+  ↓
+instance_evidence_generation = g123
+```
+
+OpenSearch：
+
+```text
+建立 versioned physical index
+完成后切 Alias
+```
+
+GaussVector：
+
+如果底层没有原生 Alias，OAG 维护：
+
+```text
+IndexCatalog:
+ontology_id + logical_index
+  → active physical table/generation
+```
+
+检索永远通过 OAG 的 IndexCatalog 找 active generation，不允许调用方直接绑定物理表名。
+
+发布操作：
+
+```text
+DB metadata transaction:
+active_generation g122 → g123
+```
+
+旧 generation 延迟删除，保留短期 rollback 能力。
+
+---
+
+# 103. Incremental Import 一致性
+
+INCREMENTAL 不创建完整新 generation，而对 active generation 做幂等变更。
+
+每个 Record：
+
+```text
+UPSERT
+DELETE
+```
+
+建议 DataSync 提供单调递增：
+
+```text
+dataVersion
+```
+
+OAG 对同一 Property 记录：
+
+```text
+last_applied_data_version
+```
+
+拒绝明显过旧的批次覆盖新数据。
+
+对于乱序增量，需使用：
+
+```text
+source_update_version / event_time
+```
+
+做业务级版本判定。
+
+---
+
+# 104. 本体映射校验
+
+OAG 收到 DataSync 的 Mapping 后必须基于当前本体元数据验证：
+
+```text
+ontologyId 存在
+ObjectType ID 存在
+Property ID 存在
+Property.parent_ID == ObjectType ID
+Property.is_semantic == true
+Property未删除/未失效
+Alias/Instance Alias映射到合法canonical value
+```
+
+不允许 DataSync 传一个不存在的 `anchor_ID` 后由 OAG 静默建索引。
+
+Mapping 错误属于：
+
+```text
+JOB_FATAL
+```
+
+应在 VALIDATING 阶段直接失败，不进入大规模 Embedding。
+
+---
+
+# 105. 行级错误与隔离
+
+错误分两类。
+
+## 105.1 Job Fatal
+
+```text
+Manifest不可解析
+Checksum不一致
+Ontology不存在
+Property映射非法
+Embedding模型不可用
+目标索引创建失败
+```
+
+直接停止 Job。
+
+## 105.2 Row Rejectable
+
+```text
+空Value
+Value超长
+非法UTF-8
+Alias格式错误
+不支持的evidence_type
+单条标准化失败
+```
+
+可写入：
+
+```text
+Reject / DLQ File
+```
+
+推荐阈值：
+
+```text
+rejectRatio <= configured threshold
+```
+
+低于阈值允许任务继续并最终：
+
+```text
+SUCCEEDED_WITH_WARNINGS
+```
+
+超过阈值则 FAILED。
+
+---
+
+# 106. 大数据量性能设计
+
+## 106.1 DataSync 侧
+
+尽量提前：
+
+```text
+DISTINCT
+过滤NULL/空串
+基础Normalize
+按Property分区
+生成Parquet
+```
+
+避免把5000万业务明细行传给 OAG，再让 OAG 做 DISTINCT。
+
+OAG仍执行轻量二次去重作为防御。
+
+## 106.2 文件大小
+
+建议起始值：
+
+```text
+单文件 128MB～512MB
+```
+
+避免：
+
+```text
+数十GB单文件 → 重试粒度过大
+数百万小文件 → 对象存储/List开销过大
+```
+
+## 106.3 Pipeline 并发隔离
+
+分别配置：
+
+```text
+readerConcurrency
+normalizeConcurrency
+embeddingConcurrency
+vectorWriterConcurrency
+openSearchWriterConcurrency
+```
+
+中间使用有界 Queue：
+
+```text
+Reader快于Embedding
+ → Queue满
+ → Reader反压
+```
+
+禁止无限堆积内存。
+
+## 106.4 Embedding Batch
+
+建议按模型吞吐评测配置，例如：
+
+```text
+64～256 records / batch
+```
+
+不是协议固定值。
+
+## 106.5 OpenSearch Bulk
+
+建议同时以：
+
+```text
+doc count
+bulk bytes
+```
+
+控制，例如起始：
+
+```text
+1000～5000 docs
+或 5～15MB / bulk
+```
+
+FULL_REPLACE 的 staging index 可降低 refresh 频率，批量完成后再恢复并 refresh。
+
+## 106.6 GaussVector Bulk
+
+优先批量写入，再在 FULL_REPLACE 数据加载完成后统一：
+
+```text
+Build/Rebuild ANN Index
+```
+
+避免每写一条记录都维护高成本 ANN 结构。
+
+大规模 Instance Evidence 根据前文规模策略选择：
+
+```text
+GsIVFFLAT
+或
+GsDiskANN
+```
+
+---
+
+# 107. 在线检索与导入资源隔离
+
+OAG 同时承担：
+
+```text
+Online Retrieval
+Bulk Indexing
+```
+
+必须保证：
+
+> **在线查询优先级高于离线导入。**
+
+推荐：
+
+```text
+独立线程池
+独立连接池
+Bulk QPS/并发限额
+Embedding worker限额
+OpenSearch Bulk限速
+GaussVector写入限速
+```
+
+系统资源达到阈值时：
+
+```text
+暂停领取新的Import Chunk
+```
+
+而不是让在线检索 P95/P99 被批量导入拖垮。
+
+同一 ontology：
+
+```text
+FULL_REPLACE 默认最多1个运行任务
+```
+
+避免两个 Generation 相互竞争。
+
+---
+
+# 108. MinIO / File 安全与可靠性边界
+
+虽然本方案重点是性能和可靠性，接口仍需满足基础边界：
+
+```text
+connectionRef引用预配置凭据
+禁止请求体明文secret
+File模式限制根目录
+MinIO bucket/prefix白名单
+对象checksum校验
+文件不可变校验
+最大文件/任务配额
+Manifest schema校验
+```
+
+Import Job 只允许访问：
+
+```text
+该任务 Manifest 明确声明的对象
+```
+
+不能把 OAG 变成通用 Object Storage Reader。
+
+---
+
+# 109. Import Metadata 表
+
+建议 OAG 持久化四类任务元数据。
+
+## import_job
+
+```text
+job_id
+request_id
+ontology_id
+data_version
+import_mode
+scope
+transport_type
+manifest_uri
+status
+stage
+active_generation_before
+staging_generation
+statistics
+created_at
+started_at
+finished_at
+last_error
+```
+
+## import_file
+
+```text
+job_id
+file_id
+uri
+checksum
+size
+row_count
+property_id
+status
+```
+
+## import_chunk
+
+```text
+job_id
+chunk_id
+file_id
+range
+status
+input_count
+output_count
+vector_write_count
+os_write_count
+retry_count
+last_error
+```
+
+## import_generation
+
+```text
+ontology_id
+generation_id
+vector_physical_index
+os_physical_index
+status
+created_by_job
+created_at
+published_at
+```
+
+这些状态是断点续传、重试、审计和版本发布的基础。
+
+---
+
+# 110. 可观测性
+
+新增 Import 指标：
+
+```text
+import_job_count{status}
+import_running_jobs
+import_files_total
+import_bytes_total
+import_rows_total
+import_rows_per_second
+import_parse_latency
+import_embedding_latency
+import_embedding_batch_size
+import_vector_write_latency
+import_os_bulk_latency
+import_chunk_retry_count
+import_rejected_rows
+import_checkpoint_lag
+import_generation_build_latency
+import_publish_latency
+```
+
+必须关联：
+
+```text
+job_id
+ontology_id
+data_version
+property_id
+```
+
+日志中禁止打印完整海量业务值，只记录：
+
+```text
+source_key / evidence_ID / truncated value / error code
+```
+
+---
+
+# 111. 错误码建议
+
+| 错误码 | 含义 | 是否可重试 |
+|---|---|---|
+| IMPORT_MANIFEST_INVALID | Manifest格式错误 | 否 |
+| IMPORT_SOURCE_NOT_FOUND | File/Object不存在 | 是/视情况 |
+| IMPORT_SOURCE_CHANGED | ETag/checksum变化 | 否，需重新提交 |
+| IMPORT_MAPPING_INVALID | 本体映射非法 | 否 |
+| IMPORT_ONTOLOGY_VERSION_CONFLICT | 本体版本冲突 | 否/重新生成包 |
+| IMPORT_EMBEDDING_UNAVAILABLE | Embedding不可用 | 是 |
+| IMPORT_VECTOR_WRITE_FAILED | GaussVector写失败 | 是 |
+| IMPORT_OS_BULK_FAILED | OpenSearch Bulk失败 | 是 |
+| IMPORT_INDEX_BUILD_FAILED | ANN/全文索引构建失败 | 是 |
+| IMPORT_VERIFY_FAILED | 双存储校验失败 | 是 |
+| IMPORT_PUBLISH_FAILED | Generation发布失败 | 是 |
+| IMPORT_REJECT_RATIO_EXCEEDED | 行错误比例超阈值 | 否/修数据 |
+| IMPORT_CANCELLED | 用户取消 | 否 |
+
+错误响应同时提供：
+
+```text
+面向调用方的message
+面向开发定位的detail/errorStage/jobId/chunkId
+```
+
+---
+
+# 112. 配置建议
+
+```yaml
+oag:
+  import:
+    enabled: true
+    preferredTransport: minio
+
+    job:
+      maxRunningPerOntology: 1
+      retryCount: 3
+      retryBackoffMs: 1000
+
+    file:
+      allowedRoots:
+        - /oag-import
+      targetFileSizeMB: 256
+
+    minio:
+      allowedConnectionRefs:
+        - oag-shared-minio
+      allowedBuckets:
+        - oag-import
+      streamRead: true
+
+    chunk:
+      targetRows: 50000
+      checkpointEnabled: true
+
+    pipeline:
+      readerConcurrency: 4
+      normalizeConcurrency: 4
+      embeddingConcurrency: 4
+      vectorWriterConcurrency: 2
+      openSearchWriterConcurrency: 2
+      queueCapacity: 16
+
+    embedding:
+      batchSize: 128
+
+    openSearch:
+      bulkDocs: 2000
+      bulkMaxBytesMB: 10
+
+    reliability:
+      verifyChecksum: true
+      rejectRatioThreshold: 0.001
+      retainFailedPackageDays: 7
+      retainOldGenerationHours: 24
+```
+
+所有并发和批量数值均为工程起始值，最终通过：
+
+```text
+Embedding TPS
+GaussVector写吞吐
+OpenSearch Bulk吞吐
+OAG CPU/内存
+在线检索P95/P99
+```
+
+联合压测确定。
+
+---
+
+# 113. DataSync → OAG 完整时序
+
+```mermaid
+sequenceDiagram
+    participant DS as DataSync
+    participant M as MinIO/File
+    participant API as OAG Import API
+    participant J as ImportJobService
+    participant E as Embedding
+    participant GV as GaussVector
+    participant OS as OpenSearch
+    participant C as IndexCatalog
+
+    DS->>DS: 读取is_semantic Property + 数据源
+    DS->>DS: DISTINCT / Normalize / Alias整理
+    DS->>M: 写Manifest + Parquet分片
+    M-->>DS: URI + checksum
+
+    DS->>API: POST import-job(manifestUri,dataVersion)
+    API->>J: 创建幂等Job
+    API-->>DS: 202 + jobId
+
+    J->>M: 校验Manifest/Checksum
+    J->>J: 校验Ontology/Property Mapping
+
+    loop Chunk
+        J->>M: Stream读取Chunk
+        J->>J: Normalize/Dedup/Build Evidence
+        J->>E: Batch Embedding
+        E-->>J: vectors
+        par 双写
+            J->>GV: Bulk UPSERT
+            J->>OS: Bulk API
+        end
+        J->>J: Chunk Commit/Checkpoint
+    end
+
+    J->>GV: Build/Verify ANN
+    J->>OS: Refresh/Verify Index
+    J->>C: Publish generation
+    C-->>J: active_version switched
+
+    DS->>API: GET job status
+    API-->>DS: SUCCEEDED + statistics
+```
+
+---
+
+# 114. 与现有索引设计的衔接
+
+本导入模块不改变 V5.0 已确定的 Instance Evidence 语义模型，只改变“谁负责真正构建索引”的职责边界。
+
+保持不变：
+
+```text
+INSTANCE_VALUE
+INSTANCE_ALIAS
+anchor_ID = Property ID
+parent_ID = ObjectType ID
+Value First
+Property Context Last
+Evidence → Anchor
+Instance Evidence 与 Metadata Evidence 物理隔离
+```
+
+职责更新为：
+
+```text
+旧描述：
+DataSync → Instance Evidence Builder → GaussVector/OpenSearch
+
+V5.2：
+DataSync → Import Package → OAG BulkImportService
+                         → Instance Evidence Builder
+                         → Embedding
+                         → GaussVector/OpenSearch
+```
+
+因此 DataSync 不再依赖：
+
+```text
+Embedding SDK
+GaussVector Client
+OpenSearch Client
+具体Index Mapping
+ANN索引参数
+```
+
+所有索引实现统一封装在 OAG 内部。
+
+---
+
+# 115. 导入接口最终设计决策
+
+1. **OAG 是 Instance Evidence 索引的唯一构建和检索引擎。**
+2. **DataSync 是实例数据生产方，负责数据源读取、DISTINCT、基础标准化和本体映射。**
+3. **DataSync 不生成 vector，也不直接写 GaussVector/OpenSearch。**
+4. **大数据量导入采用异步 Job，不使用同步海量 JSON API。**
+5. **生产环境优先 MinIO，中小部署支持受控 File/Shared Path。**
+6. **Data Package = Manifest + 不可变数据分片。**
+7. **Parquet 是大规模场景首选格式。**
+8. **推荐按 Property 分区/分片，Mapping 放 Manifest，减少每行重复字段。**
+9. **OAG 必须校验 Property/Parent ObjectType/is_semantic 映射。**
+10. **OAG 复用统一 Evidence Builder、Normalize、Embedding Content 规则。**
+11. **INSTANCE_VALUE 与 INSTANCE_ALIAS 均通过同一导入协议支持。**
+12. **evidence_ID 稳定生成，Chunk 重试必须幂等。**
+13. **Parquet RowGroup / NDJSON Offset 作为断点 Checkpoint。**
+14. **GaussVector/OpenSearch 使用 Chunk 级双写协调和最终一致。**
+15. **FULL_REPLACE 使用 staging generation，全部成功后原子发布。**
+16. **INCREMENTAL 使用 UPSERT/DELETE + dataVersion 防止旧数据覆盖。**
+17. **OAG 在线查询资源优先于 Bulk Import，必须独立线程池和限流。**
+18. **失败行进入 Reject/DLQ File，Job Fatal 与 Row Rejectable 分级处理。**
+19. **任务、文件、Chunk、Generation 状态全部持久化，支持重启续传。**
+20. **最终目标是在不牺牲在线检索 SLA 的前提下，支持千万/亿级实例 Evidence 稳定导入。**
+
+---
+
+# 116. 更新后的索引构建职责一句话总结
+
+> **DataSync 负责把“底层真实实例数据”加工成带本体 Property 映射的批量 Import Package，并通过 File/MinIO 交付给 OAG；OAG 作为唯一索引引擎，以异步、可断点、可重试、可版本发布的 Bulk Import Pipeline 统一完成 Evidence 构造、Embedding、GaussVector 与 OpenSearch 双写和索引发布，从而把大规模数据同步链路与在线本体检索能力稳定解耦。**
