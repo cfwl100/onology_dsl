@@ -1,0 +1,31 @@
+name: V5.6 schema staging
+
+on:
+  push:
+    branches:
+      - agent/v5-6-schema-staging
+    paths:
+      - .github/workflows/v5-6-schema-staging.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply and verify V5.6 patch
+        run: |
+          cat .v56/part_*.patch > /tmp/v56.patch
+          git apply --whitespace=nowarn /tmp/v56.patch
+          actual_sha=$(git hash-object "docs/OAG本体锚点语义检索与向量索引设计方案.md")
+          expected_sha="2c3d315890210c5fb3731f1762a6716697ad608f"
+          test "$actual_sha" = "$expected_sha"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "docs/OAG本体锚点语义检索与向量索引设计方案.md"
+          git commit -m "生成V5.6索引结构设计文档"
+          git push
