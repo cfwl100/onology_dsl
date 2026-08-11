@@ -1,0 +1,920 @@
+-种子节点 hit：RRF 分组种子节点 id = hit.id
+-语义元素 hit：RRF 分组种子节点 id = hit.parent_id
++```json
++{
++  "id": "subscriber-subClass::VIP",
++  "type": "INSTANCE_VALUE",
++  "parent_id": "subClass-property-id",
++  "value": "VIP",
++  "language": "und",
++  "matched_field": "value",
++  "matched_value": "VIP",
++  "score": 0.88,
++  "source": "INSTANCE_DENSE"
++}
+ ```
+ 
+-同时保留具体 hit 的：
++统一分组规则：
+ 
+ ```text
+-id/type/name/canonical_value/language
++种子节点 hit：group_id = hit.id
++Enum Value hit：group_id = hit.parent_id
++Instance Value hit：group_id = hit.parent_id
+ ```
+ 
+-不能只剩种子节点。多语言字段只影响文本召回、展示和精排上下文，不改变 RRF 的种子节点分组键。
++`matched_field/matched_value` 是最终解释“用户到底命中了 name/display/description/synonyms/value 哪一项”的关键字段，不能在 RRF 前丢失。
+ 
+-## 4.10 通道内按种子节点去重并保留语义元素
+ 
+-同一通道内，同一个种子节点可能被多个语义元素命中，例如：
+-
+-```text
+-subClass
+-  ├─ 正式用户
+-  ├─ FORMAL
+-  ├─ VIP
+-  └─ 高价值客户
+-```
++## 4.10 通道内按种子节点去重并保留具体命中
+ 
+-RRF 前必须先按：
++同一 Property 可能通过多个 Enum Value、Instance Value 或 `synonyms` 字段命中。RRF 前按：
+ 
+ ```text
+-semantic_unit_id + channel + 种子节点 id
++semantic_unit_id + channel + group_id
+ ```
+ 
+-去重，使一个种子节点在单通道只占一个排名位置。
++去重，使同一种子节点在单通道只占一个排名位置。
+ 
+ 组内保留：
+ 
+ ```text
+ primary_hit
+-top 3~5 semantic_hits
++top 3~5 supporting_hits
+ hit_count
+ ```
+ 
+-这样既避免“元素越多越容易加分”，又保留最终精排需要的具体 Alias/Enum/Instance。
++每个 supporting hit 都保留 `id/type/value/name/matched_field/matched_value`。
+ 
+ 
+ ## 4.11 RRF Aggregator：一次 Weighted RRF
+ 
+-### 推荐：一次 Weighted RRF，不做两级 RRF
+-
+-用户提出的方案可以实现为：
+-
+-```text
+-每类内部：Lexical + Dense → RRF
+-再将三类结果 → 第二次 RRF
+-```
+-
+-需要先澄清一个层级关系：如果第一层已经把每类的 `Lexical + Dense` 融合，那么第二层实际输入是 **3 条类级 Ranked List**，而不是 6 条；如果第二层仍然接收 6 条原始路径，则第一层 RRF 没有形成真正的分层收益。
+-
+-因此**不建议作为默认方案**。
+-
+-主要原因：
+-
+-1. 第一层 RRF 会把原始 6 条 Ranked List 压缩成 3 条列表，丢失通道级 rank 信息；
+-2. 第一层 TopK 截断可能提前丢掉只在某一路召回较靠后的正确候选；
+-3. 两次 rank 变换会让权重更难解释和校准；
+-4. 排障时难回答“最终候选到底由哪一路贡献”；
+-5. 6 路本身规模有限，一次 RRF 已足够解决 BM25/Dense score 不可比问题。
+-
+-因此推荐：
++默认仍采用一次 Weighted RRF，不做“类内 RRF → 总 RRF”两级融合。
+ 
+ ```text
+ Semantic Unit
+   ↓
+-6 条 Ranked List
++Seed Lexical
++Seed Dense
++Metadata Lexical
++Metadata Dense
++Instance Lexical
++Instance Dense
+   ↓
+-每通道按种子节点 id 去重
++每通道按 group_id 去重
+   ↓
+ 一次 Weighted RRF
+   ↓
+-种子节点分组粗排 + 具体 semantic_hits
++种子节点分组粗排 + supporting_hits
+ ```
+ 
++原因保持不变：两级 RRF 会提前压缩 6 路 rank 信息、增加 TopK 截断风险、让权重解释和排障更复杂。只有离线评测证明一次 Weighted RRF 无法通过权重校准解决数据源噪声差异时，才作为实验 Profile。
++
+ 公式：
+ 
+ ```text
+ RRF(seed) = Σ weight(channel) / (rrf_k + rank_channel(seed))
+ ```
+ 
+-推荐初始权重：
++初始权重：
+ 
+ ```yaml
+ rrf:
+@@ -3313,44 +2914,15 @@ rrf:
+     instanceDense: 0.8
+ ```
+ 
+-若 Exact 与 BM25 拆成独立列表，则直接增加对应 channel weight，形成 9 路一次融合。
+-
+-#### 何时才考虑两级 RRF
+-
+-仅当评测证明三类数据规模/噪声差异极大，并且一次 Weighted RRF 无法通过权重校准稳定控制某一类来源时，才把“两级 RRF”作为实验 Profile。必须用同一评测集比较：
+-
+-```text
+-SeedRecall@K
+-SemanticResultRecall@K
+-MRR/NDCG
+-ChannelContributionRate
+-LLM最终准确率
+-P95 latency
+-```
+-
+-没有数据证明前，不增加第二层融合复杂度。
++若 Exact 与 BM25 后续拆成独立 Ranked List，则直接扩为 9 路一次融合。
+ 
+ 
+ ## 4.12 Exact 不是绝对锁定
+ 
+-Exact 是强证据，但不是无条件最终锁定：
+-
+-```text
+-name
+-status
+-active
+-1
+-A
+-```
+-
+-都可能在多个种子节点或多个语义元素中重复。
+-
+-推荐流程：
++Exact 是强证据，但 `name/status/active/1/A` 或某个 synonym 仍可能在多个记录中重复。推荐：
+ 
+ ```text
+-Exact/BM25
+-→ 高权重进入一次 RRF
+-→ LLM 结合原始问题消歧
++Exact/BM25 → 高权重 RRF → LLM 结合原始问题消歧
+ ```
+ 
+ 只有全局唯一 `id` 的直接查询才可以绕过语义消歧。
+@@ -3358,30 +2930,30 @@ Exact/BM25
+ 
+ ## 4.13 RRF 粗排输出
+ 
+-RRF 粗排按 Semantic Unit 输出种子节点分组，同时保留具体语义元素：
+-
+ ```json
+ {
+   "semantic_unit_id": "u4",
+-  "text": "正式用户",
++  "text": "红色车辆",
+   "groups": [
+     {
+       "seedNode": {
+-        "id": "subClass-property-id",
+-        "type": 1,
+-        "name": "subClass"
++        "id": "prop:ont:vehicle:sp:bodyColor",
++        "type": "PROPERTY",
++        "name": "bodyColor"
+       },
+       "rrf_score": 0.071,
+       "channel_hits": [
+         {"channel": "metadataLexical", "rank": 1},
+         {"channel": "metadataDense", "rank": 2}
+       ],
+-      "semantic_hits": [
++      "supporting_hits": [
+         {
+-          "id": "subClass-property-id::ENUM_ALIAS::1::FORMAL",
+-          "type": "ENUM_ALIAS",
+-          "name": "FORMAL",
+-          "canonical_value": "1"
++          "id": "ei.veh12.enum.Col35.val.red8.1",
++          "type": "ENUM_VALUE",
++          "value": "red",
++          "name": "red",
++          "matched_field": "synonyms.zh",
++          "matched_value": "红色"
+         }
+       ]
+     }
+@@ -3389,53 +2961,28 @@ RRF 粗排按 Semantic Unit 输出种子节点分组，同时保留具体语义
+ }
+ ```
+ 
+-LLM 精排面对的是“种子节点分组 + 组内具体语义元素”，而不是只看到 Property。
++LLM 面对的是“种子节点分组 + 具体命中记录/字段”，而不是只看到 Property。
+ 
+ 
+ ## 4.14 RRF 与 LLM 的分组层级
+ 
+-RRF 首先按 `semantic_unit_id` 独立执行，避免不同语义目标互相挤压。
+-
+-每个 Semantic Unit 内：
++每个 Semantic Unit 独立执行：
+ 
+ ```text
+ 6 路 Raw Hits
+   ↓
+-每路按种子节点 id 去重
++按 group_id 去重
+   ↓
+-保留组内具体语义元素
++保留 supporting_hits
+   ↓
+ 一次 Weighted RRF
+   ↓
+ Top 种子节点分组
+ ```
+ 
+-这里的“种子节点 id”按来源确定：
+-
+-```text
+-种子节点 hit：hit.id
+-语义元素 hit：hit.parent_id
+-```
+-
+-不直接对每个 Alias/Enum/Instance `id` 做 RRF，否则语义元素数量多的 Property 会被抬高。
+-
+-LLM 随后完成两件事：
+-
+-```text
+-1. 在组内选择真正命中的语义元素/种子节点
+-2. 在所有 Semantic Units 之间检查 ObjectType/Property 上下文一致性
+-```
+-
+-推荐候选裁剪：
++不要直接按 synonyms 数量计分；Synonym 是记录字段，不形成额外 RRF 行。
+ 
+-```text
+-RRF Top 10~20 种子节点分组 / Semantic Unit
+-每组 top 3~5 具体语义元素
+-全局分组去重后 30~50
+-LLM 每个 Unit 选择 0~5 个最终结果
+-```
+-
+-默认不使用“类内 RRF → 总 RRF”的两级方案，除非离线评测证明有稳定收益。
++推荐裁剪：RRF Top 10~20 分组 / Unit，每组 3~5 supporting hits，全局 30~50 分组，LLM 每个 Unit 选择 0~5 个最终结果。
+ 
+ 
+ # 5. LLM 精排与最终检索结果
+@@ -3443,7 +2990,7 @@ LLM 每个 Unit 选择 0~5 个最终结果
+ 
+ ## 5.1 LLM Fine Ranking 目标
+ 
+-LLM Fine Ranking 的目标是从 RRF 粗排结果中选出用户真正命中的检索结果，并验证其种子节点上下文。
++LLM 从 RRF 分组中选择用户真正命中的记录，并判断具体命中字段。
+ 
+ 输入：
+ 
+@@ -3451,131 +2998,92 @@ LLM Fine Ranking 的目标是从 RRF 粗排结果中选出用户真正命中的
+ 原始问题
+ Semantic Units
+ RRF 种子节点分组
+-种子节点名称/描述
+-组内 semantic_hits
+-canonical_value
++Seed / Enum / Instance 记录
++matched_field / matched_value
+ ObjectType / Property 上下文
+ 轻量一跳 Graph Hint
+ ```
+ 
+-输出可以是：
++输出类型只需要：
+ 
+ ```text
+-ObjectType
+-Property
+-Object/Property Alias
+-Enum Value/Alias
+-Instance Value/Alias
++OBJECT_TYPE
++PROPERTY
++ENUM_VALUE
++INSTANCE_VALUE
+ ```
+ 
+-LLM 的精排任务包括：
++Synonym 不再是独立 `type`。当用户命中 synonym 时，结果仍返回所属记录，同时：
+ 
+ ```text
+-深度语义理解
+-业务限定词校验
+-ObjectType / Property 上下文对齐
+-Alias/Enum/Instance → canonical_value 映射验证
+-多候选消歧
+-必要结果完整性检查
++matched_field = synonyms.<language>
++matched_value = 实际同义词
+ ```
+ 
+-LLM 不负责创造新的 `id`，只能从候选中选择。
++LLM 不创造新的 `id/value/synonyms`，只能从候选中选择。
+ 
+ 
+ ## 5.2 为什么精排必须使用原始问题
+ 
+-例如：
+-
+-```text
+-Semantic Unit = 发生时间
+-```
+-
+-可能匹配：
+-
+-```text
+-update_time
+-firstoccurrence
+-lastoccurrence
+-```
+-
+-原始问题：
+-
+-```text
+-查询站点上影响业务的活跃告警首次发生时间
+-```
+-
+-能进一步确定：
+-
+-```text
+-AP_ALARM_LIVE.firstoccurrence
+-```
+-
+-因此 LLM 不得只使用拆词结果。
+-
+----
++例如 Semantic Unit=`发生时间` 可能命中多个 Property；只有结合“查询站点上影响业务的活跃告警首次发生时间”才能判断应选择 `firstoccurrence`。因此不能只使用拆词或局部向量相似度。
+ 
+ 
+ ## 5.3 Rerank Context
+ 
+-推荐 Rerank Context：
+-
+ ```json
+ {
+-  "original_query": "查询正式用户的套餐",
+-  "semantic_units": [...],
++  "original_query": "查询红色车辆",
++  "semantic_units": ["红色"],
+   "groups": [
+     {
+       "seedNode": {
+-        "id": "subClass-property-id",
+-        "type": 1,
+-        "name": "subClass"
++        "id": "prop:ont:vehicle:sp:bodyColor",
++        "type": "PROPERTY",
++        "name": "bodyColor"
+       },
+       "objectType": {
+-        "id": "subscriber-object-id",
+-        "name": "Subscriber"
++        "id": "vehicle-object-id",
++        "name": "Vehicle"
+       },
+       "rrf_score": 0.071,
+-      "semantic_hits": [
++      "supporting_hits": [
+         {
+-          "id": "...FORMAL",
+-          "type": "ENUM_ALIAS",
+-          "name": "FORMAL",
+-          "canonical_value": "1"
++          "id": "ei.veh12.enum.Col35.val.red8.1",
++          "type": "ENUM_VALUE",
++          "value": "red",
++          "name": "red",
++          "matched_field": "synonyms.zh",
++          "matched_value": "红色"
+         }
+       ],
+       "graph_hint": {
+-        "neighbor_object_types": ["Offering"],
+-        "relation_names": ["SUBSCRIBE_TO"]
++        "neighbor_object_types": [],
++        "relation_names": []
+       }
+     }
+   ]
+ }
+ ```
+ 
+-Graph Hint 只取一跳或轻量摘要，不在 LLM 精排前构建完整 K-hop 子图。
++Graph Hint 只取一跳或轻量摘要，不在精排前构建完整 K-hop 子图。
+ 
+ 
+ ## 5.4 LLM 精排 Prompt 约束
+ 
+-System Prompt 约束建议：
+-
+ ```text
+ Role:
+ 你是 OAG 语义检索精排器。
+ 
+-Objective:
+-根据原始问题、Semantic Units、种子节点分组、具体语义元素和轻量本体关系，选择真正表达用户意图的检索结果。
+-
+ Rules:
+-1. 只能返回输入候选中存在的 id。
+-2. 必须结合原始问题，不得仅依据名称相似。
+-3. Property 及其 Alias/Enum/Instance 必须结合所属 ObjectType 判断。
+-4. 语义元素命中时必须校验 parent_id → Property/ObjectType 映射。
++1. 只能选择输入候选中存在的 id。
++2. 必须结合原始问题，而不是只看相似度。
++3. Enum Value / Instance Value 必须结合 parent_id 对应的 Property/ObjectType 判断。
++4. synonym 命中时保留 matched_field/matched_value，不创建 synonym id。
+ 5. Exact/BM25/Dense/RRF 分数只是证据。
+-6. 必须考虑其他 Semantic Unit 的上下文一致性。
+-7. 每个 Semantic Unit 可以返回 0/1/N 个结果。
+-8. 全部不匹配允许 no_match=true。
+-9. 不创造不存在的 id/canonical_value。
++6. 必须考虑不同 Semantic Unit 的上下文一致性。
++7. 每个 Unit 可以返回 0/1/N。
++8. 无匹配允许 no_match=true。
++9. 不创造不存在的 id/value。
+ 10. 仅输出简短 reason，不输出详细思维过程。
+ 11. 严格输出 JSON Schema。
+ ```
+@@ -3583,16 +3091,6 @@ Rules:
+ 
+ ## 5.5 精排输出与 0/1/N
+ 
+-精排允许：
+-
+-```text
+-0：无匹配
+-1：唯一结果
+-N：多个业务上同时必要的结果
+-```
+-
+-示例：
+-
+ ```json
+ {
+   "semantic_unit_results": [
+@@ -3600,12 +3098,14 @@ N：多个业务上同时必要的结果
+       "semantic_unit_id": "u4",
+       "selected": [
+         {
+-          "id": "subClass-property-id::ENUM_ALIAS::1::FORMAL",
+-          "type": "ENUM_ALIAS",
+-          "name": "FORMAL",
+-          "canonical_value": "1",
++          "id": "ei.veh12.enum.Col35.val.red8.1",
++          "type": "ENUM_VALUE",
++          "value": "red",
++          "name": "red",
++          "matched_field": "synonyms.zh",
++          "matched_value": "红色",
+           "rerank_score": 0.97,
+-          "reason": "与正式用户语义一致"
++          "reason": "与用户的红色车辆条件一致"
+         }
+       ],
+       "no_match": false
+@@ -3615,135 +3115,75 @@ N：多个业务上同时必要的结果
+ }
+ ```
+ 
+-具体 ObjectType / Property 上下文由 OAG 根据候选中的 `parent_id` 和拓扑缓存补齐，不要求 LLM 自己生成。
++ObjectType / Property 上下文由 OAG 根据 `parent_id + GraphTopologyCache` 补齐，不要求 LLM 生成。
+ 
+ 
+ ## 5.6 LLM 精排可靠性与降级
+ 
+-程序必须校验：
+-
+-```text
+-JSON Schema
+-id ∈ Input Candidate
+-rerank_score 合法
+-结果去重
+-数量上限
+-```
+-
+-异常：
++程序校验 JSON Schema、`id ∈ Input Candidate`、分数范围、结果去重和数量上限。
+ 
+ ```text
+-LLM Timeout / JSON错误
+-→ 重试1次
++LLM Timeout / JSON 错误
++→ 重试 1 次
+ → 仍失败
+-→ fallback = RRF 分组 primary_hit
++→ fallback = RRF group primary_hit
+ → rerank_status = DEGRADED
+ ```
+ 
+-正常 `no_match` 不属于异常。
++合法 `no_match` 不属于异常。
+ 
+ 
+ ## 5.7 Retrieval Results 与 Semantic Extensions
+ 
+-最终响应分成三个清晰层次：
++最终响应继续分三层：
+ 
+ ```text
+ retrievalResults
+-  = 用户真正命中的种子节点/语义元素
++  = 用户真正命中的 Seed / Enum Value / Instance Value，并保留 matched_field/matched_value
+ 
+ ontologySubgraph
+   = 从 retrievalResults 投影种子节点后构建的本体核心图
+ 
+ semanticExtensions
+-  = 为结果补充的相关 Alias / Enum / Instance 上下文
++  = 为结果补充的 synonyms / enum domain 等语义上下文
+ ```
+ 
+-三者不能混为同一个数组。
+-
+-语义元素可以是最终检索结果，但不直接进入 Core Graph 路径算法。
++Synonym 本身可以成为 `matched_value`，但不作为独立物理记录或独立 `type`。
+ 
+ 
+ ## 5.8 Enum Retrieval Result 与 Extension 返回模式
+ 
+-如果最终精排选中：
+-
+-```text
+-ENUM_VALUE
+-ENUM_ALIAS
+-```
+-
+-该命中项必须无条件出现在：
+-
+-```text
+-retrievalResults
+-```
+-
+-例如：
+-
+-```text
+-FORMAL → canonical_value=1
+-```
+-
+-不能因为 `enumMode=matched_only` 而只返回 Property 种子节点。
+-
+-`semanticExtensions.enumMode` 控制的是**额外枚举域上下文**：
+-
+-```text
+-matched_only
+-all_values
+-```
+-
+-推荐默认：
++如果最终选中 Enum Value，必须返回：
+ 
+ ```text
+-matched_only
++id
++value
++name
++display/description（按需）
++synonyms（按需）
++matched_field
++matched_value
++Property + ObjectType
+ ```
+ 
+-含义：
++例如用户输入“红色”，可以得到：
+ 
+ ```text
+-retrievalResults：始终返回真正命中的 Enum Item
+-semanticExtensions：默认只附带已命中的 Enum；显式 all_values 时再返回完整枚举域
++id = ei...red8.1
++value = red
++matched_field = synonyms.zh
++matched_value = 红色
++Property = Vehicle.bodyColor
+ ```
+ 
+-这样既保证检索结果准确，又避免把完整枚举列表无条件塞给下游。
+-
+----
++`semanticExtensions.enumMode` 仍可控制额外枚举域上下文：`matched_only`（默认）或 `all_values`。这不影响真正命中的 Enum Value 必须出现在 `retrievalResults`。
+ 
+ 
+ ## 5.9 Instance Retrieval Result 与 Extension 返回模式
+ 
+-Instance 可能百万/千万/亿，但最终命中的单个或少量实例值本身仍然是合法检索目标。
+-
+-如果 LLM 最终选中：
++Instance 只支持 `INSTANCE_VALUE`。
+ 
+-```text
+-INSTANCE_VALUE
+-INSTANCE_ALIAS
+-```
+-
+-必须出现在：
+-
+-```text
+-retrievalResults
+-```
+-
+-禁止的是：
+-
+-```text
+-因为命中了某 Property，就返回该 Property 的所有 Instance Value
+-```
+-
+-而不是禁止返回实际命中的 Instance Value。
+-
+-`semanticExtensions.instanceMode` 只控制额外上下文：
+-
+-```text
+-matched_only
+-matched + topN
+-```
+-
+-例如：
++如果最终选中真实列值，必须出现在 `retrievalResults`。禁止的是“命中 Property 就返回所有实例值”，而不是禁止返回实际命中的值。
+ 
+ ```yaml
+ extension:
+@@ -3751,16 +3191,7 @@ extension:
+   maxInstanceElementsPerProperty: 10
+ ```
+ 
+-含义：
+-
+-```text
+-retrievalResults：保留 LLM 最终选中的 Instance Value / Alias
+-semanticExtensions：默认只附带 matched items；需要时最多额外 topN
+-```
+-
+-这样不会因为实例库规模巨大而污染响应，同时保证“实例列值本身是最终检索目标”。
+-
+----
++实例结果没有 `INSTANCE_ALIAS`，也没有实例 `synonyms`。
+ 
+ 
+ ## 5.10 retrievalResults 与 seedNodes
+@@ -3770,20 +3201,22 @@ semanticExtensions：默认只附带 matched items；需要时最多额外 topN
+ ```json
+ {
+   "semanticUnitId": "u4",
+-  "text": "正式用户",
++  "text": "红色",
+   "results": [
+     {
+-      "id": "subClass-property-id::ENUM_ALIAS::1::FORMAL",
+-      "type": "ENUM_ALIAS",
+-      "name": "FORMAL",
+-      "canonical_value": "1",
++      "id": "ei.veh12.enum.Col35.val.red8.1",
++      "type": "ENUM_VALUE",
++      "value": "red",
++      "name": "red",
++      "matched_field": "synonyms.zh",
++      "matched_value": "红色",
+       "objectType": {
+-        "id": "subscriber-object-id",
+-        "name": "Subscriber"
++        "id": "vehicle-object-id",
++        "name": "Vehicle"
+       },
+       "property": {
+-        "id": "subClass-property-id",
+-        "name": "subClass"
++        "id": "prop:ont:vehicle:sp:bodyColor",
++        "name": "bodyColor"
+       },
+       "source": "METADATA",
+       "rrf_score": 0.071,
+@@ -3795,28 +3228,11 @@ semanticExtensions：默认只附带 matched items；需要时最多额外 topN
+ 
+ ### seedNodes
+ 
+-由 `retrievalResults` 投影生成，只用于图构建兼容：
+-
+-```json
+-{
+-  "semanticUnitId": "u4",
+-  "seedNodes": [
+-    {
+-      "id": "subClass-property-id",
+-      "type": 1,
+-      "name": "subClass"
+-    }
+-  ]
+-}
+-```
+-
+-同一个语义结果可能投影出 Property + ObjectType；ObjectType 是否放入 `seedNodes` 由现有子图接口兼容策略决定。
++由 retrievalResults 投影生成，只用于图构建兼容。Enum Value / Instance Value 均投影到其 `parent_id` Property，再补 Parent ObjectType。
+ 
+ 
+ ## 5.11 Final Response 数据结构
+ 
+-推荐最终响应：
+-
+ ```json
+ {
+   "message_type": "message_ontology_subgraph",
+@@ -3844,71 +3260,32 @@ semanticExtensions：默认只附带 matched items；需要时最多额外 topN
+ }
+ ```
+ 
+-兼容字段继续保留：
+-
+-```text
+-seedNodes
+-nodes
+-edges
+-```
+-
+-新增 `retrievalResults` 是完整最终检索结果的权威字段。
++`retrievalResults` 是完整语义结果权威字段；`seedNodes/nodes/edges` 继续兼容图构建。
+ 
+ 
+ ## 5.12 Cypher 生成最小充分上下文
+ 
+-下游 Cypher 的最小充分上下文由三部分组成。
+-
+-### 检索结果
+-
+-```text
+-id
+-type
+-name
+-canonical_value
+-source
+-```
+-
+-### 种子节点上下文
++下游最小上下文：
+ 
+ ```text
+-ObjectType id / name
+-Property id / name
++检索结果：id / type / value / name / matched_field / matched_value / source
++种子节点：ObjectType id/name + Property id/name
++关系：relation id/name/businessSemanticType/cardinality/linkType/junctionConfig/source-target mapping
+ ```
+ 
+-### 关系上下文
+-
+-```text
+-relation id / name
+-businessSemanticType
+-cardinality
+-linkType
+-junctionConfig
+-source/target mapping
+-```
++Enum Value 的 `value` 直接作为真实过滤值，不再需要 `canonical_value` 或 `ENUM_ALIAS` 映射。
+ 
+ 例如：
+ 
+ ```text
+-result.type        = ENUM_ALIAS
+-result.name        = FORMAL
+-canonical_value    = 1
+-Property           = Subscriber.subClass
+-ObjectType         = Subscriber
+-```
+-
+-LLM 因此不再需要猜：
+-
+-```text
+-FORMAL 是属性名还是枚举同义词
+-真实过滤值是什么
+-属于哪个 Property/ObjectType
+-对象之间如何关联
++result.type      = ENUM_VALUE
++result.value     = red
++matched_value    = 红色
++Property         = Vehicle.bodyColor
++ObjectType       = Vehicle
+ ```
+ 
+-即：
+-
+-> **检索结果 + 种子节点上下文 + Relation Context。**
++因此 LLM 不需要猜“红色是属性名还是同义词”“真实过滤值是什么”“属于哪个 Property/ObjectType”。
+ 
+ 
+ ## 5.13 完整检索运行时序
+@@ -3930,23 +3307,23 @@ sequenceDiagram
+     QU-->>D: Semantic Units
+ 
+     par 种子节点
+-      D->>OS: Exact/BM25
++      D->>OS: name/display/description/synonyms Exact/BM25
+       D->>GV: Dense
+-    and 元数据语义元素
+-      D->>OS: Exact/BM25
+-      D->>GV: Dense
+-    and 实例语义元素
+-      D->>OS: Exact/BM25
++    and Enum Value
++      D->>OS: value/name/display/description/synonyms Exact/BM25
+       D->>GV: Dense
++    and Instance Value
++      D->>OS: value Exact/BM25
++      D->>GV: Dense(value only)
+     end
+ 
+     D->>N: 6路 Raw Hits
+-    N->>N: 通道内按种子节点 id 去重并保留具体元素
++    N->>N: 按种子节点 group_id 去重并保留 matched_field/value
+     N->>R: 6条 Ranked Lists
+-    R-->>L: 种子节点分组粗排 + semantic_hits
++    R-->>L: 种子节点分组 + supporting_hits
+     U->>L: Original Query
+     L-->>P: Final Retrieval Results
+-    P->>P: 投影 ObjectType / Property 种子节点
++    P->>P: 投影 ObjectType / Property
+     P->>G: seedNodes
+     G->>G: minimal/khop/component
+     G-->>U: retrievalResults + ontologySubgraph
+@@ -3958,20 +3335,18 @@ sequenceDiagram
+ 
+ ## 6.1 检索结果 → 种子节点投影
+ 
+-LLM 精排完成后，使用 `SeedNodeProjector` 将最终检索结果转换为子图算法输入。
+-
+-规则：
++`SeedNodeProjector` 只处理四类最终记录：
+ 
+ | 最终结果类型 | 投影出的种子节点 |
+ |---|---|
+ | ObjectType | 当前 `id` |
+-| ObjectType Alias | `parent_id` 对应 ObjectType |
+ | Property | 当前 `id` |
+-| Property Alias | `parent_id` 对应 Property |
+-| Enum Value/Alias | `parent_id` 对应 Property |
+-| Instance Value/Alias | `parent_id` 对应 Property |
++| Enum Value | `parent_id` 对应 Property |
++| Instance Value | `parent_id` 对应 Property |
+ 
+-Property 种子节点还需要补齐其父 ObjectType：
++Synonym 不是独立结果类型：如果用户命中 `synonyms.*`，记录仍按所属 ObjectType/Property/Enum Value 的规则投影。
++
++Property 还需要补齐父 ObjectType：
+ 
+ ```text
+ Property.id
+@@ -3979,15 +3354,7 @@ Property.id
+ ObjectType.id
+ ```
+ 
+-形成：
+-
+-```text
+-explicit_property_seed_nodes
+-object_terminals
+-mandatory_has_property_edges
+-```
+-
+-检索结果本身仍保留在 `retrievalResults`，不会因为投影而丢失。
++形成 `explicit_property_seed_nodes / object_terminals / mandatory_has_property_edges`。检索结果本身仍保留在 `retrievalResults`，不会因为投影丢失 `matched_field/matched_value`。
+ 
+ 
+ ## 6.2 Property → ObjectType：Topology Cache 优先
+@@ -4016,7 +3383,7 @@ Topology Cache hit?
+   └─ no  → 调用现有 addObjectTypeByProperty() GQL 兜底
+ ```
+ 
+-这样既保持 8 字段种子节点表兼容，又避免每次查询都访问图数据库。
++这样既保持种子节点表不保存 `parent_id` 的职责边界，又避免每次查询都访问图数据库。
+ 
+ 
+ ## 6.3 当前三种子图策略：接口语义与真实算法
+@@ -4603,7 +3970,7 @@ includeFunctions
+ includeActions
+ ```
+ 
+-V5.5 保留。
++V5.6 保留。
+ 
+ 推荐处理阶段：
+ 
+@@ -4881,9 +4248,17 @@ oag:
+       timeoutMs: 3000
+       includeInactive: false
+ 
++  indexSchema:
++    seedTable: t_ontoretrieval_{ontology_id}
++    metadataTable: t_metadata_evidence_{ontology_id}
