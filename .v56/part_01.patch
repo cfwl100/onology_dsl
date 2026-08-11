@@ -1,0 +1,902 @@
+-throughput
+-吞吐量
+-Throughput
+-小区吞吐量指标
+-Cell throughput metric
+-```
+-
+-不推荐默认：
++检索优先级：
+ 
+ ```text
+-Cell
+-throughput
+-...
++id/name/display exact
++> synonyms exact
++> name/display/synonyms phrase/BM25
++> description BM25
+ ```
+ 
+-原因：
++不再使用扁平 `i18n_content`。
+ 
+-1. 用户经常只表达属性概念；
+-2. ObjectType 前缀容易改变向量语义重心；
+-3. 同名 Property 的消歧由原始问题、其他 Semantic Units、LLM 精排和本体关系完成；
+-4. Property → ObjectType 映射由拓扑缓存提供，不需要依赖向量文本恢复。
+-
+-如果评测显示同名 Property 冲突严重，可增加内部 Shadow Vector，但最终仍回到同一 Property `id`。
+-
++## 2.8 `t_metadata_evidence_{ontology_id}`：Enum Value 模型与表结构
+ 
+-## 2.7 OpenSearch 种子节点索引
++Metadata Evidence 只承载枚举值，不再为枚举同义词建立独立 `ENUM_ALIAS` 行。
+ 
+-推荐 OpenSearch 种子节点 Index 保持核心字段兼容，同时增加**结构化多语言检索字段**：
++### 2.8.1 EnumType 源结构
+ 
+-```text
+-{ontology_id}_anchor
++```json
++{
++  "id": "ei.veh12.enum.Col35.1",
++  "name": "Color",
++  "display": {
++    "en": "Color",
++    "zh": "颜色"
++  },
++  "description": {
++    "en": "Vehicle body color enumeration",
++    "zh": "车身颜色枚举"
++  },
++  "status": "ACTIVE",
++  "creatorByOntology": "vehicle",
++  "valueType": "string",
++  "refSynonymTypeId": "term-color-synonyms",
++  "values": [
++    {
++      "id": "ei.veh12.enum.Col35.val.red8.1",
++      "name": "red",
++      "display": {
++        "en": "Red",
++        "zh": "红色"
++      },
++      "description": {
++        "en": "Red color",
++        "zh": "红色"
++      },
++      "value": "red",
++      "order": 1,
++      "refSynonymTypeId": "term-color-red-synonyms"
++    },
++    {
++      "id": "ei.veh12.enum.Col35.val.blue9.1",
++      "name": "blue",
++      "display": {
++        "en": "Blue",
++        "zh": "蓝色"
++      },
++      "description": {
++        "en": "Blue color",
++        "zh": "蓝色"
++      },
++      "value": "blue",
++      "order": 2,
++      "refSynonymTypeId": "term-color-blue-synonyms"
++    }
++  ],
++  "extensions": {}
++}
+ ```
+ 
+-核心字段：
++真正进入 `t_metadata_evidence_{ontology_id}` 的粒度是 `values[]` 中的每个枚举值。
+ 
+-| 字段 | OpenSearch 类型 | 说明 |
+-|---|---|---|
+-| `type` | `integer` | 0 ObjectType / 1 Property |
+-| `id` | `keyword` | 本体元素 ID |
+-| `name` | `keyword` + `text` | 真实名称，支持 Exact/BM25 |
+-| `display_zh` | `keyword` + `text` | 中文显示名 |
+-| `display_en` | `keyword` + `text` | 英文显示名 |
+-| `description_zh` | `text` | 中文描述 |
+-| `description_en` | `text` | 英文描述 |
+-
+-多语言扩展字段推荐使用结构化 `i18n`：
++### 2.8.2 SynonymType 源结构
+ 
+ ```json
+-"i18n": [
+-  {
+-    "language": "es",
+-    "display": "Celda inalámbrica",
+-    "description": "Entidad de celda en una red de comunicaciones"
++{
++  "id": "term-color-synonyms",
++  "name": "color-synonyms",
++  "display": {
++    "zh": "颜色近义词",
++    "en": "Color Synonyms"
+   },
+-  {
+-    "language": "pt-BR",
+-    "display": "Célula sem fio",
+-    "description": "Entidade de célula em uma rede de comunicações"
+-  }
+-]
+-```
+-
+-推荐字段语义：
+-
+-```text
+-i18n.language     keyword
+-i18n.display      keyword + text
+-i18n.description  text
++  "description": {
++    "zh": "颜色相关术语的近义词定义",
++    "en": "Synonyms for color-related terms"
++  },
++  "synonyms": {
++    "zh": ["颜色", "色彩", "色泽", "色"],
++    "en": ["Color", "Colour", "Hue", "Tint"]
++  },
++  "status": "ACTIVE"
++}
+ ```
+ 
+-这样新增西语、葡语、阿语、印尼语等语言时，不需要修改种子节点 GaussVector 表 Schema，也不需要不断增加 `display_xx/description_xx` 列。
++`synonyms` 最多 3 种语言，语言不固定。
+ 
+-明确不保留：
++### 2.8.3 Property 引用 Enum
+ 
+-```text
+-normalized_name
+-source_version
+-content
+-i18n_content   # 不使用扁平大字符串；改为结构化 i18n
+-```
+-
+-检索优先级建议：
+-
+-```text
+-id/name/display exact
+-> i18n.display exact
+-> name/display/i18n.display phrase/BM25
+-> description/i18n.description BM25
++```json
++{
++  "id": "prop:ont:vehicle:sp:bodyColor",
++  "name": "bodyColor",
++  "display": {
++    "en": "Body Color",
++    "zh": "车身颜色"
++  },
++  "description": {
++    "en": "Vehicle body color",
++    "zh": "车身颜色"
++  },
++  "dataType": "enum",
++  "valueType": "string",
++  "referenceEnumName": "Color",
++  "referenceEnumId": "ei.vehicle.enum.Color.1",
++  "extensions": {}
++}
+ ```
+ 
+-Analyzer 策略：
++OAG 按：
+ 
+ ```text
+-Exact：keyword，不做语言硬过滤
+-高频语言：可配置专用 Analyzer（如 zh/en/es）
+-其他小语种：使用通用 multilingual/standard Analyzer 兜底
+-Dense：不按语言硬过滤
++Property.referenceEnumId
++  → EnumType.values[]
++  → EnumValue.refSynonymTypeId
++  → SynonymType.synonyms
+ ```
+ 
+-语言只用于 Analyzer 选择、Boost、结果展示和可观测性，不用于关闭其他召回通道。
++展开索引。
+ 
+-## 2.8 元数据语义元素表结构
+-
+-元数据语义元素包括：ObjectType/Property 同义词、Enum Value、Enum Alias。
+-
+-推荐物理表保持简单：
++### 2.8.4 GaussVector 表结构
+ 
+ ```text
+-{ontology_id}_metadata_evidence
++t_metadata_evidence_{ontology_id}
+ ```
+ 
+ | 字段 | 类型 | 非空 | 说明 |
+ |---|---|---|---|
+-| `vector` | `DOUBLE[]` | ✔ | 语义元素向量 |
+-| `type` | `INT` | ✔ | 0 OBJECT_ALIAS，1 PROPERTY_ALIAS，2 ENUM_VALUE，3 ENUM_ALIAS |
+-| `id` | `VARCHAR(512 CHAR)` | ✔ | 当前具体元素自身 ID |
+-| `parent_id` | `VARCHAR(256 CHAR)` | ✔ | 所属种子节点 ID |
+-| `name` | `VARCHAR(4096 CHAR)` | ✔ | 当前可检索字符串 |
+-| `canonical_value` | `VARCHAR(4096 CHAR)` |  | Enum Alias 对应真实值；非枚举可空 |
+-| `language` | `VARCHAR(32 CHAR)` |  | BCP 47 语言标识，如 zh/en/es/pt-BR/mixed/und |
+-| `description_zh` | `TEXT` |  | 中文兼容描述 |
+-| `description_en` | `TEXT` |  | 英文兼容描述 |
+-
+-`language` 是为 Alias / Enum 等**当前语义元素本身**提供的简洁语言标识，不恢复旧的 `term_language` 概念名。
++| `vector` | `DOUBLE[]` | ✔ | Enum Value 向量 |
++| `type` | `INT` | ✔ | 固定表示 ENUM_VALUE |
++| `id` | `VARCHAR(512 CHAR)` | ✔ | `values[].id` |
++| `parent_id` | `VARCHAR(256 CHAR)` | ✔ | 引用该 Enum 的 Property.id |
++| `value` | `VARCHAR(4096 CHAR)` | ✔ | 真实枚举值 |
++| `name` | `VARCHAR(4096 CHAR)` | ✔ | `values[].name` |
++| `display_zh` | `VARCHAR(512 CHAR)` |  | 中文 display |
++| `display_en` | `VARCHAR(512 CHAR)` |  | 英文 display |
++| `display_lang_1` | `VARCHAR(512 CHAR)` |  | 额外语言 1 display |
++| `display_lang_2` | `VARCHAR(512 CHAR)` |  | 额外语言 2 display |
++| `description_zh` | `TEXT` |  | 中文 description |
++| `description_en` | `TEXT` |  | 英文 description |
++| `description_lang_1` | `TEXT` |  | 额外语言 1 description |
++| `description_lang_2` | `TEXT` |  | 额外语言 2 description |
++| `synonyms` | `TEXT` |  | 当前 Enum Value 的 SynonymType.synonyms，最多 3 种语言 |
+ 
+-例如：
++如果一个 EnumType 被多个 Property 复用，需要保留 Property 归属。业务字段 `id` 仍保持 Enum Value 原始 ID，物理幂等键可由 OAG 内部使用：
+ 
+ ```text
+-name = cliente formal
+-language = es
+-parent_id = Subscriber.subClass Property id
++parent_id + "::" + id
+ ```
+ 
+-相比旧模型，仍明确删除重复/冗余概念：
++该内部存储键不作为新的业务字段暴露。
+ 
+-```text
+-多组 ID/Type 映射字段
+-父级名称冗余字段
+-normalized_value
+-content_hash
+-source_version
+-```
+ 
+-映射规则：
++## 2.9 Enum Value 向量化规则
+ 
+-```text
+-OBJECT_ALIAS.parent_id   → ObjectType.id
+-PROPERTY_ALIAS.parent_id → Property.id
+-ENUM_VALUE.parent_id     → Property.id
+-ENUM_ALIAS.parent_id     → Property.id
+-```
+-
+-Enum 定义引用不作为向量表必备字段；如精排/Cypher 需要完整 EnumType 信息，OAG 根据当前语义元素 `id + parent_id` 从 OMS 元数据缓存补充。
+-
+-对于额外语言的描述信息，不要求继续向 GaussVector 表增加 `description_es/description_pt/...` 列；OAG 可从 OMS 结构化 i18n 元数据读取，并在构建向量、OpenSearch 文档和 LLM Context 时使用。
+-
+-ObjectType 上下文在运行时通过 Property → ObjectType 拓扑补齐。
+-
+-## 2.9 元数据语义元素 Vector 规则
+-
+-元数据语义元素 Dense 内容坚持“元素本身优先”，同时保留多语言描述：
++每个 `values[]` 元素按以下内容生成一个向量：
+ 
+ ```text
++{value}
+ {name}
+-{canonical_value（适用时）}
++{display_zh}
++{display_en}
++{display_lang_1}
++{display_lang_2}
+ {description_zh}
+ {description_en}
+-{localized_description_es/...（存在时）}
++{description_lang_1}
++{description_lang_2}
++{synonyms_value}
++{synonyms_description}
+ ```
+ 
+-若当前语义元素本身是西语或其他小语种，例如：
++> 用户给出的模板最后两行 description 都写成了 `description_lang_1`；按两个额外语言槽位的对称设计，V5.6 将最后一个修正为 `description_lang_2`。
+ 
+-```text
+-name = cliente formal
+-language = es
+-```
++其中：
+ 
+-则 `name` 本身就是向量的第一语义主体。
++```text
++synonyms_value
++  = 当前 Enum Value.refSynonymTypeId 对应 synonyms 中最多 3 种语言的所有同义词
+ 
+-不默认在向量开头拼接 ObjectType / Property 名称，避免父级上下文压过实际 Alias/Enum 语义。
++synonyms_description
++  = 对应 SynonymType 的 name + description（按存在语言展开）
++```
+ 
+-如果同一个 Enum 被多个 Property 复用，应为每个 Property 建立独立语义元素记录：
++向量顺序坚持：
+ 
+ ```text
+-id 唯一
+-parent_id = 对应 Property.id
+-language = 当前元素语言
++Value First
++→ Name / Display
++→ Description
++→ Synonyms
+ ```
+ 
+-这样相同枚举值可以在不同 Property、不同语言表达上分别召回和精排，同时不丢失 Property 归属。
++不在开头追加 ObjectType / Property 文本；`parent_id` 已提供确定性归属。
+ 
+-## 2.10 统一 id 设计
++## 2.10 统一 `id` 与 Synonym 身份规则
+ 
+-所有记录统一使用字段名 `id`，不再引入其他平行 ID 字段。
++所有业务记录统一使用 `id`：
+ 
+-ID 规则：
++```text
++种子节点：ObjectType / Property.id
++枚举值：EnumType.values[].id
++实例值：DataSync 提供稳定 id，或 OAG 根据 parent_id + value 稳定生成
++```
+ 
+-```text
+-种子节点：直接使用 OMS 中 ObjectType / Property 全局 ID
+-元数据语义元素：优先使用源模型中该 Alias/Enum 元素的稳定 ID
+-实例语义元素：优先使用 DataSync 提供的稳定元素 ID
+-```
+-
+-如果源数据没有独立 ID，则由 OAG 稳定构造：
++Synonym 不建立独立物理记录，因此：
+ 
+ ```text
+-{parent_id}::{type}::{source_key}
++没有 OBJECT_ALIAS id
++没有 PROPERTY_ALIAS id
++没有 ENUM_ALIAS id
++没有 INSTANCE_ALIAS id
+ ```
+ 
+-例如：
++命中 synonym 时，通过：
+ 
+ ```text
+-PropertyId::ENUM_VALUE::SubClass::1
+-PropertyId::ENUM_ALIAS::SubClass::1::FORMAL
+-PropertyId::INSTANCE_VALUE::VIP
+-PropertyId::INSTANCE_ALIAS::VIP::高价值客户
++record.id
++matched_field = synonyms.<language>
++matched_value = 实际命中的同义词
+ ```
+ 
+-只允许在 `source_key` 过长时局部 Hash，不对种子节点 `id` 做 Hash。
++表达结果。
+ 
+ 
+-## 2.11 实例语义元素表结构
++## 2.11 `t_instance_evidence_{ontology_id}` 实例列值表结构
+ 
+-实例语义元素物理表：
++实例索引只保存真实 DISTINCT 列值，不定义 `INSTANCE_ALIAS`。
+ 
+ ```text
+-{ontology_id}_instance_evidence
++t_instance_evidence_{ontology_id}
+ ```
+ 
+-Owner：OAG；DataSync 通过 Bulk Import 提供数据。
+-
+-推荐与元数据语义元素保持同构：
+-
+ | 字段 | 类型 | 非空 | 说明 |
+ |---|---|---|---|
+-| `vector` | `DOUBLE[]` | ✔ | 实例语义向量 |
+-| `type` | `INT` | ✔ | 0 INSTANCE_VALUE，1 INSTANCE_ALIAS |
+-| `id` | `VARCHAR(512 CHAR)` | ✔ | 当前具体元素自身 ID |
++| `vector` | `DOUBLE[]` | ✔ | Instance Value 向量 |
++| `type` | `INT` | ✔ | 固定表示 INSTANCE_VALUE |
++| `id` | `VARCHAR(512 CHAR)` | ✔ | 稳定实例值 ID |
+ | `parent_id` | `VARCHAR(256 CHAR)` | ✔ | 所属 Property.id |
+-| `name` | `VARCHAR(4096 CHAR)` | ✔ | 实例值或实例同义词 |
+-| `canonical_value` | `VARCHAR(4096 CHAR)` | ✔ | 真实业务值；INSTANCE_VALUE 时通常等于 name |
+-| `language` | `VARCHAR(32 CHAR)` |  | 当前实例值/同义词语言，如 es/zh/en/und |
+-| `description_zh` | `TEXT` |  | 中文兼容描述 |
+-| `description_en` | `TEXT` |  | 英文兼容描述 |
++| `value` | `VARCHAR(4096 CHAR)` | ✔ | 真实 DISTINCT 列值 |
++| `language` | `VARCHAR(32 CHAR)` |  | 可选语言标识；未知为 und |
+ 
+-`INSTANCE_ALIAS` 保留真实业务支持。Alias 本身是独立检索目标，通过 `canonical_value` 映射到真实实例值。
+-
+-对于自然语言实例值和实例同义词，DataSync 如果已知语言，应显式传 `language`；未知时 OAG 可以检测，仍无法判断则使用 `und`。例如：
++明确不保存：
+ 
+ ```text
+-VIP                         → language=und
+-高价值客户                   → language=zh
+-high-value customer         → language=en
+-cliente de alto valor       → language=es
++name
++canonical_value
++description_*
++synonyms
++INSTANCE_ALIAS
+ ```
+ 
+-## 2.12 Instance Value 向量准入规则
++DataSync 只提交真实列值；如果业务存在对实例值的语言改写，应在 Query Understanding、应用层规则或其他业务资产中处理，不在 Instance Evidence 中复制一套同义词资产。
+ 
+-`is_semantic=true` 是必要条件，不是充分条件。
+ 
+-推荐：
++## 2.12 Instance Value 向量准入规则
++
++`is_semantic=true` 是必要条件，不是充分条件：
+ 
+ ```text
+ semantic_enabled =
+@@ -920,20 +877,9 @@ semantic_enabled =
+   AND cardinality_eligible
+ ```
+ 
+-### 只索引 DISTINCT Value
++只索引 DISTINCT Value。例如 5000 万 Subscriber 行、`subLevel` 只有 VIP/GOLD/SILVER/NORMAL，只生成 4 条实例值记录。
+ 
+-例如：
+-
+-```text
+-5000万 Subscriber 行
+-subLevel 只有 VIP/GOLD/SILVER/NORMAL
+-```
+-
+-只生成 4 组 Value 语义元素，而不是 5000 万个向量。
+-
+-### 默认不向量化
+-
+-以下值通常不进入 Dense：
++默认不向量化：
+ 
+ ```text
+ UUID
+@@ -945,9 +891,7 @@ UUID
+ 高随机编码
+ ```
+ 
+-它们仍可在 OpenSearch keyword / 数据源查询中精确处理。
+-
+-### 适合向量化
++适合向量化：
+ 
+ ```text
+ 产品名称
+@@ -959,97 +903,90 @@ UUID
+ 人可理解业务分类
+ ```
+ 
+-### 高基数自由文本
++高基数自由文本进入单独 Document/RAG Index，不进入本体种子节点 Resolver 的 Instance Value Index。
+ 
+-高基数自然语言长文本不应无限进入 Instance 语义元素。
+ 
+-建议进入单独的：
++## 2.13 Instance Value 向量化内容
++
++实例列值 Dense 内容严格只使用：
+ 
+ ```text
+-Document / RAG Index
++{value}
+ ```
+ 
+-而不是本体 种子节点 Resolver 的 Instance Value Index。
+-
+----
+-
+-
+-## 2.13 实例语义元素 Vector 内容
+-
+-实例语义元素 Dense 内容：
++不拼接：
+ 
+ ```text
+-{name}
+-{canonical_value}
+-{description_zh}
+-{description_en}
++Property name
++ObjectType name
++description
++synonyms
++canonical_value
+ ```
+ 
+-坚持：
++这样 Instance Dense 表达始终由真实业务值主导，Property/ObjectType 归属由 `parent_id + GraphTopologyCache` 提供。
+ 
+-> **Value First，Property Context 不写入向量主文本。**
+ 
+-Property 归属使用 `parent_id` 确定，ObjectType 归属由本体拓扑补齐，而不是从向量文本解析。
++## 2.14 Metadata / Instance OpenSearch Index
+ 
++### `t_metadata_evidence_{ontology_id}`
+ 
+-## 2.14 OpenSearch 语义元素索引
+-
+-Metadata / Instance 两个 OpenSearch Index 使用与对应 GaussVector 表一致的核心业务字段，并保留语言信息：
++核心字段与 GaussVector 一致：
+ 
+ ```text
+-type             integer
+-id               keyword
+-parent_id        keyword
+-name             keyword + text
+-canonical_value  keyword + text
+-language         keyword
+-description_zh   text
+-description_en   text
++type
++id
++parent_id
++value
++name
++display_zh
++display_en
++display_lang_1
++display_lang_2
++description_zh
++description_en
++description_lang_1
++description_lang_2
++synonyms
+ ```
+ 
+-如 OMS / DataSync 提供额外语言描述，可在 OpenSearch 中使用结构化 `i18n` 扩展，而不向 GaussVector 表增加固定语言列。
+-
+-Exact Priority：
++Exact 优先：
+ 
+ ```text
+ id
++value.keyword
+ name.keyword
+-canonical_value.keyword
++display_*.keyword
++synonyms.*.keyword
+ ```
+ 
+ BM25：
+ 
+ ```text
+ name
+-description_zh
+-description_en
+-i18n.display / i18n.description
++display_*
++description_*
++synonyms.*
+ ```
+ 
+-语言处理：
+-
+-```text
+-language 与 query.language_hint 一致 → 可 Boost
+-language 不一致 → 不做硬过滤
+-language=und → 正常参与 Exact/BM25/Dense
+-```
++### `t_instance_evidence_{ontology_id}`
+ 
+-不再保留：
++只需要：
+ 
+ ```text
+-normalized_value
+-source_version
+-content
+-aliases 数组
++type       integer
++id         keyword
++parent_id  keyword
++value      keyword + text
++language   keyword（可选）
+ ```
+ 
+-Alias 已经作为独立语义元素记录，不需要再在同一文档中重复存一个 Alias 数组。
++Exact 主要搜索 `id/value.keyword`，BM25 搜索 `value`。
+ 
+ ## 2.15 规范化规则
+ 
+-规范化属于索引构建/查询处理逻辑，不增加额外持久化字段。
++规范化属于索引构建/查询处理逻辑，不增加额外持久化字段：
+ 
+-推荐在写入和查询侧使用一致规则：
++```text
+ trim
+@@ -1059,144 +996,73 @@ casefold（适用语言）
+ 全半角归一
+ ```
+ 
+-原始 `name` 和 `canonical_value` 始终保留；OpenSearch 通过 normalizer/analyzer 实现 Exact/BM25 规范化，GaussVector 在生成 Embedding 文本前使用相同基础规范化。
+-
+-
+-## 2.16 language_hint 与语言处理
++原始 `name/value/display/description/synonyms` 始终保留；OpenSearch 通过 normalizer/analyzer 实现 Exact/BM25 规范化，GaussVector 在 Embedding 前使用相同基础规范化。
+ 
+-多语言能力作为 OAG 的正式能力保留。
+ 
+-### 种子节点与语义元素的语言字段边界
++## 2.16 language_hint 与语言槽位
+ 
+-```text
+-种子节点 GaussVector 主表
+-  → 不新增 language 列；一条记录表示一个多语言语义实体
+-  → 完整语言内容来自 OMS i18n 元数据
+-
+-元数据/实例语义元素
+-  → 保存简洁字段 language
+-  → 表示当前 Alias/Enum/Instance 文本自身的语言
+-```
+-
+-查询理解阶段输出：
++查询理解阶段仍可以输出：
+ 
+ ```text
+ language_hint = BCP 47 language tag / mixed / und
+ ```
+ 
+-示例：
+-
+-```text
+-zh
+-en
+-es
+-es-MX
+-pt-BR
+-fr
+-ar
+-id
+-mixed
+-und
+-```
+-
+-语言识别优先级：
+-
+-```text
+-源数据显式 language
+-> OMS / DataSync 已定义 locale
+-> OAG 自动检测
+-> und
+-```
+-
+-它用于：
+-
+-```text
+-OpenSearch Analyzer 选择
+-Lexical Ranking Boost
+-返回结果本地化展示
+-可观测性
+-LLM Context
+-```
+-
+-Dense 检索**不使用语言强过滤**，因为用户可能使用西语查询，而正确的种子节点只有中文/英文主字段；跨语言 Dense 和多语言 Alias 应继续承担召回。
+-
+-对于：
+-
+-```text
+-FORMAL
+-IOT_FORMAL
+-A001
+-```
+-
+-等无法可靠判断自然语言的 Token：
+-
+-```text
+-language = und
+-```
+-
+-对于：
++但物理存储按两种机制处理：
+ 
+ ```text
+-FORMAL用户
+-5G用户
+-```
++种子节点/Enum Value display、description
++  → zh/en 固定 + lang_1/lang_2 两个 ontology 级语言槽位
+ 
+-可标：
++synonyms
++  → language Map，最多 3 种语言，不固定
+ 
+-```text
+-language = mixed
++Instance Value
++  → 仅 value；language 为可选观测/Analyzer Hint
+ ```
+ 
+-### 返回语言回退
+-
+-当调用方希望以某个语言展示结果时，推荐：
++检索规则：
+ 
+ ```text
+-请求 locale 精确匹配
+-> 同主语言匹配（如 es-MX → es）
+-> en
+-> zh
+-> name
++同语言 Exact/BM25 可以 Boost
++跨语言候选不硬过滤
++Dense 不按 language_hint 过滤
++LLM 精排继续看到原始问题和所有候选
+ ```
+ 
+-回退顺序可配置，不影响底层检索和 RRF。
+ 
+ ## 2.17 数据质量治理
+ 
+ OAG 元数据同步阶段必须检查：
+ 
+ ```text
+-Alias 与 Canonical 重复
+-Alias 重复
+-同一 ObjectType 下 Property Alias 冲突
+-一个 Alias 映射多个不相关 种子节点
++ObjectType / Property id 重复或缺失
++name/display/description 格式非法
++additionalLanguages 槽位配置不一致
++synonyms 语言数 > 3
++synonyms 某语言值重复
++synonyms 与 canonical name/display 完全重复
++同一业务范围内 synonym 映射冲突
+ Enum Ref 不存在
+-Enum Value 重复
+-Enum Alias 冲突
+-Description 多语言格式错误
++Enum values[].id/value 重复
++Enum Value.refSynonymTypeId 不存在
++Property.referenceEnumId 不存在
+ Parent ObjectType 缺失
+ ```
+ 
+-冲突处理原则：
+-
+-```text
+-不能静默覆盖
+-必须可观测
+-必要时阻断当前 语义元素 入库
+-```
++冲突处理原则：不能静默覆盖，必须可观测；严重结构错误阻断当前记录或当前批次入库。
+ 
+-DataSync 额外检查：
++DataSync 实例值额外检查：
+ 
+ ```text
+-空值
+-超长 Value
++空 value
++超长 value
+ distinct_count
+ 高基数
+ 无意义随机串
+-Instance Alias 冲突
++非法 UTF-8
+ ```
+ 
+----
++Instance Evidence 不再检查 Instance Alias，因为 V5.6 不支持 `INSTANCE_ALIAS`。
+ 
+ 
+ ## 2.18 增量索引与幂等
+@@ -1281,9 +1147,9 @@ OAG 是统一索引构建和检索引擎，负责：
+ 
+ ```text
+ OMS 元数据读取
+-种子节点索引
+-元数据语义元素索引
+-实例语义元素 Bulk Import
++ObjectType / Property + synonyms 构建 t_ontoretrieval_{ontology_id}
++Enum values[] + synonyms 构建 t_metadata_evidence_{ontology_id}
++Instance Value Bulk Import 构建 t_instance_evidence_{ontology_id}
+ Embedding
+ GaussVector / OpenSearch 写入
+ ANN/全文索引构建
+@@ -1293,81 +1159,62 @@ Generation 发布
+ 
+ ### DataSync
+ 
+-DataSync 负责：
++DataSync 只负责实例列值数据：
+ 
+ ```text
+ 读取 is_semantic=true Property
+ 访问实际数据源
+ DISTINCT / 基础标准化
+-整理 INSTANCE_VALUE / INSTANCE_ALIAS
+-建立实例数据与 Property 的映射
++输出真实 Instance Value
++建立 Value 与 Property 的映射
+ 生成 Manifest + Data Files
+ 通过 File / MinIO 交付 OAG
+ ```
+ 
+-DataSync 不负责：
++DataSync **不再整理或提交 INSTANCE_ALIAS**。
+ 
+-```text
+-Embedding
+-GaussVector / OpenSearch Client
+-ANN 参数
+-物理表结构
+-索引发布
+-```
++DataSync 不负责 Embedding、GaussVector/OpenSearch Client、ANN 参数、物理表结构和索引发布。
+ 
+-统一关联方式：
++统一关联：
+ 
+ ```text
+ DataSync Manifest.propertyId
+    ↓
+ OAG 校验 Property
+    ↓
+-实例语义元素 parent_id = Property.id
++Instance parent_id = Property.id
+ ```
+ 
+-ObjectType 上下文不要求 DataSync 每行重复传输，由 OAG 通过本体拓扑缓存补齐。
++ObjectType 上下文由 OAG 通过本体拓扑缓存补齐。
+ 
+ 
+ ## 3.2 完整索引构建流程
+ 
+ ```mermaid
+ flowchart LR
+-    subgraph OMS[OMS 本体模型]
+-      OT[ObjectType]
+-      P[Property]
+-      OA[Object/Property Alias]
+-      EN[Enum Value/Alias]
++    subgraph OMS[OMS 本体资产]
++      OT[ObjectType / Property]
++      ST[SynonymType]
++      EN[EnumType.values]
+     end
+ 
+     subgraph DS[DataSync]
+       SC[is_semantic Property]
+-      DV[DISTINCT Instance Value/Alias]
++      DV[DISTINCT Instance Value]
+       PKG[Manifest + Data Files]
+     end
+ 
+     subgraph OAG[OAG Index Engine]
+-      SB[Seed Builder]
+-      MB[Metadata Element Builder]
+-      IB[Instance Element Builder]
++      SB[Seed Builder<br/>name/display/description/synonyms]
++      MB[Enum Value Builder<br/>value/name/display/description/synonyms]
++      IB[Instance Value Builder<br/>value only]
+       EMB[Embedding]
+     end
+ 
+-    subgraph GV[GaussVector]
+-      GS[Seed]
+-      GM[Metadata]
+-      GI[Instance]
+-    end
+-
+-    subgraph OS[OpenSearch]
+-      OS1[Seed]
+-      OM[Metadata]
+-      OI[Instance]
+-    end
