@@ -1,0 +1,37 @@
+name: V5.7 final consistency fix
+
+on:
+  push:
+    branches:
+      - agent/v5-7-property-fields
+    paths:
+      - .github/workflows/v5-7-final-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fix stale incremental id wording and verify
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('docs/OAG本体锚点语义检索与向量索引设计方案.md')
+          s = p.read_text()
+          old = 'FULL_REPLACE 使用 staging generation → verify → active generation 原子发布；INCREMENTAL 使用稳定 `id` 幂等修改。'
+          new = 'FULL_REPLACE 使用 staging generation → verify → active generation 原子发布；INCREMENTAL 使用与各表业务语义一致的唯一键执行幂等 UPSERT/DELETE，其中 Instance 使用 `propertyid + objectTypeId + normalized(value)`。'
+          assert old in s
+          p.write_text(s.replace(old, new))
+          PY
+          actual_sha=$(git hash-object "docs/OAG本体锚点语义检索与向量索引设计方案.md")
+          test "$actual_sha" = "819d045badc1f36396a94242da32446139cd4375"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "docs/OAG本体锚点语义检索与向量索引设计方案.md"
+          git commit -m "修正V5.7增量导入幂等键描述"
+          git push
