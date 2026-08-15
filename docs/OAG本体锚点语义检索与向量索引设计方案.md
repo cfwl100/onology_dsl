@@ -1277,7 +1277,7 @@ FULL_REPLACE
 INCREMENTAL（UPSERT / DELETE）
 ```
 
-FULL_REPLACE 使用 staging generation → verify → active generation 原子发布；INCREMENTAL 使用稳定 `id` 幂等修改。
+FULL_REPLACE 使用 staging generation → verify → active generation 原子发布；INCREMENTAL 使用与各表业务语义一致的唯一键执行幂等 UPSERT/DELETE，其中 Instance 使用 `propertyid + objectTypeId + normalized(value)`。
 
 适用范围仍支持 ONTOLOGY / OBJECT_TYPE / PROPERTY_SET / PROPERTY。日常增量场景只处理 Instance Value 的新增、删除或值变化，不再存在“Instance Alias 调整”。
 
