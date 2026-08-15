@@ -1,0 +1,133 @@
+--- a/docs/OAG本体锚点语义检索与向量索引设计方案.md
++++ b/docs/OAG本体锚点语义检索与向量索引设计方案.md
+@@ -3020,7 +2978,7 @@
+ matched_value = 实际同义词
+ ```
+ 
+-LLM 不创造新的 `id/value/synonyms`，只能从候选中选择。
++LLM 不创造新的 `id/propertyid/objectTypeId/value/synonyms`，只能从候选中选择。
+ 
+ 
+ ## 5.2 为什么精排必须使用原始问题
+@@ -3048,7 +3006,8 @@
+       "rrf_score": 0.071,
+       "supporting_hits": [
+         {
+-          "id": "ei.veh12.enum.Col35.val.red8.1",
++          "propertyid": "prop:ont:vehicle:sp:bodyColor",
++          "objectTypeId": "vehicle-object-id",
+           "type": "ENUM_VALUE",
+           "value": "red",
+           "name": "red",
+@@ -3075,15 +3034,15 @@
+ 你是 OAG 语义检索精排器。
+ 
+ Rules:
+-1. 只能选择输入候选中存在的 id。
++1. 只能选择输入候选中已存在的记录：种子节点按 `id` 识别，Enum/Instance 按 `type + propertyid + objectTypeId + value` 识别。
+ 2. 必须结合原始问题，而不是只看相似度。
+-3. Enum Value / Instance Value 必须结合 parent_id 对应的 Property/ObjectType 判断。
++3. Enum Value / Instance Value 必须结合 `propertyid + objectTypeId` 判断所属 Property/ObjectType。
+ 4. synonym 命中时保留 matched_field/matched_value，不创建 synonym id。
+ 5. Exact/BM25/Dense/RRF 分数只是证据。
+ 6. 必须考虑不同 Semantic Unit 的上下文一致性。
+ 7. 每个 Unit 可以返回 0/1/N。
+ 8. 无匹配允许 no_match=true。
+-9. 不创造不存在的 id/value。
++9. 不创造不存在的 id/propertyid/objectTypeId/value。
+ 10. 仅输出简短 reason，不输出详细思维过程。
+ 11. 严格输出 JSON Schema。
+ ```
+@@ -3098,7 +3057,8 @@
+       "semantic_unit_id": "u4",
+       "selected": [
+         {
+-          "id": "ei.veh12.enum.Col35.val.red8.1",
++          "propertyid": "prop:ont:vehicle:sp:bodyColor",
++          "objectTypeId": "vehicle-object-id",
+           "type": "ENUM_VALUE",
+           "value": "red",
+           "name": "red",
+@@ -3115,12 +3075,12 @@
+ }
+ ```
+ 
+-ObjectType / Property 上下文由 OAG 根据 `parent_id + GraphTopologyCache` 补齐，不要求 LLM 生成。
++Enum/Instance 的 ObjectType / Property 上下文由 `propertyid + objectTypeId` 直接提供；种子节点 Property 的父 ObjectType 仍可由 GraphTopologyCache 补齐，不要求 LLM 生成。
+ 
+ 
+ ## 5.6 LLM 精排可靠性与降级
+ 
+-程序校验 JSON Schema、`id ∈ Input Candidate`、分数范围、结果去重和数量上限。
++程序校验 JSON Schema、候选身份是否来自 Input Candidate、分数范围、结果去重和数量上限。
+ 
+ ```text
+ LLM Timeout / JSON 错误
+@@ -3156,7 +3116,8 @@
+ 如果最终选中 Enum Value，必须返回：
+ 
+ ```text
+-id
++propertyid
++objectTypeId
+ value
+ name
+ display/description（按需）
+@@ -3169,7 +3130,8 @@
+ 例如用户输入“红色”，可以得到：
+ 
+ ```text
+-id = ei...red8.1
++propertyid = prop:ont:vehicle:sp:bodyColor
++objectTypeId = vehicle-object-id
+ value = red
+ matched_field = synonyms.zh
+ matched_value = 红色
+@@ -3204,7 +3166,8 @@
+   "text": "红色",
+   "results": [
+     {
+-      "id": "ei.veh12.enum.Col35.val.red8.1",
++      "propertyid": "prop:ont:vehicle:sp:bodyColor",
++      "objectTypeId": "vehicle-object-id",
+       "type": "ENUM_VALUE",
+       "value": "red",
+       "name": "red",
+@@ -3228,7 +3191,7 @@
+ 
+ ### seedNodes
+ 
+-由 retrievalResults 投影生成，只用于图构建兼容。Enum Value / Instance Value 均投影到其 `parent_id` Property，再补 Parent ObjectType。
++由 retrievalResults 投影生成，只用于图构建兼容。Enum Value / Instance Value 直接使用其 `propertyid` 作为 Property 种子节点，并使用 `objectTypeId` 补齐所属 ObjectType。
+ 
+ 
+ ## 5.11 Final Response 数据结构
+@@ -3341,8 +3304,8 @@
+ |---|---|
+ | ObjectType | 当前 `id` |
+ | Property | 当前 `id` |
+-| Enum Value | `parent_id` 对应 Property |
+-| Instance Value | `parent_id` 对应 Property |
++| Enum Value | `propertyid` 对应 Property，并携带 `objectTypeId` |
++| Instance Value | `propertyid` 对应 Property，并携带 `objectTypeId` |
+ 
+ Synonym 不是独立结果类型：如果用户命中 `synonyms.*`，记录仍按所属 ObjectType/Property/Enum Value 的规则投影。
+ 
+@@ -3359,7 +3322,7 @@
+ 
+ ## 6.2 Property → ObjectType：Topology Cache 优先
+ 
+-当前种子节点向量表为了兼容现有 OAG Schema，不保存 `parent_id`。
++当前种子节点向量表不额外保存 Property→ObjectType 归属字段。
+ 
+ 因此 Property → ObjectType 的推荐实现为：
+ 
+@@ -3383,7 +3346,7 @@
+   └─ no  → 调用现有 addObjectTypeByProperty() GQL 兜底
+ ```
+ 
+-这样既保持种子节点表不保存 `parent_id` 的职责边界，又避免每次查询都访问图数据库。
++这样既保持种子节点表职责简洁，又避免每次查询都访问图数据库。
+ 
+ 
+ ## 6.3 当前三种子图策略：接口语义与真实算法
