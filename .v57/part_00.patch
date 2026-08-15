@@ -1,0 +1,117 @@
+--- a/docs/OAG本体锚点语义检索与向量索引设计方案.md
++++ b/docs/OAG本体锚点语义检索与向量索引设计方案.md
+@@ -1,8 +1,8 @@
+ # OAG 面向本体种子节点的语义检索、混合排序与本体子图构建设计方案
+ 
+-> 版本：V5.6  
+-> 目标：在不丢失既有 Bulk Import、混合召回、RRF、LLM 精排和子图算法设计的基础上，进一步对齐现有 OMS 本体 JSON 资产：统一三张索引表命名，种子节点和枚举值直接内嵌 `synonyms`，固定支持中文/英文并额外支持最多 2 种语言，实例索引只保存真实列值。  
+-> 核心决策：**ObjectType/Property = 种子节点；Synonym 是种子节点或枚举值的结构化字段而非独立物理行；Metadata Evidence 只承载 Enum Value；Instance Evidence 只承载真实 Instance Value；所有记录主键统一为 `id`；每个 Semantic Unit 默认 6 路一次 Weighted RRF。**
++> 版本：V5.7  
++> 目标：在不丢失既有 Bulk Import、混合召回、RRF、LLM 精排和子图算法设计的基础上，进一步对齐 OAG 现有字段语义：种子节点继续使用 `id`，枚举值/实例值使用 `propertyid + objectTypeId` 显式表达归属；实例列值以 Property 的 `"capability":"DIMENSION"` 作为索引准入标识，并保证向量库中的实例值记录唯一。  
++> 核心决策：**ObjectType/Property = 种子节点；种子节点使用 `id`；Enum/Instance 使用 `propertyid + objectTypeId` 表达所属 Property/ObjectType；Synonym 是种子节点或枚举值的结构化字段；Instance Value 按唯一值入库；每个 Semantic Unit 默认 6 路一次 Weighted RRF。**
+ 
+ ---
+ 
+@@ -76,7 +76,7 @@
+ matched_value
+ ```
+ 
+-但返回记录的 `id` 仍然是该 ObjectType / Property / Enum Value 自身的 `id`，不再为每个同义词制造新的业务 ID。
++命中 Synonym 时不创建新的同义词记录：ObjectType/Property 仍返回种子节点 `id`；Enum Value 使用 `propertyid + objectTypeId + value` 表达记录身份。
+ 
+ 例如：
+ 
+@@ -85,7 +85,7 @@
+    ↓
+ 命中：Color 相关 synonyms.zh = 色泽
+    ↓
+-record.id = 对应 ObjectType / Property / Enum Value id
++record identity = 种子节点 id，或 Enum 的 propertyid + objectTypeId + value
+ matched_field = synonyms.zh
+ matched_value = 色泽
+ ```
+@@ -194,7 +194,7 @@
+ includeActions = 0
+ ```
+ 
+-V5.6 不要求一次性替换现有链路，而是在现有类和接口上渐进演进：
++V5.7 不要求一次性替换现有链路，而是在现有类和接口上渐进演进：
+ 
+ ```text
+ 现有 getSeedIds()
+@@ -251,15 +251,15 @@
+ 
+ Synonym 只是所属实体的一个可检索字段，不再单独占一行。
+ 
+-### 设计原则 2：所有业务记录统一使用 `id`
++### 设计原则 2：种子节点与值索引使用清晰的归属字段
+ 
+ ```text
+ 种子节点：id = ObjectType / Property 本体 ID
+-枚举值：id = values[].id
+-实例值：id = DataSync 稳定 ID；没有时由 OAG 稳定生成
++枚举值：propertyid = 所属 Property.id，objectTypeId = 所属 ObjectType.id
++实例值：propertyid = 所属 Property.id，objectTypeId = 所属 ObjectType.id
+ ```
+ 
+-枚举值和实例值通过 `parent_id` 关联 Property 种子节点；ObjectType 上下文由本体拓扑补齐。
++Enum/Instance 不再使用含义模糊的通用 ID 字段表达归属；具体命中的业务值由 `value` 保留。
+ 
+ ### 设计原则 3：Matched Value 必须保留
+ 
+@@ -281,7 +281,7 @@
+ 
+ ```text
+ 种子节点 hit：group_id = hit.id
+-Enum Value / Instance Value hit：group_id = hit.parent_id
++Enum Value / Instance Value hit：group_id = hit.propertyid
+ ```
+ 
+ 这样一个 Property 即使有大量枚举值、实例值或同义词，也不会因为记录/字段数量多而重复加分。
+@@ -309,13 +309,13 @@
+ 
+ ## 2.1 数据模型：种子节点、枚举值、实例值与 Synonym
+ 
+-V5.6 的物理索引模型只保留三类记录：
++V5.7 的物理索引模型只保留三类记录：
+ 
+-| 类型 | 物理实体 | Synonym 处理 | parent_id |
++| 类型 | 物理实体 | Synonym 处理 | 归属字段 |
+ |---|---|---|---|
+-| 种子节点 | ObjectType / Property | 内嵌 `synonyms` | 不需要；Property→ObjectType 走拓扑 |
+-| 元数据元素 | Enum Value | 内嵌 `synonyms` | 指向 Property.id |
+-| 实例元素 | Instance Value | **不支持 INSTANCE_ALIAS** | 指向 Property.id |
++| 种子节点 | ObjectType / Property | 内嵌 `synonyms` | 种子节点自身使用 `id`；Property→ObjectType 走拓扑 |
++| 元数据元素 | Enum Value | 内嵌 `synonyms` | `propertyid + objectTypeId` |
++| 实例元素 | Instance Value | 不建立实例同义词记录 | `propertyid + objectTypeId` |
+ 
+ 同义词统一来源于 `synonym-type` 资产，结构固定使用：
+ 
+@@ -426,7 +426,7 @@
+ 
+ 注意：额外 display/description 最多 2 种语言；`synonyms` 最多 3 种语言，且语言组合不固定，两者是两个独立约束。
+ 
+-Property → ObjectType 映射继续由 `has_property` 与 `GraphTopologyCache` 提供，不在本表增加 `parent_id`。
++Property → ObjectType 映射继续由 `has_property` 与 `GraphTopologyCache` 提供；种子节点表不额外保存 ObjectType 归属字段。
+ 
+ 明确不保留：
+ 
+@@ -436,7 +436,6 @@
+ model_version
+ source_version
+ updated_at
+-parent_id
+ i18n_content
+ content
+ ```
+@@ -739,8 +738,8 @@
+ |---|---|---|---|
+ | `vector` | `DOUBLE[]` | ✔ | Enum Value 向量 |
+ | `type` | `INT` | ✔ | 固定表示 ENUM_VALUE |
+-| `id` | `VARCHAR(512 CHAR)` | ✔ | `values[].id` |
+-| `parent_id` | `VARCHAR(256 CHAR)` | ✔ | 引用该 Enum 的 Property.id |
++| `propertyid` | `VARCHAR(256 CHAR)` | ✔ | 引用该 Enum 的 Property.id |
++| `objectTypeId` | `VARCHAR(256 CHAR)` | ✔ | 该 Property 所属 ObjectType.id |
+ | `value` | `VARCHAR(4096 CHAR)` | ✔ | 真实枚举值 |
+ | `name` | `VARCHAR(4096 CHAR)` | ✔ | `values[].name` |
+ | `display_zh` | `VARCHAR(512 CHAR)` |  | 中文 display |
