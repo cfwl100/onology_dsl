@@ -1,0 +1,42 @@
+--- a/docs/OAG本体锚点语义检索与向量索引设计方案.md
++++ b/docs/OAG本体锚点语义检索与向量索引设计方案.md
+@@ -4631,10 +4594,10 @@
+ 
+ 需要避免：
+ 
+-1. **把 Synonym 建成独立 OBJECT_ALIAS/PROPERTY_ALIAS/ENUM_ALIAS 行。** V5.6 使用所属记录的 `synonyms` 字段。
++1. **把 Synonym 建成独立 OBJECT_ALIAS/PROPERTY_ALIAS/ENUM_ALIAS 行。** V5.7 使用所属记录的 `synonyms` 字段。
+ 2. **为了多语言无限增加 display_xx/description_xx 列。** 固定 zh/en + 最多两个额外语言槽位。
+ 3. **认为 synonyms 语言必须固定 zh/en/es。** Synonyms 最多 3 种语言，但组合不固定。
+-4. **实例值继续维护 INSTANCE_ALIAS。** Instance Evidence 只保存真实 DISTINCT value。
++4. **实例值重复入库。** Instance Evidence 必须按 `propertyid + objectTypeId + normalized(value)` 保证唯一。
+ 5. **实例向量拼接 Property/描述/同义词。** Instance Dense 严格只使用 `{value}`。
+ 6. **Enum synonym 命中后丢失真正过滤值。** 返回 Enum Value 记录的 `value`，同时保留 `matched_field/matched_value`。
+ 7. **直接按 synonym 数量做 RRF 加分。** Synonym 是记录字段，不产生额外 Ranked Item。
+@@ -4652,7 +4615,7 @@
+ 2. **种子节点表统一命名 `t_ontoretrieval_{ontology_id}`。**
+ 3. **Metadata 表统一命名 `t_metadata_evidence_{ontology_id}`，只承载 Enum Value。**
+ 4. **Instance 表统一命名 `t_instance_evidence_{ontology_id}`，只承载 Instance Value。**
+-5. **所有业务记录主键统一为 `id`；Enum/Instance 使用 `parent_id` 指向 Property。**
++5. **种子节点继续使用 `id`；Enum/Instance 使用 `propertyid + objectTypeId` 显式表达 Property/ObjectType 归属。**
+ 6. **ObjectType/Property 同义词直接写入种子节点 `synonyms` 字段。**
+ 7. **Enum Value 同义词直接写入 Enum Value 记录 `synonyms` 字段。**
+ 8. **Synonym 不建立独立 OBJECT_ALIAS/PROPERTY_ALIAS/ENUM_ALIAS/INSTANCE_ALIAS 行。**
+@@ -4662,7 +4625,7 @@
+ 12. **种子节点向量化使用 name + 4语言 display/description + synonyms_value + synonyms_description。**
+ 13. **Enum Value 向量化使用 value + name + 4语言 display/description + synonyms_value + synonyms_description。**
+ 14. **Instance Value 向量化严格只使用 `{value}`。**
+-15. **Property → ObjectType 使用 GraphTopologyCache/has_property，不在种子节点表增加 parent_id。**
++15. **Property 种子节点 → ObjectType 使用 GraphTopologyCache/has_property；Enum/Instance 记录直接保存 `objectTypeId`。**
+ 16. **每个 Semantic Unit 默认形成 6 条 Ranked List：三类数据 × Lexical/Dense。**
+ 17. **默认采用 6 路一次 Weighted RRF，不采用两级 RRF；Exact/BM25 独立后可扩为 9 路。**
+ 18. **RRF 每通道先按种子节点 group_id 去重。**
+@@ -4672,7 +4635,7 @@
+ 22. **Enum/Instance 可以是最终结果，但不直接参与 Core Graph 路径算法。**
+ 23. **minimal/khop/component 的 legacy 与 enhanced 算法设计保持不变。**
+ 24. **GraphTopologyCache 继续服务 Property→ObjectType、Graph Hint、BFS 和 Component。**
+-25. **DataSync 只提供真实 DISTINCT 实例值，OAG 统一完成 Embedding、GaussVector/OpenSearch 和索引发布。**
++25. **DataSync 对 `"capability":"DIMENSION"` 的 Property 提供去重后的真实实例值，OAG 再次按唯一组合去重并统一完成 Embedding、GaussVector/OpenSearch 和索引发布。**
+ 26. **FULL_REPLACE 使用 staging generation，INCREMENTAL 使用幂等 UPSERT/DELETE。**
+ 27. **最终优化目标：检索结果准确 + Synonym 命中可解释 + Enum/Instance Value 准确 + 种子节点上下文准确 + Relation 准确 + Cypher 端到端准确。**
+ 
