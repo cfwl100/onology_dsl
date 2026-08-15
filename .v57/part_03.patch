@@ -1,0 +1,137 @@
+--- a/docs/OAG本体锚点语义检索与向量索引设计方案.md
++++ b/docs/OAG本体锚点语义检索与向量索引设计方案.md
+@@ -1773,7 +1731,7 @@
+ 重新领取未 COMMITTED Chunk
+ ```
+ 
+-已 COMMITTED Chunk 不重复执行；即使重复执行，稳定 id 仍保证幂等。
++已 COMMITTED Chunk 不重复执行；即使 Chunk 被重复执行，`propertyid + objectTypeId + normalized(value)` 的唯一组合也必须保证幂等。
+ 
+ ---
+ 
+@@ -1910,15 +1868,14 @@
+ ```text
+ ontologyId 存在
+ Property ID 存在
+-Property.is_semantic == true
++Property.capability == "DIMENSION"
+ Property 未删除/未失效
+-记录 id 合法且幂等
+ 记录 value 非空且格式合法
+ ```
+ 
+ 实例导入协议不再接收 `INSTANCE_ALIAS`，也不接收 `name/canonical_value/synonyms`。
+ 
+-ObjectType 通过本体 `has_property` 关系推导，不要求 DataSync 重复传输 `objectTypeId`。
++ObjectType 通过本体 `has_property` 关系推导；OAG 在入库时将结果写入 `objectTypeId`，不要求 DataSync 在每条数据中重复传输。
+ 
+ Mapping 错误属于 `JOB_FATAL`，必须在大规模 Embedding 前失败。
+ 
+@@ -2344,8 +2301,8 @@
+     participant OS as OpenSearch
+     participant C as IndexCatalog
+ 
+-    DS->>DS: 读取 is_semantic Property + 数据源
+-    DS->>DS: DISTINCT / Normalize Instance Value
++    DS->>DS: 读取 capability=DIMENSION Property + 数据源
++    DS->>DS: 去重 / Normalize Instance Value
+     DS->>M: 写 Manifest + Parquet 分片
+     M-->>DS: URI + checksum
+ 
+@@ -2384,15 +2341,15 @@
+ ```text
+ 种子节点：OMS ObjectType/Property + SynonymType → OAG
+ 元数据元素：OMS EnumType.values[] + SynonymType → OAG
+-实例元素：DataSync DISTINCT Value → File/MinIO → OAG
++实例元素：DataSync 去重后的 Value → File/MinIO → OAG
+ ```
+ 
+ 实例记录固定：
+ 
+ ```text
+ type = INSTANCE_VALUE
+-id = 当前 Value 稳定 ID
+-parent_id = Property.id
++propertyid = Property.id
++objectTypeId = Property 所属 ObjectType.id
+ value = 真实列值
+ EmbeddingInput = value
+ ```
+@@ -2409,9 +2366,9 @@
+ 5. **Data Package = Manifest + 不可变数据分片。**
+ 6. **Parquet 是大规模场景首选。**
+ 7. **推荐按 Property 分区，Property 映射放 Manifest。**
+-8. **每条实例记录使用 `id + value`，OAG 写入 `parent_id=Property.id`。**
++8. **每条实例记录使用 `propertyid + objectTypeId + value` 表达归属与业务值。**
+ 9. **实例向量化只使用 `{value}`。**
+-10. **稳定 id 保证 Chunk 重试幂等。**
++10. **`propertyid + objectTypeId + normalized(value)` 唯一组合保证 Chunk 重试幂等并防止重复数据。**
+ 11. **Parquet RowGroup / NDJSON Offset 作为 Checkpoint。**
+ 12. **GaussVector/OpenSearch 使用 Chunk 级双写协调和最终一致。**
+ 13. **FULL_REPLACE 使用 staging generation 原子发布。**
+@@ -2423,7 +2380,7 @@
+ 
+ ## 3.32 索引构建职责一句话总结
+ 
+-> **DataSync 负责把底层真实 DISTINCT 实例列值加工成按 Property 分区的 Import Package；OAG 以异步、可断点、可重试、可版本发布的 Bulk Import Pipeline，将 `id + value` 转成 `parent_id=Property.id` 的 `t_instance_evidence_{ontology_id}` 记录，并用 `{value}` 生成向量，统一完成 GaussVector/OpenSearch 写入和发布。**
++> **DataSync 负责把底层真实实例列值去重后加工成按 Property 分区的 Import Package；OAG 以异步、可断点、可重试、可版本发布的 Bulk Import Pipeline，补齐 `propertyid + objectTypeId`，以 `{value}` 生成向量，并按 `propertyid + objectTypeId + normalized(value)` 保证 GaussVector/OpenSearch 中记录唯一后发布。**
+ 
+ 
+ # 4. Query Understanding 与 6 路召回
+@@ -2784,9 +2741,9 @@
+ 
+ ```json
+ {
+-  "id": "ei.veh12.enum.Col35.val.red8.1",
++  "propertyid": "prop:ont:vehicle:sp:bodyColor",
++  "objectTypeId": "vehicle-object-id",
+   "type": "ENUM_VALUE",
+-  "parent_id": "prop:ont:vehicle:sp:bodyColor",
+   "value": "red",
+   "name": "red",
+   "display_zh": "红色",
+@@ -2808,9 +2765,9 @@
+ 
+ ```json
+ {
+-  "id": "ei.veh12.enum.Col35.val.red8.1",
++  "propertyid": "prop:ont:vehicle:sp:bodyColor",
++  "objectTypeId": "vehicle-object-id",
+   "type": "ENUM_VALUE",
+-  "parent_id": "prop:ont:vehicle:sp:bodyColor",
+   "value": "red",
+   "name": "red",
+   "matched_field": "synonyms.es",
+@@ -2825,9 +2782,9 @@
+ 
+ ```json
+ {
+-  "id": "subscriber-subClass::VIP",
++  "propertyid": "subClass-property-id",
++  "objectTypeId": "subscriber-object-id",
+   "type": "INSTANCE_VALUE",
+-  "parent_id": "subClass-property-id",
+   "value": "VIP",
+   "language": "und",
+   "matched_field": "value",
+@@ -2841,8 +2798,8 @@
+ 
+ ```text
+ 种子节点 hit：group_id = hit.id
+-Enum Value hit：group_id = hit.parent_id
+-Instance Value hit：group_id = hit.parent_id
++Enum Value hit：group_id = hit.propertyid
++Instance Value hit：group_id = hit.propertyid
+ ```
+ 
+ `matched_field/matched_value` 是最终解释“用户到底命中了 name/display/description/synonyms/value 哪一项”的关键字段，不能在 RRF 前丢失。
+@@ -2948,7 +2905,8 @@
+       ],
+       "supporting_hits": [
+         {
+-          "id": "ei.veh12.enum.Col35.val.red8.1",
++          "propertyid": "prop:ont:vehicle:sp:bodyColor",
++          "objectTypeId": "vehicle-object-id",
+           "type": "ENUM_VALUE",
+           "value": "red",
+           "name": "red",
