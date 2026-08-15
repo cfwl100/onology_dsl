@@ -1,0 +1,32 @@
+name: V5.7 property fields staging
+
+on:
+  push:
+    branches:
+      - agent/v5-7-property-fields
+    paths:
+      - .github/workflows/v5-7-property-fields.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply and verify V5.7
+        run: |
+          for p in .v57/part_*.patch; do
+            git apply --whitespace=nowarn "$p"
+          done
+          actual_sha=$(git hash-object "docs/OAG本体锚点语义检索与向量索引设计方案.md")
+          expected_sha="2c68978d7b43738eac2f96589654759301dcd22b"
+          test "$actual_sha" = "$expected_sha"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "docs/OAG本体锚点语义检索与向量索引设计方案.md"
+          git commit -m "生成V5.7字段语义修订文档"
+          git push
