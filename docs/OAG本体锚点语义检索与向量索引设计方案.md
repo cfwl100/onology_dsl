@@ -1,8 +1,8 @@
 # OAG 面向本体种子节点的语义检索、混合排序与本体子图构建设计方案
 
 > 版本：V5.7  
-> 目标：在不丢失既有 Bulk Import、混合召回、RRF、LLM 精排和子图算法设计的基础上，进一步对齐 OAG 现有字段语义：种子节点继续使用 `id`，枚举值/实例值使用 `propertyid + objectTypeId` 显式表达归属；实例列值以 Property 的 `"capability":"DIMENSION"` 作为索引准入标识，并保证向量库中的实例值记录唯一。  
-> 核心决策：**ObjectType/Property = 种子节点；种子节点使用 `id`；Enum/Instance 使用 `propertyid + objectTypeId` 表达所属 Property/ObjectType；Synonym 是种子节点或枚举值的结构化字段；Instance Value 按唯一值入库；每个 Semantic Unit 默认 6 路一次 Weighted RRF。**
+> 目标：在不丢失既有 Bulk Import、混合召回、RRF、LLM 精排和子图算法设计的基础上，进一步对齐现有 OMS 本体 JSON 资产：统一三张索引表命名，种子节点和枚举值直接内嵌 `synonyms`，固定支持中文/英文并额外支持最多 2 种语言，实例索引只保存去重后的真实列值。  
+> 核心决策：**ObjectType/Property = 种子节点；Synonym 是种子节点或枚举值的结构化字段而非独立物理行；Metadata Evidence 只承载 Enum Value；Instance Evidence 只承载真实 Instance Value；种子节点使用 `id`，Enum/Instance 统一使用 `propertyid + objectTypeId` 表达本体归属；每个 Semantic Unit 默认 6 路一次 Weighted RRF。**
 
 ---
 
@@ -25,7 +25,7 @@
 
 ## 1.1 设计目标与边界
 
-OAG 同时承担索引构建、语义检索和本体子图构建三类能力。V5.6 进一步收敛检索数据模型，只保留三个业务层次：
+OAG 同时承担索引构建、语义检索和本体子图构建三类能力。V5.7 进一步收敛检索数据模型，只保留三个业务层次：
 
 ```text
 种子节点（Seed Node）
@@ -38,7 +38,7 @@ OAG 同时承担索引构建、语义检索和本体子图构建三类能力。V
   = 真实 Instance Value
 ```
 
-同义词统一使用 **Synonym** 概念，并且不再建成独立 `OBJECT_ALIAS / PROPERTY_ALIAS / ENUM_ALIAS / INSTANCE_ALIAS` 物理记录：
+同义词统一使用 **Synonym** 概念，并且不再建成独立物理记录：
 
 ```text
 ObjectType / Property Synonym
@@ -48,7 +48,7 @@ Enum Value Synonym
   → 存在 Enum Value 记录的 synonyms 字段
 
 Instance Value
-  → 不定义 INSTANCE_ALIAS，只索引真实 value
+  → 只索引真实 value，不建立实例同义词记录
 ```
 
 因此需要区分：
@@ -56,10 +56,12 @@ Instance Value
 ```text
 最终检索命中（Matched Value）
         ≠
-物理索引记录身份（Record ID）
+物理索引记录定位字段
         ≠
 图算法输入（Seed Node）
 ```
+
+种子节点记录继续使用自身 `id`；Enum Value / Instance Value 不再引入独立记录 `id`，而是使用 `propertyid + objectTypeId + value` 定位业务记录。
 
 最终检索可以命中：
 
@@ -76,16 +78,18 @@ matched_field
 matched_value
 ```
 
-命中 Synonym 时不创建新的同义词记录：ObjectType/Property 仍返回种子节点 `id`；Enum Value 使用 `propertyid + objectTypeId + value` 表达记录身份。
+命中 Synonym 时不为同义词制造新的业务 ID：ObjectType / Property 仍返回种子节点 `id`；Enum Value 返回 `propertyid + objectTypeId + value` 以及实际命中的 `matched_field/matched_value`。
 
 例如：
 
 ```text
 用户：色泽
    ↓
-命中：Color 相关 synonyms.zh = 色泽
+命中：bodyColor 对应 Enum Value 的 synonyms.zh = 色泽
    ↓
-record identity = 种子节点 id，或 Enum 的 propertyid + objectTypeId + value
+propertyid = prop:ont:vehicle:sp:bodyColor
+objectTypeId = vehicle-object-id
+value = red
 matched_field = synonyms.zh
 matched_value = 色泽
 ```
@@ -251,15 +255,15 @@ t_instance_evidence_{ontology_id}
 
 Synonym 只是所属实体的一个可检索字段，不再单独占一行。
 
-### 设计原则 2：种子节点与值索引使用清晰的归属字段
+### 设计原则 2：种子节点与 Evidence 使用各自最直接的本体定位字段
 
 ```text
 种子节点：id = ObjectType / Property 本体 ID
-枚举值：propertyid = 所属 Property.id，objectTypeId = 所属 ObjectType.id
-实例值：propertyid = 所属 Property.id，objectTypeId = 所属 ObjectType.id
+Enum Value：propertyid = Property.id，objectTypeId = ObjectType.id
+Instance Value：propertyid = Property.id，objectTypeId = ObjectType.id
 ```
 
-Enum/Instance 不再使用含义模糊的通用 ID 字段表达归属；具体命中的业务值由 `value` 保留。
+Enum/Instance 不再增加额外的 Evidence 主键或父级映射字段；真实业务值由 `value` 保存，OAG 使用 `objectTypeId + propertyid + value` 作为去重和幂等定位依据。
 
 ### 设计原则 3：Matched Value 必须保留
 
@@ -311,11 +315,11 @@ Graph：只返回支持推理/Cypher 的必要拓扑
 
 V5.7 的物理索引模型只保留三类记录：
 
-| 类型 | 物理实体 | Synonym 处理 | 归属字段 |
+| 类型 | 物理实体 | Synonym 处理 | 本体归属字段 |
 |---|---|---|---|
-| 种子节点 | ObjectType / Property | 内嵌 `synonyms` | 种子节点自身使用 `id`；Property→ObjectType 走拓扑 |
+| 种子节点 | ObjectType / Property | 内嵌 `synonyms` | 使用种子节点自身 `id`；Property→ObjectType 走拓扑 |
 | 元数据元素 | Enum Value | 内嵌 `synonyms` | `propertyid + objectTypeId` |
-| 实例元素 | Instance Value | 不建立实例同义词记录 | `propertyid + objectTypeId` |
+| 实例元素 | Instance Value | 不单独建实例同义词记录 | `propertyid + objectTypeId` |
 
 同义词统一来源于 `synonym-type` 资产，结构固定使用：
 
@@ -426,7 +430,7 @@ additionalLanguages:
 
 注意：额外 display/description 最多 2 种语言；`synonyms` 最多 3 种语言，且语言组合不固定，两者是两个独立约束。
 
-Property → ObjectType 映射继续由 `has_property` 与 `GraphTopologyCache` 提供；种子节点表不额外保存 ObjectType 归属字段。
+Property → ObjectType 映射继续由 `has_property` 与 `GraphTopologyCache` 提供，种子节点表不额外增加 ObjectType 归属列。
 
 明确不保留：
 
@@ -738,8 +742,8 @@ t_metadata_evidence_{ontology_id}
 |---|---|---|---|
 | `vector` | `DOUBLE[]` | ✔ | Enum Value 向量 |
 | `type` | `INT` | ✔ | 固定表示 ENUM_VALUE |
-| `propertyid` | `VARCHAR(256 CHAR)` | ✔ | 引用该 Enum 的 Property.id |
-| `objectTypeId` | `VARCHAR(256 CHAR)` | ✔ | 该 Property 所属 ObjectType.id |
+| `propertyid` | `VARCHAR(512 CHAR)` | ✔ | 引用该 Enum 的 Property.id |
+| `objectTypeId` | `VARCHAR(256 CHAR)` | ✔ | Property 所属 ObjectType.id |
 | `value` | `VARCHAR(4096 CHAR)` | ✔ | 真实枚举值 |
 | `name` | `VARCHAR(4096 CHAR)` | ✔ | `values[].name` |
 | `display_zh` | `VARCHAR(512 CHAR)` |  | 中文 display |
@@ -752,13 +756,13 @@ t_metadata_evidence_{ontology_id}
 | `description_lang_2` | `TEXT` |  | 额外语言 2 description |
 | `synonyms` | `TEXT` |  | 当前 Enum Value 的 SynonymType.synonyms，最多 3 种语言 |
 
-如果一个 EnumType 被多个 Property 复用，需要按 Property 归属分别建立记录。向量库中同一个枚举值记录使用以下业务唯一组合保证不重复：
+如果一个 EnumType 被多个 Property 复用，需要按实际引用 Property 展开记录，并显式写入 `propertyid + objectTypeId`。向量库必须保证同一业务范围内的枚举记录不重复，推荐唯一键为：
 
 ```text
-propertyid + objectTypeId + value
+objectTypeId + "::" + propertyid + "::" + normalized(value)
 ```
 
-`values[].id` 仍属于 OMS 枚举源数据标识，但不作为 `t_metadata_evidence_{ontology_id}` 的持久化字段。
+`values[].id` 仍可用于 OMS 源数据追踪和质量校验，但不作为 `t_metadata_evidence_{ontology_id}` 的持久化字段。
 
 
 ## 2.9 Enum Value 向量化规则
@@ -801,13 +805,13 @@ Value First
 → Synonyms
 ```
 
-不在开头追加 ObjectType / Property 文本；`propertyid + objectTypeId` 已提供确定性归属。
+不在向量文本开头追加 ObjectType / Property 文本；`propertyid + objectTypeId` 已提供确定性归属。
 
 
 
 ## 2.10 `t_instance_evidence_{ontology_id}` 实例列值表结构
 
-实例索引只保存去重后的真实列值。
+实例索引保存去重后的真实列值，每条记录直接携带所属 Property 和 ObjectType。
 
 ```text
 t_instance_evidence_{ontology_id}
@@ -817,16 +821,16 @@ t_instance_evidence_{ontology_id}
 |---|---|---|---|
 | `vector` | `DOUBLE[]` | ✔ | Instance Value 向量 |
 | `type` | `INT` | ✔ | 固定表示 INSTANCE_VALUE |
-| `propertyid` | `VARCHAR(256 CHAR)` | ✔ | 所属 Property.id |
-| `objectTypeId` | `VARCHAR(256 CHAR)` | ✔ | 所属 ObjectType.id |
-| `value` | `VARCHAR(4096 CHAR)` | ✔ | 真实去重列值 |
+| `propertyid` | `VARCHAR(512 CHAR)` | ✔ | 所属 Property.id |
+| `objectTypeId` | `VARCHAR(256 CHAR)` | ✔ | Property 所属 ObjectType.id |
+| `value` | `VARCHAR(4096 CHAR)` | ✔ | 去重后的真实列值 |
 | `language` | `VARCHAR(32 CHAR)` |  | 可选语言标识；未知为 und |
 
 
 
 ## 2.11 Instance Value 向量准入规则
 
-Property 中 `"capability":"DIMENSION"` 是实例列值进入向量索引的必要标识，但仍需结合数据类型和数据形态做准入判断：
+Property 中的 `"capability":"DIMENSION"` 是实例列值进入向量索引的准入标识，同时还需要满足数据类型和值形态约束：
 
 ```text
 instance_index_enabled =
@@ -836,7 +840,7 @@ instance_index_enabled =
   AND cardinality_eligible
 ```
 
-向量库必须保证实例值记录不重复。DataSync 输出前按列值去重，OAG 入库前再次按 `propertyid + objectTypeId + normalized(value)` 去重并执行幂等 UPSERT；同一组合在 GaussVector 和 OpenSearch 中只能存在一条记录。例如 5000 万 Subscriber 行的 `subLevel` 只有 VIP/GOLD/SILVER/NORMAL，最终向量库只保留 4 条唯一实例值记录。
+向量库最终必须保证实例值记录不重复。DataSync 可以在源侧先做去重，OAG 在写入 `t_instance_evidence_{ontology_id}` 前仍必须按 `objectTypeId + propertyid + normalized(value)` 再次去重并使用幂等 UPSERT。例：5000 万 Subscriber 行中 `subLevel` 只有 VIP/GOLD/SILVER/NORMAL，最终向量库只保留 4 条唯一实例值记录。
 
 默认不向量化：
 
@@ -874,7 +878,7 @@ UUID
 ```
 
 
-这样 Instance Dense 表达始终由真实业务值主导，Property/ObjectType 归属直接由 `propertyid + objectTypeId` 提供。
+这样 Instance Dense 表达始终由真实业务值主导；Property/ObjectType 归属直接由记录中的 `propertyid + objectTypeId` 提供。
 
 
 ## 2.13 Metadata / Instance OpenSearch Index
@@ -929,7 +933,7 @@ type          integer
 propertyid    keyword
 objectTypeId  keyword
 value         keyword + text
-language   keyword（可选）
+language      keyword（可选）
 ```
 
 Exact 主要搜索 `propertyid/objectTypeId/value.keyword`，BM25 搜索 `value`。
@@ -994,7 +998,7 @@ synonyms 某语言值重复
 synonyms 与 canonical name/display 完全重复
 同一业务范围内 synonym 映射冲突
 Enum Ref 不存在
-Enum values[].id/value 重复
+Enum values[].id/value 源数据重复
 Enum Value.refSynonymTypeId 不存在
 Property.referenceEnumId 不存在
 Parent ObjectType 缺失
@@ -1007,31 +1011,26 @@ DataSync 实例值额外检查：
 ```text
 空 value
 超长 value
-distinct_count
+unique_value_count
+同一 objectTypeId + propertyid 下重复 value
 高基数
 无意义随机串
 非法 UTF-8
 ```
 
-Instance Evidence 不再检查 Instance Alias，因为 V5.7 不支持 `INSTANCE_ALIAS`。
 
 
 ## 2.17 增量索引与幂等
 
-不同表使用与业务语义一致的幂等键：
+三类表按各自稳定业务键做幂等 UPSERT / DELETE：
 
 ```text
-t_ontoretrieval_{ontology_id}
-  → id
-
-t_metadata_evidence_{ontology_id}
-  → propertyid + objectTypeId + value
-
-t_instance_evidence_{ontology_id}
-  → propertyid + objectTypeId + normalized(value)
+种子节点：id
+Enum Value：objectTypeId + propertyid + normalized(value)
+Instance Value：objectTypeId + propertyid + normalized(value)
 ```
 
-同一唯一键 UPSERT 必须覆盖现有记录而不是新增重复数据；DELETE 必须同时删除 GaussVector 与 OpenSearch 对应记录。
+同一业务键重复 UPSERT 必须覆盖当前记录而不是新增重复向量；DELETE 必须同时删除 GaussVector 与 OpenSearch 中对应记录。
 
 不在记录中保留：
 
@@ -1121,32 +1120,30 @@ Generation 发布
 DataSync 只负责实例列值数据：
 
 ```text
-读取 `"capability":"DIMENSION"` 的 Property
+读取 capability="DIMENSION" Property
 访问实际数据源
-DISTINCT / 基础标准化
+实例值去重 / 基础标准化
 输出真实 Instance Value
 建立 Value 与 Property 的映射
 生成 Manifest + Data Files
 通过 File / MinIO 交付 OAG
 ```
 
-DataSync **不再整理或提交 INSTANCE_ALIAS**。
 
 DataSync 不负责 Embedding、GaussVector/OpenSearch Client、ANN 参数、物理表结构和索引发布。
 
 统一关联：
 
 ```text
-DataSync Manifest.propertyId
+DataSync Manifest.propertyid
    ↓
 OAG 校验 Property
    ↓
 Instance propertyid = Property.id
-   ↓
 Instance objectTypeId = Property 所属 ObjectType.id
 ```
 
-ObjectType 上下文由 OAG 通过本体拓扑缓存补齐。
+OAG 根据本体 `has_property` / GraphTopologyCache 校验并补齐 `objectTypeId`，DataSync 不需要重复传输 ObjectType 信息。
 
 
 ## 3.2 完整索引构建流程
@@ -1161,7 +1158,7 @@ flowchart LR
 
     subgraph DS[DataSync]
       SC[capability=DIMENSION Property]
-      DV[DISTINCT Instance Value]
+      DV[Deduplicated Instance Value]
       PKG[Manifest + Data Files]
     end
 
@@ -1207,7 +1204,7 @@ Instance：value only
 
 ```text
 DataSync
-  负责：数据源访问 / DISTINCT / 基础标准化 / 实例值与 Property 映射 / 文件生成
+  负责：数据源访问 / 实例值去重 / 基础标准化 / 实例值与 Property 映射 / 文件生成
 
 OAG
   负责：导入任务 / Mapping 校验 / 语义元素构造 / Embedding
@@ -1228,8 +1225,8 @@ flowchart LR
     DS[DataSync] --> SRC[(业务数据源)]
     SRC --> DS
 
-    DS --> DIST[DISTINCT / Normalize]
-    DIST --> PKG[Import Package<br/>Manifest + Instance Value Files]
+    DS --> DEDUP[Dedup / Normalize]
+    DEDUP --> PKG[Import Package<br/>Manifest + Instance Value Files]
 
     PKG -->|兼容| FS[(共享文件)]
     PKG -->|推荐| MINIO[(MinIO)]
@@ -1277,9 +1274,9 @@ FULL_REPLACE
 INCREMENTAL（UPSERT / DELETE）
 ```
 
-FULL_REPLACE 使用 staging generation → verify → active generation 原子发布；INCREMENTAL 使用稳定 `id` 幂等修改。
+FULL_REPLACE 使用 staging generation → verify → active generation 原子发布；INCREMENTAL 使用 `objectTypeId + propertyid + normalized(value)` 业务唯一键幂等修改。
 
-适用范围仍支持 ONTOLOGY / OBJECT_TYPE / PROPERTY_SET / PROPERTY。日常增量场景只处理 Instance Value 的新增、删除或值变化，不再存在“Instance Alias 调整”。
+适用范围仍支持 ONTOLOGY / OBJECT_TYPE / PROPERTY_SET / PROPERTY。日常增量场景只处理 Instance Value 的新增、删除或值变化。
 
 ---
 
@@ -1295,7 +1292,7 @@ FULL_REPLACE 使用 staging generation → verify → active generation 原子�
 
 推荐格式：Parquet + Snappy/ZSTD；NDJSON + gzip 作为兼容；CSV 不作为主格式。
 
-一个文件默认只承载一个 Property 的去重后 Instance Value，Property 映射放在 Manifest 中，避免每行重复传输归属信息。
+一个文件默认只承载一个 Property 的去重实例值，从而把 Property 映射放在 Manifest 中，避免每行重复传输本体映射字段。
 
 ---
 
@@ -1318,7 +1315,7 @@ FULL_REPLACE 使用 staging generation → verify → active generation 原子�
       "rowCount": 1200000,
       "sha256": "...",
       "mapping": {
-        "propertyId": "subClass-property-id",
+        "propertyid": "subClass-property-id",
         "propertyName": "subClass",
         "capability": "DIMENSION",
         "valueColumn": "value",
@@ -1330,7 +1327,7 @@ FULL_REPLACE 使用 staging generation → verify → active generation 原子�
 }
 ```
 
-一个文件对应一个 Property 时，`propertyid/objectTypeId` 不在每行重复；OAG 根据 `mapping.propertyId` 写入 `propertyid`，并从本体拓扑解析对应 `objectTypeId`。
+一个文件对应一个 Property 时，`propertyid/objectTypeId` 不在每行重复；OAG 根据 `mapping.propertyid` 写入 `propertyid`，并通过本体关系解析写入 `objectTypeId`。
 
 ---
 
@@ -1349,7 +1346,7 @@ FULL_REPLACE 使用 staging generation → verify → active generation 原子�
 OAG 内部转换：
 
 ```text
-Manifest.propertyId
+Manifest.propertyid
 +
 Record.value/language
    ↓
@@ -1367,15 +1364,15 @@ DataSync 不发送 vector、Embedding 模型版本、OpenSearch Document、物�
 
 ---
 
-## 3.10 唯一键与幂等
+## 3.10 实例唯一键与幂等
 
-实例值不再要求 DataSync 提供独立 `id`。OAG 使用以下组合保证唯一性和幂等：
+OAG 使用以下业务唯一键保证实例记录不重复：
 
 ```text
-propertyid + objectTypeId + normalized(value)
+objectTypeId + propertyid + normalized(value)
 ```
 
-同一个 Job/Chunk 重试时，相同组合键必须 UPSERT 覆盖而不新增重复记录；DELETE 按相同组合键删除。OpenSearch `_id` 或内部存储键可以由该组合稳定生成，但不作为业务字段暴露。
+DataSync 可以预先去重，但 OAG 是向量库最终唯一性责任方。同一个 Job/Chunk 重试时，同一业务唯一键执行幂等 UPSERT，不新增重复向量；DELETE 按同一业务唯一键删除。
 
 
 ## 3.11 OAG Import API
@@ -1571,7 +1568,7 @@ MinIO Object Key 推荐包含：
 ontology_id
 data_version
 request_id
-property_id
+propertyid
 part_number
 ```
 
@@ -1645,7 +1642,7 @@ RecordParser
    ↓
 SemanticElementNormalizer
    ↓
-Deduplicator(propertyid, objectTypeId, normalized(value))
+Deduplicator(id)
    ↓
 EmbeddingTextBuilder
    ↓
@@ -1667,7 +1664,7 @@ GenerationPublisher
 OAG 实例导入统一使用：
 
 ```text
-propertyid / objectTypeId / type=INSTANCE_VALUE / value
+type=INSTANCE_VALUE / propertyid / objectTypeId / value
 EmbeddingInput = value
 1024维 Embedding
 ```
@@ -1731,7 +1728,7 @@ Worker 崩溃后：
 重新领取未 COMMITTED Chunk
 ```
 
-已 COMMITTED Chunk 不重复执行；即使 Chunk 被重复执行，`propertyid + objectTypeId + normalized(value)` 的唯一组合也必须保证幂等。
+已 COMMITTED Chunk 不重复执行；即使重复执行，业务唯一键仍保证幂等。
 
 ---
 
@@ -1761,7 +1758,7 @@ OpenSearch成功
 GaussVector失败
 ```
 
-Chunk 状态仍为 FAILED/RETRYABLE，重试时按照 `id` 幂等补写 GaussVector。
+Chunk 状态仍为 FAILED/RETRYABLE，重试时按照 `objectTypeId + propertyid + normalized(value)` 业务唯一键幂等补写 GaussVector。
 
 反之同理。
 
@@ -1870,12 +1867,13 @@ ontologyId 存在
 Property ID 存在
 Property.capability == "DIMENSION"
 Property 未删除/未失效
+propertyid/objectTypeId 映射合法
 记录 value 非空且格式合法
 ```
 
-实例导入协议不再接收 `INSTANCE_ALIAS`，也不接收 `name/canonical_value/synonyms`。
+实例导入协议只接收实例列值及必要控制字段，OAG 根据 Manifest 与本体模型补齐 `propertyid/objectTypeId`。
 
-ObjectType 通过本体 `has_property` 关系推导；OAG 在入库时将结果写入 `objectTypeId`，不要求 DataSync 在每条数据中重复传输。
+ObjectType 通过本体 `has_property` 关系推导，不要求 DataSync 重复传输 `objectTypeId`。
 
 Mapping 错误属于 `JOB_FATAL`，必须在大规模 Embedding 前失败。
 
@@ -1900,7 +1898,6 @@ Embedding 模型不可用
 value 超长
 非法 UTF-8
 不支持的 op
-id 格式非法
 单条标准化失败
 ```
 
@@ -1914,14 +1911,14 @@ Rejectable 行写入 Reject/DLQ File；低于配置 rejectRatio 可 `SUCCEEDED_W
 尽量提前：
 
 ```text
-DISTINCT
+源侧去重
 过滤NULL/空串
-基础Normalize
-按Property分区
-生成Parquet
+基础 Normalize
+按 Property 分区
+生成 Parquet
 ```
 
-避免把5000万业务明细行传给 OAG，再让 OAG 做 DISTINCT。
+避免把 5000 万业务明细行原样传给 OAG，再由 OAG 承担全量去重。
 
 OAG仍执行轻量二次去重作为防御。
 
@@ -2115,7 +2112,7 @@ uri
 checksum
 size
 row_count
-property_id
+propertyid
 status
 ```
 
@@ -2182,13 +2179,13 @@ import_publish_latency
 job_id
 ontology_id
 data_version
-property_id
+propertyid
 ```
 
 日志中禁止打印完整海量业务值，只记录：
 
 ```text
-source_key / id / truncated value / error code
+source_key / propertyid / objectTypeId / truncated value / error code
 ```
 
 ---
@@ -2302,7 +2299,7 @@ sequenceDiagram
     participant C as IndexCatalog
 
     DS->>DS: 读取 capability=DIMENSION Property + 数据源
-    DS->>DS: 去重 / Normalize Instance Value
+    DS->>DS: Dedup / Normalize Instance Value
     DS->>M: 写 Manifest + Parquet 分片
     M-->>DS: URI + checksum
 
@@ -2341,7 +2338,7 @@ sequenceDiagram
 ```text
 种子节点：OMS ObjectType/Property + SynonymType → OAG
 元数据元素：OMS EnumType.values[] + SynonymType → OAG
-实例元素：DataSync 去重后的 Value → File/MinIO → OAG
+实例元素：DataSync 去重 Value → File/MinIO → OAG
 ```
 
 实例记录固定：
@@ -2350,7 +2347,7 @@ sequenceDiagram
 type = INSTANCE_VALUE
 propertyid = Property.id
 objectTypeId = Property 所属 ObjectType.id
-value = 真实列值
+value = 去重后的真实列值
 EmbeddingInput = value
 ```
 
@@ -2360,27 +2357,27 @@ DataSync 不依赖 Embedding SDK、GaussVector Client、OpenSearch Client、具�
 ## 3.31 导入接口最终设计决策
 
 1. **OAG 是三类索引的统一构建和检索引擎。**
-2. **DataSync 只生产真实实例列值，不生产 INSTANCE_ALIAS。**
+2. **DataSync 只生产实例列值数据，并在源侧预去重。**
 3. **大数据量采用异步 Import Job + File/MinIO 数据面。**
 4. **生产优先 MinIO；File 用于兼容部署。**
 5. **Data Package = Manifest + 不可变数据分片。**
 6. **Parquet 是大规模场景首选。**
 7. **推荐按 Property 分区，Property 映射放 Manifest。**
-8. **每条实例记录使用 `propertyid + objectTypeId + value` 表达归属与业务值。**
+8. **每条实例记录使用 `propertyid + objectTypeId + value` 表达归属与业务值，OAG 负责最终去重。**
 9. **实例向量化只使用 `{value}`。**
-10. **`propertyid + objectTypeId + normalized(value)` 唯一组合保证 Chunk 重试幂等并防止重复数据。**
-11. **Parquet RowGroup / NDJSON Offset 作为 Checkpoint。**
-12. **GaussVector/OpenSearch 使用 Chunk 级双写协调和最终一致。**
-13. **FULL_REPLACE 使用 staging generation 原子发布。**
-14. **INCREMENTAL 使用 UPSERT/DELETE + dataVersion。**
-15. **在线检索优先于 Bulk Import，必须独立线程池/限流。**
-16. **失败行进入 Reject/DLQ，Job Fatal 与 Row Rejectable 分级。**
-17. **任务、文件、Chunk、Generation 状态持久化，支持重启续传。**
+9. **`objectTypeId + propertyid + normalized(value)` 业务唯一键保证 Chunk 重试幂等。**
+9. **Parquet RowGroup / NDJSON Offset 作为 Checkpoint。**
+9. **GaussVector/OpenSearch 使用 Chunk 级双写协调和最终一致。**
+9. **FULL_REPLACE 使用 staging generation 原子发布。**
+9. **INCREMENTAL 使用 UPSERT/DELETE + dataVersion。**
+9. **在线检索优先于 Bulk Import，必须独立线程池/限流。**
+9. **失败行进入 Reject/DLQ，Job Fatal 与 Row Rejectable 分级。**
+9. **任务、文件、Chunk、Generation 状态持久化，支持重启续传。**
 
 
 ## 3.32 索引构建职责一句话总结
 
-> **DataSync 负责把底层真实实例列值去重后加工成按 Property 分区的 Import Package；OAG 以异步、可断点、可重试、可版本发布的 Bulk Import Pipeline，补齐 `propertyid + objectTypeId`，以 `{value}` 生成向量，并按 `propertyid + objectTypeId + normalized(value)` 保证 GaussVector/OpenSearch 中记录唯一后发布。**
+> **DataSync 负责把底层实例列值预去重后加工成按 Property 分区的 Import Package；OAG 根据 Property 映射补齐 `propertyid + objectTypeId`，并在写入前按 `objectTypeId + propertyid + normalized(value)` 做最终去重和幂等 UPSERT，再用 `{value}` 生成向量，统一完成 GaussVector/OpenSearch 写入和发布。**
 
 
 # 4. Query Understanding 与 6 路召回
@@ -2823,7 +2820,7 @@ top 3~5 supporting_hits
 hit_count
 ```
 
-每个 supporting hit 都保留 `id/type/value/name/matched_field/matched_value`。
+每个 supporting hit 都保留实际身份字段：Seed 保留 `id/type/name`；Enum/Instance 保留 `propertyid/objectTypeId/type/value`，Enum 可继续携带 `name`；所有命中统一保留 `matched_field/matched_value`。
 
 
 ## 4.11 RRF Aggregator：一次 Weighted RRF
@@ -2882,7 +2879,7 @@ Exact 是强证据，但 `name/status/active/1/A` 或某个 synonym 仍可能在
 Exact/BM25 → 高权重 RRF → LLM 结合原始问题消歧
 ```
 
-只有全局唯一 `id` 的直接查询才可以绕过语义消歧。
+只有种子节点全局唯一 `id` 的直接查询才可以绕过语义消歧；Enum/Instance 仍按 `objectTypeId + propertyid + value` 判断具体记录。
 
 
 ## 4.13 RRF 粗排输出
@@ -2978,7 +2975,7 @@ matched_field = synonyms.<language>
 matched_value = 实际同义词
 ```
 
-LLM 不创造新的 `id/propertyid/objectTypeId/value/synonyms`，只能从候选中选择。
+LLM 不创造新的 `id/value/synonyms`，只能从候选中选择。
 
 
 ## 5.2 为什么精排必须使用原始问题
@@ -3034,15 +3031,15 @@ Role:
 你是 OAG 语义检索精排器。
 
 Rules:
-1. 只能选择输入候选中已存在的记录：种子节点按 `id` 识别，Enum/Instance 按 `type + propertyid + objectTypeId + value` 识别。
+1. 只能选择输入候选中真实存在的记录；种子节点按 `id` 识别，Enum/Instance 按 `objectTypeId + propertyid + value` 识别。
 2. 必须结合原始问题，而不是只看相似度。
-3. Enum Value / Instance Value 必须结合 `propertyid + objectTypeId` 判断所属 Property/ObjectType。
-4. synonym 命中时保留 matched_field/matched_value，不创建 synonym id。
+3. Enum Value / Instance Value 必须结合 `propertyid + objectTypeId` 判断本体归属。
+4. synonym 命中时保留 matched_field/matched_value，不创建 synonym 独立记录。
 5. Exact/BM25/Dense/RRF 分数只是证据。
 6. 必须考虑不同 Semantic Unit 的上下文一致性。
 7. 每个 Unit 可以返回 0/1/N。
 8. 无匹配允许 no_match=true。
-9. 不创造不存在的 id/propertyid/objectTypeId/value。
+9. 不创造不存在的种子节点 id、propertyid、objectTypeId 或 value。
 10. 仅输出简短 reason，不输出详细思维过程。
 11. 严格输出 JSON Schema。
 ```
@@ -3075,12 +3072,12 @@ Rules:
 }
 ```
 
-Enum/Instance 的 ObjectType / Property 上下文由 `propertyid + objectTypeId` 直接提供；种子节点 Property 的父 ObjectType 仍可由 GraphTopologyCache 补齐，不要求 LLM 生成。
+Enum/Instance 的 Property/ObjectType 上下文直接来自 `propertyid + objectTypeId`；种子节点 Property 的父 ObjectType 仍由 GraphTopologyCache 补齐，不要求 LLM 推断。
 
 
 ## 5.6 LLM 精排可靠性与降级
 
-程序校验 JSON Schema、候选身份是否来自 Input Candidate、分数范围、结果去重和数量上限。
+程序校验 JSON Schema、候选身份是否存在于输入（Seed=`id`；Enum/Instance=`objectTypeId+propertyid+value`）、分数范围、结果去重和数量上限。
 
 ```text
 LLM Timeout / JSON 错误
@@ -3116,8 +3113,7 @@ Synonym 本身可以成为 `matched_value`，但不作为独立物理记录或�
 如果最终选中 Enum Value，必须返回：
 
 ```text
-propertyid
-objectTypeId
+id
 value
 name
 display/description（按需）
@@ -3130,8 +3126,7 @@ Property + ObjectType
 例如用户输入“红色”，可以得到：
 
 ```text
-propertyid = prop:ont:vehicle:sp:bodyColor
-objectTypeId = vehicle-object-id
+id = ei...red8.1
 value = red
 matched_field = synonyms.zh
 matched_value = 红色
@@ -3153,7 +3148,7 @@ extension:
   maxInstanceElementsPerProperty: 10
 ```
 
-实例结果没有 `INSTANCE_ALIAS`，也没有实例 `synonyms`。
+实例结果只包含真实实例值，不返回独立实例同义词记录。
 
 
 ## 5.10 retrievalResults 与 seedNodes
@@ -3191,7 +3186,7 @@ extension:
 
 ### seedNodes
 
-由 retrievalResults 投影生成，只用于图构建兼容。Enum Value / Instance Value 直接使用其 `propertyid` 作为 Property 种子节点，并使用 `objectTypeId` 补齐所属 ObjectType。
+由 retrievalResults 投影生成，只用于图构建兼容。Enum Value / Instance Value 直接投影到其 `propertyid` Property，并使用记录中的 `objectTypeId` 补齐父 ObjectType。
 
 
 ## 5.11 Final Response 数据结构
@@ -3304,8 +3299,8 @@ sequenceDiagram
 |---|---|
 | ObjectType | 当前 `id` |
 | Property | 当前 `id` |
-| Enum Value | `propertyid` 对应 Property，并携带 `objectTypeId` |
-| Instance Value | `propertyid` 对应 Property，并携带 `objectTypeId` |
+| Enum Value | `propertyid` 对应 Property；`objectTypeId` 为父 ObjectType |
+| Instance Value | `propertyid` 对应 Property；`objectTypeId` 为父 ObjectType |
 
 Synonym 不是独立结果类型：如果用户命中 `synonyms.*`，记录仍按所属 ObjectType/Property/Enum Value 的规则投影。
 
@@ -3322,7 +3317,7 @@ ObjectType.id
 
 ## 6.2 Property → ObjectType：Topology Cache 优先
 
-当前种子节点向量表不额外保存 Property→ObjectType 归属字段。
+当前种子节点向量表保持现有 Seed Schema，不额外保存 Property 的 `objectTypeId`；但 Metadata/Instance Evidence 记录会直接保存 `propertyid + objectTypeId`。
 
 因此 Property → ObjectType 的推荐实现为：
 
@@ -3346,7 +3341,7 @@ Topology Cache hit?
   └─ no  → 调用现有 addObjectTypeByProperty() GQL 兜底
 ```
 
-这样既保持种子节点表职责简洁，又避免每次查询都访问图数据库。
+这样既保持种子节点表职责简洁，又让 Enum/Instance 命中可以直接获得完整 Property/ObjectType 归属；只有 Property 种子节点自身需要通过拓扑缓存补父 ObjectType。
 
 
 ## 6.3 当前三种子图策略：接口语义与真实算法
@@ -3933,7 +3928,7 @@ includeFunctions
 includeActions
 ```
 
-V5.6 保留。
+V5.7 保留。
 
 推荐处理阶段：
 
@@ -4076,7 +4071,7 @@ Instance 语义元素 限流
 ### Candidate Normalize / RRF
 
 ```text
-channel 内 id Group 去重
+channel 内 group_id 去重
 maxMatchedItemsPerSeedGroup
 coarseTopKPerSemanticUnit
 maxGlobalCandidates
@@ -4571,7 +4566,7 @@ SeedNodeProjector
 
 ## 7.9 现有方法级增强映射
 
-| 当前方法/结构 | 当前职责 | V5.6 建议 |
+| 当前方法/结构 | 当前职责 | V5.7 建议 |
 |---|---|---|
 | `interpretQueryIntent()` | LLM 意图解析 | 输出 Semantic Units / hints |
 | `getSeedIds()` | Vector/ES 获取 Seed | 升级为 6 路 SearchDispatcher |
@@ -4594,10 +4589,10 @@ SeedNodeProjector
 
 需要避免：
 
-1. **把 Synonym 建成独立 OBJECT_ALIAS/PROPERTY_ALIAS/ENUM_ALIAS 行。** V5.7 使用所属记录的 `synonyms` 字段。
+1. **把 Synonym 建成独立物理记录。** V5.7 使用所属记录的 `synonyms` 字段。
 2. **为了多语言无限增加 display_xx/description_xx 列。** 固定 zh/en + 最多两个额外语言槽位。
 3. **认为 synonyms 语言必须固定 zh/en/es。** Synonyms 最多 3 种语言，但组合不固定。
-4. **实例值重复入库。** Instance Evidence 必须按 `propertyid + objectTypeId + normalized(value)` 保证唯一。
+4. **为实例值额外建立独立同义词记录。** Instance Evidence 只保存去重后的真实 value。
 5. **实例向量拼接 Property/描述/同义词。** Instance Dense 严格只使用 `{value}`。
 6. **Enum synonym 命中后丢失真正过滤值。** 返回 Enum Value 记录的 `value`，同时保留 `matched_field/matched_value`。
 7. **直接按 synonym 数量做 RRF 加分。** Synonym 是记录字段，不产生额外 Ranked Item。
@@ -4609,39 +4604,40 @@ SeedNodeProjector
 13. **为每条向量记录增加版本/Hash 等运维字段。** 版本放 Import Job / Generation 元数据。
 
 
+
 ## 7.11 最终设计决策
 
 1. **ObjectType / Property 统一称为种子节点。**
 2. **种子节点表统一命名 `t_ontoretrieval_{ontology_id}`。**
 3. **Metadata 表统一命名 `t_metadata_evidence_{ontology_id}`，只承载 Enum Value。**
 4. **Instance 表统一命名 `t_instance_evidence_{ontology_id}`，只承载 Instance Value。**
-5. **种子节点继续使用 `id`；Enum/Instance 使用 `propertyid + objectTypeId` 显式表达 Property/ObjectType 归属。**
+5. **种子节点使用自身 `id`；Enum/Instance 使用 `propertyid + objectTypeId + value` 表达本体归属与业务值，不再引入额外 Evidence 主键。**
 6. **ObjectType/Property 同义词直接写入种子节点 `synonyms` 字段。**
 7. **Enum Value 同义词直接写入 Enum Value 记录 `synonyms` 字段。**
-8. **Synonym 不建立独立 OBJECT_ALIAS/PROPERTY_ALIAS/ENUM_ALIAS/INSTANCE_ALIAS 行。**
-9. **Instance Evidence 明确去除 INSTANCE_ALIAS。**
-10. **种子节点 display/description 固定 zh/en，并额外支持最多 2 个 ontology 级语言槽位 `lang_1/lang_2`。**
-11. **`synonyms` 最多支持 3 种语言，三种语言不固定，每种语言可有多个词。**
-12. **种子节点向量化使用 name + 4语言 display/description + synonyms_value + synonyms_description。**
-13. **Enum Value 向量化使用 value + name + 4语言 display/description + synonyms_value + synonyms_description。**
-14. **Instance Value 向量化严格只使用 `{value}`。**
-15. **Property 种子节点 → ObjectType 使用 GraphTopologyCache/has_property；Enum/Instance 记录直接保存 `objectTypeId`。**
-16. **每个 Semantic Unit 默认形成 6 条 Ranked List：三类数据 × Lexical/Dense。**
-17. **默认采用 6 路一次 Weighted RRF，不采用两级 RRF；Exact/BM25 独立后可扩为 9 路。**
-18. **RRF 每通道先按种子节点 group_id 去重。**
-19. **SearchHit 必须保留 `matched_field/matched_value`，用于解释 synonym/display/value 等具体命中。**
-20. **LLM 使用原始问题 + 种子节点分组 + supporting hits + Graph Hint 精排，允许 0/1/N。**
-21. **SeedNodeProjector 只处理 ObjectType/Property/Enum Value/Instance Value 四类记录。**
-22. **Enum/Instance 可以是最终结果，但不直接参与 Core Graph 路径算法。**
-23. **minimal/khop/component 的 legacy 与 enhanced 算法设计保持不变。**
-24. **GraphTopologyCache 继续服务 Property→ObjectType、Graph Hint、BFS 和 Component。**
-25. **DataSync 对 `"capability":"DIMENSION"` 的 Property 提供去重后的真实实例值，OAG 再次按唯一组合去重并统一完成 Embedding、GaussVector/OpenSearch 和索引发布。**
-26. **FULL_REPLACE 使用 staging generation，INCREMENTAL 使用幂等 UPSERT/DELETE。**
-27. **最终优化目标：检索结果准确 + Synonym 命中可解释 + Enum/Instance Value 准确 + 种子节点上下文准确 + Relation 准确 + Cypher 端到端准确。**
+8. **Synonym 不建立独立物理行；Instance Evidence 只保存真实实例值。**
+9. **种子节点 display/description 固定 zh/en，并额外支持最多 2 个 ontology 级语言槽位 `lang_1/lang_2`。**
+10. **`synonyms` 最多支持 3 种语言，三种语言不固定，每种语言可有多个词。**
+11. **种子节点向量化使用 name + 4语言 display/description + synonyms_value + synonyms_description。**
+12. **Enum Value 向量化使用 value + name + 4语言 display/description + synonyms_value + synonyms_description。**
+13. **Instance Value 向量化严格只使用 `{value}`。**
+14. **Property 种子节点 → ObjectType 使用 GraphTopologyCache/has_property；Enum/Instance 记录直接保存 `objectTypeId`。**
+15. **每个 Semantic Unit 默认形成 6 条 Ranked List：三类数据 × Lexical/Dense。**
+16. **默认采用 6 路一次 Weighted RRF，不采用两级 RRF；Exact/BM25 独立后可扩为 9 路。**
+17. **RRF 每通道先按种子节点 group_id 去重。**
+18. **SearchHit 必须保留 `matched_field/matched_value`，用于解释 synonym/display/value 等具体命中。**
+19. **LLM 使用原始问题 + 种子节点分组 + supporting hits + Graph Hint 精排，允许 0/1/N。**
+20. **SeedNodeProjector 只处理 ObjectType/Property/Enum Value/Instance Value 四类记录。**
+21. **Enum/Instance 可以是最终结果，但不直接参与 Core Graph 路径算法。**
+22. **minimal/khop/component 的 legacy 与 enhanced 算法设计保持不变。**
+23. **GraphTopologyCache 继续服务 Property→ObjectType、Graph Hint、BFS 和 Component。**
+24. **DataSync 对实例值做源侧预去重，OAG 按 `objectTypeId + propertyid + normalized(value)` 保证向量库最终无重复，并统一完成 Embedding、GaussVector/OpenSearch 和索引发布。**
+25. **FULL_REPLACE 使用 staging generation，INCREMENTAL 使用幂等 UPSERT/DELETE。**
+26. **最终优化目标：检索结果准确 + Synonym 命中可解释 + Enum/Instance Value 准确 + 种子节点上下文准确 + Relation 准确 + Cypher 端到端准确。**
+
 
 
 ## 7.12 一句话总结
 
-> **OAG 使用三张稳定索引表承载种子节点、Enum Value 和 Instance Value：ObjectType/Property 及 Enum Value 的 Synonym 内嵌在 `synonyms` 字段中，中文/英文之外最多再支持两个 display/description 语言槽位，Synonym 最多三种非固定语言；Seed/Enum 向量包含 name/display/description/synonyms，Instance 向量只包含 value。查询阶段对三类数据执行 6 路一次 Weighted RRF，保留 `matched_field/matched_value` 后进行 LLM 精排，再投影 ObjectType/Property 种子节点构建本体子图。**
+> **OAG 使用三张稳定索引表承载种子节点、Enum Value 和 Instance Value：种子节点使用 `id`，Enum/Instance 使用 `propertyid + objectTypeId + value`；ObjectType/Property 及 Enum Value 的 Synonym 内嵌在 `synonyms` 字段中，中文/英文之外最多再支持两个 display/description 语言槽位，Synonym 最多三种非固定语言；Seed/Enum 向量包含 name/display/description/synonyms，Instance 向量只包含 value。查询阶段对三类数据执行 6 路一次 Weighted RRF，Enum/Instance 按 `propertyid` 归并到 Property 种子节点，保留 `matched_field/matched_value` 后进行 LLM 精排，再构建本体子图。**
 
 
