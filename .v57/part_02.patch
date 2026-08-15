@@ -1,0 +1,203 @@
+--- a/docs/OAG本体锚点语义检索与向量索引设计方案.md
++++ b/docs/OAG本体锚点语义检索与向量索引设计方案.md
+@@ -974,17 +925,17 @@
+ 只需要：
+ 
+ ```text
+-type       integer
+-id         keyword
+-parent_id  keyword
+-value      keyword + text
++type          integer
++propertyid    keyword
++objectTypeId  keyword
++value         keyword + text
+ language   keyword（可选）
+ ```
+ 
+-Exact 主要搜索 `id/value.keyword`，BM25 搜索 `value`。
++Exact 主要搜索 `propertyid/objectTypeId/value.keyword`，BM25 搜索 `value`。
+ 
+ 
+-## 2.15 规范化规则
++## 2.14 规范化规则
+ 
+ 规范化属于索引构建/查询处理逻辑，不增加额外持久化字段：
+ 
+@@ -999,7 +950,7 @@
+ 原始 `name/value/display/description/synonyms` 始终保留；OpenSearch 通过 normalizer/analyzer 实现 Exact/BM25 规范化，GaussVector 在 Embedding 前使用相同基础规范化。
+ 
+ 
+-## 2.16 language_hint 与语言槽位
++## 2.15 language_hint 与语言槽位
+ 
+ 查询理解阶段仍可以输出：
+ 
+@@ -1030,7 +981,7 @@
+ ```
+ 
+ 
+-## 2.17 数据质量治理
++## 2.16 数据质量治理
+ 
+ OAG 元数据同步阶段必须检查：
+ 
+@@ -1062,18 +1013,26 @@
+ 非法 UTF-8
+ ```
+ 
+-Instance Evidence 不再检查 Instance Alias，因为 V5.6 不支持 `INSTANCE_ALIAS`。
++Instance Evidence 不再检查 Instance Alias，因为 V5.7 不支持 `INSTANCE_ALIAS`。
+ 
+ 
+-## 2.18 增量索引与幂等
++## 2.17 增量索引与幂等
+ 
+-所有表以 `id` 做幂等 UPSERT / DELETE 主键。
++不同表使用与业务语义一致的幂等键：
+ 
+ ```text
+-同 id UPSERT → 覆盖当前记录
+-同 id DELETE → 删除 GaussVector + OpenSearch 对应记录
++t_ontoretrieval_{ontology_id}
++  → id
++
++t_metadata_evidence_{ontology_id}
++  → propertyid + objectTypeId + value
++
++t_instance_evidence_{ontology_id}
++  → propertyid + objectTypeId + normalized(value)
+ ```
+ 
++同一唯一键 UPSERT 必须覆盖现有记录而不是新增重复数据；DELETE 必须同时删除 GaussVector 与 OpenSearch 对应记录。
++
+ 不在记录中保留：
+ 
+ ```text
+@@ -1097,7 +1056,7 @@
+ 如果未来需要“内容未变化则跳过 Embedding”，可以作为 OAG 内部缓存优化实现，但不扩展业务表 Schema。
+ 
+ 
+-## 2.19 GaussVector 索引算法
++## 2.18 GaussVector 索引算法
+ 
+ 种子节点 / Metadata 语义元素：
+ 
+@@ -1162,7 +1121,7 @@
+ DataSync 只负责实例列值数据：
+ 
+ ```text
+-读取 is_semantic=true Property
++读取 `"capability":"DIMENSION"` 的 Property
+ 访问实际数据源
+ DISTINCT / 基础标准化
+ 输出真实 Instance Value
+@@ -1182,7 +1141,9 @@
+    ↓
+ OAG 校验 Property
+    ↓
+-Instance parent_id = Property.id
++Instance propertyid = Property.id
++   ↓
++Instance objectTypeId = Property 所属 ObjectType.id
+ ```
+ 
+ ObjectType 上下文由 OAG 通过本体拓扑缓存补齐。
+@@ -1199,7 +1160,7 @@
+     end
+ 
+     subgraph DS[DataSync]
+-      SC[is_semantic Property]
++      SC[capability=DIMENSION Property]
+       DV[DISTINCT Instance Value]
+       PKG[Manifest + Data Files]
+     end
+@@ -1334,7 +1295,7 @@
+ 
+ 推荐格式：Parquet + Snappy/ZSTD；NDJSON + gzip 作为兼容；CSV 不作为主格式。
+ 
+-一个文件默认只承载一个 Property 的 DISTINCT Instance Value，从而把 `parent_id/property mapping` 放在 Manifest 中，避免每行重复。
++一个文件默认只承载一个 Property 的去重后 Instance Value，Property 映射放在 Manifest 中，避免每行重复传输归属信息。
+ 
+ ---
+ 
+@@ -1359,8 +1320,7 @@
+       "mapping": {
+         "propertyId": "subClass-property-id",
+         "propertyName": "subClass",
+-        "isSemantic": true,
+-        "idColumn": "id",
++        "capability": "DIMENSION",
+         "valueColumn": "value",
+         "languageColumn": "language",
+         "operationColumn": "op"
+@@ -1370,7 +1330,7 @@
+ }
+ ```
+ 
+-一个文件对应一个 Property 时，`parent_id` 不在每行重复；OAG 根据 `mapping.propertyId` 写入。
++一个文件对应一个 Property 时，`propertyid/objectTypeId` 不在每行重复；OAG 根据 `mapping.propertyId` 写入 `propertyid`，并从本体拓扑解析对应 `objectTypeId`。
+ 
+ ---
+ 
+@@ -1380,7 +1340,6 @@
+ 
+ ```json
+ {
+-  "id": "subscriber-subClass::VIP",
+   "value": "VIP",
+   "language": "und",
+   "op": "UPSERT"
+@@ -1392,9 +1351,10 @@
+ ```text
+ Manifest.propertyId
+ +
+-Record.id/value/language
++Record.value/language
+    ↓
+-parent_id = Property.id
++propertyid = Property.id
++objectTypeId = Property 所属 ObjectType.id
+    ↓
+ EmbeddingInput = value
+    ↓
+@@ -1407,17 +1367,15 @@
+ 
+ ---
+ 
+-## 3.10 id 生成与幂等
++## 3.10 唯一键与幂等
+ 
+-优先使用 DataSync 稳定 `id`；否则 OAG 根据：
++实例值不再要求 DataSync 提供独立 `id`。OAG 使用以下组合保证唯一性和幂等：
+ 
+ ```text
+-parent_id + normalized(value)
++propertyid + objectTypeId + normalized(value)
+ ```
+ 
+-稳定生成。
+-
+-同一个 Job/Chunk 重试时，同 `id` UPSERT 覆盖而不产生重复；DELETE 删除同一 `id`。
++同一个 Job/Chunk 重试时，相同组合键必须 UPSERT 覆盖而不新增重复记录；DELETE 按相同组合键删除。OpenSearch `_id` 或内部存储键可以由该组合稳定生成，但不作为业务字段暴露。
+ 
+ 
+ ## 3.11 OAG Import API
+@@ -1687,7 +1645,7 @@
+    ↓
+ SemanticElementNormalizer
+    ↓
+-Deduplicator(id)
++Deduplicator(propertyid, objectTypeId, normalized(value))
+    ↓
+ EmbeddingTextBuilder
+    ↓
+@@ -1709,7 +1667,7 @@
+ OAG 实例导入统一使用：
+ 
+ ```text
+-id / type=INSTANCE_VALUE / parent_id / value
++propertyid / objectTypeId / type=INSTANCE_VALUE / value
+ EmbeddingInput = value
+ 1024维 Embedding
+ ```
