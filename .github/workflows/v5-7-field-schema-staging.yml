@@ -1,0 +1,34 @@
+name: V5.7 field schema staging
+
+on:
+  push:
+    branches:
+      - agent/v5-7-field-schema-staging
+    paths:
+      - .github/workflows/v5-7-field-schema-staging.yml
+
+permissions:
+  contents: write
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Rebuild and verify V5.7
+        run: |
+          cat .v57delta/part_*.b64 | base64 -d > /tmp/v57.zstpatch
+          target="docs/OAG本体锚点语义检索与向量索引设计方案.md"
+          cp "$target" /tmp/v56.md
+          zstd --patch-from=/tmp/v56.md -d /tmp/v57.zstpatch -o /tmp/v57.md -q -f
+          mv /tmp/v57.md "$target"
+          actual_sha=$(git hash-object "$target")
+          expected_sha="7f05e40de9df311113feae58c4afad1d7a5a5acb"
+          test "$actual_sha" = "$expected_sha"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$target"
+          git commit -m "生成V5.7字段模型设计文档"
+          git push
