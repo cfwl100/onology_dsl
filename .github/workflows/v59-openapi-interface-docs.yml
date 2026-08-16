@@ -65,6 +65,12 @@ jobs:
           enum_body = enum_body.replace('propertyid', 'propertyId')
           text = p1 + enum_start + enum_body + enum_end + p2
 
+          # Fix any remaining bodyColor Enum example outside section 3.3-3.6.
+          text = text.replace(
+              '"propertyid": "prop:ont:vehicle:sp:bodyColor"',
+              '"propertyId": "prop:ont:vehicle:sp:bodyColor"',
+          )
+
           # Keep downstream descriptions consistent with the intentional casing difference.
           text = text.replace(
               '唯一业务范围：`objectTypeId + propertyid + normalized(value)`。Embedding 严格复用第 2.9 节',
@@ -95,6 +101,8 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
+
           p = Path('target/docs/OAG本体锚点语义检索与向量索引设计方案.md')
           t = p.read_text(encoding='utf-8')
 
@@ -123,14 +131,19 @@ jobs:
           if missing:
               raise SystemExit(f'missing required content: {missing}')
 
-          forbidden = [
-              '/v1/ontologies/{ontologyId}/',
-              '/instance-evidence/import-jobs',
-              '"propertyid": "prop:ont:vehicle:sp:bodyColor"',
+          # Historical/migration descriptions may mention old URIs, but no active HTTP or Spring mapping may use them.
+          forbidden_patterns = [
+              r'(?m)^\s*(GET|POST|PUT|DELETE|PATCH)\s+/v1/ontologies/\{ontologyId\}/',
+              r'@(?:Get|Post|Put|Delete|Patch)Mapping\("/v1/ontologies/\{ontologyId\}/',
+              r'(?m)^\s*(GET|POST|PUT|DELETE|PATCH)\s+.*?/instance-evidence/import-jobs',
+              r'@(?:Get|Post|Put|Delete|Patch)Mapping\(".*?/instance-evidence/import-jobs',
           ]
-          found = [x for x in forbidden if x in t]
-          if found:
-              raise SystemExit(f'found stale/invalid content: {found}')
+          bad = [pat for pat in forbidden_patterns if re.search(pat, t)]
+          if bad:
+              raise SystemExit(f'found active stale API definitions: {bad}')
+
+          if '"propertyid": "prop:ont:vehicle:sp:bodyColor"' in t:
+              raise SystemExit('Enum bodyColor example still uses propertyid instead of propertyId')
 
           if t.count('## 3.3 统一 REST API 规范') != 1:
               raise SystemExit('section 3.3 duplicated')
