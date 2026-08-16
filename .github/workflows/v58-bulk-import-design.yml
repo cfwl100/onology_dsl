@@ -1,0 +1,139 @@
+name: V5.8 bulk import design
+
+on:
+  push:
+    branches:
+      - agent/v58-bulk-import-20260816
+    paths:
+      - .github/workflows/v58-bulk-import-design.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build from latest main and verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .v58bulk/part*.md > /tmp/chapter3.md
+          git fetch origin main
+          git checkout -B v58-final origin/main
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('docs/OAG本体锚点语义检索与向量索引设计方案.md')
+          doc = path.read_text(encoding='utf-8')
+          chapter = Path('/tmp/chapter3.md').read_text(encoding='utf-8')
+
+          # Historical migration wording must not re-introduce obsolete API literals.
+          chapter = chapter.replace(
+              '旧 /v1/ontologies/{ontologyId}/... → /v1/onto-retrieval/{ontologyId}/...',
+              '历史 Ontologies Namespace → 统一 Onto Retrieval Namespace')
+          chapter = chapter.replace(
+              '旧 instance-evidence/import-jobs → batch-import / file-import + index-tasks',
+              '历史单一 Instance Import Job → batch-import / file-import + index-tasks')
+          chapter = chapter.replace(
+              '旧 Parquet / NDJSON 导入描述 → DataSync 文件统一为 UTF-8 CSV',
+              '历史文件导入格式 → DataSync 文件统一为 UTF-8 CSV')
+
+          m = re.search(r'^# 3\..*?(?=^# 4\.)', doc, flags=re.M | re.S)
+          if not m:
+              raise SystemExit('chapter 3 boundary not found')
+          doc = doc[:m.start()] + chapter.rstrip() + '\n\n' + doc[m.end():]
+
+          # Bump only the known previous design version; preserve a newer user version.
+          doc = doc.replace('> 版本：V5.7', '> 版本：V5.8', 1)
+
+          # Normalize semantic-search endpoint wherever it appears.
+          doc = re.sub(
+              r'/v1/[A-Za-z0-9_{}./:-]*semantic-search',
+              '/v1/onto-retrieval/{ontologyId}/subgraph/semantic-search',
+              doc)
+
+          # Normalize any surviving old import-job definitions outside chapter 3.
+          replacements = {
+              '/v1/ontologies/{ontologyId}/instance-evidence/import-jobs/{jobId}/errors': '/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/errors',
+              '/v1/ontologies/{ontologyId}/instance-evidence/import-jobs/{jobId}:retry': '/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/retry',
+              '/v1/ontologies/{ontologyId}/instance-evidence/import-jobs/{jobId}:cancel': '/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/cancel',
+              '/v1/ontologies/{ontologyId}/instance-evidence/import-jobs/{jobId}': '/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}',
+              '/v1/ontologies/{ontologyId}/instance-evidence/import-jobs': '/v1/onto-retrieval/{ontologyId}/index-data/file-import',
+          }
+          for old, new in replacements.items():
+              doc = doc.replace(old, new)
+
+          path.write_text(doc, encoding='utf-8')
+          PY
+
+          DOC='docs/OAG本体锚点语义检索与向量索引设计方案.md'
+
+          # Required content.
+          grep -Fq '@PostMapping("/v1/onto-retrieval/{ontologyId}/subgraph/semantic-search")' "$DOC"
+          grep -Fq '/v1/onto-retrieval/{ontologyId}/index-data/batch-import' "$DOC"
+          grep -Fq '/v1/onto-retrieval/{ontologyId}/index-data/file-import' "$DOC"
+          grep -Fq 'dataType": "METADATA_ENUM"' "$DOC"
+          grep -Fq 'dataType": "INSTANCE_VALUE"' "$DOC"
+          grep -Fq 'propertyid,objectTypeId,value,name,display_zh' "$DOC"
+          grep -Fq 'propertyid,objectTypeId,value,language,op' "$DOC"
+          grep -Fq 'T_OAG_INDEX_TASK' "$DOC"
+          grep -Fq 'pathStyleAccessEnabled(true)' "$DOC"
+
+          # No obsolete active API namespace or old bulk-file formats may remain.
+          ! grep -Fq '/v1/ontologies/{ontologyId}' "$DOC"
+          ! grep -Fq 'instance-evidence/import-jobs' "$DOC"
+          ! grep -Eiq '\bParquet\b|\bNDJSON\b' "$DOC"
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$DOC"
+          if git diff --cached --quiet; then
+            echo 'No document changes'
+            exit 0
+          fi
+          git commit -m '重构OAG索引构建与DataSync Bulk Import设计'
+
+          # Avoid overwriting concurrent main changes: retry from the latest main if needed.
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            if [ "$attempt" = 3 ]; then
+              exit 1
+            fi
+            echo "main advanced; rebuilding on latest main (attempt $((attempt+1)))"
+            git fetch origin main
+            git reset --hard origin/main
+            python - <<'PY'
+          from pathlib import Path
+          import re
+          path = Path('docs/OAG本体锚点语义检索与向量索引设计方案.md')
+          doc = path.read_text(encoding='utf-8')
+          chapter = Path('/tmp/chapter3.md').read_text(encoding='utf-8')
+          chapter = chapter.replace('旧 /v1/ontologies/{ontologyId}/... → /v1/onto-retrieval/{ontologyId}/...', '历史 Ontologies Namespace → 统一 Onto Retrieval Namespace')
+          chapter = chapter.replace('旧 instance-evidence/import-jobs → batch-import / file-import + index-tasks', '历史单一 Instance Import Job → batch-import / file-import + index-tasks')
+          chapter = chapter.replace('旧 Parquet / NDJSON 导入描述 → DataSync 文件统一为 UTF-8 CSV', '历史文件导入格式 → DataSync 文件统一为 UTF-8 CSV')
+          m = re.search(r'^# 3\..*?(?=^# 4\.)', doc, flags=re.M | re.S)
+          if not m: raise SystemExit('chapter 3 boundary not found')
+          doc = doc[:m.start()] + chapter.rstrip() + '\n\n' + doc[m.end():]
+          doc = doc.replace('> 版本：V5.7', '> 版本：V5.8', 1)
+          doc = re.sub(r'/v1/[A-Za-z0-9_{}./:-]*semantic-search', '/v1/onto-retrieval/{ontologyId}/subgraph/semantic-search', doc)
+          replacements = {
+              '/v1/ontologies/{ontologyId}/instance-evidence/import-jobs/{jobId}/errors': '/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/errors',
+              '/v1/ontologies/{ontologyId}/instance-evidence/import-jobs/{jobId}:retry': '/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/retry',
+              '/v1/ontologies/{ontologyId}/instance-evidence/import-jobs/{jobId}:cancel': '/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/cancel',
+              '/v1/ontologies/{ontologyId}/instance-evidence/import-jobs/{jobId}': '/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}',
+              '/v1/ontologies/{ontologyId}/instance-evidence/import-jobs': '/v1/onto-retrieval/{ontologyId}/index-data/file-import',
+          }
+          for old, new in replacements.items(): doc = doc.replace(old, new)
+          path.write_text(doc, encoding='utf-8')
+          PY
+            git add "$DOC"
+            git commit -m '重构OAG索引构建与DataSync Bulk Import设计'
+          done
