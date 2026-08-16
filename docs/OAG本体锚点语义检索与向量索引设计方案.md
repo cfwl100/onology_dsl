@@ -1,6 +1,6 @@
 # OAG 面向本体种子节点的语义检索、混合排序与本体子图构建设计方案
 
-> 版本：V5.8  
+> 版本：V5.9  
 > 目标：在不丢失既有 Bulk Import、混合召回、RRF、LLM 精排和子图算法设计的基础上，进一步对齐现有 OMS 本体 JSON 资产：统一三张索引表命名，种子节点和枚举值直接内嵌 `synonyms`，固定支持中文/英文并额外支持最多 2 种语言，实例索引只保存去重后的真实列值。  
 > 核心决策：**ObjectType/Property = 种子节点；Synonym 是种子节点或枚举值的结构化字段而非独立物理行；Metadata Evidence 只承载 Enum Value；Instance Evidence 只承载真实 Instance Value；种子节点使用 `id`，Enum/Instance 统一使用 `propertyid + objectTypeId` 表达本体归属；每个 Semantic Unit 默认 6 路一次 Weighted RRF。**
 
@@ -1141,113 +1141,333 @@ OAG 对外接口统一使用 Namespace：
 
 不再新增 `/v1/ontologies/{ontologyId}/...` 或 `/instance-evidence/import-jobs/...` 风格接口。
 
-### 3.3.1 语义检索接口
+本章接口按 **OpenAPI 3.0.3** 规范定义。所有 URI、Path/Header/Query 参数、Request Body、HTTP Status Code 和 Response Schema 都必须能够直接映射为 OpenAPI `paths / parameters / requestBody / responses / components.schemas`。
+
+### 3.3.1 公共协议约束
+
+#### Content-Type
+
+```http
+Content-Type: application/json
+Accept: application/json
+```
+
+MinIO 文件导入接口自身仍使用 JSON 注册文件，不通过 `multipart/form-data` 直接上传大文件；CSV 先由 DataSync 上传到双方约定的 MinIO Bucket，再调用 `file-import`。
+
+#### 公共 Path 参数
+
+**表 1  OntologyPath 参数列表**
+
+| 参数名称 | 类型 | 是否必选 | 默认值 | OpenAPI 约束 | 说明 |
+|:--|:--|:--|:--|:--|:--|
+| `ontologyId` | String | 是 | - | `in: path`，`required: true`，`maxLength: 256` | 本体唯一 ID；必须与 URI 中的目标本体一致 |
+
+#### 公共 Header 参数
+
+**表 2  OAGCommonHeaders 参数列表**
+
+| 参数名称 | 类型 | 是否必选 | 默认值 | OpenAPI 约束 | 说明 |
+|:--|:--|:--|:--|:--|:--|
+| `x-gde-tenant-id` | String | 是 | - | `in: header`，`required: true`，`maxLength: 256` | 租户 ID；OAG 按租户隔离本体和任务 |
+| `Content-Type` | String | POST 请求是 | `application/json` | `application/json` | 请求体编码类型 |
+| `Accept` | String | 否 | `application/json` | `application/json` | 响应类型 |
+
+#### 公共 HTTP 状态码
+
+| HTTP 状态码 | 场景 | Response Schema |
+|:--|:--|:--|
+| `200 OK` | 同步查询成功 | 对应接口 Success Response |
+| `202 Accepted` | 异步导入、重试或取消请求已接受 | `AsyncTaskAcceptedResponse` / `TaskOperationAcceptedResponse` |
+| `400 Bad Request` | Path/Header/Body/Query 参数校验失败 | `ValidationErrorResponse` |
+| `404 Not Found` | Ontology、Task 或同步校验的资源不存在 | `BusinessErrorResponse` |
+| `409 Conflict` | 幂等键冲突、任务状态不允许当前操作 | `BusinessErrorResponse` |
+| `413 Payload Too Large` | REST Batch 超过 `maxRecordsPerRequest` 或 Body 限制 | `BusinessErrorResponse` |
+| `429 Too Many Requests` | 导入任务或接口触发限流 | `BusinessErrorResponse` |
+| `500 Internal Server Error` | OAG 内部未预期异常 | `BusinessErrorResponse` |
+| `503 Service Unavailable` | GaussDB、Embedding、GaussVector、OpenSearch、MinIO 等依赖暂不可用 | `BusinessErrorResponse` |
+
+> 对异步导入接口，`202 Accepted` 仅表示任务已成功写入 GaussDB 并进入执行队列，不表示数据已经完成 Embedding、双写或发布。
+
+#### 幂等规则
+
+`requestId` 是调用方生成的业务幂等键，最大长度 256。OAG 使用：
+
+```text
+ontologyId + requestId
+```
+
+作为任务级幂等约束：
+
+```text
+相同 ontologyId + requestId + 相同请求语义
+  → 返回原 taskId，不重复创建任务
+
+相同 ontologyId + requestId + 不同 dataType/importMode/数据内容
+  → HTTP 409 IDEMPOTENCY_CONFLICT
+```
+
+---
+
+### 3.3.2 语义子图检索接口
+
+#### 典型场景
+
+Agent、Skill 或上层业务根据自然语言问题获取与问题相关的 ObjectType、Property、Enum Value、Instance Value、Relation、Function/Action 等检索结果和本体子图。
+
+#### 接口功能
+
+执行 Query Understanding、6 路混合召回、Weighted RRF、LLM 精排和本体子图生成。该接口只负责语义检索与子图返回，不承担索引数据导入。
+
+#### 调用方法
+
+POST
+
+#### URI
+
+```text
+/v1/onto-retrieval/{ontologyId}/subgraph/semantic-search
+```
+
+对应 Spring 接口：
 
 ```java
 @PostMapping("/v1/onto-retrieval/{ontologyId}/subgraph/semantic-search")
 ```
 
-```http
-POST /v1/onto-retrieval/{ontologyId}/subgraph/semantic-search
+#### 请求参数
+
+除表 1、表 2 的公共 Path/Header 参数外，请求 Body 使用 `SemanticSearchRequest`。
+
+**表 3  SemanticSearchRequest 参数列表**
+
+| 参数名称 | 类型 | 是否必选 | 默认值 | OpenAPI 约束 | 说明 |
+|:--|:--|:--|:--|:--|:--|
+| `query` | String | 是 | - | `minLength: 1` | 自然语言业务问题或 Planning 层整理后的语义检索问题 |
+| `similarityThreshold` | Number(float) | 否 | `0.6` | `minimum: 0`，`maximum: 1` | Dense 相似度阈值；Exact 命中不受该阈值过滤 |
+| `includeFunctions` | Integer | 否 | `1` | `enum: [0,1]` | 是否返回 Function，1 返回，0 不返回 |
+| `includeActions` | Integer | 否 | `0` | `enum: [0,1]` | 是否返回 Action，1 返回，0 不返回 |
+| `seedRetrievalMode` | String | 否 | `vector` | 当前支持值以服务配置为准 | 种子节点检索模式 |
+| `topK` | Integer | 否 | `3` | `minimum: 1` | 种子节点候选 TopK |
+| `graphExpansionStrategy` | String | 否 | `minimal` | `enum: [minimal,khop,component]` | 子图扩展策略 |
+| `hopLimit` | Integer | 否 | `3` | `minimum: 1` | `khop` 策略下的最大扩散深度 |
+
+#### 请求示例
+
+```json
+{
+  "query": "查询正式用户的 Mobile Number",
+  "similarityThreshold": 0.6,
+  "includeFunctions": 1,
+  "includeActions": 0,
+  "seedRetrievalMode": "vector",
+  "topK": 3,
+  "graphExpansionStrategy": "minimal",
+  "hopLimit": 3
+}
 ```
 
-该接口负责 Query Understanding、混合召回、RRF、LLM 精排和子图生成，不承担索引数据导入。
+#### 返回参数
 
-### 3.3.2 索引导入与任务接口
+成功响应沿用后续第 5、6 章定义的最终检索与子图结构。OpenAPI 中 `result` 至少声明为 Object，内部字段包括 `retrievalResults / seedNodes / nodes / edges / semanticExtensions / capabilityExtensions / metadata`，具体字段以第 5、6 章为准。
 
-| 场景 | Method | URI | 说明 |
-|---|---|---|---|
-| REST 批量导入 | POST | `/v1/onto-retrieval/{ontologyId}/index-data/batch-import` | Body 直接提交 Enum/Instance records |
-| MinIO 文件导入 | POST | `/v1/onto-retrieval/{ontologyId}/index-data/file-import` | 注册已经上传到 MinIO 的 CSV 文件 |
-| 查询任务 | GET | `/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}` | 查询持久化任务状态和进度 |
-| 重试任务 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/retry` | 对失败任务重新执行 |
-| 取消任务 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/cancel` | 请求取消未完成任务 |
-| 查询错误 | GET | `/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/errors` | 查询任务错误明细 |
+**表 4  SemanticSearchResponse 参数列表（HTTP 200）**
 
-对应 Spring 接口：
+| 参数名称 | 类型 | 说明 |
+|:--|:--|:--|
+| `result` | Object | 最终语义检索结果与本体子图 |
 
-```java
-@PostMapping("/v1/onto-retrieval/{ontologyId}/index-data/batch-import")
-@PostMapping("/v1/onto-retrieval/{ontologyId}/index-data/file-import")
-@GetMapping("/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}")
-@PostMapping("/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/retry")
-@PostMapping("/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/cancel")
-@GetMapping("/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/errors")
+#### OpenAPI 3.0.3 Path 定义
+
+```yaml
+/v1/onto-retrieval/{ontologyId}/subgraph/semantic-search:
+  post:
+    operationId: semanticSearchSubgraph
+    summary: 本体语义子图检索
+    parameters:
+      - $ref: '#/components/parameters/OntologyId'
+      - $ref: '#/components/parameters/TenantId'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SemanticSearchRequest'
+    responses:
+      '200':
+        description: 检索成功
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SemanticSearchResponse'
+      '400': { $ref: '#/components/responses/BadRequest' }
+      '404': { $ref: '#/components/responses/NotFound' }
+      '429': { $ref: '#/components/responses/TooManyRequests' }
+      '500': { $ref: '#/components/responses/InternalError' }
+      '503': { $ref: '#/components/responses/ServiceUnavailable' }
 ```
+
+---
+
+### 3.3.3 索引导入与任务接口清单
+
+| 场景 | Method | URI | OpenAPI operationId | 说明 |
+|---|---|---|---|---|
+| REST 批量导入 | POST | `/v1/onto-retrieval/{ontologyId}/index-data/batch-import` | `batchImportIndexData` | Body 直接提交 Enum/Instance records |
+| MinIO 文件导入 | POST | `/v1/onto-retrieval/{ontologyId}/index-data/file-import` | `importIndexDataFromMinio` | 注册已经上传到 MinIO 的 CSV 文件 |
+| 查询任务 | GET | `/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}` | `getIndexTask` | 查询持久化任务状态和进度 |
+| 重试任务 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/retry` | `retryIndexTask` | 对失败任务重新执行 |
+| 取消任务 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/cancel` | `cancelIndexTask` | 请求取消未完成任务 |
+| 查询错误 | GET | `/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/errors` | `listIndexTaskErrors` | 分页查询任务记录级错误 |
 
 所有导入接口采用异步任务模型：
 
 ```text
-提交请求 → 基础参数校验 → GaussDB 创建 T_OAG_INDEX_TASK → HTTP 202 + taskId → 后台执行
+提交请求 → 同步基础参数校验 → GaussDB 创建/复用 T_OAG_INDEX_TASK → HTTP 202 + taskId → 后台执行
 ```
 
-`requestId` 是调用方幂等键；同一个 `ontologyId + requestId` 重复提交时不得创建重复任务。
-
-统一的数据类型：`METADATA_ENUM`、`INSTANCE_VALUE`；统一导入模式：`FULL_REPLACE`、`INCREMENTAL`；统一记录操作：`UPSERT`、`DELETE`。
+统一数据类型：`METADATA_ENUM`、`INSTANCE_VALUE`；统一导入模式：`FULL_REPLACE`、`INCREMENTAL`；统一记录操作：`UPSERT`、`DELETE`。
 
 ---
 
 ## 3.4 REST 批量导入接口
 
-REST Batch Import 是 MinIO 文件导入的补充，主要面向动态枚举值实时/准实时增加、删除或修订，以及少量/中等规模实例值增量。超大数据不应通过 HTTP JSON Body 替代 MinIO 文件通道。`maxRecordsPerRequest` 作为 OAG 工程配置，建议默认从 1000 条起步并通过压测调整。
+REST Batch Import 是 MinIO 文件导入的补充，主要面向动态枚举值实时/准实时增加、删除或修订，以及少量/中等规模实例值增量。超大数据不应通过 HTTP JSON Body 替代 MinIO 文件通道。`maxRecordsPerRequest` 为 OAG 工程配置，建议默认从 1000 条起步并通过压测调整。
 
-### 3.4.1 请求公共结构
+### 3.4.1 接口定义
 
-```json
-{
-  "requestId": "req-20260816-000001",
-  "dataType": "METADATA_ENUM",
-  "importMode": "INCREMENTAL",
-  "records": []
-}
+#### 典型场景
+
+业务系统动态增加/删除枚举值，或 DataSync/业务应用需要实时、准实时导入少量实例列值，不希望先生成 MinIO 文件。
+
+#### 接口功能
+
+接收 `METADATA_ENUM` 或 `INSTANCE_VALUE` 批量记录，完成同步协议校验并创建异步索引任务。后台统一执行本体映射校验、Normalize、Dedup、Embedding、GaussVector/OpenSearch 双写、Verify 和 Publish。
+
+#### 调用方法
+
+POST
+
+#### URI
+
+```text
+/v1/onto-retrieval/{ontologyId}/index-data/batch-import
 ```
 
-| 字段 | 必选 | 说明 |
-|---|---|---|
-| `requestId` | ✔ | 调用幂等键 |
-| `dataType` | ✔ | `METADATA_ENUM` / `INSTANCE_VALUE` |
-| `importMode` | ✔ | `FULL_REPLACE` / `INCREMENTAL` |
-| `records` | ✔ | 与 `dataType` 对应的业务记录 |
+对应 Spring 接口：
 
-OAG 不接受调用方提交 `vector`；物理 `type` 由 `dataType` 确定：`METADATA_ENUM → ENUM_VALUE`，`INSTANCE_VALUE → INSTANCE_VALUE`。
+```java
+@PostMapping("/v1/onto-retrieval/{ontologyId}/index-data/batch-import")
+```
 
-### 3.4.2 METADATA_ENUM 请求
+#### 请求参数
 
-请求参数与第 2.8 节 `t_metadata_evidence_{ontology_id}` 的业务字段一致：
+**表 5  IndexBatchImportRequest 参数列表**
+
+| 参数名称 | 类型 | 是否必选 | 默认值 | OpenAPI 约束 | 说明 |
+|:--|:--|:--|:--|:--|:--|
+| `requestId` | String | 是 | - | `minLength: 1`，`maxLength: 256` | 调用方幂等键 |
+| `dataType` | String | 是 | - | `enum: [METADATA_ENUM, INSTANCE_VALUE]` | 指定本批记录类型，禁止一个请求混合两类数据 |
+| `importMode` | String | 是 | - | `enum: [FULL_REPLACE, INCREMENTAL]` | 全量替换或增量导入 |
+| `records` | Array[MetadataEnumRecord] / Array[InstanceValueRecord] | 是 | - | `minItems: 1`；最大条数由 `maxRecordsPerRequest` 配置 | 记录类型必须与 `dataType` 一致 |
+
+`records` 是 OpenAPI `oneOf` 语义：
+
+```text
+dataType = METADATA_ENUM
+  → records[] 必须满足 MetadataEnumRecord
+
+dataType = INSTANCE_VALUE
+  → records[] 必须满足 InstanceValueRecord
+```
+
+OAG 不接受调用方提交 `vector`；物理 `type` 由 `dataType` 推导：`METADATA_ENUM → ENUM_VALUE`，`INSTANCE_VALUE → INSTANCE_VALUE`。
+
+##### METADATA_ENUM 记录
+
+> **字段名严格与第 2.8 节一致：使用 `propertyId`，不是 `propertyid`。字段名大小写敏感。**
+
+**表 6  MetadataEnumRecord 参数列表**
+
+| 参数名称 | 类型 | 是否必选 | 默认值 | OpenAPI 约束 | 说明 |
+|:--|:--|:--|:--|:--|:--|
+| `propertyId` | String | 是 | - | `maxLength: 512` | 引用该 Enum 的 Property.id |
+| `objectTypeId` | String | 否 | - | `maxLength: 256` | Property 所属 ObjectType.id；如传入必须与本体映射一致 |
+| `value` | String | 是 | - | `maxLength: 4096` | 真实枚举值；用于唯一键和向量内容 |
+| `name` | String | 否 | - | `maxLength: 4096` | Enum Value name |
+| `display_zh` | String | 否 | - | `maxLength: 512` | 中文 display |
+| `display_en` | String | 否 | - | `maxLength: 512` | 英文 display |
+| `display_lang_1` | String | 否 | - | `maxLength: 512` | ontology 级额外语言槽位 1 display |
+| `display_lang_2` | String | 否 | - | `maxLength: 512` | ontology 级额外语言槽位 2 display |
+| `description_zh` | String | 否 | - | - | 中文 description |
+| `description_en` | String | 否 | - | - | 英文 description |
+| `description_lang_1` | String | 否 | - | - | 额外语言槽位 1 description |
+| `description_lang_2` | String | 否 | - | - | 额外语言槽位 2 description |
+| `synonyms` | Map[String, Array[String]] | 否 | `{}` | `maxProperties: 3` | 当前 Enum Value 的多语言同义词；语言 key 最多 3 个 |
+| `op` | String | 否 | `UPSERT` | `enum: [UPSERT, DELETE]` | 增量操作；`FULL_REPLACE` 默认只使用 `UPSERT` |
+
+枚举唯一业务键：
+
+```text
+objectTypeId + propertyId + normalized(value)
+```
+
+如果 `objectTypeId` 未传，OAG 可以根据 `propertyId` 的本体归属补齐；若调用方传入，则必须校验与 OMS 本体映射一致，不一致返回 `OBJECT_TYPE_MISMATCH`。
+
+##### INSTANCE_VALUE 记录
+
+> **字段名严格与第 2.10 节一致：使用 `propertyid`。该字段与第 2.8 的 `propertyId` 大小写不同，当前协议保持与既有物理模型一致。**
+
+**表 7  InstanceValueRecord 参数列表**
+
+| 参数名称 | 类型 | 是否必选 | 默认值 | OpenAPI 约束 | 说明 |
+|:--|:--|:--|:--|:--|:--|
+| `propertyid` | String | 是 | - | `maxLength: 512` | 所属 Property.id |
+| `objectTypeId` | String | 否 | - | `maxLength: 256` | Property 所属 ObjectType.id；如传入必须与本体映射一致 |
+| `value` | String | 是 | - | `maxLength: 4096` | 去重后的真实 Instance Value；EmbeddingInput 严格为 `{value}` |
+| `language` | String | 否 | `und` | BCP 47 / `und` | 导入协议扩展字段，只用于 Analyzer/观测 Hint，不改变第 2.10 的向量表核心字段 |
+| `op` | String | 否 | `UPSERT` | `enum: [UPSERT, DELETE]` | 增量操作；`FULL_REPLACE` 默认只使用 `UPSERT` |
+
+实例唯一业务键：
+
+```text
+objectTypeId + propertyid + normalized(value)
+```
+
+#### 请求示例：动态枚举
 
 ```json
 {
-  "requestId": "req-enum-001",
+  "requestId": "req-enum-20260816-000001",
   "dataType": "METADATA_ENUM",
   "importMode": "INCREMENTAL",
   "records": [
     {
-      "propertyid": "prop:ont:vehicle:sp:bodyColor",
+      "propertyId": "prop:ont:vehicle:sp:bodyColor",
       "objectTypeId": "obj:ont:vehicle:Vehicle",
       "value": "red",
       "name": "red",
       "display_zh": "红色",
       "display_en": "Red",
       "display_lang_1": "Rojo",
-      "display_lang_2": null,
       "description_zh": "红色",
       "description_en": "Red color",
       "description_lang_1": "Color rojo",
-      "description_lang_2": null,
-      "synonyms": {"zh": ["红", "赤色"], "en": ["Red"], "es": ["Rojo"]},
+      "synonyms": {
+        "zh": ["红", "赤色"],
+        "en": ["Red"],
+        "es": ["Rojo"]
+      },
       "op": "UPSERT"
     }
   ]
 }
 ```
 
-OAG 按 `objectTypeId + propertyid + normalized(value)` 去重，按第 2.9 节 Enum Value 模板构建 Embedding 文本，再写入 `t_metadata_evidence_{ontology_id}` 的 GaussVector/OpenSearch。
-
-### 3.4.3 INSTANCE_VALUE 请求
+#### 请求示例：实例列值
 
 ```json
 {
-  "requestId": "req-instance-001",
+  "requestId": "req-instance-20260816-000001",
   "dataType": "INSTANCE_VALUE",
   "importMode": "INCREMENTAL",
   "records": [
@@ -1262,39 +1482,141 @@ OAG 按 `objectTypeId + propertyid + normalized(value)` 去重，按第 2.9 节 
 }
 ```
 
-Instance 继续按 `objectTypeId + propertyid + normalized(value)` 去重，EmbeddingInput 严格为 `{value}`。
+#### 返回参数
 
-### 3.4.4 异步响应
+**表 8  AsyncTaskAcceptedResponse 参数列表（HTTP 202）**
+
+| 参数名称 | 类型 | 说明 | 示例 |
+|:--|:--|:--|:--|
+| `ontologyId` | String | 本体 ID | `dtmi.ontology.xxx.1` |
+| `taskId` | String | GaussDB 持久化任务 ID | `idx-task-20260816-000001` |
+| `requestId` | String | 调用幂等键 | `req-enum-20260816-000001` |
+| `dataType` | String | `METADATA_ENUM` / `INSTANCE_VALUE` | `METADATA_ENUM` |
+| `sourceType` | String | 固定 `REST` | `REST` |
+| `status` | Integer | 任务状态：0 构建中，1 成功，2 失败，3 已取消 | `0` |
+| `stage` | String | 当前阶段，任务创建时通常为 `CREATED` | `CREATED` |
+
+#### 响应示例
 
 ```http
 HTTP/1.1 202 Accepted
+Content-Type: application/json
 ```
 
 ```json
 {
   "ontologyId": "dtmi.ontology.xxx.1",
   "taskId": "idx-task-20260816-000001",
-  "requestId": "req-enum-001",
+  "requestId": "req-enum-20260816-000001",
   "dataType": "METADATA_ENUM",
   "sourceType": "REST",
-  "status": 0
+  "status": 0,
+  "stage": "CREATED"
 }
 ```
 
-任务创建成功只表示已持久化并接受任务，不表示索引已经可检索。
+#### OpenAPI 3.0.3 Path 定义
+
+```yaml
+/v1/onto-retrieval/{ontologyId}/index-data/batch-import:
+  post:
+    operationId: batchImportIndexData
+    summary: REST 批量导入枚举值或实例列值
+    parameters:
+      - $ref: '#/components/parameters/OntologyId'
+      - $ref: '#/components/parameters/TenantId'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IndexBatchImportRequest'
+          examples:
+            metadataEnum:
+              $ref: '#/components/examples/MetadataEnumBatchImportExample'
+            instanceValue:
+              $ref: '#/components/examples/InstanceValueBatchImportExample'
+    responses:
+      '202':
+        description: 导入任务已创建或命中幂等任务
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AsyncTaskAcceptedResponse'
+      '400': { $ref: '#/components/responses/BadRequest' }
+      '404': { $ref: '#/components/responses/NotFound' }
+      '409': { $ref: '#/components/responses/Conflict' }
+      '413': { $ref: '#/components/responses/PayloadTooLarge' }
+      '429': { $ref: '#/components/responses/TooManyRequests' }
+      '500': { $ref: '#/components/responses/InternalError' }
+      '503': { $ref: '#/components/responses/ServiceUnavailable' }
+```
+
+---
+
 ## 3.5 MinIO CSV 文件导入接口
 
 对于百万/千万级实例值及大规模枚举数据，默认使用 MinIO 文件通道：
 
 ```text
-DataSync → 生成 CSV → 上传双方约定 MinIO Bucket → POST file-import → OAG 创建任务 → S3 getObject 流式读取 → Normalize/Dedup/Embedding/Bulk Write
+DataSync → 生成 CSV → S3 putObject 到双方约定 Bucket → POST file-import
+         → OAG 创建任务 → S3 getObject 流式读取
+         → Normalize/Dedup/Embedding/Bulk Write/Verify/Publish
 ```
 
-### 3.5.1 文件注册请求
+### 3.5.1 接口定义
 
-```http
-POST /v1/onto-retrieval/{ontologyId}/index-data/file-import
+#### 典型场景
+
+DataSync 定期或按事件生成大规模枚举/实例列值文件，数据量不适合通过 HTTP JSON Body 直接提交，需要使用 MinIO 进行解耦、流式消费和失败重试。
+
+#### 接口功能
+
+注册已经上传到 MinIO 的一个或多个 UTF-8 CSV 对象。接口同步校验请求结构和基础资源信息，创建持久化异步任务；后台按文件流式读取并进入与 REST Batch 相同的 Import Pipeline。
+
+#### 调用方法
+
+POST
+
+#### URI
+
+```text
+/v1/onto-retrieval/{ontologyId}/index-data/file-import
 ```
+
+对应 Spring 接口：
+
+```java
+@PostMapping("/v1/onto-retrieval/{ontologyId}/index-data/file-import")
+```
+
+#### 请求参数
+
+**表 9  IndexFileImportRequest 参数列表**
+
+| 参数名称 | 类型 | 是否必选 | 默认值 | OpenAPI 约束 | 说明 |
+|:--|:--|:--|:--|:--|:--|
+| `requestId` | String | 是 | - | `minLength: 1`，`maxLength: 256` | 调用方幂等键 |
+| `dataType` | String | 是 | - | `enum: [METADATA_ENUM, INSTANCE_VALUE]` | 当前文件批次的数据类型 |
+| `importMode` | String | 是 | - | `enum: [FULL_REPLACE, INCREMENTAL]` | 全量替换或增量导入 |
+| `files` | Array[MinioCsvFile] | 是 | - | `minItems: 1` | 待导入的 MinIO CSV 对象列表 |
+
+**表 10  MinioCsvFile 参数列表**
+
+| 参数名称 | 类型 | 是否必选 | 默认值 | OpenAPI 约束 | 说明 |
+|:--|:--|:--|:--|:--|:--|
+| `bucket` | String | 是 | - | `minLength: 3`，`maxLength: 63` | 双方部署时约定并加入 OAG allowlist 的 MinIO Bucket |
+| `objectKey` | String | 是 | - | `minLength: 1`，`maxLength: 1024` | CSV 对象 Key；任务完成前不得覆盖同一 Key |
+| `fileFormat` | String | 否 | `CSV` | `enum: [CSV]` | 当前只支持 CSV |
+| `encoding` | String | 否 | `UTF-8` | `enum: [UTF-8]` | 当前只支持 UTF-8 |
+| `hasHeader` | Boolean | 否 | `true` | 当前必须为 `true` | CSV 第一行为 Header |
+| `rowCount` | Integer(int64) | 否 | - | `minimum: 0` | DataSync 侧统计的预期记录数；OAG 用于校验/观测 |
+| `size` | Integer(int64) | 否 | - | `minimum: 0` | 预期文件字节数；OAG 可通过 `headObject` 二次校验 |
+| `sha256` | String | 是 | - | `pattern: ^[A-Fa-f0-9]{64}$` | 文件 SHA-256；用于不可变校验和 Chunk 稳定标识 |
+
+MinIO 的 `endpoint / accessKey / secretKey` 属于部署配置，不属于业务 API 参数，禁止通过 `file-import` Body 传输。
+
+#### 请求示例
 
 ```json
 {
@@ -1310,15 +1632,83 @@ POST /v1/onto-retrieval/{ontologyId}/index-data/file-import
       "hasHeader": true,
       "rowCount": 1200000,
       "size": 183421234,
-      "sha256": "..."
+      "sha256": "7c222fb2927d828af22f592134e8932480637c0d4d7b31a7d7e6c80b7f5506ab"
     }
   ]
 }
 ```
 
-`dataType` 同样只能为 `METADATA_ENUM` 或 `INSTANCE_VALUE`，因此 MinIO 和 REST 共享同一数据模型。
+#### 返回参数
 
-DataSync/调用方负责生成 CSV、计算 sha256、上传 MinIO、调用 file-import；OAG 负责校验 bucket/objectKey/checksum/CSV Header、创建并持久化任务、流式读取、Schema 选择、Normalize/Dedup/Embedding、GaussVector/OpenSearch 写入以及 Verify/Publish。MinIO 的 endpoint/accessKey/secretKey 属于部署配置，不通过业务导入 API 传输。
+复用表 8 `AsyncTaskAcceptedResponse`，其中：
+
+```text
+sourceType = MINIO
+status     = 0
+stage      = CREATED
+```
+
+#### 响应示例
+
+```json
+{
+  "ontologyId": "dtmi.ontology.xxx.1",
+  "taskId": "idx-task-20260816-000101",
+  "requestId": "datasync-20260816-000001",
+  "dataType": "INSTANCE_VALUE",
+  "sourceType": "MINIO",
+  "status": 0,
+  "stage": "CREATED"
+}
+```
+
+#### OpenAPI 3.0.3 Path 定义
+
+```yaml
+/v1/onto-retrieval/{ontologyId}/index-data/file-import:
+  post:
+    operationId: importIndexDataFromMinio
+    summary: 从 MinIO CSV 导入枚举值或实例列值
+    parameters:
+      - $ref: '#/components/parameters/OntologyId'
+      - $ref: '#/components/parameters/TenantId'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IndexFileImportRequest'
+    responses:
+      '202':
+        description: 文件导入任务已创建或命中幂等任务
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AsyncTaskAcceptedResponse'
+      '400': { $ref: '#/components/responses/BadRequest' }
+      '404': { $ref: '#/components/responses/NotFound' }
+      '409': { $ref: '#/components/responses/Conflict' }
+      '429': { $ref: '#/components/responses/TooManyRequests' }
+      '500': { $ref: '#/components/responses/InternalError' }
+      '503': { $ref: '#/components/responses/ServiceUnavailable' }
+```
+
+### 3.5.2 同步校验与异步校验边界
+
+接口返回 `202` 前至少完成：
+
+```text
+ontologyId / tenant 基础校验
+requestId 幂等校验
+dataType / importMode Schema 校验
+files 非空
+bucket allowlist 校验
+objectKey 格式校验
+sha256 格式校验
+T_OAG_INDEX_TASK 持久化成功
+```
+
+MinIO 对象存在性、size/checksum、CSV Header、逐行 Schema、Ontology Mapping 等校验可以在后台任务阶段执行；如果后台校验失败，任务进入 `STATUS=2` 并通过任务查询/错误查询接口返回详细错误。实现如果选择在 `202` 前执行 `headObject`，则对象不存在可以同步返回 `404 MINIO_OBJECT_NOT_FOUND`，但不得因此把百万级 CSV 内容同步加载到 API 线程。
 
 ---
 
@@ -1344,12 +1734,12 @@ CSV 不包含 `vector`，因为向量必须由 OAG 使用当前配置的 Embeddi
 Header：
 
 ```csv
-propertyid,objectTypeId,value,name,display_zh,display_en,display_lang_1,display_lang_2,description_zh,description_en,description_lang_1,description_lang_2,synonyms,op
+propertyId,objectTypeId,value,name,display_zh,display_en,display_lang_1,display_lang_2,description_zh,description_en,description_lang_1,description_lang_2,synonyms,op
 ```
 
 | CSV 字段 | 目标字段 | 说明 |
 |---|---|---|
-| `propertyid` | `propertyid` | 引用 Enum 的 Property.id |
+| `propertyId` | `propertyId` | 引用 Enum 的 Property.id |
 | `objectTypeId` | `objectTypeId` | Property 所属 ObjectType.id |
 | `value` | `value` | 真实枚举值 |
 | `name` | `name` | Enum Value name |
@@ -1367,7 +1757,7 @@ propertyid,objectTypeId,value,name,display_zh,display_en,display_lang_1,display_
 示例：
 
 ```csv
-propertyid,objectTypeId,value,name,display_zh,display_en,display_lang_1,display_lang_2,description_zh,description_en,description_lang_1,description_lang_2,synonyms,op
+propertyId,objectTypeId,value,name,display_zh,display_en,display_lang_1,display_lang_2,description_zh,description_en,description_lang_1,description_lang_2,synonyms,op
 prop:ont:vehicle:sp:bodyColor,obj:ont:vehicle:Vehicle,red,red,红色,Red,Rojo,,红色,Red color,Color rojo,,"{""zh"":[""红"",""赤色""],""en"":[""Red""],""es"":[""Rojo""]}",UPSERT
 ```
 
@@ -1472,7 +1862,7 @@ T_OAG_INDEX_TASK (N)
 | `UPDATE_TIME` | TIMESTAMP | NOT NULL | 最近状态更新时间 |
 | `COMPLETION_TIME` | TIMESTAMP |  | 完成时间 |
 
-兼容原则：`STATUS=0/1/2` 继续兼容现有构建中/成功/失败语义，新增 `STATUS=3` 表示取消；更细执行阶段写入 `STAGE`，推荐值：`CREATED / VALIDATING / READING / DEDUPLICATING / EMBEDDING / WRITING_VECTOR / WRITING_SEARCH / VERIFYING / PUBLISHING / FINISHED`。
+兼容原则：`STATUS=0/1/2` 继续兼容现有构建中/成功/失败语义，新增 `STATUS=3` 表示取消；更细执行阶段写入 `STAGE`，推荐值：`CREATED / VALIDATING / READING / DEDUPLICATING / EMBEDDING / WRITING_VECTOR / WRITING_SEARCH / VERIFYING / PUBLISHING / CANCEL_REQUESTED / FINISHED`。
 
 ### 3.8.2 索引与约束
 
@@ -1532,6 +1922,775 @@ ON T_OAG_INDEX_TASK (STATUS, UPDATE_TIME);
 ```
 
 如果现网已经存在精简版 `T_OAG_INDEX_TASK`，通过数据库升级脚本增加字段，不新建第二张任务主表。
+### 3.8.4 索引任务管理接口详细定义
+
+任务管理接口统一以 GaussDB `T_OAG_INDEX_TASK` 为事实来源，不以内存线程/Future 状态作为权威结果。
+
+#### 3.8.4.1 查询索引任务
+
+##### 典型场景
+
+调用方提交 REST Batch 或 MinIO File Import 后，根据 `taskId` 轮询任务当前阶段、进度、结果和最后错误摘要。
+
+##### 接口功能
+
+查询指定本体下的索引任务状态。接口必须同时校验 `ontologyId + taskId + tenant` 归属，禁止跨租户/跨本体读取任务。
+
+##### 调用方法
+
+GET
+
+##### URI
+
+```text
+/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}
+```
+
+##### 请求参数
+
+**表 11  GetIndexTask 参数列表**
+
+| 参数名称 | 类型 | 参数位置 | 是否必选 | 默认值 | OpenAPI 约束 | 说明 |
+|:--|:--|:--|:--|:--|:--|:--|
+| `ontologyId` | String | Path | 是 | - | `maxLength: 256` | 本体 ID |
+| `taskId` | String | Path | 是 | - | `maxLength: 256` | 索引任务 ID |
+| `x-gde-tenant-id` | String | Header | 是 | - | `maxLength: 256` | 租户 ID |
+
+##### 返回参数
+
+**表 12  IndexTaskResponse 参数列表（HTTP 200）**
+
+| 参数名称 | 类型 | 说明 |
+|:--|:--|:--|
+| `tenantId` | String | 租户 ID |
+| `ontologyId` | String | 本体 ID |
+| `taskId` | String | 任务 ID |
+| `requestId` | String | 调用幂等键 |
+| `dataType` | String | `SEED_NODE / METADATA_ENUM / INSTANCE_VALUE` |
+| `sourceType` | String | `OMS / REST / MINIO` |
+| `importMode` | String | `FULL_REPLACE / INCREMENTAL`；OMS 内部任务可为空 |
+| `status` | Integer | 0 构建中；1 成功；2 失败；3 已取消 |
+| `stage` | String | 当前执行阶段 |
+| `totalCount` | Integer(int64) | 总记录数；未知时可为空 |
+| `successCount` | Integer(int64) | 成功处理数 |
+| `failedCount` | Integer(int64) | 失败记录数 |
+| `skippedCount` | Integer(int64) | 去重/过滤记录数 |
+| `retryCount` | Integer | 已执行重试次数 |
+| `errorCode` | String | 任务最后错误码；非失败状态可为空 |
+| `errorMessage` | String | 最后错误摘要；非失败状态可为空 |
+| `createTime` | String(date-time) | 创建时间 |
+| `startTime` | String(date-time) | 实际开始时间 |
+| `updateTime` | String(date-time) | 最近更新时间 |
+| `completionTime` | String(date-time) | 完成时间；未结束可为空 |
+
+##### 响应示例
+
+```json
+{
+  "tenantId": "tenant-a",
+  "ontologyId": "dtmi.ontology.xxx.1",
+  "taskId": "idx-task-20260816-000001",
+  "requestId": "req-enum-20260816-000001",
+  "dataType": "METADATA_ENUM",
+  "sourceType": "REST",
+  "importMode": "INCREMENTAL",
+  "status": 0,
+  "stage": "EMBEDDING",
+  "totalCount": 1000,
+  "successCount": 640,
+  "failedCount": 2,
+  "skippedCount": 8,
+  "retryCount": 0,
+  "errorCode": null,
+  "errorMessage": null,
+  "createTime": "2026-08-16T22:10:00+08:00",
+  "startTime": "2026-08-16T22:10:01+08:00",
+  "updateTime": "2026-08-16T22:10:08+08:00",
+  "completionTime": null
+}
+```
+
+##### OpenAPI 3.0.3 Path 定义
+
+```yaml
+/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}:
+  get:
+    operationId: getIndexTask
+    summary: 查询索引任务
+    parameters:
+      - $ref: '#/components/parameters/OntologyId'
+      - $ref: '#/components/parameters/TaskId'
+      - $ref: '#/components/parameters/TenantId'
+    responses:
+      '200':
+        description: 查询成功
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IndexTaskResponse'
+      '400': { $ref: '#/components/responses/BadRequest' }
+      '404': { $ref: '#/components/responses/NotFound' }
+      '500': { $ref: '#/components/responses/InternalError' }
+```
+
+---
+
+#### 3.8.4.2 重试索引任务
+
+##### 典型场景
+
+索引任务因 MinIO、Embedding、GaussVector、OpenSearch 或 Verify 等临时故障失败后，调用方希望从持久化 Source/Checkpoint 重试，而不是重新提交整批业务数据。
+
+##### 接口功能
+
+对 `STATUS=2` 的失败任务发起重试。OAG 复用原 `taskId`、`requestId`、输入 Source 和 Checkpoint，增加 `RETRY_COUNT` 并重新进入执行队列，不创建重复业务任务。
+
+##### 调用方法
+
+POST
+
+##### URI
+
+```text
+/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/retry
+```
+
+##### 请求参数
+
+无 Request Body。Path/Header 参数复用表 11。
+
+##### 前置条件
+
+```text
+任务存在
+AND tenant/ontology 归属一致
+AND STATUS = 2（FAILED）
+AND 原始 REST Payload 或 MinIO Source/Checkpoint 仍可恢复
+```
+
+否则返回 `409 TASK_STATE_CONFLICT` 或相应资源错误。
+
+##### 返回参数
+
+**表 13  TaskOperationAcceptedResponse 参数列表（HTTP 202）**
+
+| 参数名称 | 类型 | 说明 | 示例 |
+|:--|:--|:--|:--|
+| `ontologyId` | String | 本体 ID | `dtmi.ontology.xxx.1` |
+| `taskId` | String | 原任务 ID | `idx-task-20260816-000001` |
+| `operation` | String | 当前接受的任务操作 | `RETRY` |
+| `accepted` | Boolean | 是否已接受 | `true` |
+| `status` | Integer | 接受后任务状态，通常重新进入 0 | `0` |
+| `stage` | String | 接受后的阶段 | `CREATED` |
+
+##### 响应示例
+
+```json
+{
+  "ontologyId": "dtmi.ontology.xxx.1",
+  "taskId": "idx-task-20260816-000001",
+  "operation": "RETRY",
+  "accepted": true,
+  "status": 0,
+  "stage": "CREATED"
+}
+```
+
+##### OpenAPI 3.0.3 Path 定义
+
+```yaml
+/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/retry:
+  post:
+    operationId: retryIndexTask
+    summary: 重试失败的索引任务
+    parameters:
+      - $ref: '#/components/parameters/OntologyId'
+      - $ref: '#/components/parameters/TaskId'
+      - $ref: '#/components/parameters/TenantId'
+    responses:
+      '202':
+        description: 重试请求已接受
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskOperationAcceptedResponse'
+      '404': { $ref: '#/components/responses/NotFound' }
+      '409': { $ref: '#/components/responses/Conflict' }
+      '429': { $ref: '#/components/responses/TooManyRequests' }
+      '500': { $ref: '#/components/responses/InternalError' }
+      '503': { $ref: '#/components/responses/ServiceUnavailable' }
+```
+
+---
+
+#### 3.8.4.3 取消索引任务
+
+##### 典型场景
+
+调用方发现导入数据错误、提交范围错误或需要停止长时间运行的文件导入任务。
+
+##### 接口功能
+
+请求取消尚未进入终态的索引任务。接口返回 `202` 代表取消请求已接受，不代表 Worker 已立即停止；Worker 在安全检查点停止后将任务更新为 `STATUS=3`。
+
+##### 调用方法
+
+POST
+
+##### URI
+
+```text
+/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/cancel
+```
+
+##### 请求参数
+
+无 Request Body。Path/Header 参数复用表 11。
+
+##### 前置条件
+
+只有 `STATUS=0` 的未完成任务允许取消；`STATUS=1/2/3` 返回 `409 TASK_STATE_CONFLICT`。
+
+##### 返回参数
+
+复用表 13 `TaskOperationAcceptedResponse`，其中 `operation=CANCEL`。
+
+##### 响应示例
+
+```json
+{
+  "ontologyId": "dtmi.ontology.xxx.1",
+  "taskId": "idx-task-20260816-000001",
+  "operation": "CANCEL",
+  "accepted": true,
+  "status": 0,
+  "stage": "CANCEL_REQUESTED"
+}
+```
+
+`CANCEL_REQUESTED` 作为取消请求已接收的瞬态阶段；Worker 安全停止后更新为 `STATUS=3`。
+
+##### OpenAPI 3.0.3 Path 定义
+
+```yaml
+/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/cancel:
+  post:
+    operationId: cancelIndexTask
+    summary: 取消索引任务
+    parameters:
+      - $ref: '#/components/parameters/OntologyId'
+      - $ref: '#/components/parameters/TaskId'
+      - $ref: '#/components/parameters/TenantId'
+    responses:
+      '202':
+        description: 取消请求已接受
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskOperationAcceptedResponse'
+      '404': { $ref: '#/components/responses/NotFound' }
+      '409': { $ref: '#/components/responses/Conflict' }
+      '500': { $ref: '#/components/responses/InternalError' }
+```
+
+---
+
+#### 3.8.4.4 查询索引任务错误
+
+##### 典型场景
+
+批量或文件导入存在部分记录失败，需要定位具体 `recordIndex / objectKey / rowNumber / Property / value` 的错误原因。
+
+##### 接口功能
+
+分页查询任务记录级错误。百万级错误不得整体塞入 `T_OAG_INDEX_TASK.ERROR_MESSAGE` 或一次性返回。
+
+##### 调用方法
+
+GET
+
+##### URI
+
+```text
+/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/errors
+```
+
+##### 请求参数
+
+**表 14  ListIndexTaskErrors 参数列表**
+
+| 参数名称 | 类型 | 参数位置 | 是否必选 | 默认值 | OpenAPI 约束 | 说明 |
+|:--|:--|:--|:--|:--|:--|:--|
+| `ontologyId` | String | Path | 是 | - | `maxLength: 256` | 本体 ID |
+| `taskId` | String | Path | 是 | - | `maxLength: 256` | 任务 ID |
+| `x-gde-tenant-id` | String | Header | 是 | - | `maxLength: 256` | 租户 ID |
+| `page` | Integer | Query | 否 | `0` | `minimum: 0` | 页码，从 0 开始 |
+| `pageSize` | Integer | Query | 否 | `100` | `minimum: 1`，`maximum: 1000` | 每页条数 |
+
+**表 15  IndexTaskErrorItem 参数列表**
+
+| 参数名称 | 类型 | 说明 |
+|:--|:--|:--|
+| `recordIndex` | Integer(int64) | REST records[] 下标；文件导入可为空 |
+| `objectKey` | String | MinIO Object Key；REST 导入可为空 |
+| `rowNumber` | Integer(int64) | CSV 行号；REST 导入可为空 |
+| `propertyId` | String | 统一错误输出中的 Property.id；从 Enum `propertyId` 或 Instance `propertyid` 规范化得到 |
+| `objectTypeId` | String | ObjectType.id |
+| `value` | String | 必要时脱敏/截断后的业务值 |
+| `errorCode` | String | 记录级错误码 |
+| `errorMessage` | String | 记录级错误信息 |
+
+**表 16  IndexTaskErrorPage 参数列表（HTTP 200）**
+
+| 参数名称 | 类型 | 说明 |
+|:--|:--|:--|
+| `taskId` | String | 任务 ID |
+| `page` | Integer | 当前页码 |
+| `pageSize` | Integer | 当前页大小 |
+| `total` | Integer(int64) | 错误总数 |
+| `items` | Array[IndexTaskErrorItem] | 当前页错误明细 |
+
+##### 响应示例
+
+```json
+{
+  "taskId": "idx-task-20260816-000001",
+  "page": 0,
+  "pageSize": 100,
+  "total": 2,
+  "items": [
+    {
+      "recordIndex": 8,
+      "objectKey": null,
+      "rowNumber": null,
+      "propertyId": "prop:ont:vehicle:sp:bodyColor",
+      "objectTypeId": "obj:ont:vehicle:Vehicle",
+      "value": "red",
+      "errorCode": "OBJECT_TYPE_MISMATCH",
+      "errorMessage": "objectTypeId does not match the Property owner"
+    }
+  ]
+}
+```
+
+##### OpenAPI 3.0.3 Path 定义
+
+```yaml
+/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/errors:
+  get:
+    operationId: listIndexTaskErrors
+    summary: 分页查询索引任务记录级错误
+    parameters:
+      - $ref: '#/components/parameters/OntologyId'
+      - $ref: '#/components/parameters/TaskId'
+      - $ref: '#/components/parameters/TenantId'
+      - name: page
+        in: query
+        required: false
+        schema: { type: integer, minimum: 0, default: 0 }
+      - name: pageSize
+        in: query
+        required: false
+        schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+    responses:
+      '200':
+        description: 查询成功
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IndexTaskErrorPage'
+      '400': { $ref: '#/components/responses/BadRequest' }
+      '404': { $ref: '#/components/responses/NotFound' }
+      '500': { $ref: '#/components/responses/InternalError' }
+```
+
+---
+
+### 3.8.5 OpenAPI 3.0.3 公共 Components 定义
+
+以下 Components 与 3.3～3.8 的 Path 定义组合后，可以直接形成 OpenAPI 3.0.3 契约。工程实现可以将这些定义拆到独立 `openapi.yaml`，设计文档保留同名 Schema 作为接口评审基线。
+
+```yaml
+openapi: 3.0.3
+info:
+  title: OAG Onto Retrieval API
+  version: 1.0.0
+
+components:
+  parameters:
+    OntologyId:
+      name: ontologyId
+      in: path
+      required: true
+      schema:
+        type: string
+        maxLength: 256
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      schema:
+        type: string
+        maxLength: 256
+    TenantId:
+      name: x-gde-tenant-id
+      in: header
+      required: true
+      schema:
+        type: string
+        maxLength: 256
+
+  schemas:
+    SemanticSearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          minLength: 1
+        similarityThreshold:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          default: 0.6
+        includeFunctions:
+          type: integer
+          enum: [0, 1]
+          default: 1
+        includeActions:
+          type: integer
+          enum: [0, 1]
+          default: 0
+        seedRetrievalMode:
+          type: string
+          default: vector
+        topK:
+          type: integer
+          minimum: 1
+          default: 3
+        graphExpansionStrategy:
+          type: string
+          enum: [minimal, khop, component]
+          default: minimal
+        hopLimit:
+          type: integer
+          minimum: 1
+          default: 3
+
+    SemanticSearchResponse:
+      type: object
+      required: [result]
+      properties:
+        result:
+          type: object
+          additionalProperties: true
+
+    MetadataEnumRecord:
+      type: object
+      required: [propertyId, value]
+      properties:
+        propertyId: { type: string, maxLength: 512 }
+        objectTypeId: { type: string, maxLength: 256 }
+        value: { type: string, maxLength: 4096 }
+        name: { type: string, maxLength: 4096 }
+        display_zh: { type: string, maxLength: 512 }
+        display_en: { type: string, maxLength: 512 }
+        display_lang_1: { type: string, maxLength: 512 }
+        display_lang_2: { type: string, maxLength: 512 }
+        description_zh: { type: string }
+        description_en: { type: string }
+        description_lang_1: { type: string }
+        description_lang_2: { type: string }
+        synonyms:
+          type: object
+          maxProperties: 3
+          additionalProperties:
+            type: array
+            items: { type: string }
+        op:
+          type: string
+          enum: [UPSERT, DELETE]
+          default: UPSERT
+      additionalProperties: false
+
+    InstanceValueRecord:
+      type: object
+      required: [propertyid, value]
+      properties:
+        propertyid: { type: string, maxLength: 512 }
+        objectTypeId: { type: string, maxLength: 256 }
+        value: { type: string, maxLength: 4096 }
+        language: { type: string, default: und }
+        op:
+          type: string
+          enum: [UPSERT, DELETE]
+          default: UPSERT
+      additionalProperties: false
+
+    MetadataEnumBatchImportRequest:
+      type: object
+      required: [requestId, dataType, importMode, records]
+      properties:
+        requestId: { type: string, minLength: 1, maxLength: 256 }
+        dataType: { type: string, enum: [METADATA_ENUM] }
+        importMode: { type: string, enum: [FULL_REPLACE, INCREMENTAL] }
+        records:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/MetadataEnumRecord' }
+      additionalProperties: false
+
+    InstanceValueBatchImportRequest:
+      type: object
+      required: [requestId, dataType, importMode, records]
+      properties:
+        requestId: { type: string, minLength: 1, maxLength: 256 }
+        dataType: { type: string, enum: [INSTANCE_VALUE] }
+        importMode: { type: string, enum: [FULL_REPLACE, INCREMENTAL] }
+        records:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/InstanceValueRecord' }
+      additionalProperties: false
+
+    IndexBatchImportRequest:
+      oneOf:
+        - $ref: '#/components/schemas/MetadataEnumBatchImportRequest'
+        - $ref: '#/components/schemas/InstanceValueBatchImportRequest'
+      discriminator:
+        propertyName: dataType
+        mapping:
+          METADATA_ENUM: '#/components/schemas/MetadataEnumBatchImportRequest'
+          INSTANCE_VALUE: '#/components/schemas/InstanceValueBatchImportRequest'
+
+    MinioCsvFile:
+      type: object
+      required: [bucket, objectKey, sha256]
+      properties:
+        bucket: { type: string, minLength: 3, maxLength: 63 }
+        objectKey: { type: string, minLength: 1, maxLength: 1024 }
+        fileFormat: { type: string, enum: [CSV], default: CSV }
+        encoding: { type: string, enum: [UTF-8], default: UTF-8 }
+        hasHeader: { type: boolean, enum: [true], default: true }
+        rowCount: { type: integer, format: int64, minimum: 0 }
+        size: { type: integer, format: int64, minimum: 0 }
+        sha256:
+          type: string
+          pattern: '^[A-Fa-f0-9]{64}$'
+      additionalProperties: false
+
+    IndexFileImportRequest:
+      type: object
+      required: [requestId, dataType, importMode, files]
+      properties:
+        requestId: { type: string, minLength: 1, maxLength: 256 }
+        dataType: { type: string, enum: [METADATA_ENUM, INSTANCE_VALUE] }
+        importMode: { type: string, enum: [FULL_REPLACE, INCREMENTAL] }
+        files:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/MinioCsvFile' }
+      additionalProperties: false
+
+    AsyncTaskAcceptedResponse:
+      type: object
+      required: [ontologyId, taskId, requestId, dataType, sourceType, status, stage]
+      properties:
+        ontologyId: { type: string }
+        taskId: { type: string }
+        requestId: { type: string }
+        dataType: { type: string, enum: [METADATA_ENUM, INSTANCE_VALUE] }
+        sourceType: { type: string, enum: [REST, MINIO] }
+        status: { type: integer, enum: [0, 1, 2, 3] }
+        stage: { type: string }
+
+    IndexTaskResponse:
+      type: object
+      required: [ontologyId, taskId, requestId, dataType, sourceType, status, stage, createTime, updateTime]
+      properties:
+        tenantId: { type: string, nullable: true }
+        ontologyId: { type: string }
+        taskId: { type: string }
+        requestId: { type: string }
+        dataType: { type: string, enum: [SEED_NODE, METADATA_ENUM, INSTANCE_VALUE] }
+        sourceType: { type: string, enum: [OMS, REST, MINIO] }
+        importMode: { type: string, enum: [FULL_REPLACE, INCREMENTAL], nullable: true }
+        status: { type: integer, enum: [0, 1, 2, 3] }
+        stage: { type: string }
+        totalCount: { type: integer, format: int64, nullable: true }
+        successCount: { type: integer, format: int64, nullable: true }
+        failedCount: { type: integer, format: int64, nullable: true }
+        skippedCount: { type: integer, format: int64, nullable: true }
+        retryCount: { type: integer, minimum: 0 }
+        errorCode: { type: string, nullable: true }
+        errorMessage: { type: string, nullable: true }
+        createTime: { type: string, format: date-time }
+        startTime: { type: string, format: date-time, nullable: true }
+        updateTime: { type: string, format: date-time }
+        completionTime: { type: string, format: date-time, nullable: true }
+
+    TaskOperationAcceptedResponse:
+      type: object
+      required: [ontologyId, taskId, operation, accepted, status, stage]
+      properties:
+        ontologyId: { type: string }
+        taskId: { type: string }
+        operation: { type: string, enum: [RETRY, CANCEL] }
+        accepted: { type: boolean }
+        status: { type: integer, enum: [0, 1, 2, 3] }
+        stage: { type: string }
+
+    IndexTaskErrorItem:
+      type: object
+      required: [errorCode, errorMessage]
+      properties:
+        recordIndex: { type: integer, format: int64, nullable: true }
+        objectKey: { type: string, nullable: true }
+        rowNumber: { type: integer, format: int64, nullable: true }
+        propertyId: { type: string, nullable: true }
+        objectTypeId: { type: string, nullable: true }
+        value: { type: string, nullable: true }
+        errorCode: { type: string }
+        errorMessage: { type: string }
+
+    IndexTaskErrorPage:
+      type: object
+      required: [taskId, page, pageSize, total, items]
+      properties:
+        taskId: { type: string }
+        page: { type: integer, minimum: 0 }
+        pageSize: { type: integer, minimum: 1, maximum: 1000 }
+        total: { type: integer, format: int64, minimum: 0 }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/IndexTaskErrorItem' }
+
+    ValidationErrorResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+
+    BusinessErrorResponse:
+      type: object
+      required: [code, descriptions]
+      properties:
+        code: { type: string }
+        descriptions:
+          type: object
+          additionalProperties: { type: string }
+        solutions:
+          type: object
+          additionalProperties: true
+        descriptionDetails:
+          nullable: true
+
+  examples:
+    MetadataEnumBatchImportExample:
+      value:
+        requestId: req-enum-20260816-000001
+        dataType: METADATA_ENUM
+        importMode: INCREMENTAL
+        records:
+          - propertyId: prop:ont:vehicle:sp:bodyColor
+            objectTypeId: obj:ont:vehicle:Vehicle
+            value: red
+            name: red
+            display_zh: 红色
+            display_en: Red
+            op: UPSERT
+    InstanceValueBatchImportExample:
+      value:
+        requestId: req-instance-20260816-000001
+        dataType: INSTANCE_VALUE
+        importMode: INCREMENTAL
+        records:
+          - propertyid: prop:subscriber:subLevel
+            objectTypeId: obj:subscriber:Subscriber
+            value: VIP
+            language: und
+            op: UPSERT
+
+  responses:
+    BadRequest:
+      description: 请求参数校验失败
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ValidationErrorResponse' }
+    NotFound:
+      description: 指定资源不存在
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/BusinessErrorResponse' }
+    Conflict:
+      description: 幂等键或任务状态冲突
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/BusinessErrorResponse' }
+    PayloadTooLarge:
+      description: REST Batch 请求体或 records 超过服务限制
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/BusinessErrorResponse' }
+    TooManyRequests:
+      description: 请求被限流
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/BusinessErrorResponse' }
+    InternalError:
+      description: 服务内部错误
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/BusinessErrorResponse' }
+    ServiceUnavailable:
+      description: 外部依赖暂不可用
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/BusinessErrorResponse' }
+```
+
+### 3.8.6 公共错误响应示例
+
+#### 参数校验失败：HTTP 400
+
+```json
+{
+  "message": "requestId must not be empty"
+}
+```
+
+#### 幂等键冲突：HTTP 409
+
+```json
+{
+  "code": "IDEMPOTENCY_CONFLICT",
+  "descriptions": {
+    "zh_CN": "相同 requestId 已用于不同的导入请求",
+    "en_US": "The same requestId has already been used for a different import request"
+  },
+  "solutions": {
+    "zh_CN": "复用原请求内容，或使用新的 requestId"
+  },
+  "descriptionDetails": null
+}
+```
+
+#### 服务内部异常：HTTP 500
+
+```json
+{
+  "code": "OAG_INTERNAL_ERROR",
+  "descriptions": {
+    "zh_CN": "服务内部错误",
+    "en_US": "service internal server error"
+  },
+  "solutions": {},
+  "descriptionDetails": null
+}
+```
+
 ## 3.9 任务状态机与恢复
 
 任务创建流程：
@@ -1576,7 +2735,7 @@ Input → SchemaValidator → OntologyMappingValidator → Normalizer → Dedupl
 
 ### METADATA_ENUM
 
-唯一业务范围：`objectTypeId + propertyid + normalized(value)`。Embedding 严格复用第 2.9 节：`value + name + display_* + description_* + synonyms_value + synonyms_description`。
+唯一业务范围：`objectTypeId + propertyId + normalized(value)`。Embedding 严格复用第 2.9 节：`value + name + display_* + description_* + synonyms_value + synonyms_description`。
 
 ### INSTANCE_VALUE
 
@@ -1600,7 +2759,7 @@ Create Task → Build Staging Generation → Import/Embed/Write → Verify → A
 
 ### INCREMENTAL
 
-适用于动态 Enum Value UPSERT/DELETE、实例值新增/删除和小规模业务数据变化。METADATA_ENUM 与 INSTANCE_VALUE 都使用 `objectTypeId + propertyid + normalized(value)` 作为幂等业务键；相同请求或 Chunk 重试只能覆盖原记录，不能追加重复记录。
+适用于动态 Enum Value UPSERT/DELETE、实例值新增/删除和小规模业务数据变化。METADATA_ENUM 使用 `objectTypeId + propertyId + normalized(value)`，INSTANCE_VALUE 使用 `objectTypeId + propertyid + normalized(value)` 作为幂等业务键；相同请求或 Chunk 重试只能覆盖原记录，不能追加重复记录。
 
 ---
 
@@ -1680,7 +2839,7 @@ VERIFY_FAILED
 PUBLISH_FAILED
 ```
 
-任务级错误通过 `ERROR_CODE / ERROR_MESSAGE` 写入 `T_OAG_INDEX_TASK`；记录级错误至少保留 taskId、objectKey/rowNumber 或 recordIndex、propertyid、objectTypeId、必要时脱敏后的 value、errorCode、errorMessage。
+任务级错误通过 `ERROR_CODE / ERROR_MESSAGE` 写入 `T_OAG_INDEX_TASK`；记录级错误至少保留 taskId、objectKey/rowNumber 或 recordIndex、Property 标识（Enum 为 propertyId，Instance 为 propertyid）、objectTypeId、必要时脱敏后的 value、errorCode、errorMessage。
 
 `GET /v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/errors` 返回记录级错误，避免将百万条错误塞入任务主表。
 
@@ -2148,7 +3307,7 @@ RRF 前，OAG 将三张表的查询结果统一成 SearchHit，不向上层直�
 
 ```json
 {
-  "propertyid": "prop:ont:vehicle:sp:bodyColor",
+  "propertyId": "prop:ont:vehicle:sp:bodyColor",
   "objectTypeId": "vehicle-object-id",
   "type": "ENUM_VALUE",
   "value": "red",
@@ -2172,7 +3331,7 @@ RRF 前，OAG 将三张表的查询结果统一成 SearchHit，不向上层直�
 
 ```json
 {
-  "propertyid": "prop:ont:vehicle:sp:bodyColor",
+  "propertyId": "prop:ont:vehicle:sp:bodyColor",
   "objectTypeId": "vehicle-object-id",
   "type": "ENUM_VALUE",
   "value": "red",
@@ -2312,7 +3471,7 @@ Exact/BM25 → 高权重 RRF → LLM 结合原始问题消歧
       ],
       "supporting_hits": [
         {
-          "propertyid": "prop:ont:vehicle:sp:bodyColor",
+          "propertyId": "prop:ont:vehicle:sp:bodyColor",
           "objectTypeId": "vehicle-object-id",
           "type": "ENUM_VALUE",
           "value": "red",
@@ -2413,7 +3572,7 @@ LLM 不创造新的 `id/value/synonyms`，只能从候选中选择。
       "rrf_score": 0.071,
       "supporting_hits": [
         {
-          "propertyid": "prop:ont:vehicle:sp:bodyColor",
+          "propertyId": "prop:ont:vehicle:sp:bodyColor",
           "objectTypeId": "vehicle-object-id",
           "type": "ENUM_VALUE",
           "value": "red",
@@ -2464,7 +3623,7 @@ Rules:
       "semantic_unit_id": "u4",
       "selected": [
         {
-          "propertyid": "prop:ont:vehicle:sp:bodyColor",
+          "propertyId": "prop:ont:vehicle:sp:bodyColor",
           "objectTypeId": "vehicle-object-id",
           "type": "ENUM_VALUE",
           "value": "red",
@@ -2571,7 +3730,7 @@ extension:
   "text": "红色",
   "results": [
     {
-      "propertyid": "prop:ont:vehicle:sp:bodyColor",
+      "propertyId": "prop:ont:vehicle:sp:bodyColor",
       "objectTypeId": "vehicle-object-id",
       "type": "ENUM_VALUE",
       "value": "red",
