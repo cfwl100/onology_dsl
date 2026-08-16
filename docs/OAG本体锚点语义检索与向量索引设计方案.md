@@ -367,16 +367,6 @@ SynonymType 自身不建立独立向量记录；其 `name / description / synony
 | 元数据元素 | `t_metadata_evidence_{ontology_id}` | OAG | Enum Value + Synonyms |
 | 实例元素 | `t_instance_evidence_{ontology_id}` | OAG，DataSync 提供数据 | Instance Value |
 
-旧名称：
-
-```text
-{ontology_id}_anchor
-{ontology_id}_metadata_evidence
-{ontology_id}_instance_evidence
-```
-
-仅作为历史迁移来源，不再作为目标设计名称。
-
 三类数据继续物理隔离，原因不变：
 
 ```text
@@ -392,31 +382,22 @@ ANN 算法差异
 
 种子节点表增加两个额外语言槽位，并增加 `synonyms`。中文和英文仍保留固定列，另外最多支持 2 种语言：
 
-| 字段 | 类型 | 非空 | 说明 |
-|---|---|---|---|
-| `vector` | `DOUBLE[]` | ✔ | 1024 维向量 |
-| `type` | `INT` | ✔ | 0 ObjectType，1 Property |
-| `id` | `VARCHAR(256 CHAR)` | ✔ | ObjectType / Property 全局唯一 ID |
-| `name` | `VARCHAR(256 CHAR)` | ✔ | 本体真实名称 |
-| `display_zh` | `VARCHAR(512 CHAR)` |  | 中文显示名 |
-| `display_en` | `VARCHAR(512 CHAR)` |  | 英文显示名 |
-| `display_lang_1` | `VARCHAR(512 CHAR)` |  | 第 1 个额外语言显示名 |
-| `display_lang_2` | `VARCHAR(512 CHAR)` |  | 第 2 个额外语言显示名 |
-| `description_zh` | `VARCHAR(1024 CHAR)` |  | 中文描述 |
-| `description_en` | `VARCHAR(1024 CHAR)` |  | 英文描述 |
+| 字段                   | 类型 | 非空 | 说明 |
+|----------------------|---|--|---|
+| `vector`             | `DOUBLE[]` | ✔ | 1024 维向量 |
+| `type`               | `INT` |  | 0 ObjectType，1 Property |
+| `id`                 | `VARCHAR(256 CHAR)` | ✔ | ObjectType / Property 全局唯一 ID |
+| `parent_id`          | `VARCHAR(256 CHAR)` |  | 父元素ID，当type=1时，parent_ID记录的是Property所属的ObjectType ID。 |
+| `name`               | `VARCHAR(256 CHAR)` |  | 本体真实名称 |
+| `display_zh`         | `VARCHAR(512 CHAR)` |  | 中文显示名 |
+| `display_en`         | `VARCHAR(512 CHAR)` |  | 英文显示名 |
+| `display_lang_1`     | `VARCHAR(512 CHAR)` |  | 第 1 个额外语言显示名 |
+| `display_lang_2`     | `VARCHAR(512 CHAR)` |  | 第 2 个额外语言显示名 |
+| `description_zh`     | `VARCHAR(1024 CHAR)` |  | 中文描述 |
+| `description_en`     | `VARCHAR(1024 CHAR)` |  | 英文描述 |
 | `description_lang_1` | `VARCHAR(1024 CHAR)` |  | 第 1 个额外语言描述 |
 | `description_lang_2` | `VARCHAR(1024 CHAR)` |  | 第 2 个额外语言描述 |
-| `synonyms` | `TEXT` |  | JSON 序列化的多语言同义词 Map，最多 3 种语言 |
-
-`lang_1/lang_2` 的具体语言不在每行重复存储，而由 ontology/index 级配置绑定，例如：
-
-```yaml
-additionalLanguages:
-  lang_1: es
-  lang_2: pt-BR
-```
-
-因此同一 ontology 内所有记录的 `display_lang_1/description_lang_1` 都表示同一语言。
+| `synonyms`           | `TEXT` |  | JSON 序列化的多语言同义词 Map，最多 3 种语言 |
 
 `synonyms` 示例：
 
@@ -429,20 +410,6 @@ additionalLanguages:
 ```
 
 注意：额外 display/description 最多 2 种语言；`synonyms` 最多 3 种语言，且语言组合不固定，两者是两个独立约束。
-
-Property → ObjectType 映射继续由 `has_property` 与 `GraphTopologyCache` 提供，种子节点表不额外增加 ObjectType 归属列。
-
-明确不保留：
-
-```text
-normalized_name
-content_hash
-model_version
-source_version
-updated_at
-i18n_content
-content
-```
 
 
 ## 2.4 种子节点向量化内容
@@ -498,23 +465,6 @@ synonyms
 总计最多 4 种
 ```
 
-例如：
-
-```yaml
-additionalLanguages:
-  lang_1: es
-  lang_2: pt-BR
-```
-
-则：
-
-```text
-display_lang_1 = 西语 display
-description_lang_1 = 西语 description
-display_lang_2 = 葡萄牙语 display
-description_lang_2 = 葡萄牙语 description
-```
-
 没有配置某个额外语言时，对应列为空。
 
 ### 2.5.2 Synonyms 最多 3 种语言且不固定
@@ -537,27 +487,6 @@ en + es + pt-BR
 zh + ar + fr
 ...
 ```
-
-### 2.5.3 Dense 与 Lexical 的语言处理
-
-Dense 使用完整拼接文本生成一个多语言 Vector，不按语言复制多条记录。
-
-OpenSearch 根据 ontology 级 `lang_1/lang_2` 配置为对应 display/description 字段选择 Analyzer；`synonyms` 则按其语言 key 选择对应 Analyzer 或通用 Analyzer。
-
-查询 `language_hint` 用于 Analyzer、Boost、展示和观测，不作为 Dense 硬过滤条件。
-
-### 2.5.4 Shadow Vector
-
-若某个额外语言真实 Recall 明显不足，可以实验性增加语言 Shadow Vector，但必须：
-
-```text
-最终按同一个业务 id 去重
-不让语言副本重复进入 RRF
-不改变 API 主记录结构
-```
-
-Shadow Vector 不是默认方案。
-
 
 ## 2.6 Property Vector 是否带 ObjectType
 
@@ -617,7 +546,7 @@ id/name/display exact
 
 ## 2.8 `t_metadata_evidence_{ontology_id}`：Enum Value 模型与表结构
 
-Metadata Evidence 只承载枚举值，不再为枚举同义词建立独立 `ENUM_ALIAS` 行。
+Metadata Evidence 只承载本体模型中定义的枚举值。
 
 ### 2.8.1 EnumType 源结构
 
@@ -738,28 +667,28 @@ Property.referenceEnumId
 t_metadata_evidence_{ontology_id}
 ```
 
-| 字段 | 类型 | 非空 | 说明 |
-|---|---|---|---|
-| `vector` | `DOUBLE[]` | ✔ | Enum Value 向量 |
-| `type` | `INT` | ✔ | 固定表示 ENUM_VALUE |
-| `propertyid` | `VARCHAR(512 CHAR)` | ✔ | 引用该 Enum 的 Property.id |
-| `objectTypeId` | `VARCHAR(256 CHAR)` | ✔ | Property 所属 ObjectType.id |
-| `value` | `VARCHAR(4096 CHAR)` | ✔ | 真实枚举值 |
-| `name` | `VARCHAR(4096 CHAR)` | ✔ | `values[].name` |
-| `display_zh` | `VARCHAR(512 CHAR)` |  | 中文 display |
-| `display_en` | `VARCHAR(512 CHAR)` |  | 英文 display |
-| `display_lang_1` | `VARCHAR(512 CHAR)` |  | 额外语言 1 display |
-| `display_lang_2` | `VARCHAR(512 CHAR)` |  | 额外语言 2 display |
-| `description_zh` | `TEXT` |  | 中文 description |
-| `description_en` | `TEXT` |  | 英文 description |
+| 字段                   | 类型 | 非空 | 说明 |
+|----------------------|---|--|---|
+| `vector`             | `DOUBLE[]` | ✔ | Enum Value 向量 |
+| `type`               | `INT` |  | 固定表示 ENUM_VALUE |
+| `propertyId`         | `VARCHAR(512 CHAR)` | ✔ | 引用该 Enum 的 Property.id |
+| `objectTypeId`       | `VARCHAR(256 CHAR)` |  | Property 所属 ObjectType.id |
+| `value`              | `VARCHAR(4096 CHAR)` |  | 真实枚举值 |
+| `name`               | `VARCHAR(4096 CHAR)` |  | `values[].name` |
+| `display_zh`         | `VARCHAR(512 CHAR)` |  | 中文 display |
+| `display_en`         | `VARCHAR(512 CHAR)` |  | 英文 display |
+| `display_lang_1`     | `VARCHAR(512 CHAR)` |  | 额外语言 1 display |
+| `display_lang_2`     | `VARCHAR(512 CHAR)` |  | 额外语言 2 display |
+| `description_zh`     | `TEXT` |  | 中文 description |
+| `description_en`     | `TEXT` |  | 英文 description |
 | `description_lang_1` | `TEXT` |  | 额外语言 1 description |
 | `description_lang_2` | `TEXT` |  | 额外语言 2 description |
-| `synonyms` | `TEXT` |  | 当前 Enum Value 的 SynonymType.synonyms，最多 3 种语言 |
+| `synonyms`           | `TEXT` |  | 当前 Enum Value 的 SynonymType.synonyms，最多 3 种语言 |
 
-如果一个 EnumType 被多个 Property 复用，需要按实际引用 Property 展开记录，并显式写入 `propertyid + objectTypeId`。向量库必须保证同一业务范围内的枚举记录不重复，推荐唯一键为：
+如果一个 EnumType 被多个 Property 复用，需要按实际引用 Property 展开记录，并显式写入 `id + parent_id`。向量库必须保证同一业务范围内的枚举记录不重复，推荐唯一键为：
 
 ```text
-objectTypeId + "::" + propertyid + "::" + normalized(value)
+objectTypeId + "::" + propertyId + "::" + normalized(value)
 ```
 
 `values[].id` 仍可用于 OMS 源数据追踪和质量校验，但不作为 `t_metadata_evidence_{ontology_id}` 的持久化字段。
@@ -783,8 +712,6 @@ objectTypeId + "::" + propertyid + "::" + normalized(value)
 {synonyms_value}
 {synonyms_description}
 ```
-
-> 用户给出的模板最后两行 description 都写成了 `description_lang_1`；按两个额外语言槽位的对称设计，V5.7 将最后一个修正为 `description_lang_2`。
 
 其中：
 
@@ -818,13 +745,12 @@ t_instance_evidence_{ontology_id}
 ```
 
 | 字段 | 类型 | 非空 | 说明 |
-|---|---|---|---|
+|---|---|--|---|
 | `vector` | `DOUBLE[]` | ✔ | Instance Value 向量 |
-| `type` | `INT` | ✔ | 固定表示 INSTANCE_VALUE |
+| `type` | `INT` |  | 固定表示 INSTANCE_VALUE |
 | `propertyid` | `VARCHAR(512 CHAR)` | ✔ | 所属 Property.id |
-| `objectTypeId` | `VARCHAR(256 CHAR)` | ✔ | Property 所属 ObjectType.id |
+| `objectTypeId` | `VARCHAR(256 CHAR)` |  | Property 所属 ObjectType.id |
 | `value` | `VARCHAR(4096 CHAR)` | ✔ | 去重后的真实列值 |
-| `language` | `VARCHAR(32 CHAR)` |  | 可选语言标识；未知为 und |
 
 
 
@@ -877,9 +803,9 @@ UUID
 {value}
 ```
 
-
 这样 Instance Dense 表达始终由真实业务值主导；Property/ObjectType 归属直接由记录中的 `propertyid + objectTypeId` 提供。
 
+可以只用组合的Struct 结构的value。
 
 ## 2.13 Metadata / Instance OpenSearch Index
 
@@ -889,7 +815,7 @@ UUID
 
 ```text
 type
-propertyid
+propertyId
 objectTypeId
 value
 name
@@ -907,7 +833,7 @@ synonyms
 Exact 优先：
 
 ```text
-propertyid
+propertyId
 objectTypeId
 value.keyword
 name.keyword
@@ -930,7 +856,7 @@ synonyms.*
 
 ```text
 type          integer
-propertyid    keyword
+propertyId    keyword
 objectTypeId  keyword
 value         keyword + text
 language      keyword（可选）
@@ -1026,8 +952,8 @@ unique_value_count
 
 ```text
 种子节点：id
-Enum Value：objectTypeId + propertyid + normalized(value)
-Instance Value：objectTypeId + propertyid + normalized(value)
+Enum Value：objectTypeId + propertyId + normalized(value)
+Instance Value：objectTypeId + propertyId + normalized(value)
 ```
 
 同一业务键重复 UPSERT 必须覆盖当前记录而不是新增重复向量；DELETE 必须同时删除 GaussVector 与 OpenSearch 中对应记录。
