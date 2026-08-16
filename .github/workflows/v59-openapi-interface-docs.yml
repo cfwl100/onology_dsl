@@ -1,0 +1,161 @@
+name: V5.9 OpenAPI interface docs
+
+on:
+  push:
+    branches:
+      - agent/v59-openapi-interface-docs-20260816
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v59-openapi-interface-docs-20260816
+          path: source
+
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: target
+          fetch-depth: 0
+
+      - name: Patch latest main document
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('source/.automation/v59')
+          target = Path('target/docs/OAG本体锚点语义检索与向量索引设计方案.md')
+          text = target.read_text(encoding='utf-8')
+
+          section = (source / 'section_3_3_to_3_5.md').read_text(encoding='utf-8').rstrip() + '\n\n'
+          task_api = (source / 'task_api_insert.md').read_text(encoding='utf-8').rstrip() + '\n\n'
+
+          start = '## 3.3 统一 REST API 规范'
+          end = '## 3.6 CSV 文件结构'
+          if start not in text or end not in text:
+              raise SystemExit('section 3.3/3.6 marker not found')
+          before, rest = text.split(start, 1)
+          _, after = rest.split(end, 1)
+          text = before + section + end + after
+
+          insert_marker = '## 3.9 任务状态机与恢复'
+          if insert_marker not in text:
+              raise SystemExit('section 3.9 marker not found')
+          if '### 3.8.4 索引任务管理接口详细定义' not in text:
+              text = text.replace(insert_marker, task_api + insert_marker, 1)
+
+          # Version bump.
+          text = text.replace('> 版本：V5.8  ', '> 版本：V5.9  ', 1)
+
+          # Keep Enum CSV strictly aligned with section 2.8 propertyId casing.
+          enum_start = '### 3.6.1 METADATA_ENUM CSV'
+          enum_end = '### 3.6.2 INSTANCE_VALUE CSV'
+          if enum_start not in text or enum_end not in text:
+              raise SystemExit('CSV enum markers not found')
+          p1, r1 = text.split(enum_start, 1)
+          enum_body, p2 = r1.split(enum_end, 1)
+          enum_body = enum_body.replace('propertyid', 'propertyId')
+          text = p1 + enum_start + enum_body + enum_end + p2
+
+          # Keep downstream descriptions consistent with the intentional casing difference.
+          text = text.replace(
+              '唯一业务范围：`objectTypeId + propertyid + normalized(value)`。Embedding 严格复用第 2.9 节',
+              '唯一业务范围：`objectTypeId + propertyId + normalized(value)`。Embedding 严格复用第 2.9 节',
+              1,
+          )
+          text = text.replace(
+              'METADATA_ENUM 与 INSTANCE_VALUE 都使用 `objectTypeId + propertyid + normalized(value)` 作为幂等业务键；相同请求或 Chunk 重试只能覆盖原记录，不能追加重复记录。',
+              'METADATA_ENUM 使用 `objectTypeId + propertyId + normalized(value)`，INSTANCE_VALUE 使用 `objectTypeId + propertyid + normalized(value)` 作为幂等业务键；相同请求或 Chunk 重试只能覆盖原记录，不能追加重复记录。',
+              1,
+          )
+          text = text.replace(
+              'recordIndex、propertyid、objectTypeId、必要时脱敏后的 value、errorCode、errorMessage',
+              'recordIndex、Property 标识（Enum 为 propertyId，Instance 为 propertyid）、objectTypeId、必要时脱敏后的 value、errorCode、errorMessage',
+              1,
+          )
+
+          # CANCEL_REQUESTED is an explicit transient stage used by the cancel API.
+          old_stages = '`CREATED / VALIDATING / READING / DEDUPLICATING / EMBEDDING / WRITING_VECTOR / WRITING_SEARCH / VERIFYING / PUBLISHING / FINISHED`'
+          new_stages = '`CREATED / VALIDATING / READING / DEDUPLICATING / EMBEDDING / WRITING_VECTOR / WRITING_SEARCH / VERIFYING / PUBLISHING / CANCEL_REQUESTED / FINISHED`'
+          text = text.replace(old_stages, new_stages, 1)
+
+          target.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Validate document contract
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('target/docs/OAG本体锚点语义检索与向量索引设计方案.md')
+          t = p.read_text(encoding='utf-8')
+
+          required = [
+              '> 版本：V5.9',
+              'openapi: 3.0.3',
+              'operationId: semanticSearchSubgraph',
+              'operationId: batchImportIndexData',
+              'operationId: importIndexDataFromMinio',
+              'operationId: getIndexTask',
+              'operationId: retryIndexTask',
+              'operationId: cancelIndexTask',
+              'operationId: listIndexTaskErrors',
+              'MetadataEnumRecord',
+              'InstanceValueRecord',
+              'IndexFileImportRequest',
+              'AsyncTaskAcceptedResponse',
+              'IndexTaskResponse',
+              'IndexTaskErrorPage',
+              'IDEMPOTENCY_CONFLICT',
+              'CANCEL_REQUESTED',
+              'propertyId,objectTypeId,value,name',
+              'propertyid,objectTypeId,value,language,op',
+          ]
+          missing = [x for x in required if x not in t]
+          if missing:
+              raise SystemExit(f'missing required content: {missing}')
+
+          forbidden = [
+              '/v1/ontologies/{ontologyId}/',
+              '/instance-evidence/import-jobs',
+              '"propertyid": "prop:ont:vehicle:sp:bodyColor"',
+          ]
+          found = [x for x in forbidden if x in t]
+          if found:
+              raise SystemExit(f'found stale/invalid content: {found}')
+
+          if t.count('## 3.3 统一 REST API 规范') != 1:
+              raise SystemExit('section 3.3 duplicated')
+          if t.count('### 3.8.4 索引任务管理接口详细定义') != 1:
+              raise SystemExit('task API section duplicated')
+          if t.count('```') % 2 != 0:
+              raise SystemExit('unbalanced markdown fences')
+
+          # Ensure chapter boundary was preserved.
+          if '# 4. Query Understanding 与 6 路召回' not in t:
+              raise SystemExit('chapter 4 boundary lost')
+
+          print('validation passed')
+          PY
+
+      - name: Commit and push main
+        shell: bash
+        run: |
+          cd target
+          if git diff --quiet; then
+            echo 'No changes to commit'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 'docs/OAG本体锚点语义检索与向量索引设计方案.md'
+          git commit -m '补充索引导入OpenAPI接口详细定义'
+          git push origin HEAD:main
