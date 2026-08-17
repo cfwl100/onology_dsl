@@ -1,6 +1,6 @@
 # OAG 面向本体种子节点的语义检索、混合排序与本体子图构建设计方案
 
-> 版本：V5.9  
+> 版本：V5.10  
 > 目标：在不丢失既有 Bulk Import、混合召回、RRF、LLM 精排和子图算法设计的基础上，进一步对齐现有 OMS 本体 JSON 资产：统一三张索引表命名，种子节点和枚举值直接内嵌 `synonyms`，固定支持中文/英文并额外支持最多 2 种语言，实例索引只保存去重后的真实列值。  
 > 核心决策：**ObjectType/Property = 种子节点；Synonym 是种子节点或枚举值的结构化字段而非独立物理行；Metadata Evidence 只承载 Enum Value；Instance Evidence 只承载真实 Instance Value；种子节点使用 `id`，Enum/Instance 统一使用 `propertyid + objectTypeId` 表达本体归属；每个 Semantic Unit 默认 6 路一次 Weighted RRF。**
 
@@ -1177,7 +1177,7 @@ MinIO 文件导入接口自身仍使用 JSON 注册文件，不通过 `multipart
 | HTTP 状态码 | 场景 | Response Schema |
 |:--|:--|:--|
 | `200 OK` | 同步查询成功 | 对应接口 Success Response |
-| `202 Accepted` | 异步导入、重试或取消请求已接受 | `AsyncTaskAcceptedResponse` / `TaskOperationAcceptedResponse` |
+| `202 Accepted` | 异步导入、重试或取消请求已接受 | `AsyncTaskAcceptedResponse` / `BatchTaskOperationResponse` |
 | `400 Bad Request` | Path/Header/Body/Query 参数校验失败 | `ValidationErrorResponse` |
 | `404 Not Found` | Ontology、Task 或同步校验的资源不存在 | `BusinessErrorResponse` |
 | `409 Conflict` | 幂等键冲突、任务状态不允许当前操作 | `BusinessErrorResponse` |
@@ -1314,9 +1314,9 @@ POST
 |---|---|---|---|---|
 | REST 批量导入 | POST | `/v1/onto-retrieval/{ontologyId}/index-data/batch-import` | `batchImportIndexData` | Body 直接提交 Enum/Instance records |
 | MinIO 文件导入 | POST | `/v1/onto-retrieval/{ontologyId}/index-data/file-import` | `importIndexDataFromMinio` | 注册已经上传到 MinIO 的 CSV 文件 |
-| 查询任务 | GET | `/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}` | `getIndexTask` | 查询持久化任务状态和进度 |
-| 重试任务 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/retry` | `retryIndexTask` | 对失败任务重新执行 |
-| 取消任务 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/cancel` | `cancelIndexTask` | 请求取消未完成任务 |
+| 批量查询任务 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/batch-query` | `batchQueryIndexTasks` | Body 传 taskIds，批量查询持久化任务状态和进度 |
+| 批量重试任务 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/batch-retry` | `batchRetryIndexTasks` | 逐 task 判断 retryable，允许部分成功 |
+| 批量取消任务 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/batch-cancel` | `batchCancelIndexTasks` | 逐 task 请求取消，允许部分成功 |
 | 查询错误 | GET | `/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/errors` | `listIndexTaskErrors` | 分页查询任务记录级错误 |
 
 所有导入接口采用异步任务模型：
@@ -1393,7 +1393,6 @@ OAG 不接受调用方提交 `vector`；物理 `type` 由 `dataType` 推导：`M
 | `propertyId` | String | 是 | - | `maxLength: 512` | 引用该 Enum 的 Property.id                 |
 | `objectTypeId` | String | 否 | - | `maxLength: 256` | Property 所属 ObjectType.id；如传入必须与本体映射一致 |
 | `value` | String | 是 | - | `maxLength: 4096` | 真实枚举值；用于唯一键和向量内容                       |
-| `name` | String | 否 | - | `maxLength: 4096` | Enum Value name (TODO:待删除)             |
 | `display_zh` | String | 否 | - | `maxLength: 512` | 中文 display                             |
 | `display_en` | String | 否 | - | `maxLength: 512` | 英文 display                             |
 | `display_lang_1` | String | 否 | - | `maxLength: 512` | ontology 级额外语言槽位 1 display             |
@@ -1402,12 +1401,17 @@ OAG 不接受调用方提交 `vector`；物理 `type` 由 `dataType` 推导：`M
 | `description_en` | String | 否 | - | - | 英文 description                         |
 | `description_lang_1` | String | 否 | - | - | 额外语言槽位 1 description                   |
 | `description_lang_2` | String | 否 | - | - | 额外语言槽位 2 description                   |
-| `synonyms` | Map[String, Array[String]] | 否 | `{}` | `maxProperties: 3` | 当前 Enum Value 的多语言同义词；语言 key 最多 3 个    |
+| `synonyms` | String | 否 | `""` | 换行分隔文本 | 同义词平铺字符串；逻辑分隔符固定为 LF（`\n`），不再使用 JSON Map/Array 嵌套 |
 | `op` | String | 否 | `UPSERT` | `enum: [UPSERT, DELETE]` | 增量操作；`FULL_REPLACE` 默认只使用 `UPSERT`     |
 
+`synonyms` 在接口层直接使用平铺字符串，避免 OAG 收到请求后再次对 JSON Map/Array 做反序列化。调用方按稳定顺序展开同义词并使用换行符连接；OAG 只执行一次 `split(LF) → trim → 去空 → 去重（保持首次出现顺序）`。动态导入协议不再携带语言 Map，语言分组在上游 SynonymType 展开阶段完成。
+
+传输规则：
+
 ```text
-TODO：
-上面的synonyms 使用\n拼接，不使用json嵌套，避免再次反序列化解析耗费性能
+逻辑值：红<LF>赤色<LF>Red<LF>Rojo
+REST JSON："红\n赤色\nRed\nRojo"
+OAG Runtime：框架完成 JSON 转义后直接得到包含 LF 的 String，不进行第二次 JSON 解析
 ```
 
 枚举唯一业务键：
@@ -1417,6 +1421,8 @@ objectTypeId + propertyId + normalized(value)
 ```
 
 如果 `objectTypeId` 未传，OAG 可以根据 `propertyId` 的本体归属补齐；若调用方传入，则必须校验与 OMS 本体映射一致，不一致返回 `OBJECT_TYPE_MISMATCH`。
+
+动态导入协议不再接收 `name`。静态 OMS 枚举资产仍可保留 `values[].name`；动态导入的 EmbeddingInputBuilder 对不存在的 `name` 项直接跳过，不为兼容而复制 `value` 造成重复权重。
 
 ##### INSTANCE_VALUE 记录
 
@@ -1440,28 +1446,66 @@ objectTypeId + propertyid + normalized(value)
 
 
 
+##### GaussVector 组合键幂等 UPSERT
+
+REST、MinIO、Chunk 重试最终都必须落到数据库级唯一约束，不能只依赖 JVM 内存 Dedup。OAG Writer 在写入前必须先补齐 `objectTypeId`；接口允许省略该字段，但持久化阶段不得为 `NULL`。
+
+为避免重新引入 `normalized_value` 物理列，`KeyNormalizer` 在 Writer 前完成不会改变业务语义的基础规范化（trim、Unicode normalize、全半角归一）；大小写归一只在 Property 明确声明大小写不敏感时启用。规范化后的 `value` 进入唯一组合键。
+
+GaussVector / GaussDB 唯一索引：
+
+```sql
+-- Enum Value
+CREATE UNIQUE INDEX UK_METADATA_EVIDENCE_BIZ
+ON t_metadata_evidence_{ontology_id} (objectTypeId, propertyId, value);
+
+-- Instance Value
+CREATE UNIQUE INDEX UK_INSTANCE_EVIDENCE_BIZ
+ON t_instance_evidence_{ontology_id} (objectTypeId, propertyid, value);
 ```
-TODO: 按照如下描述，upsert的时候，增加GaussVector按照组合键覆盖能力，使用 INSERT ON DUPLICATE KEY UPDATE
 
---建表。
-gaussdb=# CREATE TABLE test_t4 (id INT PRIMARY KEY, info VARCHAR(10));
-gaussdb=# INSERT INTO test_t4 VALUES (1, 'AA'), (2,'BB'), (3, 'CC');
+`UPSERT` 使用 `INSERT ... ON DUPLICATE KEY UPDATE`，Chunk 内可以一次提交多条 VALUES：
 
---使用ON DUPLICATE KEY UPDATE关键字。
-gaussdb=# INSERT INTO test_t4 VALUES (3, 'DD'), (4, 'EE') ON DUPLICATE KEY UPDATE info = VALUES(info);
-
---查询表。
-gaussdb=# SELECT * FROM test_t4;
-id | info
-----+------
-1 | AA
-2 | BB
-4 | EE
-3 | DD
-
---删除表。
-gaussdb=# DROP TABLE test_t4;
+```sql
+INSERT INTO t_metadata_evidence_{ontology_id}
+(vector, type, propertyId, objectTypeId, value,
+ display_zh, display_en, display_lang_1, display_lang_2,
+ description_zh, description_en, description_lang_1, description_lang_2,
+ synonyms)
+VALUES
+(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE
+vector             = VALUES(vector),
+display_zh         = VALUES(display_zh),
+display_en         = VALUES(display_en),
+display_lang_1     = VALUES(display_lang_1),
+display_lang_2     = VALUES(display_lang_2),
+description_zh     = VALUES(description_zh),
+description_en     = VALUES(description_en),
+description_lang_1 = VALUES(description_lang_1),
+description_lang_2 = VALUES(description_lang_2),
+synonyms           = VALUES(synonyms);
 ```
+
+```sql
+INSERT INTO t_instance_evidence_{ontology_id}
+(vector, type, propertyid, objectTypeId, value)
+VALUES (?, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE
+vector = VALUES(vector);
+```
+
+行为约束：
+
+```text
+同一组合键首次写入      → INSERT
+同一组合键再次 UPSERT   → UPDATE 原记录，不新增向量
+同一 Chunk 重放         → 幂等覆盖
+DELETE                  → 按相同组合键删除
+```
+
+OpenSearch 使用同一业务组合键计算确定性 `_id`（例如 SHA-256），确保 GaussVector 和 OpenSearch 的重复提交语义一致；`_id` 只属于检索实现，不作为业务返回字段。
+
 
 
 #### 请求示例：动态枚举
@@ -1476,18 +1520,13 @@ gaussdb=# DROP TABLE test_t4;
       "propertyId": "prop:ont:vehicle:sp:bodyColor",
       "objectTypeId": "obj:ont:vehicle:Vehicle",
       "value": "red",
-      "name": "red",
       "display_zh": "红色",
       "display_en": "Red",
       "display_lang_1": "Rojo",
       "description_zh": "红色",
       "description_en": "Red color",
       "description_lang_1": "Color rojo",
-      "synonyms": { // TODO: 按照平铺结构修改成按照换行符拼接
-        "zh": ["红", "赤色"],
-        "en": ["Red"],
-        "es": ["Rojo"]
-      },
+      "synonyms": "红\n赤色\nRed\nRojo",
       "op": "UPSERT"
     }
   ]
@@ -1757,14 +1796,14 @@ LF 作为推荐换行符
 
 CSV 不包含 `vector`，因为向量必须由 OAG 使用当前配置的 Embedding 模型统一生成；CSV 也不要求携带物理 `type`，因为 `file-import.dataType` 已唯一确定目标类型。
 
-文本中出现逗号、双引号或换行时按标准 CSV quoting 规则转义；双引号使用 `""` 表示。`synonyms` 使用 JSON Object 字符串写入单个 CSV 字段。
+文本中出现逗号、双引号或换行时按标准 CSV quoting 规则转义；双引号使用 `""` 表示。`synonyms` 不再保存 JSON Object。逻辑上仍以 LF 分隔；为保证“一条业务记录对应一条 CSV 物理行”，CSV 中推荐写入两个字符 `\n` 作为转义分隔，OAG 读取字段后一次性转换为 LF，再执行 trim/去空/去重。
 
 ### 3.6.1 METADATA_ENUM CSV
 
 Header：
 
 ```csv
-propertyId,objectTypeId,value,name,display_zh,display_en,display_lang_1,display_lang_2,description_zh,description_en,description_lang_1,description_lang_2,synonyms,op
+propertyId,objectTypeId,value,display_zh,display_en,display_lang_1,display_lang_2,description_zh,description_en,description_lang_1,description_lang_2,synonyms,op
 ```
 
 | CSV 字段 | 目标字段 | 说明 |
@@ -1772,7 +1811,6 @@ propertyId,objectTypeId,value,name,display_zh,display_en,display_lang_1,display_
 | `propertyId` | `propertyId` | 引用 Enum 的 Property.id |
 | `objectTypeId` | `objectTypeId` | Property 所属 ObjectType.id |
 | `value` | `value` | 真实枚举值 |
-| `name` | `name` | Enum Value name |
 | `display_zh` | `display_zh` | 中文 display |
 | `display_en` | `display_en` | 英文 display |
 | `display_lang_1` | `display_lang_1` | 额外语言 1 |
@@ -1781,14 +1819,14 @@ propertyId,objectTypeId,value,name,display_zh,display_en,display_lang_1,display_
 | `description_en` | `description_en` | 英文描述 |
 | `description_lang_1` | `description_lang_1` | 额外语言 1 描述 |
 | `description_lang_2` | `description_lang_2` | 额外语言 2 描述 |
-| `synonyms` | `synonyms` | JSON Object，最多 3 种语言 |
+| `synonyms` | `synonyms` | 换行分隔的平铺同义词字符串；CSV 使用 `\n` 转义分隔 |
 | `op` | 导入操作 | `UPSERT` / `DELETE` |
 
 示例：
 
 ```csv
-propertyId,objectTypeId,value,name,display_zh,display_en,display_lang_1,display_lang_2,description_zh,description_en,description_lang_1,description_lang_2,synonyms,op
-prop:ont:vehicle:sp:bodyColor,obj:ont:vehicle:Vehicle,red,red,红色,Red,Rojo,,红色,Red color,Color rojo,,"{""zh"":[""红"",""赤色""],""en"":[""Red""],""es"":[""Rojo""]}",UPSERT
+propertyId,objectTypeId,value,display_zh,display_en,display_lang_1,display_lang_2,description_zh,description_en,description_lang_1,description_lang_2,synonyms,op
+prop:ont:vehicle:sp:bodyColor,obj:ont:vehicle:Vehicle,red,红色,Red,Rojo,,红色,Red color,Color rojo,,"红\n赤色\nRed\nRojo",UPSERT
 ```
 
 ### 3.6.2 INSTANCE_VALUE CSV
@@ -1956,130 +1994,17 @@ ON T_OAG_INDEX_TASK (STATUS, UPDATE_TIME);
 
 任务管理接口统一以 GaussDB `T_OAG_INDEX_TASK` 为事实来源，不以内存线程/Future 状态作为权威结果。
 
-#### 3.8.4.1 查询索引任务
+#### 3.8.4.1 批量查询索引任务
 
 ##### 典型场景
 
-调用方提交 REST Batch 或 MinIO File Import 后，根据 `taskId` 轮询任务当前阶段、进度、结果和最后错误摘要。
+业务侧提交多个 REST Batch / MinIO File Import 后，希望一次查询多个 `taskId` 的当前阶段、进度和失败原因，避免逐任务轮询产生大量 HTTP 请求。
 
 ##### 接口功能
 
-查询指定本体下的索引任务状态。接口必须同时校验 `ontologyId + taskId + tenant` 归属，禁止跨租户/跨本体读取任务。
+按 `taskIds` 批量读取 GaussDB `T_OAG_INDEX_TASK`。接口必须校验 `tenant + ontologyId` 归属；单个 task 不存在或不属于当前本体时，不让整个批次失败，而是在 `notFoundTaskIds` 中返回。
 
-##### 调用方法
-
-GET
-
-##### URI
-
-```text
-/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}
-```
-
-```text
-TODO: 
-将这个接口修改为批量接口，业务侧可以传递多个taskid列表，用于批量查询操作
-```
-
-
-##### 请求参数
-
-**表 11  GetIndexTask 参数列表**
-
-| 参数名称 | 类型 | 参数位置 | 是否必选 | 默认值 | OpenAPI 约束 | 说明 |
-|:--|:--|:--|:--|:--|:--|:--|
-| `ontologyId` | String | Path | 是 | - | `maxLength: 256` | 本体 ID |
-| `taskId` | String | Path | 是 | - | `maxLength: 256` | 索引任务 ID |
-| `x-gde-tenant-id` | String | Header | 是 | - | `maxLength: 256` | 租户 ID |
-
-##### 返回参数
-
-**表 12  IndexTaskResponse 参数列表（HTTP 200）**
-
-| 参数名称 | 类型 | 说明 |
-|:--|:--|:--|
-| `tenantId` | String | 租户 ID |
-| `ontologyId` | String | 本体 ID |
-| `taskId` | String | 任务 ID |
-| `requestId` | String | 调用幂等键 |
-| `dataType` | String | `SEED_NODE / METADATA_ENUM / INSTANCE_VALUE` |
-| `sourceType` | String | `OMS / REST / MINIO` |
-| `importMode` | String | `FULL_REPLACE / INCREMENTAL`；OMS 内部任务可为空 |
-| `status` | Integer | 0 构建中；1 成功；2 失败；3 已取消 |
-| `stage` | String | 当前执行阶段 |
-| `totalCount` | Integer(int64) | 总记录数；未知时可为空 |
-| `successCount` | Integer(int64) | 成功处理数 |
-| `failedCount` | Integer(int64) | 失败记录数 |
-| `skippedCount` | Integer(int64) | 去重/过滤记录数 |
-| `retryCount` | Integer | 已执行重试次数 |
-| `errorCode` | String | 任务最后错误码；非失败状态可为空 |
-| `errorMessage` | String | 最后错误摘要；非失败状态可为空 |
-| `createTime` | String(date-time) | 创建时间 |
-| `startTime` | String(date-time) | 实际开始时间 |
-| `updateTime` | String(date-time) | 最近更新时间 |
-| `completionTime` | String(date-time) | 完成时间；未结束可为空 |
-
-##### 响应示例
-
-```json
-{
-  "tenantId": "tenant-a",
-  "ontologyId": "dtmi.ontology.xxx.1",
-  "taskId": "idx-task-20260816-000001",
-  "requestId": "req-enum-20260816-000001",
-  "dataType": "METADATA_ENUM",
-  "sourceType": "REST",
-  "importMode": "INCREMENTAL",
-  "status": 0,
-  "stage": "EMBEDDING",
-  "totalCount": 1000,
-  "successCount": 640,
-  "failedCount": 2,
-  "skippedCount": 8,
-  "retryCount": 0,
-  "errorCode": null,
-  "errorMessage": null,
-  "createTime": "2026-08-16T22:10:00+08:00",
-  "startTime": "2026-08-16T22:10:01+08:00",
-  "updateTime": "2026-08-16T22:10:08+08:00",
-  "completionTime": null
-}
-```
-
-##### OpenAPI 3.0.3 Path 定义
-
-```yaml
-/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}:
-  get:
-    operationId: getIndexTask
-    summary: 查询索引任务
-    parameters:
-      - $ref: '#/components/parameters/OntologyId'
-      - $ref: '#/components/parameters/TaskId'
-      - $ref: '#/components/parameters/TenantId'
-    responses:
-      '200':
-        description: 查询成功
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/IndexTaskResponse'
-      '400': { $ref: '#/components/responses/BadRequest' }
-      '404': { $ref: '#/components/responses/NotFound' }
-      '500': { $ref: '#/components/responses/InternalError' }
-```
-
----
-
-#### 3.8.4.2 重试索引任务
-
-##### 典型场景
-
-索引任务因 MinIO、Embedding、GaussVector、OpenSearch 或 Verify 等临时故障失败后，调用方希望从持久化 Source/Checkpoint 重试，而不是重新提交整批业务数据。
-
-##### 接口功能
-
-对 `STATUS=2` 的失败任务发起重试。OAG 复用原 `taskId`、`requestId`、输入 Source 和 Checkpoint，增加 `RETRY_COUNT` 并重新进入执行队列，不创建重复业务任务。
+批量查询选择 `POST + JSON Body` 而不是 GET Query 参数，原因是 taskId 数量较多时容易触发 URL 长度和网关限制；该接口虽然使用 POST，但语义上仍为只读、无副作用查询。
 
 ##### 调用方法
 
@@ -2088,75 +2013,279 @@ POST
 ##### URI
 
 ```text
-/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/retry
-```
-
-```text
-TODO: 
-将这个接口修改为批量接口，批量接口，同时给出哪些错误码需要重试，用于指导业务根据错误码重试
+/v1/onto-retrieval/{ontologyId}/index-tasks/batch-query
 ```
 
 ##### 请求参数
 
-无 Request Body。Path/Header 参数复用表 11。
+**表 11  BatchTaskIdsRequest 参数列表**
 
-##### 前置条件
+| 参数名称 | 类型 | 是否必选 | 默认值 | OpenAPI 约束 | 说明 |
+|:--|:--|:--|:--|:--|:--|
+| `taskIds` | Array[String] | 是 | - | `minItems: 1`，`uniqueItems: true`；最大数量由 `maxTaskIdsPerRequest` 配置 | 待查询的索引任务 ID 列表 |
 
-```text
-任务存在
-AND tenant/ontology 归属一致
-AND STATUS = 2（FAILED）
-AND 原始 REST Payload 或 MinIO Source/Checkpoint 仍可恢复
+服务端对重复 `taskId` 先去重并保持首次出现顺序。建议 `maxTaskIdsPerRequest` 默认从 100 起步，通过接口压测调整，不在协议中绑定数据库 `IN` 子句的固定上限。
+
+##### 请求示例
+
+```json
+{
+  "taskIds": [
+    "idx-task-20260816-000001",
+    "idx-task-20260816-000002",
+    "idx-task-20260816-000003"
+  ]
+}
 ```
-
-否则返回 `409 TASK_STATE_CONFLICT` 或相应资源错误。
 
 ##### 返回参数
 
-**表 13  TaskOperationAcceptedResponse 参数列表（HTTP 202）**
+**表 12  BatchTaskQueryResponse 参数列表（HTTP 200）**
 
-| 参数名称 | 类型 | 说明 | 示例 |
-|:--|:--|:--|:--|
-| `ontologyId` | String | 本体 ID | `dtmi.ontology.xxx.1` |
-| `taskId` | String | 原任务 ID | `idx-task-20260816-000001` |
-| `operation` | String | 当前接受的任务操作 | `RETRY` |
-| `accepted` | Boolean | 是否已接受 | `true` |
-| `status` | Integer | 接受后任务状态，通常重新进入 0 | `0` |
-| `stage` | String | 接受后的阶段 | `CREATED` |
+| 参数名称 | 类型 | 说明 |
+|:--|:--|:--|
+| `ontologyId` | String | 本体 ID |
+| `requestedCount` | Integer | 去重后的请求 task 数量 |
+| `foundCount` | Integer | 实际查询到的任务数量 |
+| `tasks` | Array[IndexTaskResponse] | 已找到任务的状态、进度和错误摘要 |
+| `notFoundTaskIds` | Array[String] | 不存在或不属于当前 tenant/ontology 的 taskId |
+
+`IndexTaskResponse` 保持原任务字段，并新增：
+
+```text
+retryable = true / false
+```
+
+其值由 `ERROR_CODE` 的重试策略计算；非失败任务默认为 `false`。
 
 ##### 响应示例
 
 ```json
 {
   "ontologyId": "dtmi.ontology.xxx.1",
-  "taskId": "idx-task-20260816-000001",
-  "operation": "RETRY",
-  "accepted": true,
-  "status": 0,
-  "stage": "CREATED"
+  "requestedCount": 3,
+  "foundCount": 2,
+  "tasks": [
+    {
+      "ontologyId": "dtmi.ontology.xxx.1",
+      "taskId": "idx-task-20260816-000001",
+      "requestId": "req-enum-001",
+      "dataType": "METADATA_ENUM",
+      "sourceType": "REST",
+      "importMode": "INCREMENTAL",
+      "status": 1,
+      "stage": "FINISHED",
+      "retryCount": 0,
+      "retryable": false,
+      "errorCode": null,
+      "errorMessage": null,
+      "createTime": "2026-08-16T22:10:00+08:00",
+      "updateTime": "2026-08-16T22:10:08+08:00"
+    },
+    {
+      "ontologyId": "dtmi.ontology.xxx.1",
+      "taskId": "idx-task-20260816-000002",
+      "requestId": "req-instance-002",
+      "dataType": "INSTANCE_VALUE",
+      "sourceType": "MINIO",
+      "importMode": "INCREMENTAL",
+      "status": 2,
+      "stage": "WRITING_VECTOR",
+      "retryCount": 0,
+      "retryable": true,
+      "errorCode": "VECTOR_WRITE_FAILED",
+      "errorMessage": "temporary vector storage write failure",
+      "createTime": "2026-08-16T22:11:00+08:00",
+      "updateTime": "2026-08-16T22:11:08+08:00"
+    }
+  ],
+  "notFoundTaskIds": ["idx-task-20260816-000003"]
 }
 ```
+
+批量查询允许部分命中，因此单个 task 不存在时仍返回 `200`；只有 ontology 不存在、请求体非法或服务异常才使用请求级 `4xx/5xx`。
 
 ##### OpenAPI 3.0.3 Path 定义
 
 ```yaml
-/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/retry:
+/v1/onto-retrieval/{ontologyId}/index-tasks/batch-query:
   post:
-    operationId: retryIndexTask
-    summary: 重试失败的索引任务
+    operationId: batchQueryIndexTasks
+    summary: 批量查询索引任务
     parameters:
       - $ref: '#/components/parameters/OntologyId'
-      - $ref: '#/components/parameters/TaskId'
       - $ref: '#/components/parameters/TenantId'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BatchTaskIdsRequest'
     responses:
-      '202':
-        description: 重试请求已接受
+      '200':
+        description: 批量查询成功，允许部分 task 未找到
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/TaskOperationAcceptedResponse'
+              $ref: '#/components/schemas/BatchTaskQueryResponse'
+      '400': { $ref: '#/components/responses/BadRequest' }
       '404': { $ref: '#/components/responses/NotFound' }
-      '409': { $ref: '#/components/responses/Conflict' }
+      '429': { $ref: '#/components/responses/TooManyRequests' }
+      '500': { $ref: '#/components/responses/InternalError' }
+```
+
+---
+
+#### 3.8.4.2 批量重试索引任务
+
+##### 典型场景
+
+一批索引任务因 Embedding、GaussVector、OpenSearch、MinIO 读取或发布阶段的临时故障失败，业务侧希望一次性重试其中可恢复的任务。
+
+##### 接口功能
+
+批量检查 `taskIds`，仅把满足以下条件的任务重新加入执行队列：
+
+```text
+任务存在且 tenant/ontology 归属一致
+AND STATUS = 2（FAILED）
+AND retryable = true
+AND 原始 REST Payload 或 MinIO Source/Checkpoint 仍可恢复
+AND RETRY_COUNT 未超过服务配置上限
+```
+
+批量操作采用**逐任务判定、允许部分成功**。一个 task 不可重试不能阻断其他 task。
+
+##### 调用方法
+
+POST
+
+##### URI
+
+```text
+/v1/onto-retrieval/{ontologyId}/index-tasks/batch-retry
+```
+
+##### 请求参数
+
+复用表 11 `BatchTaskIdsRequest`。
+
+##### 可重试错误码
+
+业务侧应优先使用任务返回的 `retryable` 字段，而不是在客户端复制一套判断逻辑；错误码表用于故障定位和兜底判断。
+
+| 错误码 | retryable | 处理建议 |
+|---|---:|---|
+| `MINIO_READ_FAILED` | true | MinIO 临时读取失败，可从 Checkpoint 重试 |
+| `EMBEDDING_FAILED` | true | Embedding 服务超时/5xx 等临时失败，可重试 |
+| `VECTOR_WRITE_FAILED` | true | GaussVector 临时写失败，利用组合键幂等 UPSERT 重试 |
+| `SEARCH_WRITE_FAILED` | true | OpenSearch 临时写失败，可按业务键幂等重试 |
+| `VERIFY_FAILED` | true | 双写后的临时校验失败，可重新 Verify/补写 |
+| `PUBLISH_FAILED` | true | Generation 发布阶段临时失败，可重新发布 |
+| `INVALID_REQUEST` | false | 请求结构错误，修正数据后重新提交新任务 |
+| `INVALID_DATA_TYPE` | false | dataType 错误，修正后重新提交 |
+| `ONTOLOGY_NOT_FOUND` | false | 本体不存在，需要先修复本体资产 |
+| `PROPERTY_NOT_FOUND` | false | Property 映射不存在，需要修复本体/输入 |
+| `OBJECT_TYPE_MISMATCH` | false | ObjectType 与 Property 归属冲突，需要修正数据 |
+| `CSV_SCHEMA_ERROR` | false | CSV Header/字段格式错误，需要重新生成文件 |
+| `MINIO_OBJECT_NOT_FOUND` | false | 源文件不存在，需要重新上传并新建导入任务 |
+| `CHECKSUM_MISMATCH` | false | 文件内容已变化/损坏，需要重新生成并提交 |
+
+如果同一个高层错误码存在可重试和不可重试两类根因，OAG 必须以 `retryable` 作为最终判断，不要求业务侧解析 `errorMessage`。
+
+##### 返回参数
+
+**表 13  BatchTaskOperationResponse 参数列表（HTTP 202）**
+
+| 参数名称 | 类型 | 说明 |
+|:--|:--|:--|
+| `ontologyId` | String | 本体 ID |
+| `operation` | String | `RETRY` / `CANCEL` |
+| `requestedCount` | Integer | 去重后的请求 task 数量 |
+| `acceptedCount` | Integer | 已进入异步操作的任务数量 |
+| `rejectedCount` | Integer | 未接受操作的任务数量 |
+| `results` | Array[TaskOperationResult] | 每个 task 的独立处理结果 |
+
+`TaskOperationResult`：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `taskId` | String | 任务 ID |
+| `accepted` | Boolean | 当前操作是否被接受 |
+| `status` | Integer | 当前任务状态；任务不存在时可为空 |
+| `stage` | String | 当前任务阶段；任务不存在时可为空 |
+| `retryable` | Boolean | 对 RETRY 表示当前失败是否允许重试 |
+| `reasonCode` | String | `TASK_NOT_FOUND / TASK_STATE_CONFLICT / NOT_RETRYABLE / RETRY_LIMIT_EXCEEDED / SOURCE_UNRECOVERABLE` 等 |
+| `message` | String | 简短处理说明 |
+
+##### 响应示例
+
+```json
+{
+  "ontologyId": "dtmi.ontology.xxx.1",
+  "operation": "RETRY",
+  "requestedCount": 3,
+  "acceptedCount": 1,
+  "rejectedCount": 2,
+  "results": [
+    {
+      "taskId": "idx-task-001",
+      "accepted": true,
+      "status": 0,
+      "stage": "CREATED",
+      "retryable": true,
+      "reasonCode": null,
+      "message": "retry accepted"
+    },
+    {
+      "taskId": "idx-task-002",
+      "accepted": false,
+      "status": 2,
+      "stage": "FINISHED",
+      "retryable": false,
+      "reasonCode": "NOT_RETRYABLE",
+      "message": "CSV_SCHEMA_ERROR must be fixed and resubmitted"
+    },
+    {
+      "taskId": "idx-task-404",
+      "accepted": false,
+      "status": null,
+      "stage": null,
+      "retryable": false,
+      "reasonCode": "TASK_NOT_FOUND",
+      "message": "task not found"
+    }
+  ]
+}
+```
+
+请求结构合法时返回 `202`，逐 task 是否真正进入队列由 `results[].accepted` 表达；不使用单个 task 的 `409/404` 把整个批次打失败。
+
+##### OpenAPI 3.0.3 Path 定义
+
+```yaml
+/v1/onto-retrieval/{ontologyId}/index-tasks/batch-retry:
+  post:
+    operationId: batchRetryIndexTasks
+    summary: 批量重试失败的索引任务
+    parameters:
+      - $ref: '#/components/parameters/OntologyId'
+      - $ref: '#/components/parameters/TenantId'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BatchTaskIdsRequest'
+    responses:
+      '202':
+        description: 批量重试请求已处理，逐 task 查看 accepted
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchTaskOperationResponse'
+      '400': { $ref: '#/components/responses/BadRequest' }
+      '404': { $ref: '#/components/responses/NotFound' }
       '429': { $ref: '#/components/responses/TooManyRequests' }
       '500': { $ref: '#/components/responses/InternalError' }
       '503': { $ref: '#/components/responses/ServiceUnavailable' }
@@ -2164,15 +2293,17 @@ AND 原始 REST Payload 或 MinIO Source/Checkpoint 仍可恢复
 
 ---
 
-#### 3.8.4.3 取消索引任务
+#### 3.8.4.3 批量取消索引任务
 
 ##### 典型场景
 
-调用方发现导入数据错误、提交范围错误或需要停止长时间运行的文件导入任务。
+业务侧发现多个导入任务的数据范围错误或需要停止一组耗时任务，希望一次取消多个任务。
 
 ##### 接口功能
 
-请求取消尚未进入终态的索引任务。接口返回 `202` 代表取消请求已接受，不代表 Worker 已立即停止；Worker 在安全检查点停止后将任务更新为 `STATUS=3`。
+对 `STATUS=0` 的运行中/排队任务设置 `STAGE=CANCEL_REQUESTED`。Worker 在安全检查点停止后更新为 `STATUS=3`。批量取消同样逐 task 判定、允许部分成功。
+
+取消操作要求幂等：已处于 `STATUS=3` 的任务返回 `accepted=true`、`reasonCode=ALREADY_CANCELLED`，不重复触发取消；`STATUS=1/2` 的终态任务返回 `accepted=false`、`reasonCode=TASK_STATE_CONFLICT`。
 
 ##### 调用方法
 
@@ -2181,61 +2312,84 @@ POST
 ##### URI
 
 ```text
-/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/cancel
-```
-
-```text
-TODO: 
-将这个接口修改为批量接口
+/v1/onto-retrieval/{ontologyId}/index-tasks/batch-cancel
 ```
 
 ##### 请求参数
 
-无 Request Body。Path/Header 参数复用表 11。
-
-##### 前置条件
-
-只有 `STATUS=0` 的未完成任务允许取消；`STATUS=1/2/3` 返回 `409 TASK_STATE_CONFLICT`。
+复用表 11 `BatchTaskIdsRequest`。
 
 ##### 返回参数
 
-复用表 13 `TaskOperationAcceptedResponse`，其中 `operation=CANCEL`。
+复用表 13 `BatchTaskOperationResponse`，其中 `operation=CANCEL`。
 
 ##### 响应示例
 
 ```json
 {
   "ontologyId": "dtmi.ontology.xxx.1",
-  "taskId": "idx-task-20260816-000001",
   "operation": "CANCEL",
-  "accepted": true,
-  "status": 0,
-  "stage": "CANCEL_REQUESTED"
+  "requestedCount": 3,
+  "acceptedCount": 2,
+  "rejectedCount": 1,
+  "results": [
+    {
+      "taskId": "idx-task-001",
+      "accepted": true,
+      "status": 0,
+      "stage": "CANCEL_REQUESTED",
+      "retryable": false,
+      "reasonCode": null,
+      "message": "cancel accepted"
+    },
+    {
+      "taskId": "idx-task-002",
+      "accepted": true,
+      "status": 3,
+      "stage": "FINISHED",
+      "retryable": false,
+      "reasonCode": "ALREADY_CANCELLED",
+      "message": "task already cancelled"
+    },
+    {
+      "taskId": "idx-task-003",
+      "accepted": false,
+      "status": 1,
+      "stage": "FINISHED",
+      "retryable": false,
+      "reasonCode": "TASK_STATE_CONFLICT",
+      "message": "completed task cannot be cancelled"
+    }
+  ]
 }
 ```
-
-`CANCEL_REQUESTED` 作为取消请求已接收的瞬态阶段；Worker 安全停止后更新为 `STATUS=3`。
 
 ##### OpenAPI 3.0.3 Path 定义
 
 ```yaml
-/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/cancel:
+/v1/onto-retrieval/{ontologyId}/index-tasks/batch-cancel:
   post:
-    operationId: cancelIndexTask
-    summary: 取消索引任务
+    operationId: batchCancelIndexTasks
+    summary: 批量取消索引任务
     parameters:
       - $ref: '#/components/parameters/OntologyId'
-      - $ref: '#/components/parameters/TaskId'
       - $ref: '#/components/parameters/TenantId'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BatchTaskIdsRequest'
     responses:
       '202':
-        description: 取消请求已接受
+        description: 批量取消请求已处理，逐 task 查看 accepted
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/TaskOperationAcceptedResponse'
+              $ref: '#/components/schemas/BatchTaskOperationResponse'
+      '400': { $ref: '#/components/responses/BadRequest' }
       '404': { $ref: '#/components/responses/NotFound' }
-      '409': { $ref: '#/components/responses/Conflict' }
+      '429': { $ref: '#/components/responses/TooManyRequests' }
       '500': { $ref: '#/components/responses/InternalError' }
 ```
 
@@ -2439,7 +2593,6 @@ components:
         propertyId: { type: string, maxLength: 512 }
         objectTypeId: { type: string, maxLength: 256 }
         value: { type: string, maxLength: 4096 }
-        name: { type: string, maxLength: 4096 }
         display_zh: { type: string, maxLength: 512 }
         display_en: { type: string, maxLength: 512 }
         display_lang_1: { type: string, maxLength: 512 }
@@ -2449,11 +2602,8 @@ components:
         description_lang_1: { type: string }
         description_lang_2: { type: string }
         synonyms:
-          type: object
-          maxProperties: 3
-          additionalProperties:
-            type: array
-            items: { type: string }
+          type: string
+          description: 同义词平铺字符串，逻辑分隔符为 LF；REST JSON 使用 \n 转义
         op:
           type: string
           enum: [UPSERT, DELETE]
@@ -2553,7 +2703,7 @@ components:
 
     IndexTaskResponse:
       type: object
-      required: [ontologyId, taskId, requestId, dataType, sourceType, status, stage, createTime, updateTime]
+      required: [ontologyId, taskId, requestId, dataType, sourceType, status, stage, retryable, createTime, updateTime]
       properties:
         tenantId: { type: string, nullable: true }
         ontologyId: { type: string }
@@ -2571,21 +2721,61 @@ components:
         retryCount: { type: integer, minimum: 0 }
         errorCode: { type: string, nullable: true }
         errorMessage: { type: string, nullable: true }
+        retryable: { type: boolean, default: false }
         createTime: { type: string, format: date-time }
         startTime: { type: string, format: date-time, nullable: true }
         updateTime: { type: string, format: date-time }
         completionTime: { type: string, format: date-time, nullable: true }
 
-    TaskOperationAcceptedResponse:
+    BatchTaskIdsRequest:
       type: object
-      required: [ontologyId, taskId, operation, accepted, status, stage]
+      required: [taskIds]
+      properties:
+        taskIds:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, maxLength: 256 }
+      additionalProperties: false
+
+    BatchTaskQueryResponse:
+      type: object
+      required: [ontologyId, requestedCount, foundCount, tasks, notFoundTaskIds]
       properties:
         ontologyId: { type: string }
+        requestedCount: { type: integer, minimum: 0 }
+        foundCount: { type: integer, minimum: 0 }
+        tasks:
+          type: array
+          items: { $ref: '#/components/schemas/IndexTaskResponse' }
+        notFoundTaskIds:
+          type: array
+          items: { type: string }
+
+    TaskOperationResult:
+      type: object
+      required: [taskId, accepted, retryable]
+      properties:
         taskId: { type: string }
-        operation: { type: string, enum: [RETRY, CANCEL] }
         accepted: { type: boolean }
-        status: { type: integer, enum: [0, 1, 2, 3] }
-        stage: { type: string }
+        status: { type: integer, enum: [0, 1, 2, 3], nullable: true }
+        stage: { type: string, nullable: true }
+        retryable: { type: boolean }
+        reasonCode: { type: string, nullable: true }
+        message: { type: string, nullable: true }
+
+    BatchTaskOperationResponse:
+      type: object
+      required: [ontologyId, operation, requestedCount, acceptedCount, rejectedCount, results]
+      properties:
+        ontologyId: { type: string }
+        operation: { type: string, enum: [RETRY, CANCEL] }
+        requestedCount: { type: integer, minimum: 0 }
+        acceptedCount: { type: integer, minimum: 0 }
+        rejectedCount: { type: integer, minimum: 0 }
+        results:
+          type: array
+          items: { $ref: '#/components/schemas/TaskOperationResult' }
 
     IndexTaskErrorItem:
       type: object
@@ -2643,9 +2833,9 @@ components:
           - propertyId: prop:ont:vehicle:sp:bodyColor
             objectTypeId: obj:ont:vehicle:Vehicle
             value: red
-            name: red
             display_zh: 红色
             display_en: Red
+            synonyms: "红\n赤色\nRed\nRojo"
             op: UPSERT
     InstanceValueBatchImportExample:
       value:
@@ -2764,7 +2954,7 @@ FAILED    → STATUS=2, ERROR_CODE/ERROR_MESSAGE, COMPLETION_TIME
 CANCELLED → STATUS=3, COMPLETION_TIME
 ```
 
-OAG 重启后从 GaussDB 找到未完成任务，根据 `SOURCE_TYPE + CHECKPOINT` 决定恢复、重试或标记失败。任务查询接口必须以 GaussDB 为事实来源，而不是以内存 Future/线程状态作为权威状态。
+OAG 重启后从 GaussDB 找到未完成任务，根据 `SOURCE_TYPE + CHECKPOINT` 决定恢复、重试或标记失败。批量任务查询接口必须以 GaussDB 为事实来源，而不是以内存 Future/线程状态作为权威状态。
 
 ---
 
@@ -2781,13 +2971,13 @@ Input → SchemaValidator → OntologyMappingValidator → Normalizer → Dedupl
 
 ### METADATA_ENUM
 
-唯一业务范围：`objectTypeId + propertyId + normalized(value)`。Embedding 严格复用第 2.9 节：`value + name + display_* + description_* + synonyms_value + synonyms_description`。
+唯一业务范围：`objectTypeId + propertyId + normalized(value)`。动态导入不再接收 `name`，EmbeddingInputBuilder 拼接 `value + display_* + description_* + synonyms`；静态 OMS 构建仍可使用第 2.9 节中存在的 `name`。
 
 ### INSTANCE_VALUE
 
 唯一业务范围：`objectTypeId + propertyid + normalized(value)`。Embedding 严格复用第 2.12 节：`{value}`。
 
-> **所有导入路径都必须保证同一个业务唯一键最终在 GaussVector 和 OpenSearch 中各只有一条有效记录。**
+> **所有导入路径都必须保证同一个业务唯一键最终在 GaussVector 和 OpenSearch 中各只有一条有效记录；GaussVector 由组合唯一索引 + `INSERT ... ON DUPLICATE KEY UPDATE` 提供数据库级兜底。**
 
 ---
 
@@ -2831,7 +3021,7 @@ Chunk 大小属于性能参数，通过压测配置，不写入协议常量。Ch
 
 FULL_REPLACE 使用 Staging Generation，两边全部写入并完成 Count/Sample/Query Verify 后再切换 Active Generation；任一侧失败都不发布新 Generation。
 
-INCREMENTAL 对同一业务唯一键在 GaussVector/OpenSearch 执行 UPSERT/DELETE；失败记录进入 task error，由任务重试补齐，不能因为一侧成功就把任务标记成功。
+INCREMENTAL 对同一业务唯一键在 GaussVector 使用 `INSERT ... ON DUPLICATE KEY UPDATE`、在 OpenSearch 使用确定性 `_id` 执行幂等 UPSERT/DELETE；失败记录进入 task error，由任务重试补齐，不能因为一侧成功就把任务标记成功。
 
 ---
 
@@ -2867,27 +3057,30 @@ task progress flush interval
 后端压力过高时 Import Task 排队/降速，不能挤占语义检索线程池。
 ## 3.16 错误处理与可观测性
 
-统一错误分类：
+统一错误分类，同时维护服务端 `retryable` 判断：
 
-```text
-INVALID_REQUEST
-INVALID_DATA_TYPE
-ONTOLOGY_NOT_FOUND
-PROPERTY_NOT_FOUND
-OBJECT_TYPE_MISMATCH
-CSV_SCHEMA_ERROR
-MINIO_OBJECT_NOT_FOUND
-CHECKSUM_MISMATCH
-EMBEDDING_FAILED
-VECTOR_WRITE_FAILED
-SEARCH_WRITE_FAILED
-VERIFY_FAILED
-PUBLISH_FAILED
-```
+| 错误码 | 默认 retryable | 说明 |
+|---|---:|---|
+| `INVALID_REQUEST` | false | 请求结构错误 |
+| `INVALID_DATA_TYPE` | false | dataType 非法 |
+| `ONTOLOGY_NOT_FOUND` | false | 本体不存在 |
+| `PROPERTY_NOT_FOUND` | false | Property 不存在 |
+| `OBJECT_TYPE_MISMATCH` | false | ObjectType 与 Property 归属冲突 |
+| `CSV_SCHEMA_ERROR` | false | CSV Header/字段格式错误 |
+| `MINIO_OBJECT_NOT_FOUND` | false | MinIO 源对象不存在，需要重新上传/提交 |
+| `CHECKSUM_MISMATCH` | false | 文件 checksum 不一致，需要重新生成/提交 |
+| `MINIO_READ_FAILED` | true | 已存在对象的临时读取失败 |
+| `EMBEDDING_FAILED` | true | Embedding 服务超时/5xx 等临时失败 |
+| `VECTOR_WRITE_FAILED` | true | GaussVector 临时写入失败 |
+| `SEARCH_WRITE_FAILED` | true | OpenSearch 临时写入失败 |
+| `VERIFY_FAILED` | true | 双写后校验失败，可幂等补写并重新 Verify |
+| `PUBLISH_FAILED` | true | Generation 发布阶段临时失败 |
+
+业务侧批量查询任务时读取 `retryable`，批量重试接口也由 OAG 再次校验该值；客户端不需要解析 `errorMessage` 判断是否重试。若一个高层错误码因根因不同需要不同策略，以服务端计算后的 `retryable` 为准。
 
 任务级错误通过 `ERROR_CODE / ERROR_MESSAGE` 写入 `T_OAG_INDEX_TASK`；记录级错误至少保留 taskId、objectKey/rowNumber 或 recordIndex、Property 标识（Enum 为 propertyId，Instance 为 propertyid）、objectTypeId、必要时脱敏后的 value、errorCode、errorMessage。
 
-`GET /v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/errors` 返回记录级错误，避免将百万条错误塞入任务主表。
+`GET /v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/errors` 继续按单任务分页返回记录级错误，避免将百万条错误塞入任务主表。
 
 关键指标：
 
@@ -2957,7 +3150,7 @@ sequenceDiagram
 2. **语义检索固定使用 `POST /subgraph/semantic-search`。**
 3. **Enum/Instance 动态索引支持 REST Batch 和 MinIO CSV 两类入口。**
 4. **两类入口使用 `dataType=METADATA_ENUM/INSTANCE_VALUE` 显式区分数据。**
-5. **REST/CSV 字段必须与第 2.8/2.10 节物理业务字段一致，不接受外部 vector。**
+5. **REST/CSV 核心定位字段与第 2.8/2.10 节一致，不接受外部 vector/type；动态 Enum 导入不再接收 name，synonyms 使用换行分隔平铺字符串。**
 6. **DataSync → MinIO 数据文件统一使用 UTF-8 CSV。**
 7. **DataSync 与 OAG 约定专用 MinIO Bucket；使用 S3 API 和 Path-style 访问。**
 8. **索引任务必须先持久化到 GaussDB `T_OAG_INDEX_TASK`，再异步执行。**
@@ -2965,6 +3158,10 @@ sequenceDiagram
 10. **REST 和文件导入共享 Normalize/Dedup/Embedding/双写/Verify/Publish Pipeline。**
 11. **百万/千万级数据默认走 MinIO CSV Streaming，不通过超大 JSON Body。**
 12. **GaussVector/OpenSearch 不使用分布式事务，通过唯一键、幂等、Verify 和任务重试保证一致性。**
+13. **GaussVector 使用 `(objectTypeId, propertyId/propertyid, value)` 组合唯一索引和 `INSERT ... ON DUPLICATE KEY UPDATE`，保证重复导入覆盖而不是新增向量。**
+14. **任务查询、重试、取消统一提供批量接口；批量操作逐 task 返回结果，允许部分成功。**
+15. **批量重试以服务端 `retryable` 为最终判断，并公开可重试/不可重试错误码分类。**
+16. **批量取消幂等处理已经取消的任务；终态成功/失败任务不再进入取消流程。**
 
 ---
 
@@ -2993,7 +3190,7 @@ sourceType = REST | MINIO
 importMode = FULL_REPLACE | INCREMENTAL
 ```
 
-动态枚举和实例列值共享协议、任务、去重、Embedding 和双存储能力，同时保留 REST 的动态性和 MinIO CSV 的规模能力。
+动态枚举和实例列值共享协议、任务、去重、Embedding 和双存储能力，同时保留 REST 的动态性和 MinIO CSV 的规模能力。任务管理采用 batch-query / batch-retry / batch-cancel，数据写入采用数据库级组合键 UPSERT，使接口幂等与存储幂等形成闭环。
 
 # 4. Query Understanding 与 6 路召回
 
