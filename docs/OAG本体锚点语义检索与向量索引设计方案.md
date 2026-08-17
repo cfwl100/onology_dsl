@@ -1388,22 +1388,27 @@ OAG 不接受调用方提交 `vector`；物理 `type` 由 `dataType` 推导：`M
 
 **表 6  MetadataEnumRecord 参数列表**
 
-| 参数名称 | 类型 | 是否必选 | 默认值 | OpenAPI 约束 | 说明 |
-|:--|:--|:--|:--|:--|:--|
-| `propertyId` | String | 是 | - | `maxLength: 512` | 引用该 Enum 的 Property.id |
+| 参数名称 | 类型 | 是否必选 | 默认值 | OpenAPI 约束 | 说明                                     |
+|:--|:--|:--|:--|:--|:---------------------------------------|
+| `propertyId` | String | 是 | - | `maxLength: 512` | 引用该 Enum 的 Property.id                 |
 | `objectTypeId` | String | 否 | - | `maxLength: 256` | Property 所属 ObjectType.id；如传入必须与本体映射一致 |
-| `value` | String | 是 | - | `maxLength: 4096` | 真实枚举值；用于唯一键和向量内容 |
-| `name` | String | 否 | - | `maxLength: 4096` | Enum Value name |
-| `display_zh` | String | 否 | - | `maxLength: 512` | 中文 display |
-| `display_en` | String | 否 | - | `maxLength: 512` | 英文 display |
-| `display_lang_1` | String | 否 | - | `maxLength: 512` | ontology 级额外语言槽位 1 display |
-| `display_lang_2` | String | 否 | - | `maxLength: 512` | ontology 级额外语言槽位 2 display |
-| `description_zh` | String | 否 | - | - | 中文 description |
-| `description_en` | String | 否 | - | - | 英文 description |
-| `description_lang_1` | String | 否 | - | - | 额外语言槽位 1 description |
-| `description_lang_2` | String | 否 | - | - | 额外语言槽位 2 description |
-| `synonyms` | Map[String, Array[String]] | 否 | `{}` | `maxProperties: 3` | 当前 Enum Value 的多语言同义词；语言 key 最多 3 个 |
-| `op` | String | 否 | `UPSERT` | `enum: [UPSERT, DELETE]` | 增量操作；`FULL_REPLACE` 默认只使用 `UPSERT` |
+| `value` | String | 是 | - | `maxLength: 4096` | 真实枚举值；用于唯一键和向量内容                       |
+| `name` | String | 否 | - | `maxLength: 4096` | Enum Value name (TODO:待删除)             |
+| `display_zh` | String | 否 | - | `maxLength: 512` | 中文 display                             |
+| `display_en` | String | 否 | - | `maxLength: 512` | 英文 display                             |
+| `display_lang_1` | String | 否 | - | `maxLength: 512` | ontology 级额外语言槽位 1 display             |
+| `display_lang_2` | String | 否 | - | `maxLength: 512` | ontology 级额外语言槽位 2 display             |
+| `description_zh` | String | 否 | - | - | 中文 description                         |
+| `description_en` | String | 否 | - | - | 英文 description                         |
+| `description_lang_1` | String | 否 | - | - | 额外语言槽位 1 description                   |
+| `description_lang_2` | String | 否 | - | - | 额外语言槽位 2 description                   |
+| `synonyms` | Map[String, Array[String]] | 否 | `{}` | `maxProperties: 3` | 当前 Enum Value 的多语言同义词；语言 key 最多 3 个    |
+| `op` | String | 否 | `UPSERT` | `enum: [UPSERT, DELETE]` | 增量操作；`FULL_REPLACE` 默认只使用 `UPSERT`     |
+
+```text
+TODO：
+上面的synonyms 使用\n拼接，不使用json嵌套，避免再次反序列化解析耗费性能
+```
 
 枚举唯一业务键：
 
@@ -1424,7 +1429,6 @@ objectTypeId + propertyId + normalized(value)
 | `propertyid` | String | 是 | - | `maxLength: 512` | 所属 Property.id |
 | `objectTypeId` | String | 否 | - | `maxLength: 256` | Property 所属 ObjectType.id；如传入必须与本体映射一致 |
 | `value` | String | 是 | - | `maxLength: 4096` | 去重后的真实 Instance Value；EmbeddingInput 严格为 `{value}` |
-| `language` | String | 否 | `und` | BCP 47 / `und` | 导入协议扩展字段，只用于 Analyzer/观测 Hint，不改变第 2.10 的向量表核心字段 |
 | `op` | String | 否 | `UPSERT` | `enum: [UPSERT, DELETE]` | 增量操作；`FULL_REPLACE` 默认只使用 `UPSERT` |
 
 实例唯一业务键：
@@ -1432,6 +1436,33 @@ objectTypeId + propertyId + normalized(value)
 ```text
 objectTypeId + propertyid + normalized(value)
 ```
+
+
+
+
+```
+TODO: 按照如下描述，upsert的时候，增加GaussVector按照组合键覆盖能力，使用 INSERT ON DUPLICATE KEY UPDATE
+
+--建表。
+gaussdb=# CREATE TABLE test_t4 (id INT PRIMARY KEY, info VARCHAR(10));
+gaussdb=# INSERT INTO test_t4 VALUES (1, 'AA'), (2,'BB'), (3, 'CC');
+
+--使用ON DUPLICATE KEY UPDATE关键字。
+gaussdb=# INSERT INTO test_t4 VALUES (3, 'DD'), (4, 'EE') ON DUPLICATE KEY UPDATE info = VALUES(info);
+
+--查询表。
+gaussdb=# SELECT * FROM test_t4;
+id | info
+----+------
+1 | AA
+2 | BB
+4 | EE
+3 | DD
+
+--删除表。
+gaussdb=# DROP TABLE test_t4;
+```
+
 
 #### 请求示例：动态枚举
 
@@ -1452,7 +1483,7 @@ objectTypeId + propertyid + normalized(value)
       "description_zh": "红色",
       "description_en": "Red color",
       "description_lang_1": "Color rojo",
-      "synonyms": {
+      "synonyms": { // TODO: 按照平铺结构修改成按照换行符拼接
         "zh": ["红", "赤色"],
         "en": ["Red"],
         "es": ["Rojo"]
@@ -1475,7 +1506,6 @@ objectTypeId + propertyid + normalized(value)
       "propertyid": "prop:subscriber:subLevel",
       "objectTypeId": "obj:subscriber:Subscriber",
       "value": "VIP",
-      "language": "und",
       "op": "UPSERT"
     }
   ]
@@ -1946,6 +1976,12 @@ GET
 /v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}
 ```
 
+```text
+TODO: 
+将这个接口修改为批量接口，业务侧可以传递多个taskid列表，用于批量查询操作
+```
+
+
 ##### 请求参数
 
 **表 11  GetIndexTask 参数列表**
@@ -2055,6 +2091,11 @@ POST
 /v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/retry
 ```
 
+```text
+TODO: 
+将这个接口修改为批量接口，批量接口，同时给出哪些错误码需要重试，用于指导业务根据错误码重试
+```
+
 ##### 请求参数
 
 无 Request Body。Path/Header 参数复用表 11。
@@ -2141,6 +2182,11 @@ POST
 
 ```text
 /v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/cancel
+```
+
+```text
+TODO: 
+将这个接口修改为批量接口
 ```
 
 ##### 请求参数
