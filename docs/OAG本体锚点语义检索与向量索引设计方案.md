@@ -560,6 +560,7 @@ OpenSearch 与 GaussVector 共享同一业务字段语义：
 ```text
 type
 id
+parent_id
 name
 display_zh
 display_en
@@ -785,23 +786,23 @@ Property.referenceEnumId
 t_metadata_evidence_{ontology_id}
 ```
 
-| 字段                   | 类型 | 非空 | 说明 |
-|----------------------|---|--|---|
-| `vector`             | `DOUBLE[]` | ✔ | Enum Value 向量 |
-| `type`               | `INT` |  | 固定表示 ENUM_VALUE |
-| `propertyId`         | `VARCHAR(512 CHAR)` | ✔ | 引用该 Enum 的 Property.id |
-| `objectTypeId`       | `VARCHAR(256 CHAR)` |  | Property 所属 ObjectType.id |
-| `value`              | `VARCHAR(4096 CHAR)` |  | 真实枚举值 |
+| 字段                   | 类型 | 非空 | 说明                                  |
+|----------------------|---|--|-------------------------------------|
+| `vector`             | `DOUBLE[]` | ✔ | Enum Value 向量                       |
+| `type`               | `INT` |  | 固定为2                                |
+| `propertyId`         | `VARCHAR(512 CHAR)` | ✔ | 引用该 Enum 的 Property.id              |
+| `objectTypeId`       | `VARCHAR(256 CHAR)` |  | Property 所属 ObjectType.id           |
+| `value`              | `VARCHAR(4096 CHAR)` |  | 真实枚举值                               |
 | `name`               | `VARCHAR(4096 CHAR)` |  | OMS 静态构建时可保存 `values[].name`；动态导入可为空 |
-| `display_zh`         | `VARCHAR(512 CHAR)` |  | 中文 display |
-| `display_en`         | `VARCHAR(512 CHAR)` |  | 英文 display |
-| `display_lang_1`     | `VARCHAR(512 CHAR)` |  | 额外语言 1 display |
-| `display_lang_2`     | `VARCHAR(512 CHAR)` |  | 额外语言 2 display |
-| `description_zh`     | `TEXT` |  | 中文 description |
-| `description_en`     | `TEXT` |  | 英文 description |
-| `description_lang_1` | `TEXT` |  | 额外语言 1 description |
-| `description_lang_2` | `TEXT` |  | 额外语言 2 description |
-| `synonyms`           | `TEXT` |  | LF 分隔的 Enum Value 同义词平铺字符串 |
+| `display_zh`         | `VARCHAR(512 CHAR)` |  | 中文 display                          |
+| `display_en`         | `VARCHAR(512 CHAR)` |  | 英文 display                          |
+| `display_lang_1`     | `VARCHAR(512 CHAR)` |  | 额外语言 1 display                      |
+| `display_lang_2`     | `VARCHAR(512 CHAR)` |  | 额外语言 2 display                      |
+| `description_zh`     | `TEXT` |  | 中文 description                      |
+| `description_en`     | `TEXT` |  | 英文 description                      |
+| `description_lang_1` | `TEXT` |  | 额外语言 1 description                  |
+| `description_lang_2` | `TEXT` |  | 额外语言 2 description                  |
+| `synonyms`           | `TEXT` |  | LF 分隔的 Enum Value 同义词平铺字符串          |
 
 如果一个 EnumType 被多个 Property 复用，需要按实际引用 Property 展开记录。Evidence 不重新引入 `id/parent_id`；业务定位和数据库唯一性统一使用：
 
@@ -852,13 +853,13 @@ Value First
 t_instance_evidence_{ontology_id}
 ```
 
-| 字段 | 类型 | 非空 | 说明 |
-|---|---|--|---|
-| `vector` | `DOUBLE[]` | ✔ | Instance Value 向量 |
-| `type` | `INT` |  | 固定表示 INSTANCE_VALUE |
-| `propertyid` | `VARCHAR(512 CHAR)` | ✔ | 所属 Property.id |
+| 字段 | 类型 | 非空 | 说明                        |
+|---|---|--|---------------------------|
+| `vector` | `DOUBLE[]` | ✔ | Instance Value 向量         |
+| `type` | `INT` |  | 固定为 3                     |
+| `propertyid` | `VARCHAR(512 CHAR)` | ✔ | 所属 Property.id            |
 | `objectTypeId` | `VARCHAR(256 CHAR)` |  | Property 所属 ObjectType.id |
-| `value` | `VARCHAR(4096 CHAR)` | ✔ | 去重后的真实列值 |
+| `value` | `VARCHAR(4096 CHAR)` | ✔ | 去重后的真实列值                  |
 
 
 
@@ -1980,7 +1981,6 @@ propertyid,objectTypeId,value,language,op
 | `propertyid` | `propertyid` | 所属 Property.id |
 | `objectTypeId` | `objectTypeId` | 所属 ObjectType.id |
 | `value` | `value` | 真实 Instance Value |
-| `language` | `language` | 可选；未知使用 `und` |
 | `op` | 导入操作 | `UPSERT` / `DELETE` |
 
 ```csv
