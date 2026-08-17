@@ -88,7 +88,7 @@ jobs:
           print('V5.11 contract validation passed')
           PY
           cd target
-          changed="$(git diff --name-only)"
+          changed="$(git -c core.quotePath=false diff --name-only)"
           printf 'changed files:\n%s\n' "$changed"
           test "$changed" = 'docs/OAG本体锚点语义检索与向量索引设计方案.md'
 
