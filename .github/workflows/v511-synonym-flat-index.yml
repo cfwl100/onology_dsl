@@ -54,6 +54,17 @@ jobs:
       - name: Patch latest main document
         shell: bash
         run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('source/.automation/v511/patch.py')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace(
+              '不再使用 `synonyms.*.keyword` 或语言 dynamic object。',
+              '不再使用按语言展开的 keyword 子字段或语言 dynamic object。'
+          )
+          s = s.replace("    'synonyms.*.keyword',\n", '')
+          p.write_text(s, encoding='utf-8')
+          PY
           python3 source/.automation/v511/patch.py \
             'target/docs/OAG本体锚点语义检索与向量索引设计方案.md'
 
