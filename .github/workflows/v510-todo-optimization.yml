@@ -1,0 +1,61 @@
+name: V5.10 TODO optimization
+
+on:
+  push:
+    branches:
+      - agent/v510-todo-optimization
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v510-todo-optimization
+          path: source
+
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: target
+          fetch-depth: 0
+
+      - name: Patch and validate latest main document
+        shell: bash
+        run: |
+          python3 source/.automation/v510/patch.py \
+            'target/docs/OAG本体锚点语义检索与向量索引设计方案.md' \
+            'source/.automation/v510/task_api.md'
+
+      - name: Verify chapter TODOs and diff scope
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('target/docs/OAG本体锚点语义检索与向量索引设计方案.md')
+          t = p.read_text(encoding='utf-8')
+          ch = t.split('# 3. 索引构建与 DataSync Bulk Import', 1)[1].split('# 4. Query Understanding 与 6 路召回', 1)[0]
+          assert 'TODO' not in ch
+          assert 'batch-query' in ch and 'batch-retry' in ch and 'batch-cancel' in ch
+          assert 'INSERT ... ON DUPLICATE KEY UPDATE' in ch
+          assert 'synonyms' in ch and 'Map[String, Array[String]]' not in ch
+          print('chapter 3 validation passed')
+          PY
+          cd target
+          changed="$(git diff --name-only)"
+          test "$changed" = 'docs/OAG本体锚点语义检索与向量索引设计方案.md'
+
+      - name: Commit and push main
+        shell: bash
+        run: |
+          cd target
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 'docs/OAG本体锚点语义检索与向量索引设计方案.md'
+          git commit -m '实现第3章TODO并优化索引任务批量接口'
+          git push origin HEAD:main
