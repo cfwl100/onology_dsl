@@ -2050,13 +2050,31 @@ POST
 | `tasks` | Array[IndexTaskResponse] | 已找到任务的状态、进度和错误摘要 |
 | `notFoundTaskIds` | Array[String] | 不存在或不属于当前 tenant/ontology 的 taskId |
 
-`IndexTaskResponse` 保持原任务字段，并新增：
+`IndexTaskResponse` 保持原任务字段
 
-```text
-retryable = true / false
-```
+| 参数名称 | 类型 | 说明 |
+|:--|:--|:--|
+| `tenantId` | String | 租户 ID |
+| `ontologyId` | String | 本体 ID |
+| `taskId` | String | 任务 ID |
+| `requestId` | String | 调用幂等键 |
+| `dataType` | String | `SEED_NODE / METADATA_ENUM / INSTANCE_VALUE` |
+| `sourceType` | String | `OMS / REST / MINIO` |
+| `importMode` | String | `FULL_REPLACE / INCREMENTAL`；OMS 内部任务可为空 |
+| `status` | Integer | 0 构建中；1 成功；2 失败；3 已取消 |
+| `stage` | String | 当前执行阶段 |
+| `totalCount` | Integer(int64) | 总记录数；未知时可为空 |
+| `successCount` | Integer(int64) | 成功处理数 |
+| `failedCount` | Integer(int64) | 失败记录数 |
+| `skippedCount` | Integer(int64) | 去重/过滤记录数 |
+| `retryCount` | Integer | 已执行重试次数 |
+| `errorCode` | String | 任务最后错误码；非失败状态可为空 |
+| `errorMessage` | String | 最后错误摘要；非失败状态可为空 |
+| `createTime` | String(date-time) | 创建时间 |
+| `startTime` | String(date-time) | 实际开始时间 |
+| `updateTime` | String(date-time) | 最近更新时间 |
+| `completionTime` | String(date-time) | 完成时间；未结束可为空 |
 
-其值由 `ERROR_CODE` 的重试策略计算；非失败任务默认为 `false`。
 
 ##### 响应示例
 
