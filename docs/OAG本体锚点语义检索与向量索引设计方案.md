@@ -1,7 +1,7 @@
 # OAG 面向本体种子节点的语义检索、混合排序与本体子图构建设计方案
 
-> 版本：V5.13  
-> 目标：在不丢失既有 Bulk Import、混合召回、RRF、LLM 精排和子图算法设计的基础上，进一步对齐现有 OMS 本体 JSON 资产，并补齐手动构建、OAC 数据抽取、MinIO 文件通知的对外接口及全量/增量组合：统一三张索引表命名，种子节点和枚举值直接内嵌 `synonyms`，固定支持中文/英文并额外支持最多 2 种语言，实例索引只保存去重后的真实列值。  
+> 版本：V5.14  
+> 目标：在不丢失既有 Bulk Import、混合召回、RRF、LLM 精排和子图算法设计的基础上，进一步对齐现有 OMS 本体 JSON 资产，补齐手动构建、OAC 数据抽取、MinIO 文件通知的对外接口及全量/增量组合，并规范阶段 2 Entity Linking 的 ObjectType 作用域内 Property 匹配与 RRF 粗排输出：统一三张索引表命名，种子节点和枚举值直接内嵌 `synonyms`，固定支持中文/英文并额外支持最多 2 种语言，实例索引只保存去重后的真实列值。  
 > 核心决策：**ObjectType/Property = 种子节点；SynonymType 在 OMS 中保留多语言源结构，OAG 物理索引中的 `synonyms` 统一为 LF 分隔的平铺字符串且不建立独立物理行；Metadata Evidence 只承载 Enum Value；Instance Evidence 只承载真实 Instance Value；种子节点使用 `id`，Enum/Instance 统一使用 `propertyid + objectTypeId` 表达本体归属；每个 Semantic Unit 默认 6 路一次 Weighted RRF。**
 
 ---
@@ -281,14 +281,15 @@ value
 
 ### 设计原则 4：RRF 按种子节点分组，组内保留具体命中
 
-RRF 公平性单位仍然是种子节点：
+RRF 公平性单位仍然是带 ObjectType 作用域的种子节点：
 
 ```text
-种子节点 hit：group_id = hit.id
-Enum Value / Instance Value hit：group_id = hit.propertyid
+ObjectType hit：group_id = "OT:" + hit.id
+Property hit：group_id = "PROP:" + hit.parent_id + ":" + hit.id
+Enum Value / Instance Value hit：group_id = "PROP:" + hit.objectTypeId + ":" + hit.propertyid
 ```
 
-这样一个 Property 即使有大量枚举值、实例值或同义词，也不会因为记录/字段数量多而重复加分。
+`parent_id/objectTypeId` 把 Property 约束在所属 ObjectType 下。这样一个 Property 即使有大量枚举值、实例值或同义词，也不会因为记录/字段数量多而重复加分；不同 ObjectType 下的 Property 候选也不会进入同一个 RRF Group。
 
 ### 设计原则 5：Core Graph 与检索字段分离
 
@@ -3799,9 +3800,10 @@ RRF 前，OAG 将三张表的查询结果统一成 SearchHit，不向上层直�
 统一分组规则：
 
 ```text
-种子节点 hit：group_id = hit.id
-Enum Value hit：group_id = hit.propertyid
-Instance Value hit：group_id = hit.propertyid
+ObjectType hit：group_id = "OT:" + hit.id
+Property hit：group_id = "PROP:" + hit.parent_id + ":" + hit.id
+Enum Value hit：group_id = "PROP:" + hit.objectTypeId + ":" + hit.propertyid
+Instance Value hit：group_id = "PROP:" + hit.objectTypeId + ":" + hit.propertyid
 ```
 
 `matched_field/matched_value` 是最终解释“用户到底命中了 name/display/description/synonyms/value 哪一项”的关键字段，不能在 RRF 前丢失。
@@ -3812,7 +3814,7 @@ Instance Value hit：group_id = hit.propertyid
 同一 Property 可能通过多个 Enum Value、Instance Value 或 `synonyms` 字段命中。RRF 前按：
 
 ```text
-semantic_unit_id + channel + group_id
+semantic_unit_id + target_object_type_id + channel + group_id
 ```
 
 去重，使同一种子节点在单通道只占一个排名位置。
@@ -3887,33 +3889,135 @@ Exact/BM25 → 高权重 RRF → LLM 结合原始问题消歧
 只有种子节点全局唯一 `id` 的直接查询才可以绕过语义消歧；Enum/Instance 仍按 `objectTypeId + propertyid + value` 判断具体记录。
 
 
-## 4.13 RRF 粗排输出
+## 4.13 RRF 粗排输出：Entity Linking 结果
+
+阶段 2 的目标是完成实体映射与消歧（Entity Linking）：使用 Exact/BM25、Embedding 召回和 Weighted RRF，将实体提取阶段得到的 `ObjectType / Property` 文本对齐到 NebulaGraph 中真实存在的 ObjectType、Property 节点。
+
+> 当前阶段只处理 ObjectType、Property。Relationship、RelationshipProperty 不在本阶段实体链接范围内。
+
+### 4.13.1 Property 必须在候选 ObjectType 范围内检索
+
+实体提取结果中的 ObjectType 与 Property 具有明确从属关系。因此链接顺序固定为：
+
+```text
+sourceObjectType
+  → 召回并粗排 targetObjectTypes[]
+  → 对每一个 targetObjectType.id 分别检索其所属 Property
+  → 生成该 targetObjectType 自己的 propertyLinks[]
+```
+
+Property 检索必须同时施加 ObjectType 归属过滤：
+
+```text
+GaussVector:
+  type = PROPERTY
+  AND parent_id = targetObjectType.id
+
+OpenSearch:
+  type.keyword = PROPERTY
+  AND parent_id.keyword = targetObjectType.id
+
+Nebula / GraphTopologyCache:
+  Property 必须存在属于该 ObjectType 的 has_property 映射
+```
+
+禁止先在全本体范围检索 Property，再把结果无条件挂到所有 ObjectType 候选下。相同的 `sourceProperty` 在不同 `targetObjectType` 下允许产生不同的 `targetProperties` 候选集合和分数。
+
+如果一个 `sourceObjectType` 有多个 ObjectType 候选，`propertyLinks` 必须放在每个 `targetObjectTypes[]` 元素内部，不能放在 `sourceObjectType` 层级。否则无法表达 Property 是在哪个候选 ObjectType 范围内完成匹配的。
+
+### 4.13.2 输出结构
+
+```text
+seedNodes[]
+  ├─ sourceObjectType
+  └─ targetObjectTypes[]
+       ├─ name / id / score
+       └─ propertyLinks[]
+            ├─ sourceProperty
+            └─ targetProperties[]
+                 └─ name / id / score
+```
+
+字段定义：
+
+| 字段 | 类型 | 必选 | 说明 |
+|---|---|---|---|
+| `seedNodes` | Array | 是 | 按实体提取结果中的 ObjectType 分组的实体链接候选 |
+| `sourceObjectType` | String | 是 | 实体提取阶段得到的原始 ObjectType 文本 |
+| `targetObjectTypes` | Array | 是 | RRF 粗排后的 Nebula ObjectType 候选，按 `score` 降序排列；允许为空 |
+| `targetObjectTypes[].name` | String | 是 | 本体中的 ObjectType 名称 |
+| `targetObjectTypes[].id` | String | 是 | 本体中的 ObjectType ID |
+| `targetObjectTypes[].score` | Number | 是 | 归一化后的实体链接粗排分数，范围 `[0,1]`；不是单路向量 cosine，也不是 OpenSearch `_score` |
+| `propertyLinks` | Array | 是 | 在当前 `targetObjectType.id` 范围内生成的 Property 链接结果；没有源 Property 时返回空数组 |
+| `sourceProperty` | String | 是 | 从属于 `sourceObjectType` 的原始 Property 文本 |
+| `targetProperties` | Array | 是 | 只包含归属于当前候选 ObjectType 的 Property，按 `score` 降序排列；允许为空 |
+| `targetProperties[].name` | String | 是 | 本体中的 Property 名称 |
+| `targetProperties[].id` | String | 是 | 本体中的 Property ID |
+| `targetProperties[].score` | Number | 是 | 当前 ObjectType 作用域内归一化后的 Property 粗排分数，范围 `[0,1]` |
+
+`score` 是对 RRF 粗排结果进行单调归一化后的对外比较分数。同一候选的原始 `rrfScore / channelHits / supportingHits / matchedField / matchedValue` 仍在 OAG 内部 Rerank Context 中保留，供第 5 章 LLM 精排、解释和问题定位使用，但默认不展开到本阶段业务输出中。
+
+本阶段的 `seedNodes` 表示“实体链接候选集合”；第 5、6 章最终响应中的 `seedNodes` 是经过 LLM 精排和 SeedNodeProjector 投影后的图构建种子，两者处于不同生命周期，不能直接等同。
+
+### 4.13.3 示例1：单个 ObjectType
+
+实体提取输入：
 
 ```json
 {
-  "semantic_unit_id": "u4",
-  "text": "红色车辆",
-  "groups": [
+  "extractedEntities": [
     {
-      "seedNode": {
-        "id": "prop:ont:vehicle:sp:bodyColor",
-        "type": "PROPERTY",
-        "name": "bodyColor"
-      },
-      "rrf_score": 0.071,
-      "channel_hits": [
-        {"channel": "metadataLexical", "rank": 1},
-        {"channel": "metadataDense", "rank": 2}
-      ],
-      "supporting_hits": [
+      "objectType": "WhatsApp应用",
+      "properties": ["体验质量", "时间"]
+    }
+  ]
+}
+```
+
+RRF 粗排输出：
+
+```json
+{
+  "seedNodes": [
+    {
+      "sourceObjectType": "WhatsApp应用",
+      "targetObjectTypes": [
         {
-          "propertyId": "prop:ont:vehicle:sp:bodyColor",
-          "objectTypeId": "vehicle-object-id",
-          "type": "ENUM_VALUE",
-          "value": "red",
-          "name": "red",
-          "matched_field": "synonyms",
-          "matched_value": "红色"
+          "name": "WhatsAPP应用",
+          "id": "xx",
+          "score": 0.996,
+          "propertyLinks": [
+            {
+              "sourceProperty": "体验质量",
+              "targetProperties": [
+                {
+                  "name": "call_reconnect",
+                  "id": "xx",
+                  "score": 0.931
+                },
+                {
+                  "name": "poor_cnt",
+                  "id": "xx",
+                  "score": 0.921
+                },
+                {
+                  "name": "call_drop",
+                  "id": "xx",
+                  "score": 0.9111
+                }
+              ]
+            },
+            {
+              "sourceProperty": "时间",
+              "targetProperties": [
+                {
+                  "name": "occurrenceTime",
+                  "id": "xx",
+                  "score": 0.655
+                }
+              ]
+            }
+          ]
         }
       ]
     }
@@ -3921,28 +4025,211 @@ Exact/BM25 → 高权重 RRF → LLM 结合原始问题消歧
 }
 ```
 
-LLM 面对的是“种子节点分组 + 具体命中记录/字段”，而不是只看到 Property。
+这里 `体验质量` 和 `时间` 的 Property 候选只从 `WhatsAPP应用(id=xx)` 所属 Property 中产生。
 
+### 4.13.4 示例2：多个 ObjectType，且一个源对象存在多个候选
+
+```json
+{
+  "seedNodes": [
+    {
+      "sourceObjectType": "WhatsApp应用",
+      "targetObjectTypes": [
+        {
+          "name": "WhatsAPP应用",
+          "id": "xx",
+          "score": 0.996,
+          "propertyLinks": [
+            {
+              "sourceProperty": "数据包下行丢包率",
+              "targetProperties": [
+                {
+                  "name": "packet_loss_rate_downlink",
+                  "id": "xx",
+                  "score": 0.912
+                },
+                {
+                  "name": "dl_packet_loss_rate",
+                  "id": "xx",
+                  "score": 0.887
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "sourceObjectType": "4G小区",
+      "targetObjectTypes": [
+        {
+          "name": "4G小区",
+          "id": "xx",
+          "score": 0.995,
+          "propertyLinks": [
+            {
+              "sourceProperty": "上行PRB平均利用率",
+              "targetProperties": [
+                {
+                  "name": "avg_ul_prb_utilization",
+                  "id": "xx",
+                  "score": 0.934
+                },
+                {
+                  "name": "uplink_prb_avg_usage",
+                  "id": "xx",
+                  "score": 0.901
+                }
+              ]
+            },
+            {
+              "sourceProperty": "下行PRB平均利用率",
+              "targetProperties": [
+                {
+                  "name": "avg_dl_prb_utilization",
+                  "id": "xx",
+                  "score": 0.936
+                },
+                {
+                  "name": "downlink_prb_avg_usage",
+                  "id": "xx",
+                  "score": 0.903
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "无线小区",
+          "id": "xx",
+          "score": 0.963,
+          "propertyLinks": [
+            {
+              "sourceProperty": "上行PRB平均利用率",
+              "targetProperties": [
+                {
+                  "name": "ul_prb_utilization",
+                  "id": "xx",
+                  "score": 0.921
+                },
+                {
+                  "name": "uplink_prb_avg_usage",
+                  "id": "xx",
+                  "score": 0.895
+                }
+              ]
+            },
+            {
+              "sourceProperty": "下行PRB平均利用率",
+              "targetProperties": [
+                {
+                  "name": "dl_prb_utilization",
+                  "id": "xx",
+                  "score": 0.925
+                },
+                {
+                  "name": "downlink_prb_avg_usage",
+                  "id": "xx",
+                  "score": 0.898
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "sourceObjectType": "栅格",
+      "targetObjectTypes": [
+        {
+          "name": "栅格",
+          "id": "xx",
+          "score": 0.997,
+          "propertyLinks": [
+            {
+              "sourceProperty": "栅格中心经纬度",
+              "targetProperties": [
+                {
+                  "name": "centerLongitudeLatitude",
+                  "id": "xx",
+                  "score": 0.936
+                },
+                {
+                  "name": "grid_center_location",
+                  "id": "xx",
+                  "score": 0.882
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "sourceObjectType": "用户",
+      "targetObjectTypes": [
+        {
+          "name": "用户",
+          "id": "xx",
+          "score": 0.998,
+          "propertyLinks": [
+            {
+              "sourceProperty": "msisdn",
+              "targetProperties": [
+                {
+                  "name": "msisdn",
+                  "id": "xx",
+                  "score": 0.999
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+`4G小区` 同时链接到 `4G小区` 和 `无线小区` 两个候选时，两者的 `propertyLinks` 分别在各自 ObjectType 归属范围内检索和排序，不能复用同一个全局 Property 候选列表。
+
+### 4.13.5 排序、裁剪与异常规则
+
+1. `targetObjectTypes` 按 ObjectType 的归一化 RRF 粗排分数降序排列。
+2. 每个 `targetProperties` 只在对应 `targetObjectType.id` 范围内排序和裁剪。
+3. ObjectType 默认保留 Top 3；每个 `sourceProperty` 默认保留 Top 3 Property，具体值由检索 Profile 配置。
+4. ObjectType 低于阈值时可以返回空 `targetObjectTypes`，不得为保证非空而制造链接结果。
+5. ObjectType 有候选但某个 Property 没有合格候选时，该 `sourceProperty` 仍保留，`targetProperties` 返回空数组，供 LLM 或上层识别未解析项。
+6. 同一 `targetObjectType.id` 或 Property `id` 在同一层级内必须去重，只保留分数最高且证据最完整的候选。
+7. `id/name` 必须来自本体或检索候选，LLM 不得生成新的 ObjectType、Property ID。
+
+LLM 面对的是“源实体 → ObjectType 候选 → 该候选范围内的 Property 候选 + 内部 RRF 证据”，而不是只看到脱离 ObjectType 归属的全局 Property 列表。
 
 ## 4.14 RRF 与 LLM 的分组层级
 
-每个 Semantic Unit 独立执行：
+ObjectType 与 Property 仍以 Semantic Unit 为召回和 RRF 计算单元，但 Property 必须在 ObjectType 候选确定后按候选作用域执行：
 
 ```text
-6 路 Raw Hits
-  ↓
-按 group_id 去重
-  ↓
-保留 supporting_hits
-  ↓
-一次 Weighted RRF
-  ↓
-Top 种子节点分组
+ObjectType Semantic Unit
+  → 6 路 Raw Hits
+  → 按 OT:{objectTypeId} 去重并执行 Weighted RRF
+  → targetObjectTypes[]
+
+每个 targetObjectType.id + 其 sourceProperty
+  → 带 parent_id/objectTypeId Filter 的 Property 召回
+  → 按 PROP:{objectTypeId}:{propertyId} 去重并执行 Weighted RRF
+  → 当前 ObjectType 下的 targetProperties[]
+
+两级候选组装
+  → seedNodes[].targetObjectTypes[].propertyLinks[]
+  → RerankContextBuilder 携带 supporting_hits 进入 LLM
 ```
+
+这里的“两级候选组装”不是两级 RRF 融合：ObjectType 和 Property 分别在自己的语义单元及作用域内执行一次 Weighted RRF，不会再对两者的 RRF 排名做第二次融合。
 
 不要直接按 synonyms 数量计分；Synonym 是记录字段，不形成额外 RRF 行。
 
-推荐裁剪：RRF Top 10~20 分组 / Unit，每组 3~5 supporting hits，全局 30~50 分组，LLM 每个 Unit 选择 0~5 个最终结果。
+推荐裁剪：每个源 ObjectType 保留 Top 3 ObjectType 候选；每个候选 ObjectType 下，每个源 Property 保留 Top 3 Property 候选；内部每组保留 3~5 个 supporting hits，全局候选数量继续受 `maxGlobalCandidates` 控制，LLM 每个 Unit 允许选择 0~5 个最终结果。
 
 
 # 5. LLM 精排与最终检索结果
@@ -3989,6 +4276,8 @@ LLM 不创造新的 `id/value/synonyms`，只能从候选中选择。
 
 
 ## 5.3 Rerank Context
+
+`RerankContextBuilder` 将 4.13 的嵌套 Entity Linking 结果与内部保留的 `rrfScore/channelHits/supportingHits` 合并为 LLM 输入。每个 Property Group 必须携带已经确定的 `objectType`，不得在此阶段丢失 ObjectType 作用域。以下 `groups` 是内部精排视图，不替代 4.13 对外输出的 `seedNodes[].targetObjectTypes[].propertyLinks[]`。
 
 ```json
 {
@@ -5628,7 +5917,7 @@ SeedNodeProjector
 14. **Property 种子节点 → ObjectType 使用 GraphTopologyCache/has_property；Enum/Instance 记录直接保存 `objectTypeId`。**
 15. **每个 Semantic Unit 默认形成 6 条 Ranked List：三类数据 × Lexical/Dense。**
 16. **默认采用 6 路一次 Weighted RRF，不采用两级 RRF；Exact/BM25 独立后可扩为 9 路。**
-17. **RRF 每通道先按种子节点 group_id 去重。**
+17. **RRF 每通道先按带 ObjectType 作用域的 group_id 去重：ObjectType 使用 `OT:{objectTypeId}`，Property/Enum/Instance 使用 `PROP:{objectTypeId}:{propertyId}`。**
 18. **SearchHit 必须保留 `matched_field/matched_value`，用于解释 synonym/display/value 等具体命中。**
 19. **LLM 使用原始问题 + 种子节点分组 + supporting hits + Graph Hint 精排，允许 0/1/N。**
 20. **SeedNodeProjector 只处理 ObjectType/Property/Enum Value/Instance Value 四类记录。**
