@@ -243,13 +243,13 @@ minimal / khop / component
 ### 设计原则 1：三张表分别表达三类稳定实体
 
 ```text
-t_ontoretrieval_{ontology_id}
+t_oag_{ontology_id}
   → ObjectType / Property
 
-t_metadata_evidence_{ontology_id}
+t_oag_enum_{ontology_id}
   → Enum Value
 
-t_instance_evidence_{ontology_id}
+t_oag_instance_{ontology_id}
   → Instance Value
 ```
 
@@ -409,9 +409,9 @@ SynonymType 自身不建立独立向量记录。其 `name/display/description` �
 
 | 逻辑类型 | 物理表 / Index | Owner | 数据 |
 |---|---|---|---|
-| 种子节点 | `t_ontoretrieval_{ontology_id}` | OAG | ObjectType / Property |
-| 元数据元素 | `t_metadata_evidence_{ontology_id}` | OAG | Enum Value + Synonyms |
-| 实例元素 | `t_instance_evidence_{ontology_id}` | OAG，DataSync 提供数据 | Instance Value |
+| 种子节点 | `t_oag_{ontology_id}` | OAG | ObjectType / Property |
+| 元数据元素 | `t_oag_enum_{ontology_id}` | OAG | Enum Value + Synonyms |
+| 实例元素 | `t_oag_instance_{ontology_id}` | OAG，DataSync 提供数据 | Instance Value |
 
 三类数据继续物理隔离，原因不变：
 
@@ -424,7 +424,7 @@ ANN 算法差异
 ```
 
 
-## 2.3 `t_ontoretrieval_{ontology_id}` GaussVector 表结构
+## 2.3 `t_oag_{ontology_id}` GaussVector 表结构
 
 种子节点表保留两个额外语言槽位，并增加平铺 `synonyms`。中文和英文仍保留固定列，另外最多支持 2 种 display/description 语言：
 
@@ -553,7 +553,7 @@ Property Dense 向量默认不增加 ObjectType 名称前缀。原因：
 如果评测显示同名 Property 冲突严重，可以启用内部 Shadow Vector，但最终仍回到同一 Property `id`。
 
 
-## 2.7 `t_ontoretrieval_{ontology_id}` OpenSearch Index
+## 2.7 `t_oag_{ontology_id}` OpenSearch Index
 
 OpenSearch 与 GaussVector 共享同一业务字段语义：
 
@@ -643,9 +643,9 @@ Exact 命中可以直接定位匹配行；BM25 命中由 `SynonymMatchResolver` 
 
 不再使用扁平 `i18n_content`，也不再建立 `synonyms.*` dynamic template。
 
-## 2.8 `t_metadata_evidence_{ontology_id}`：Enum Value 模型与表结构
+## 2.8 `t_oag_enum_{ontology_id}`：Enum Value 模型与表结构
 
-Metadata Evidence 只承载本体模型中定义的枚举值。
+t_oag_enum 只承载本体模型中定义的枚举值。
 
 ### 2.8.1 EnumType 源结构
 
@@ -668,31 +668,22 @@ Metadata Evidence 只承载本体模型中定义的枚举值。
   "values": [
     {
       "id": "ei.veh12.enum.Col35.val.red8.1",
-      "name": "red",
-      "display": {
-        "en": "Red",
-        "zh": "红色"
-      },
+      "code": "0",
+      "value": "red",
       "description": {
         "en": "Red color",
         "zh": "红色"
       },
-      "value": "red",
       "order": 1,
       "refSynonymTypeId": "term-color-red-synonyms"
     },
     {
       "id": "ei.veh12.enum.Col35.val.blue9.1",
-      "name": "blue",
-      "display": {
-        "en": "Blue",
-        "zh": "蓝色"
-      },
+      "value": "blue",
       "description": {
         "en": "Blue color",
         "zh": "蓝色"
       },
-      "value": "blue",
       "order": 2,
       "refSynonymTypeId": "term-color-blue-synonyms"
     }
@@ -701,7 +692,7 @@ Metadata Evidence 只承载本体模型中定义的枚举值。
 }
 ```
 
-真正进入 `t_metadata_evidence_{ontology_id}` 的粒度是 `values[]` 中的每个枚举值。
+真正进入 `t_oag_enum_{ontology_id}` 的粒度是 `values[]` 中的每个枚举值。
 
 ### 2.8.2 SynonymType 源结构与索引转换
 
@@ -737,7 +728,7 @@ Red
 Rojo
 ```
 
-最终 `t_metadata_evidence_{ontology_id}.synonyms` 保存：
+最终 `t_oag_enum_{ontology_id}.synonyms` 保存：
 
 ```text
 红\n赤色\nRed\nRojo
@@ -780,29 +771,29 @@ Property.referenceEnumId
 
 展开索引。
 
-### 2.8.4 GaussVector 表结构
+### 2.8.4 向量库 表结构
 
 ```text
-t_metadata_evidence_{ontology_id}
+t_oag_enum_{ontology_id}
 ```
 
-| 字段                   | 类型 | 非空 | 说明                                  |
-|----------------------|---|--|-------------------------------------|
-| `vector`             | `DOUBLE[]` | ✔ | Enum Value 向量                       |
-| `type`               | `INT` |  | 固定为2                                |
-| `propertyId`         | `VARCHAR(512 CHAR)` | ✔ | 引用该 Enum 的 Property.id              |
-| `objectTypeId`       | `VARCHAR(256 CHAR)` |  | Property 所属 ObjectType.id           |
-| `value`              | `VARCHAR(4096 CHAR)` |  | 真实枚举值                               |
-| `name`               | `VARCHAR(4096 CHAR)` |  | OMS 静态构建时可保存 `values[].name`；动态导入可为空 |
-| `display_zh`         | `VARCHAR(512 CHAR)` |  | 中文 display                          |
-| `display_en`         | `VARCHAR(512 CHAR)` |  | 英文 display                          |
-| `display_lang_1`     | `VARCHAR(512 CHAR)` |  | 额外语言 1 display                      |
-| `display_lang_2`     | `VARCHAR(512 CHAR)` |  | 额外语言 2 display                      |
-| `description_zh`     | `TEXT` |  | 中文 description                      |
-| `description_en`     | `TEXT` |  | 英文 description                      |
-| `description_lang_1` | `TEXT` |  | 额外语言 1 description                  |
-| `description_lang_2` | `TEXT` |  | 额外语言 2 description                  |
-| `synonyms`           | `TEXT` |  | LF 分隔的 Enum Value 同义词平铺字符串          |
+| 字段                   | 类型                   | 非空  | 说明                                   |
+| -------------------- | -------------------- | --- | ------------------------------------ |
+| `vector`             | `DOUBLE[]`           | ✔   | Enum Value 向量                        |
+| `type`               | `INT`                |     | 固定为2                                 |
+| `propertyId`         | `VARCHAR(512 CHAR)`  | ✔   | 引用该 Enum 的 Property.id               |
+| `objectTypeId`       | `VARCHAR(256 CHAR)`  |     | Property 所属 ObjectType.id            |
+| `value`              | `VARCHAR(4096 CHAR)` |     | 真实枚举值                                |
+| `name`               | `VARCHAR(4096 CHAR)` |     | OMS 静态构建时可保存 `values[].name`；动态导入可为空 |
+| `display_zh`         | `VARCHAR(512 CHAR)`  |     | 中文 display                           |
+| `display_en`         | `VARCHAR(512 CHAR)`  |     | 英文 display                           |
+| `display_lang_1`     | `VARCHAR(512 CHAR)`  |     | 额外语言 1 display                       |
+| `display_lang_2`     | `VARCHAR(512 CHAR)`  |     | 额外语言 2 display                       |
+| `description_zh`     | `TEXT`               |     | 中文 description                       |
+| `description_en`     | `TEXT`               |     | 英文 description                       |
+| `description_lang_1` | `TEXT`               |     | 额外语言 1 description                   |
+| `description_lang_2` | `TEXT`               |     | 额外语言 2 description                   |
+| `synonyms`           | `TEXT`               |     | LF 分隔的 Enum Value 同义词平铺字符串           |
 
 如果一个 EnumType 被多个 Property 复用，需要按实际引用 Property 展开记录。Evidence 不重新引入 `id/parent_id`；业务定位和数据库唯一性统一使用：
 
@@ -810,7 +801,7 @@ t_metadata_evidence_{ontology_id}
 objectTypeId + propertyId + normalized(value)
 ```
 
-`values[].id` 仍可用于 OMS 源数据追踪和质量校验，但不作为 `t_metadata_evidence_{ontology_id}` 的持久化字段。
+`values[].id` 仍可用于 OMS 源数据追踪和质量校验，但不作为 `t_oag_enum_{ontology_id}` 的持久化字段。
 
 ## 2.9 Enum Value 向量化规则
 
@@ -845,23 +836,27 @@ Value First
 
 不在向量文本开头追加 ObjectType / Property 文本；`propertyId + objectTypeId` 已提供确定性归属。
 
-## 2.10 `t_instance_evidence_{ontology_id}` 实例列值表结构
+## 2.10 `t_oag_instance_{ontology_id}` 实例列值表结构
 
 实例索引保存去重后的真实列值，每条记录直接携带所属 Property 和 ObjectType。
 
 ```text
-t_instance_evidence_{ontology_id}
+t_oag_instance_{ontology_id}
 ```
 
-| 字段 | 类型 | 非空 | 说明                        |
-|---|---|--|---------------------------|
-| `vector` | `DOUBLE[]` | ✔ | Instance Value 向量         |
-| `type` | `INT` |  | 固定为 3                     |
-| `propertyid` | `VARCHAR(512 CHAR)` | ✔ | 所属 Property.id            |
-| `objectTypeId` | `VARCHAR(256 CHAR)` |  | Property 所属 ObjectType.id |
-| `value` | `VARCHAR(4096 CHAR)` | ✔ | 去重后的真实列值                  |
+| 字段             | 类型                   | 非空  | 说明                        |
+| -------------- | -------------------- | --- | ------------------------- |
+| `vector`       | `DOUBLE[]`           | ✔   | Instance Value 向量         |
+| `propertyid`   | `VARCHAR(512 CHAR)`  | ✔   | 所属 Property.id            |
+| `objectTypeId` | `VARCHAR(256 CHAR)`  |     | Property 所属 ObjectType.id |
+| `value`        | `VARCHAR(4096 CHAR)` | ✔   | 去重后的真实列值                  |
 
-
+不同列做语义放在一个表里面？
+分表策略：水平拆分，达到一个上限后分表
+候选方案：
+1、水平拆
+2、按照对象分表
+3、不拆，规格约束
 
 ## 2.11 Instance Value 向量准入规则
 
@@ -875,7 +870,7 @@ instance_index_enabled =
   AND cardinality_eligible
 ```
 
-向量库最终必须保证实例值记录不重复。DataSync 可以在源侧先做去重，OAG 在写入 `t_instance_evidence_{ontology_id}` 前仍必须按 `objectTypeId + propertyid + normalized(value)` 再次去重并使用幂等 UPSERT。例：5000 万 Subscriber 行中 `subLevel` 只有 VIP/GOLD/SILVER/NORMAL，最终向量库只保留 4 条唯一实例值记录。
+向量库最终必须保证实例值记录不重复。DataSync 可以在源侧先做去重，OAG 在写入 `t_oag_instance_{ontology_id}` 前仍必须按 `objectTypeId + propertyid + normalized(value)` 再次去重并使用幂等 UPSERT。例：5000 万 Subscriber 行中 `subLevel` 只有 VIP/GOLD/SILVER/NORMAL，最终向量库只保留 4 条唯一实例值记录。
 
 默认不向量化：
 
@@ -918,7 +913,7 @@ UUID
 
 ## 2.13 Metadata / Instance OpenSearch Index
 
-### `t_metadata_evidence_{ontology_id}`
+### `t_oag_enum_{ontology_id}`
 
 核心字段与 GaussVector 一致：
 
@@ -961,7 +956,7 @@ synonyms.bm25
 
 Metadata 的 `synonyms` 映射与 2.7 完全一致，不再使用按语言展开的 keyword 子字段或语言 dynamic object。
 
-### `t_instance_evidence_{ontology_id}`
+### `t_oag_instance_{ontology_id}`
 
 只需要：
 
@@ -970,7 +965,6 @@ type          integer
 propertyid    keyword
 objectTypeId  keyword
 value         keyword + text
-language      keyword（可选）
 ```
 
 Exact 主要搜索 `propertyid/objectTypeId/value.keyword`，BM25 搜索 `value`。
@@ -1164,9 +1158,9 @@ Metadata 与 Instance 分表的一个核心原因就是允许 ANN 算法独立�
 本章定义 OAG 索引数据的构建、动态导入、MinIO 文件交互、任务持久化和双存储发布机制。索引数据仍由第 2 章定义的三张物理表承载：
 
 ```text
-t_ontoretrieval_{ontology_id} → ObjectType / Property 种子节点
-t_metadata_evidence_{ontology_id} → Enum Value
-t_instance_evidence_{ontology_id} → Instance Value
+t_oag_{ontology_id} → ObjectType / Property 种子节点
+t_oag_enum_{ontology_id} → Enum Value
+t_oag_instance_{ontology_id} → Instance Value
 ```
 
 其中种子节点索引由 OAG 根据 OMS 本体资产构建；Enum Value 和 Instance Value 除随本体构建外，还支持运行期动态导入。动态数据导入统一为两类入口：
@@ -1187,7 +1181,7 @@ MinIO CSV 文件导入
 
 ### OMS
 
-负责提供 ObjectType / Property、多语言 display/description、SynonymType、EnumType / values[]、Property→ObjectType 和 Property→EnumType 等本体资产。OAG 根据 OMS 资产构建 `t_ontoretrieval_{ontology_id}` 和静态 Enum Value 索引。
+负责提供 ObjectType / Property、多语言 display/description、SynonymType、EnumType / values[]、Property→ObjectType 和 Property→EnumType 等本体资产。OAG 根据 OMS 资产构建 `t_oag_{ontology_id}` 和静态 Enum Value 索引。
 
 ### DataSync
 
@@ -1527,21 +1521,21 @@ OAG 不接受调用方提交 `vector`；物理 `type` 由 `dataType` 推导：`M
 
 **表 6  MetadataEnumRecord 参数列表**
 
-| 参数名称 | 类型 | 是否必选 | 默认值 | OpenAPI 约束 | 说明                                     |
-|:--|:--|:--|:--|:--|:---------------------------------------|
-| `propertyId` | String | 是 | - | `maxLength: 512` | 引用该 Enum 的 Property.id                 |
-| `objectTypeId` | String | 否 | - | `maxLength: 256` | Property 所属 ObjectType.id；如传入必须与本体映射一致 |
-| `value` | String | 是 | - | `maxLength: 4096` | 真实枚举值；用于唯一键和向量内容                       |
-| `display_zh` | String | 否 | - | `maxLength: 512` | 中文 display                             |
-| `display_en` | String | 否 | - | `maxLength: 512` | 英文 display                             |
-| `display_lang_1` | String | 否 | - | `maxLength: 512` | ontology 级额外语言槽位 1 display             |
-| `display_lang_2` | String | 否 | - | `maxLength: 512` | ontology 级额外语言槽位 2 display             |
-| `description_zh` | String | 否 | - | - | 中文 description                         |
-| `description_en` | String | 否 | - | - | 英文 description                         |
-| `description_lang_1` | String | 否 | - | - | 额外语言槽位 1 description                   |
-| `description_lang_2` | String | 否 | - | - | 额外语言槽位 2 description                   |
-| `synonyms` | String | 否 | `""` | 换行分隔文本 | 同义词平铺字符串；逻辑分隔符固定为 LF（`\n`），不再使用 JSON Map/Array 嵌套 |
-| `op` | String | 否 | `UPSERT` | `enum: [UPSERT, DELETE]` | 增量操作；`FULL_REPLACE` 默认只使用 `UPSERT`     |
+| 参数名称                 | 类型     | 是否必选 | 默认值      | OpenAPI 约束               | 说明                                                |
+| :------------------- | :----- | :--- | :------- | :----------------------- | :------------------------------------------------ |
+| `propertyId`         | String | 是    | -        | `maxLength: 512`         | 引用该 Enum 的 Property.id                            |
+| `objectTypeId`       | String | 否    | -        | `maxLength: 256`         | Property 所属 ObjectType.id；如传入必须与本体映射一致            |
+| `value`              | String | 是    | -        | `maxLength: 4096`        | 真实枚举值；用于唯一键和向量内容                                  |
+| `display_zh`         | String | 否    | -        | `maxLength: 512`         | 中文 display                                        |
+| `display_en`         | String | 否    | -        | `maxLength: 512`         | 英文 display                                        |
+| `display_lang_1`     | String | 否    | -        | `maxLength: 512`         | ontology 级额外语言槽位 1 display                        |
+| `display_lang_2`     | String | 否    | -        | `maxLength: 512`         | ontology 级额外语言槽位 2 display                        |
+| `description_zh`     | String | 否    | -        | -                        | 中文 description                                    |
+| `description_en`     | String | 否    | -        | -                        | 英文 description                                    |
+| `description_lang_1` | String | 否    | -        | -                        | 额外语言槽位 1 description                              |
+| `description_lang_2` | String | 否    | -        | -                        | 额外语言槽位 2 description                              |
+| `synonyms`           | String | 否    | `""`     | 换行分隔文本                   | 同义词平铺字符串；逻辑分隔符固定为 LF（`\n`），不再使用 JSON Map/Array 嵌套 |
+| `op`                 | String | 否    | `UPSERT` | `enum: [UPSERT, DELETE]` | 增量操作；`FULL_REPLACE` 默认只使用 `UPSERT`                |
 
 `synonyms` 在接口层直接使用平铺字符串，避免 OAG 收到请求后再次对 JSON Map/Array 做反序列化。调用方按稳定顺序展开同义词并使用换行符连接；OAG 只执行一次 `split(LF) → trim → 去空 → 去重（保持首次出现顺序）`。动态导入协议不再携带语言 Map，语言分组在上游 SynonymType 展开阶段完成。
 
@@ -1569,12 +1563,12 @@ objectTypeId + propertyId + normalized(value)
 
 **表 7  InstanceValueRecord 参数列表**
 
-| 参数名称 | 类型 | 是否必选 | 默认值 | OpenAPI 约束 | 说明 |
-|:--|:--|:--|:--|:--|:--|
-| `propertyid` | String | 是 | - | `maxLength: 512` | 所属 Property.id |
-| `objectTypeId` | String | 否 | - | `maxLength: 256` | Property 所属 ObjectType.id；如传入必须与本体映射一致 |
-| `value` | String | 是 | - | `maxLength: 4096` | 去重后的真实 Instance Value；EmbeddingInput 严格为 `{value}` |
-| `op` | String | 否 | `UPSERT` | `enum: [UPSERT, DELETE]` | 增量操作；`FULL_REPLACE` 默认只使用 `UPSERT` |
+| 参数名称           | 类型     | 是否必选 | 默认值      | OpenAPI 约束               | 说明                                                 |
+| :------------- | :----- | :--- | :------- | :----------------------- | :------------------------------------------------- |
+| `propertyid`   | String | 是    | -        | `maxLength: 512`         | 所属 Property.id                                     |
+| `objectTypeId` | String | 否    | -        | `maxLength: 256`         | Property 所属 ObjectType.id；如传入必须与本体映射一致             |
+| `value`        | String | 是    | -        | `maxLength: 4096`        | 去重后的真实 Instance Value；EmbeddingInput 严格为 `{value}` |
+| `op`           | String | 否    | `UPSERT` | `enum: [UPSERT, DELETE]` | 增量操作；`FULL_REPLACE` 默认只使用 `UPSERT`                 |
 
 实例唯一业务键：
 
@@ -1596,17 +1590,17 @@ GaussVector / GaussDB 唯一索引：
 ```sql
 -- Enum Value
 CREATE UNIQUE INDEX UK_METADATA_EVIDENCE_BIZ
-ON t_metadata_evidence_{ontology_id} (objectTypeId, propertyId, value);
+ON t_oag_enum_{ontology_id} (objectTypeId, propertyId, value);
 
 -- Instance Value
 CREATE UNIQUE INDEX UK_INSTANCE_EVIDENCE_BIZ
-ON t_instance_evidence_{ontology_id} (objectTypeId, propertyid, value);
+ON t_oag_instance_{ontology_id} (objectTypeId, propertyid, value);
 ```
 
 `UPSERT` 使用 `INSERT ... ON DUPLICATE KEY UPDATE`，Chunk 内可以一次提交多条 VALUES：
 
 ```sql
-INSERT INTO t_metadata_evidence_{ontology_id}
+INSERT INTO t_oag_enum_{ontology_id}
 (vector, type, propertyId, objectTypeId, value,
  display_zh, display_en, display_lang_1, display_lang_2,
  description_zh, description_en, description_lang_1, description_lang_2,
@@ -1627,7 +1621,7 @@ synonyms           = VALUES(synonyms);
 ```
 
 ```sql
-INSERT INTO t_instance_evidence_{ontology_id}
+INSERT INTO t_oag_instance_{ontology_id}
 (vector, type, propertyid, objectTypeId, value)
 VALUES (?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE
@@ -1795,19 +1789,19 @@ POST
 对应 Spring 接口：
 
 ```java
-@PostMapping("/v1/onto-retrieval/{ontologyId}/index-data/file-import")
+@PostMapping("/v1/onto-retrieval/{ontologyId}/index-data/file-notice")
 ```
 
 #### 请求参数
 
 **表 9  IndexFileImportRequest 参数列表**
 
-| 参数名称 | 类型 | 是否必选 | 默认值 | OpenAPI 约束 | 说明 |
-|:--|:--|:--|:--|:--|:--|
-| `requestId` | String | 是 | - | `minLength: 1`，`maxLength: 256` | 调用方幂等键 |
-| `dataType` | String | 是 | - | `enum: [METADATA_ENUM, INSTANCE_VALUE]` | 当前文件批次的数据类型 |
-| `importMode` | String | 是 | - | `enum: [FULL_REPLACE, INCREMENTAL]` | 全量替换或增量导入 |
-| `files` | Array[MinioCsvFile] | 是 | - | `minItems: 1` | 待导入的 MinIO CSV 对象列表 |
+| 参数名称         | 类型                  | 是否必选 | 默认值 | OpenAPI 约束                              | 说明                  |
+| :----------- | :------------------ | :--- | :-- | :-------------------------------------- | :------------------ |
+| `requestId`  | String              | 是    | -   | `minLength: 1`，`maxLength: 256`         | 调用方幂等键              |
+| `dataType`   | String              | 是    | -   | `enum: [METADATA_ENUM, INSTANCE_VALUE]` | 当前文件批次的数据类型         |
+| `importMode` | String              | 是    | -   | `enum: [FULL_REPLACE, INCREMENTAL]`     | 全量替换或增量导入           |
+| `files`      | Array[MinioCsvFile] | 是    | -   | `minItems: 1`                           | 待导入的 MinIO CSV 对象列表 |
 
 **表 10  MinioCsvFile 参数列表**
 
@@ -5167,9 +5161,9 @@ oag:
       includeInactive: false
 
   indexSchema:
-    seedTable: t_ontoretrieval_{ontology_id}
-    metadataTable: t_metadata_evidence_{ontology_id}
-    instanceTable: t_instance_evidence_{ontology_id}
+    seedTable: t_oag_{ontology_id}
+    metadataTable: t_oag_enum_{ontology_id}
+    instanceTable: t_oag_instance_{ontology_id}
     additionalLanguages:
       lang_1: es
       lang_2: null
@@ -5568,9 +5562,9 @@ SeedNodeProjector
 ## 7.11 最终设计决策
 
 1. **ObjectType / Property 统一称为种子节点。**
-2. **种子节点表统一命名 `t_ontoretrieval_{ontology_id}`。**
-3. **Metadata 表统一命名 `t_metadata_evidence_{ontology_id}`，只承载 Enum Value。**
-4. **Instance 表统一命名 `t_instance_evidence_{ontology_id}`，只承载 Instance Value。**
+2. **种子节点表统一命名 `t_oag_{ontology_id}`。**
+3. **Metadata 表统一命名 `t_oag_enum_{ontology_id}`，只承载 Enum Value。**
+4. **Instance 表统一命名 `t_oag_instance_{ontology_id}`，只承载 Instance Value。**
 5. **种子节点使用自身 `id`；Enum/Instance 使用 `propertyid + objectTypeId + value` 表达本体归属与业务值，不再引入额外 Evidence 主键。**
 6. **ObjectType/Property 同义词直接写入种子节点 `synonyms` 字段。**
 7. **Enum Value 同义词直接写入 Enum Value 记录 `synonyms` 字段。**
