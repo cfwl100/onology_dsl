@@ -26,13 +26,14 @@ jobs:
           path: target
           fetch-depth: 0
 
-      - name: Normalize helper
+      - name: Normalize helper and CSV field contract
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          p = Path('source/.automation/v512/patch.py')
-          s = p.read_text(encoding='utf-8')
+
+          helper = Path('source/.automation/v512/patch.py')
+          s = helper.read_text(encoding='utf-8')
           fixed = []
           for line in s.splitlines(True):
               if line.lstrip().startswith("sub_once(r'"):
@@ -49,7 +50,33 @@ jobs:
           }
           for old, new in replacements.items():
               s = s.replace(old, new)
-          p.write_text(s, encoding='utf-8')
+          helper.write_text(s, encoding='utf-8')
+
+          doc = Path('target/docs/OAG本体锚点语义检索与向量索引设计方案.md')
+          t = doc.read_text(encoding='utf-8')
+          a = t.index('### 3.6.1 METADATA_ENUM CSV')
+          b = t.index('---\n\n## 3.7 MinIO 文件交互协议', a)
+          csv = t[a:b]
+
+          # METADATA_ENUM: Header and mapping table use the same camelCase API/CSV names.
+          m_end = csv.index('### 3.6.2 INSTANCE_VALUE CSV')
+          metadata = csv[:m_end]
+          instance = csv[m_end:]
+          metadata = metadata.replace('`property_id`', '`propertyId`')
+          metadata = metadata.replace('`object_type_id`', '`objectTypeId`')
+
+          # INSTANCE_VALUE: propertyid is intentionally lower-case i; objectTypeId remains camelCase.
+          instance = instance.replace('`property_id`', '`propertyid`')
+          instance = instance.replace('`object_type_id`', '`objectTypeId`')
+          if '| `language`' not in instance:
+              needle = '| `value`          | `value`          | 真实 Instance Value   |\n| `op`'
+              repl = '| `value`          | `value`          | 真实 Instance Value   |\n| `language`       | `language`       | 可选语言标记，未知使用 `und` |\n| `op`'
+              if needle not in instance:
+                  raise SystemExit('INSTANCE_VALUE CSV mapping table shape changed')
+              instance = instance.replace(needle, repl, 1)
+
+          t = t[:a] + metadata + instance + t[b:]
+          doc.write_text(t, encoding='utf-8')
           PY
 
       - name: Apply and validate patch
@@ -71,8 +98,12 @@ jobs:
           assert 'FILE_RETENTION_UNTIL' in ch3
           assert 'sourceFileMaxRetentionDays=30' in ch3
           assert '生产者负责业务删除 + MinIO Lifecycle 硬 TTL 兜底 + OAG 只读消费' in ch3
+          assert '| `property_id`' not in ch3
+          assert '| `object_type_id`' not in ch3
           assert '| `propertyid`' in ch3
+          assert '| `propertyId`' in ch3
           assert '| `objectTypeId`' in ch3
+          assert '| `language`' in ch3
           print('V5.12 chapter3 contract validated')
           PY
           cd target
