@@ -1,11 +1,9 @@
 name: V5.12 one-shot chapter3 build
 
 on:
-  push:
+  pull_request:
     branches:
       - main
-    paths:
-      - .github/workflows/v512-one-shot.yml
 
 permissions:
   contents: write
