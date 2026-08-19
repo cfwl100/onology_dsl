@@ -1,6 +1,6 @@
 # OAG 面向本体种子节点的语义检索、混合排序与本体子图构建设计方案
 
-> 版本：V5.11  
+> 版本：V5.12  
 > 目标：在不丢失既有 Bulk Import、混合召回、RRF、LLM 精排和子图算法设计的基础上，进一步对齐现有 OMS 本体 JSON 资产：统一三张索引表命名，种子节点和枚举值直接内嵌 `synonyms`，固定支持中文/英文并额外支持最多 2 种语言，实例索引只保存去重后的真实列值。  
 > 核心决策：**ObjectType/Property = 种子节点；SynonymType 在 OMS 中保留多语言源结构，OAG 物理索引中的 `synonyms` 统一为 LF 分隔的平铺字符串且不建立独立物理行；Metadata Evidence 只承载 Enum Value；Instance Evidence 只承载真实 Instance Value；种子节点使用 `id`，Enum/Instance 统一使用 `propertyid + objectTypeId` 表达本体归属；每个 Semantic Unit 默认 6 路一次 Weighted RRF。**
 
@@ -10,7 +10,7 @@
 
 1. 设计目标、术语与总体架构  
 2. 数据模型与索引结构  
-3. 索引构建与 DataSync Bulk Import  
+3. 索引构建与入库  
 4. Query Understanding 与 6 路召回  
 5. LLM 精排与最终检索结果  
 6. 种子节点投影与本体子图构建  
@@ -1446,7 +1446,7 @@ POST
 | REST 批量导入  | POST   | `/v1/onto-retrieval/{ontologyId}/index-data/notice`           | `batchImportIndexData`     | Body 直接提交 Enum/Instance records |
 | MinIO 文件导入 | POST   | `/v1/onto-retrieval/{ontologyId}/index-data/file-import`      | `importIndexDataFromMinio` | 注册已经上传到 MinIO 的 CSV 文件          |
 | 批量查询任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/batch-query`     | `batchQueryIndexTasks`     | Body 传 taskIds，批量查询持久化任务状态和进度   |
-| 批量重试任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/batch-retry`     | `batchRetryIndexTasks`     | 逐 task 判断 retryable，允许部分成功      |
+| 批量重试任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/batch-retry`     | `batchRetryIndexTasks`     | 业务基于错误码与失败文件选择 task，OAG 校验状态和源文件可恢复性，允许部分成功      |
 | 批量取消任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/batch-cancel`    | `batchCancelIndexTasks`    | 逐 task 请求取消，允许部分成功              |
 | 查询错误       | GET    | `/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/errors` | `listIndexTaskErrors`      | 分页查询任务记录级错误                     |
 
@@ -1645,8 +1645,8 @@ propertyId,objectTypeId,value,display_zh,display_en,display_lang_1,display_lang_
 
 | CSV 字段               | 目标字段                 | 说明                             |
 | -------------------- | -------------------- | ------------------------------ |
-| `property_id`        | `property_id`        | 引用 Enum 的 Property.id          |
-| `object_type_id`     | `object_type_id`     | Property 所属 ObjectType.id      |
+| `propertyId`        | `propertyId`        | 引用 Enum 的 Property.id          |
+| `objectTypeId`     | `objectTypeId`     | Property 所属 ObjectType.id      |
 | `value`              | `value`              | 真实枚举值                          |
 | `display_zh`         | `display_zh`         | 中文 display                     |
 | `display_en`         | `display_en`         | 英文 display                     |
@@ -1676,9 +1676,10 @@ propertyid,objectTypeId,value,language,op
 
 | CSV 字段           | 目标字段             | 说明                  |
 | ---------------- | ---------------- | ------------------- |
-| `property_id`    | `property_id`    | 所属 Property.id      |
-| `object_type_id` | `object_type_id` | 所属 ObjectType.id    |
+| `propertyid`    | `propertyid`    | 所属 Property.id      |
+| `objectTypeId` | `objectTypeId` | 所属 ObjectType.id    |
 | `value`          | `value`          | 真实 Instance Value   |
+| `language`       | `language`       | 可选语言标记，未知使用 `und` |
 | `op`             | 导入操作             | `UPSERT` / `DELETE` |
 
 ```csv
@@ -1719,7 +1720,55 @@ S3Configuration.builder()
 
 ### 3.7.3 文件不可变与校验
 
-文件上传成功并提交 `file-import` 后，同一个 objectKey 在任务结束前不得覆盖。OAG 至少校验 Bucket 允许列表、Object 是否存在、size、sha256、CSV Header、dataType 对应 Schema 和可选 rowCount。百万/千万级数据必须流式读取，不允许一次性加载完整 CSV 到 JVM Heap。任务成功后按保留策略延迟清理；失败时默认保留文件用于重试和定位。
+文件上传成功并提交 `file-import` 后，同一个 `objectKey` 在任务结束前不得覆盖。OAG 至少校验 Bucket 允许列表、Object 是否存在、size、sha256、CSV Header、dataType 对应 Schema 和可选 rowCount。百万/千万级数据必须流式读取，不允许一次性加载完整 CSV 到 JVM Heap。
+
+同一个 `file-import` Task 内的所有 `files[]` 必须使用同一个 Bucket；`FILE_LIST` 只保存 objectKey 列表，Bucket 统一保存在任务级 `BUCKET_NAME`。如果调用方需要跨 Bucket 导入，应拆成多个 Task，避免任务持久化和重试语义出现歧义。
+
+任务执行期间 OAG 将 `FILE_LIST` 视为不可变输入快照：
+
+```text
+file-import.files[]
+  ↓
+校验 bucket/objectKey/sha256
+  ↓
+写入 T_OAG_INDEX_TASK.FILE_LIST
+  ↓
+任务执行期间禁止覆盖同名 objectKey
+```
+
+### 3.7.4 文件老化与删除策略
+
+文件生命周期采用 **“生产者负责业务删除 + MinIO Lifecycle 硬 TTL 兜底 + OAG 只读消费”** 的职责边界，不由 OAG 周期线程主动删除 DataSync/业务上传的源 CSV。
+
+职责如下：
+
+| 角色 | 职责 |
+|---|---|
+| DataSync / 业务系统 | 上传源 CSV；任务终态后根据业务重试、审计和留存要求决定是否提前删除源文件 |
+| OAG | 只读消费源 CSV；记录 `FILE_LIST / ERR_FILE_LIST / FILE_RETENTION_UNTIL`；不主动删除生产者源文件 |
+| MinIO / 平台 | 对 OAG 导入 Bucket/Prefix 配置 Lifecycle，作为最大保留期限的硬兜底 |
+
+推荐策略：
+
+```text
+SUCCESS
+  → 业务确认不再需要重试后可删除源文件
+
+FAILED
+  → 在决定 retry / 修复后重新提交之前保留失败文件
+
+CANCELLED
+  → 业务确认无需恢复后可删除
+
+达到 MinIO Lifecycle 硬 TTL
+  → 对象允许自动过期
+  → 原 Task 不再保证可重试
+  → 业务需要重新上传并创建新的导入 Task
+```
+
+MinIO 最大保留时间必须配置化，例如可从 `sourceFileMaxRetentionDays=30` 起步，不能硬编码到业务协议。OAG 根据相同配置计算并持久化 `FILE_RETENTION_UNTIL`，用于向业务暴露当前 Task 的源文件最晚可恢复时间；该字段是重试窗口提示，不代表 OAG 拥有删除权限。
+
+OAG 自己产生的 staging/chunk/cache 临时文件不属于生产者源文件，可以由 OAG 独立定期清理。
 ## 3.8 GaussDB 索引任务持久化
 
 索引任务不能只保存在 JVM 内存中。REST Batch Import、MinIO File Import、OMS 全量索引构建都必须创建持久化任务。
@@ -1737,41 +1786,65 @@ T_OAG_INDEX_TASK (N)
 
 ### 3.8.1 `T_OAG_INDEX_TASK` 表结构
 
-在现有 `ONTOLOGY_ID / TASK_ID / STATUS / CREATE_* / COMPLETION_TIME` 基础上扩展数据来源、导入类型、进度和错误字段：
+任务表继续作为 Task 级事实来源，同时补齐 **稳定错误码集合 + 全量文件列表 + 失败文件列表 + 源文件保留截止时间**。业务侧据此决定是否调用重试接口，OAG 不再持久化或返回服务端布尔重试标记。
 
-| 字段名                   | 类型            | 约束       | 说明                                               |
-| --------------------- | ------------- | -------- | ------------------------------------------------ |
-| `TENANT_ID`           | VARCHAR(256)  |          | 租户 ID                                            |
-| `ONTOLOGY_ID`         | VARCHAR(256)  | NOT NULL | 本体 ID                                            |
-| `TASK_ID`             | VARCHAR(256)  | PK       | 索引任务 ID                                          |
-| `REQUEST_ID`          | VARCHAR(256)  | NOT NULL | 调用幂等键                                            |
+| 字段名                   | 类型            | 约束       | 说明 |
+| --------------------- | ------------- | -------- | ---- |
+| `TENANT_ID`           | VARCHAR(256)  | NOT NULL | 租户 ID |
+| `ONTOLOGY_ID`         | VARCHAR(256)  | NOT NULL | 本体 ID |
+| `TASK_ID`             | VARCHAR(256)  | PK       | 索引任务 ID |
+| `REQUEST_ID`          | VARCHAR(256)  | NOT NULL | 调用幂等键 |
 | `DATA_TYPE`           | VARCHAR(64)   | NOT NULL | `SEED_NODE` / `METADATA_ENUM` / `INSTANCE_VALUE` |
-| `SOURCE_TYPE`         | VARCHAR(32)   | NOT NULL | `OMS` / `REST` / `MINIO`                         |
-| `IMPORT_MODE`         | VARCHAR(32)   |          | `FULL_REPLACE` / `INCREMENTAL`                   |
-| `STATUS`              | INT           | NOT NULL | 0 构建中；1 成功；2 失败；3 已取消                            |
-| `STAGE`               | VARCHAR(64)   |          | 当前执行阶段                                           |
-| `TOTAL_COUNT`         | BIGINT        |          | 总记录数                                             |
-| `SUCCESS_COUNT`       | BIGINT        |          | 成功记录数                                            |
-| `FAILED_COUNT`        | BIGINT        |          | 失败记录数                                            |
-| `SKIPPED_COUNT`       | BIGINT        |          | 去重/过滤记录数                                         |
-| `BUCKET_NAME`         | VARCHAR(256)  |          | MinIO Bucket；REST/OMS 可空                         |
-| `OBJECT_PREFIX`       | VARCHAR(1024) |          | MinIO Object/Prefix；REST/OMS 可空                  |
-| `CHECKPOINT`          | VARCHAR(1024) |          | CSV 文件/行号或内部 Chunk Checkpoint                    |
-| `RETRY_COUNT`         | INT           | NOT NULL | 重试次数，默认 0                                        |
-| `ERROR_CODE`          | VARCHAR(128)  |          | 最后错误码                                            |
-| `ERROR_MESSAGE`       | TEXT          |          | 最后错误摘要                                           |
-| `CREATE_USER_ACCOUNT` | VARCHAR(256)  | NOT NULL | 创建者                                              |
-| `CREATE_TIME`         | TIMESTAMP     | NOT NULL | 创建时间                                             |
-| `START_TIME`          | TIMESTAMP     |          | 实际开始时间                                           |
-| `UPDATE_TIME`         | TIMESTAMP     | NOT NULL | 最近状态更新时间                                         |
-| `COMPLETION_TIME`     | TIMESTAMP     |          | 完成时间                                             |
-| `FILE_LIST`           | Array[String] |          | 当前TASK处理的数据文件列表                                  |
-| `ERR_FILE_LIST`       | Array[String] |          | 当前TASK处理失败的数据文件列表，用于业务做重试和数据更新                   |
-TODO: 业务根据错误码信息和文件列表 判断是否重试，刷新表字段信息，并刷新下面的返回信息和表字段设计。
+| `SOURCE_TYPE`         | VARCHAR(32)   | NOT NULL | `OMS` / `REST` / `MINIO` |
+| `IMPORT_MODE`         | VARCHAR(32)   |          | `FULL_REPLACE` / `INCREMENTAL` |
+| `STATUS`              | INT           | NOT NULL | 0 构建中；1 成功；2 失败；3 已取消 |
+| `STAGE`               | VARCHAR(64)   |          | 当前执行阶段 |
+| `TOTAL_COUNT`         | BIGINT        |          | 总记录数 |
+| `SUCCESS_COUNT`       | BIGINT        |          | 成功记录数 |
+| `FAILED_COUNT`        | BIGINT        |          | 失败记录数 |
+| `SKIPPED_COUNT`       | BIGINT        |          | 去重/过滤记录数 |
+| `BUCKET_NAME`         | VARCHAR(256)  |          | MinIO Bucket；REST/OMS 可空；同一 Task 只允许一个 Bucket |
+| `OBJECT_PREFIX`       | VARCHAR(1024) |          | MinIO 公共 Object Prefix；REST/OMS 可空 |
+| `FILE_LIST`           | TEXT          |          | JSON String Array；当前 Task 的全部 objectKey，MINIO 任务使用 |
+| `ERR_FILE_LIST`       | TEXT          |          | JSON String Array；本次执行失败或需要重处理的 objectKey |
+| `FILE_RETENTION_UNTIL`| TIMESTAMP     |          | 源文件硬 TTL 对应的最晚可恢复时间；REST/OMS 可空 |
+| `CHECKPOINT`          | VARCHAR(1024) |          | CSV 文件/行号或内部 Chunk Checkpoint |
+| `RETRY_COUNT`         | INT           | NOT NULL | 已执行重试次数，默认 0 |
+| `ERROR_CODE`          | VARCHAR(128)  |          | 兼容字段；Task 主错误码/最后一个高优先级错误码 |
+| `ERROR_CODE_LIST`     | TEXT          |          | JSON String Array；Task 本次执行出现的去重错误码集合，供业务决策 |
+| `ERROR_MESSAGE`       | TEXT          |          | 错误摘要，仅用于展示/定位，不作为业务重试判断依据 |
+| `CREATE_USER_ACCOUNT` | VARCHAR(256)  | NOT NULL | 创建者 |
+| `CREATE_TIME`         | TIMESTAMP     | NOT NULL | 创建时间 |
+| `START_TIME`          | TIMESTAMP     |          | 实际开始时间 |
+| `UPDATE_TIME`         | TIMESTAMP     | NOT NULL | 最近状态更新时间 |
+| `COMPLETION_TIME`     | TIMESTAMP     |          | 完成时间 |
 
-兼容原则：`STATUS=0/1/2` 继续兼容现有构建中/成功/失败语义，新增 `STATUS=3` 表示取消；更细执行阶段写入 `STAGE`，推荐值：`CREATED / VALIDATING / READING / DEDUPLICATING / EMBEDDING / WRITING_VECTOR / WRITING_SEARCH / VERIFYING / PUBLISHING / CANCEL_REQUESTED / FINISHED`。
+数据库中的 `FILE_LIST / ERR_FILE_LIST / ERROR_CODE_LIST` 使用 `TEXT` 存储 JSON Array，而不是使用文档伪类型 `Array[String]`。API 层统一反序列化为 `Array[String]` 返回：
 
-TODO：文件老化 删除策略，需要业务侧进行删除还是OAG服务进行定期老化？
+```text
+FILE_LIST        = [".../part-00000.csv", ".../part-00001.csv"]
+ERR_FILE_LIST    = [".../part-00001.csv"]
+ERROR_CODE_LIST  = ["VECTOR_WRITE_FAILED", "SEARCH_WRITE_FAILED"]
+```
+
+字段语义：
+
+```text
+ERROR_CODE
+  → 兼容已有单错误码调用方
+
+ERROR_CODE_LIST
+  → 当前执行发现的去重错误码集合
+  → 业务侧重试/修复决策优先使用
+
+FILE_LIST
+  → 当前 Task 注册的完整 MinIO objectKey 快照
+
+ERR_FILE_LIST
+  → 当前执行失败、重试时优先处理的文件集合
+```
+
+`STATUS=0/1/2` 继续兼容现有构建中/成功/失败语义，`STATUS=3` 表示取消；更细执行阶段写入 `STAGE`：`CREATED / VALIDATING / READING / DEDUPLICATING / EMBEDDING / WRITING_VECTOR / WRITING_SEARCH / VERIFYING / PUBLISHING / CANCEL_REQUESTED / FINISHED`。
 
 ### 3.8.2 索引与约束
 
@@ -1779,58 +1852,67 @@ TODO：文件老化 删除策略，需要业务侧进行删除还是OAG服务进
 PRIMARY KEY (TASK_ID);
 
 CREATE UNIQUE INDEX UQ_T_OAG_INDEX_TASK_REQUEST
-ON T_OAG_INDEX_TASK (ONTOLOGY_ID, REQUEST_ID);
+ON T_OAG_INDEX_TASK (TENANT_ID, ONTOLOGY_ID, REQUEST_ID);
 
 CREATE INDEX IDX_T_OAG_INDEX_TASK_ONTOLOGY_TIME
-ON T_OAG_INDEX_TASK (ONTOLOGY_ID, CREATE_TIME);
+ON T_OAG_INDEX_TASK (TENANT_ID, ONTOLOGY_ID, CREATE_TIME);
 
 CREATE INDEX IDX_T_OAG_INDEX_TASK_STATUS_TIME
 ON T_OAG_INDEX_TASK (STATUS, UPDATE_TIME);
+
+CREATE INDEX IDX_T_OAG_INDEX_TASK_RETENTION
+ON T_OAG_INDEX_TASK (FILE_RETENTION_UNTIL);
 ```
 
-`ONTOLOGY_ID + REQUEST_ID` 唯一约束确保 API 重试不会创建重复任务。
+`TENANT_ID + ONTOLOGY_ID + REQUEST_ID` 唯一约束确保同租户同本体的 API 重试不会创建重复任务；单租户部署也应写入固定租户值，不依赖 `NULL` 的唯一索引语义。
 
 ### 3.8.3 GaussDB 建表示例
 
 ```sql
 CREATE TABLE T_OAG_INDEX_TASK
 (
-    TENANT_ID           VARCHAR(256),
-    ONTOLOGY_ID         VARCHAR(256) NOT NULL,
-    TASK_ID             VARCHAR(256) NOT NULL,
-    REQUEST_ID          VARCHAR(256) NOT NULL,
-    DATA_TYPE           VARCHAR(64)  NOT NULL,
-    SOURCE_TYPE         VARCHAR(32)  NOT NULL,
-    IMPORT_MODE         VARCHAR(32),
-    STATUS              INT          NOT NULL,
-    STAGE               VARCHAR(64),
-    TOTAL_COUNT         BIGINT,
-    SUCCESS_COUNT       BIGINT,
-    FAILED_COUNT        BIGINT,
-    SKIPPED_COUNT       BIGINT,
-    BUCKET_NAME         VARCHAR(256),
-    OBJECT_PREFIX       VARCHAR(1024),
-    CHECKPOINT          VARCHAR(1024),
-    RETRY_COUNT         INT          NOT NULL DEFAULT 0,
-    ERROR_CODE          VARCHAR(128),
-    ERROR_MESSAGE       TEXT,
-    CREATE_USER_ACCOUNT VARCHAR(256) NOT NULL,
-    CREATE_TIME         TIMESTAMP    NOT NULL,
-    START_TIME          TIMESTAMP,
-    UPDATE_TIME         TIMESTAMP    NOT NULL,
-    COMPLETION_TIME     TIMESTAMP,
+    TENANT_ID             VARCHAR(256)  NOT NULL,
+    ONTOLOGY_ID           VARCHAR(256)  NOT NULL,
+    TASK_ID               VARCHAR(256)  NOT NULL,
+    REQUEST_ID            VARCHAR(256)  NOT NULL,
+    DATA_TYPE             VARCHAR(64)   NOT NULL,
+    SOURCE_TYPE           VARCHAR(32)   NOT NULL,
+    IMPORT_MODE           VARCHAR(32),
+    STATUS                INT           NOT NULL,
+    STAGE                 VARCHAR(64),
+    TOTAL_COUNT           BIGINT,
+    SUCCESS_COUNT         BIGINT,
+    FAILED_COUNT          BIGINT,
+    SKIPPED_COUNT         BIGINT,
+    BUCKET_NAME           VARCHAR(256),
+    OBJECT_PREFIX         VARCHAR(1024),
+    FILE_LIST             TEXT,
+    ERR_FILE_LIST         TEXT,
+    FILE_RETENTION_UNTIL  TIMESTAMP,
+    CHECKPOINT            VARCHAR(1024),
+    RETRY_COUNT           INT           NOT NULL DEFAULT 0,
+    ERROR_CODE            VARCHAR(128),
+    ERROR_CODE_LIST       TEXT,
+    ERROR_MESSAGE         TEXT,
+    CREATE_USER_ACCOUNT   VARCHAR(256)  NOT NULL,
+    CREATE_TIME           TIMESTAMP     NOT NULL,
+    START_TIME            TIMESTAMP,
+    UPDATE_TIME           TIMESTAMP     NOT NULL,
+    COMPLETION_TIME       TIMESTAMP,
     CONSTRAINT PK_T_OAG_INDEX_TASK_TASK_ID PRIMARY KEY (TASK_ID)
 );
 
 CREATE UNIQUE INDEX UQ_T_OAG_INDEX_TASK_REQUEST
-ON T_OAG_INDEX_TASK (ONTOLOGY_ID, REQUEST_ID);
+ON T_OAG_INDEX_TASK (TENANT_ID, ONTOLOGY_ID, REQUEST_ID);
 CREATE INDEX IDX_T_OAG_INDEX_TASK_ONTOLOGY_TIME
-ON T_OAG_INDEX_TASK (ONTOLOGY_ID, CREATE_TIME);
+ON T_OAG_INDEX_TASK (TENANT_ID, ONTOLOGY_ID, CREATE_TIME);
 CREATE INDEX IDX_T_OAG_INDEX_TASK_STATUS_TIME
 ON T_OAG_INDEX_TASK (STATUS, UPDATE_TIME);
+CREATE INDEX IDX_T_OAG_INDEX_TASK_RETENTION
+ON T_OAG_INDEX_TASK (FILE_RETENTION_UNTIL);
 ```
 
-如果现网已经存在精简版 `T_OAG_INDEX_TASK`，通过数据库升级脚本增加字段，不新建第二张任务主表。
+如果现网已经存在精简版 `T_OAG_INDEX_TASK`，通过数据库升级脚本增加 `FILE_LIST / ERR_FILE_LIST / FILE_RETENTION_UNTIL / ERROR_CODE_LIST` 等字段并调整幂等索引，不新建第二张任务主表。
 ### 3.8.4 索引任务管理接口详细定义
 
 任务管理接口统一以 GaussDB `T_OAG_INDEX_TASK` 为事实来源，不以内存线程/Future 状态作为权威结果。
@@ -1839,13 +1921,13 @@ ON T_OAG_INDEX_TASK (STATUS, UPDATE_TIME);
 
 ##### 典型场景
 
-业务侧提交多个 REST 接口后，希望一次查询多个 `taskId` 的当前阶段、进度和失败原因，避免逐任务轮询产生大量 HTTP 请求。
+业务侧提交多个索引任务后，需要一次查询多个 `taskId` 的状态、进度、稳定错误码以及 MinIO 文件列表，再由业务规则决定是否重试、修复数据或重新提交。
 
 ##### 接口功能
 
-按 `taskIds` 批量读取 GaussDB `T_OAG_INDEX_TASK`。接口必须校验 `tenant + ontologyId` 归属；单个 task 不存在或不属于当前本体时，不让整个批次失败，而是在 `notFoundTaskIds` 中返回。
+按 `taskIds` 批量读取 GaussDB `T_OAG_INDEX_TASK`。接口校验 `tenant + ontologyId` 归属；单个 task 不存在或不属于当前本体时，不让整个批次失败，而是在 `notFoundTaskIds` 中返回。
 
-批量查询选择 `POST + JSON Body` 而不是 GET Query 参数，原因是 taskId 数量较多时容易触发 URL 长度和网关限制；该接口虽然使用 POST，但语义上仍为只读、无副作用查询。
+批量查询选择 `POST + JSON Body` 而不是 GET Query 参数，避免大量 taskId 触发 URL/网关长度限制；该接口语义仍为只读、无副作用查询。
 
 ##### 调用方法
 
@@ -1861,11 +1943,11 @@ POST
 
 **表 11  BatchTaskIdsRequest 参数列表**
 
-| 参数名称      | 类型            | 是否必选 | 默认值 | OpenAPI 约束                                                        | 说明             |
-| :-------- | :------------ | :--- | :-- | :---------------------------------------------------------------- | :------------- |
-| `taskIds` | Array[String] | 是    | -   | `minItems: 1`，`uniqueItems: true`；最大数量由 `maxTaskIdsPerRequest` 配置 | 待查询的索引任务 ID 列表 |
+| 参数名称 | 类型 | 是否必选 | 默认值 | OpenAPI 约束 | 说明 |
+|:--|:--|:--|:--|:--|:--|
+| `taskIds` | Array[String] | 是 | - | `minItems: 1`，`uniqueItems: true`；最大数量由 `maxTaskIdsPerRequest` 配置 | 待查询的索引任务 ID 列表 |
 
-服务端对重复 `taskId` 先去重并保持首次出现顺序。建议 `maxTaskIdsPerRequest` 默认从 100 起步，通过接口压测调整，不在协议中绑定数据库 `IN` 子句的固定上限。
+服务端对重复 `taskId` 去重并保持首次出现顺序。建议 `maxTaskIdsPerRequest` 默认从 100 起步，通过接口压测调整。
 
 ##### 请求示例
 
@@ -1873,8 +1955,7 @@ POST
 {
   "taskIds": [
     "idx-task-20260816-000001",
-    "idx-task-20260816-000002",
-    "idx-task-20260816-000003"
+    "idx-task-20260816-000002"
   ]
 }
 ```
@@ -1888,41 +1969,56 @@ POST
 | `ontologyId` | String | 本体 ID |
 | `requestedCount` | Integer | 去重后的请求 task 数量 |
 | `foundCount` | Integer | 实际查询到的任务数量 |
-| `tasks` | Array[IndexTaskResponse] | 已找到任务的状态、进度和错误摘要 |
+| `tasks` | Array[IndexTaskResponse] | 已找到任务的状态、进度、错误和文件信息 |
 | `notFoundTaskIds` | Array[String] | 不存在或不属于当前 tenant/ontology 的 taskId |
 
-`IndexTaskResponse` 保持原任务字段
+`IndexTaskResponse`：
 
-| 参数名称             | 类型                | 说明                                           |
-| :--------------- | :---------------- | :------------------------------------------- |
-| `tenantId`       | String            | 租户 ID                                        |
-| `ontologyId`     | String            | 本体 ID                                        |
-| `taskId`         | String            | 任务 ID                                        |
-| `requestId`      | String            | 调用幂等键                                        |
-| `dataType`       | String            | `SEED_NODE / METADATA_ENUM / INSTANCE_VALUE` |
-| `sourceType`     | String            | `OMS / REST / MINIO`                         |
-| `importMode`     | String            | `FULL_REPLACE / INCREMENTAL`；OMS 内部任务可为空     |
-| `status`         | Integer           | 0 构建中；1 成功；2 失败；3 已取消                        |
-| `stage`          | String            | 当前执行阶段                                       |
-| `totalCount`     | Integer(int64)    | 总记录数；未知时可为空                                  |
-| `successCount`   | Integer(int64)    | 成功处理数                                        |
-| `failedCount`    | Integer(int64)    | 失败记录数                                        |
-| `skippedCount`   | Integer(int64)    | 去重/过滤记录数                                     |
-| `retryCount`     | Integer           | 已执行重试次数                                      |
-| `errorCode`      | String            | 任务最后错误码；非失败状态可为空                             |
-| `errorMessage`   | String            | 最后错误摘要；非失败状态可为空                              |
-| `createTime`     | String(date-time) | 创建时间                                         |
-| `startTime`      | String(date-time) | 实际开始时间                                       |
-| `updateTime`     | String(date-time) | 最近更新时间                                       |
-| `completionTime` | String(date-time) | 完成时间；未结束可为空                                  |
+| 参数名称 | 类型 | 说明 |
+|:--|:--|:--|
+| `tenantId` | String | 租户 ID |
+| `ontologyId` | String | 本体 ID |
+| `taskId` | String | 任务 ID |
+| `requestId` | String | 调用幂等键 |
+| `dataType` | String | `SEED_NODE / METADATA_ENUM / INSTANCE_VALUE` |
+| `sourceType` | String | `OMS / REST / MINIO` |
+| `importMode` | String | `FULL_REPLACE / INCREMENTAL`；OMS 内部任务可为空 |
+| `status` | Integer | 0 构建中；1 成功；2 失败；3 已取消 |
+| `stage` | String | 当前执行阶段 |
+| `totalCount` | Integer(int64) | 总记录数；未知时可为空 |
+| `successCount` | Integer(int64) | 成功处理数 |
+| `failedCount` | Integer(int64) | 失败记录数 |
+| `skippedCount` | Integer(int64) | 去重/过滤记录数 |
+| `retryCount` | Integer | 已执行重试次数 |
+| `errorCode` | String | 兼容主错误码；无错误时为空 |
+| `errorCodes` | Array[String] | 本次执行出现的去重稳定错误码集合；业务重试判断优先使用 |
+| `errorMessage` | String | 错误摘要，仅用于展示/定位 |
+| `fileList` | Array[String] | MINIO Task 的全部 objectKey；其他来源返回空数组 |
+| `errFileList` | Array[String] | 本次执行失败/需要重处理的 objectKey；其他来源或无失败返回空数组 |
+| `fileRetentionUntil` | String(date-time) | MinIO 源文件硬 TTL 对应的最晚恢复时间；其他来源为空 |
+| `createTime` | String(date-time) | 创建时间 |
+| `startTime` | String(date-time) | 实际开始时间 |
+| `updateTime` | String(date-time) | 最近更新时间 |
+| `completionTime` | String(date-time) | 完成时间；未结束可为空 |
 
+业务侧重试判断推荐只使用稳定结构化信息：
+
+```text
+status == 2
++ errorCode / errorCodes
++ fileList / errFileList
++ fileRetentionUntil
++ 业务自身重试策略
+```
+
+不得解析 `errorMessage` 文本来决定是否重试。
 
 ##### 响应示例
 
 ```json
 {
   "ontologyId": "dtmi.ontology.xxx.1",
-  "requestedCount": 3,
+  "requestedCount": 2,
   "foundCount": 2,
   "tasks": [
     {
@@ -1935,9 +2031,12 @@ POST
       "status": 1,
       "stage": "FINISHED",
       "retryCount": 0,
-      "retryable": false,
       "errorCode": null,
+      "errorCodes": [],
       "errorMessage": null,
+      "fileList": [],
+      "errFileList": [],
+      "fileRetentionUntil": null,
       "createTime": "2026-08-16T22:10:00+08:00",
       "updateTime": "2026-08-16T22:10:08+08:00"
     },
@@ -1951,14 +2050,22 @@ POST
       "status": 2,
       "stage": "WRITING_VECTOR",
       "retryCount": 0,
-      "retryable": true,
       "errorCode": "VECTOR_WRITE_FAILED",
+      "errorCodes": ["VECTOR_WRITE_FAILED"],
       "errorMessage": "temporary vector storage write failure",
+      "fileList": [
+        "onto-retrieval/t1/dtmi.ontology.xxx.1/INSTANCE_VALUE/req-instance-002/part-00000.csv",
+        "onto-retrieval/t1/dtmi.ontology.xxx.1/INSTANCE_VALUE/req-instance-002/part-00001.csv"
+      ],
+      "errFileList": [
+        "onto-retrieval/t1/dtmi.ontology.xxx.1/INSTANCE_VALUE/req-instance-002/part-00001.csv"
+      ],
+      "fileRetentionUntil": "2026-09-15T22:11:00+08:00",
       "createTime": "2026-08-16T22:11:00+08:00",
       "updateTime": "2026-08-16T22:11:08+08:00"
     }
   ],
-  "notFoundTaskIds": ["idx-task-20260816-000003"]
+  "notFoundTaskIds": []
 }
 ```
 
@@ -1992,28 +2099,49 @@ POST
       '429': { $ref: '#/components/responses/TooManyRequests' }
       '500': { $ref: '#/components/responses/InternalError' }
 ```
-
 ---
 
 #### 3.8.4.2 批量重试索引任务
 
 ##### 典型场景
 
-一批索引任务因 Embedding、GaussVector、OpenSearch、MinIO 读取或发布阶段的临时故障失败，业务侧希望一次性重试其中可恢复的任务。
+业务侧先通过任务查询获取 `errorCode/errorCodes + fileList/errFileList + fileRetentionUntil`，结合自身规则判断哪些失败 Task 需要重试，然后一次提交多个 `taskId`。
 
 ##### 接口功能
 
-批量检查 `taskIds`，仅把满足以下条件的任务重新加入执行队列：
+OAG **不再根据错误码返回或维护服务端布尔重试标记**。重试接口只做服务端必须保证的技术前置校验：
 
 ```text
 任务存在且 tenant/ontology 归属一致
 AND STATUS = 2（FAILED）
-AND retryable = true
-AND 原始 REST Payload 或 MinIO Source/Checkpoint 仍可恢复
 AND RETRY_COUNT 未超过服务配置上限
+AND 原始 Source/Checkpoint 仍可恢复
 ```
 
-批量操作采用**逐任务判定、允许部分成功**。一个 task 不可重试不能阻断其他 task。
+MINIO Task 额外校验：
+
+```text
+当前时间 < FILE_RETENTION_UNTIL（配置了硬 TTL 时）
+AND 需要重试的 objectKey 仍存在
+AND 文件 sha256 与任务注册快照一致
+```
+
+重试文件范围：
+
+```text
+ERR_FILE_LIST 非空
+  → 默认只重处理 ERR_FILE_LIST
+
+ERR_FILE_LIST 为空，但失败发生在文件处理前/Task 级阶段
+  → 根据 CHECKPOINT/STAGE 恢复；必要时使用 FILE_LIST
+
+PUBLISH_FAILED / VERIFY_FAILED 等文件已处理完成的 Task 级失败
+  → 优先从对应 STAGE/Checkpoint 继续，不强制重新读取全部 CSV
+```
+
+业务如果判断原始文件内容本身需要修正，不应覆盖原 objectKey 后调用 retry；应生成新文件、新 requestId，并重新调用 `file-import`。
+
+批量操作采用**逐任务判定、允许部分成功**。一个 Task 因状态、重试次数或源文件过期被拒绝，不阻断其他 Task。
 
 ##### 调用方法
 
@@ -2027,30 +2155,7 @@ POST
 
 ##### 请求参数
 
-复用表 11 `BatchTaskIdsRequest`。
-
-##### 可重试错误码
-
-业务侧应优先使用任务返回的 `retryable` 字段，而不是在客户端复制一套判断逻辑；错误码表用于故障定位和兜底判断。
-
-| 错误码                      | retryable | 处理建议                                |
-| ------------------------ | --------: | ----------------------------------- |
-| `MINIO_READ_FAILED`      |      true | MinIO 临时读取失败，可从 Checkpoint 重试       |
-| `EMBEDDING_FAILED`       |      true | Embedding 服务超时/5xx 等临时失败，可重试        |
-| `VECTOR_WRITE_FAILED`    |      true | GaussVector 临时写失败，利用组合键幂等 UPSERT 重试 |
-| `SEARCH_WRITE_FAILED`    |      true | OpenSearch 临时写失败，可按业务键幂等重试          |
-| `VERIFY_FAILED`          |      true | 双写后的临时校验失败，可重新 Verify/补写            |
-| `PUBLISH_FAILED`         |      true | Generation 发布阶段临时失败，可重新发布           |
-| `INVALID_REQUEST`        |     false | 请求结构错误，修正数据后重新提交新任务                 |
-| `INVALID_DATA_TYPE`      |     false | dataType 错误，修正后重新提交                 |
-| `ONTOLOGY_NOT_FOUND`     |     false | 本体不存在，需要先修复本体资产                     |
-| `PROPERTY_NOT_FOUND`     |     false | Property 映射不存在，需要修复本体/输入            |
-| `OBJECT_TYPE_MISMATCH`   |     false | ObjectType 与 Property 归属冲突，需要修正数据   |
-| `CSV_SCHEMA_ERROR`       |     false | CSV Header/字段格式错误，需要重新生成文件          |
-| `MINIO_OBJECT_NOT_FOUND` |     false | 源文件不存在，需要重新上传并新建导入任务                |
-| `CHECKSUM_MISMATCH`      |     false | 文件内容已变化/损坏，需要重新生成并提交                |
-
-如果同一个高层错误码存在可重试和不可重试两类根因，OAG 必须以 `retryable` 作为最终判断，不要求业务侧解析 `errorMessage`。
+复用表 11 `BatchTaskIdsRequest`。业务侧传入已经根据错误码和文件信息筛选后的 taskIds。
 
 ##### 返回参数
 
@@ -2073,8 +2178,7 @@ POST
 | `accepted` | Boolean | 当前操作是否被接受 |
 | `status` | Integer | 当前任务状态；任务不存在时可为空 |
 | `stage` | String | 当前任务阶段；任务不存在时可为空 |
-| `retryable` | Boolean | 对 RETRY 表示当前失败是否允许重试 |
-| `reasonCode` | String | `TASK_NOT_FOUND / TASK_STATE_CONFLICT / NOT_RETRYABLE / RETRY_LIMIT_EXCEEDED / SOURCE_UNRECOVERABLE` 等 |
+| `reasonCode` | String | `TASK_NOT_FOUND / TASK_STATE_CONFLICT / RETRY_LIMIT_EXCEEDED / SOURCE_UNRECOVERABLE / SOURCE_FILE_EXPIRED / SOURCE_FILE_MISSING` 等 |
 | `message` | String | 简短处理说明 |
 
 ##### 响应示例
@@ -2092,25 +2196,22 @@ POST
       "accepted": true,
       "status": 0,
       "stage": "CREATED",
-      "retryable": true,
       "reasonCode": null,
-      "message": "retry accepted"
+      "message": "retry accepted; failed files will be resumed"
     },
     {
       "taskId": "idx-task-002",
       "accepted": false,
       "status": 2,
       "stage": "FINISHED",
-      "retryable": false,
-      "reasonCode": "NOT_RETRYABLE",
-      "message": "CSV_SCHEMA_ERROR must be fixed and resubmitted"
+      "reasonCode": "SOURCE_FILE_EXPIRED",
+      "message": "source file retention window has expired; re-upload and create a new task"
     },
     {
       "taskId": "idx-task-404",
       "accepted": false,
       "status": null,
       "stage": null,
-      "retryable": false,
       "reasonCode": "TASK_NOT_FOUND",
       "message": "task not found"
     }
@@ -2118,7 +2219,7 @@ POST
 }
 ```
 
-请求结构合法时返回 `202`，逐 task 是否真正进入队列由 `results[].accepted` 表达；不使用单个 task 的 `409/404` 把整个批次打失败。
+请求结构合法时返回 `202`；逐 task 是否真正进入队列由 `results[].accepted` 表达，不使用单个 task 的 `409/404` 把整个批次打失败。
 
 ##### OpenAPI 3.0.3 Path 定义
 
@@ -2149,7 +2250,6 @@ POST
       '500': { $ref: '#/components/responses/InternalError' }
       '503': { $ref: '#/components/responses/ServiceUnavailable' }
 ```
-
 ---
 
 #### 3.8.4.3 批量取消索引任务
@@ -2160,9 +2260,9 @@ POST
 
 ##### 接口功能
 
-对 `STATUS=0` 的运行中/排队任务设置 `STAGE=CANCEL_REQUESTED`。Worker 在安全检查点停止后更新为 `STATUS=3`。批量取消同样逐 task 判定、允许部分成功。
+对 `STATUS=0` 的运行中/排队任务设置 `STAGE=CANCEL_REQUESTED`。Worker 在安全检查点停止后更新为 `STATUS=3`。批量取消逐 task 判定、允许部分成功。
 
-取消操作要求幂等：已处于 `STATUS=3` 的任务返回 `accepted=true`、`reasonCode=ALREADY_CANCELLED`，不重复触发取消；`STATUS=1/2` 的终态任务返回 `accepted=false`、`reasonCode=TASK_STATE_CONFLICT`。
+取消操作幂等：已处于 `STATUS=3` 的任务返回 `accepted=true`、`reasonCode=ALREADY_CANCELLED`；`STATUS=1/2` 的终态任务返回 `accepted=false`、`reasonCode=TASK_STATE_CONFLICT`。
 
 ##### 调用方法
 
@@ -2197,7 +2297,6 @@ POST
       "accepted": true,
       "status": 0,
       "stage": "CANCEL_REQUESTED",
-      "retryable": false,
       "reasonCode": null,
       "message": "cancel accepted"
     },
@@ -2206,7 +2305,6 @@ POST
       "accepted": true,
       "status": 3,
       "stage": "FINISHED",
-      "retryable": false,
       "reasonCode": "ALREADY_CANCELLED",
       "message": "task already cancelled"
     },
@@ -2215,7 +2313,6 @@ POST
       "accepted": false,
       "status": 1,
       "stage": "FINISHED",
-      "retryable": false,
       "reasonCode": "TASK_STATE_CONFLICT",
       "message": "completed task cannot be cancelled"
     }
@@ -2251,7 +2348,6 @@ POST
       '429': { $ref: '#/components/responses/TooManyRequests' }
       '500': { $ref: '#/components/responses/InternalError' }
 ```
-
 ---
 
 ### 3.8.5 OpenAPI 3.0.3 公共 Components 定义
@@ -2451,7 +2547,7 @@ components:
 
     IndexTaskResponse:
       type: object
-      required: [ontologyId, taskId, requestId, dataType, sourceType, status, stage, retryable, createTime, updateTime]
+      required: [ontologyId, taskId, requestId, dataType, sourceType, status, stage, errorCodes, fileList, errFileList, createTime, updateTime]
       properties:
         tenantId: { type: string, nullable: true }
         ontologyId: { type: string }
@@ -2468,8 +2564,17 @@ components:
         skippedCount: { type: integer, format: int64, nullable: true }
         retryCount: { type: integer, minimum: 0 }
         errorCode: { type: string, nullable: true }
+        errorCodes:
+          type: array
+          items: { type: string }
         errorMessage: { type: string, nullable: true }
-        retryable: { type: boolean, default: false }
+        fileList:
+          type: array
+          items: { type: string }
+        errFileList:
+          type: array
+          items: { type: string }
+        fileRetentionUntil: { type: string, format: date-time, nullable: true }
         createTime: { type: string, format: date-time }
         startTime: { type: string, format: date-time, nullable: true }
         updateTime: { type: string, format: date-time }
@@ -2502,13 +2607,12 @@ components:
 
     TaskOperationResult:
       type: object
-      required: [taskId, accepted, retryable]
+      required: [taskId, accepted]
       properties:
         taskId: { type: string }
         accepted: { type: boolean }
         status: { type: integer, enum: [0, 1, 2, 3], nullable: true }
         stage: { type: string, nullable: true }
-        retryable: { type: boolean }
         reasonCode: { type: string, nullable: true }
         message: { type: string, nullable: true }
 
@@ -2692,17 +2796,17 @@ STATUS=0, STAGE=CREATED
 HTTP 202
 ```
 
-如果任务记录写 GaussDB 失败，不返回“已接受”，也不开始索引执行。后台持续更新 `STAGE / TOTAL_COUNT / SUCCESS_COUNT / FAILED_COUNT / SKIPPED_COUNT / CHECKPOINT / UPDATE_TIME`。
+如果任务记录写 GaussDB 失败，不返回“已接受”，也不开始索引执行。后台持续更新 `STAGE / TOTAL_COUNT / SUCCESS_COUNT / FAILED_COUNT / SKIPPED_COUNT / FILE_LIST / ERR_FILE_LIST / ERROR_CODE_LIST / CHECKPOINT / UPDATE_TIME`。
 
 终态：
 
 ```text
 SUCCESS   → STATUS=1, STAGE=FINISHED, COMPLETION_TIME
-FAILED    → STATUS=2, ERROR_CODE/ERROR_MESSAGE, COMPLETION_TIME
+FAILED    → STATUS=2, ERROR_CODE/ERROR_CODE_LIST/ERROR_MESSAGE/ERR_FILE_LIST, COMPLETION_TIME
 CANCELLED → STATUS=3, COMPLETION_TIME
 ```
 
-OAG 重启后从 GaussDB 找到未完成任务，根据 `SOURCE_TYPE + CHECKPOINT` 决定恢复、重试或标记失败。批量任务查询接口必须以 GaussDB 为事实来源，而不是以内存 Future/线程状态作为权威状态。
+OAG 重启后从 GaussDB 找到未完成任务，根据 `SOURCE_TYPE + CHECKPOINT + FILE_LIST` 决定恢复、重试或标记失败。对于 MINIO Task，如果源对象已经超过 `FILE_RETENTION_UNTIL` 或实际不存在，任务不能继续依赖原文件恢复。批量任务查询接口必须以 GaussDB 为事实来源，而不是以内存 Future/线程状态作为权威状态。
 
 ---
 
@@ -2808,28 +2912,52 @@ task progress flush interval
 后端压力过高时 Import Task 排队/降速，不能挤占语义检索线程池。
 ## 3.16 错误处理与可观测性
 
-统一错误分类，同时维护服务端 `retryable` 判断：
+错误协议采用 **稳定错误码 + 业务侧重试决策**。OAG 不再输出服务端布尔重试标记；业务系统根据 `status / errorCode / errorCodes / fileList / errFileList / fileRetentionUntil` 和自身策略决定 `RETRY / FIX_AND_RESUBMIT / REUPLOAD_AND_RESUBMIT / IGNORE`。
 
-| 错误码 | 默认 retryable | 说明 |
-|---|---:|---|
-| `INVALID_REQUEST` | false | 请求结构错误 |
-| `INVALID_DATA_TYPE` | false | dataType 非法 |
-| `ONTOLOGY_NOT_FOUND` | false | 本体不存在 |
-| `PROPERTY_NOT_FOUND` | false | Property 不存在 |
-| `OBJECT_TYPE_MISMATCH` | false | ObjectType 与 Property 归属冲突 |
-| `CSV_SCHEMA_ERROR` | false | CSV Header/字段格式错误 |
-| `MINIO_OBJECT_NOT_FOUND` | false | MinIO 源对象不存在，需要重新上传/提交 |
-| `CHECKSUM_MISMATCH` | false | 文件 checksum 不一致，需要重新生成/提交 |
-| `MINIO_READ_FAILED` | true | 已存在对象的临时读取失败 |
-| `EMBEDDING_FAILED` | true | Embedding 服务超时/5xx 等临时失败 |
-| `VECTOR_WRITE_FAILED` | true | GaussVector 临时写入失败 |
-| `SEARCH_WRITE_FAILED` | true | OpenSearch 临时写入失败 |
-| `VERIFY_FAILED` | true | 双写后校验失败，可幂等补写并重新 Verify |
-| `PUBLISH_FAILED` | true | Generation 发布阶段临时失败 |
+错误码及建议动作：
 
-业务侧批量查询任务时读取 `retryable`，批量重试接口也由 OAG 再次校验该值；客户端不需要解析 `errorMessage` 判断是否重试。若一个高层错误码因根因不同需要不同策略，以服务端计算后的 `retryable` 为准。
+| 错误码 | 建议业务动作 | 说明 |
+|---|---|---|
+| `INVALID_REQUEST` | `FIX_AND_RESUBMIT` | 请求结构错误 |
+| `INVALID_DATA_TYPE` | `FIX_AND_RESUBMIT` | dataType 非法 |
+| `ONTOLOGY_NOT_FOUND` | `FIX_AND_RESUBMIT` | 本体不存在，先修复/安装本体 |
+| `PROPERTY_NOT_FOUND` | `FIX_AND_RESUBMIT` | Property 不存在或映射错误 |
+| `OBJECT_TYPE_MISMATCH` | `FIX_AND_RESUBMIT` | ObjectType 与 Property 归属冲突 |
+| `CSV_SCHEMA_ERROR` | `FIX_AND_RESUBMIT` | CSV Header/字段格式错误，需要重新生成文件 |
+| `MINIO_OBJECT_NOT_FOUND` | `REUPLOAD_AND_RESUBMIT` | MinIO 源对象不存在 |
+| `CHECKSUM_MISMATCH` | `REUPLOAD_AND_RESUBMIT` | 文件内容已变化/损坏，不能覆盖原 objectKey 后直接 retry |
+| `SOURCE_FILE_EXPIRED` | `REUPLOAD_AND_RESUBMIT` | 已超过源文件硬 TTL，原 Task 不再保证可恢复 |
+| `MINIO_READ_FAILED` | `RETRY` | 已存在对象的临时读取失败 |
+| `EMBEDDING_FAILED` | `RETRY` | Embedding 服务超时/5xx 等临时失败 |
+| `VECTOR_WRITE_FAILED` | `RETRY` | GaussVector 临时写入失败，组合键 UPSERT 可幂等恢复 |
+| `SEARCH_WRITE_FAILED` | `RETRY` | OpenSearch 临时写入失败，可按确定性 `_id` 幂等恢复 |
+| `VERIFY_FAILED` | `RETRY` | 双写后校验失败，可从 Verify/补写阶段恢复 |
+| `PUBLISH_FAILED` | `RETRY` | Generation 发布阶段临时失败，可从发布阶段恢复 |
 
-任务级错误通过 `ERROR_CODE / ERROR_MESSAGE` 写入 `T_OAG_INDEX_TASK`；记录级错误至少保留 taskId、objectKey/rowNumber 或 recordIndex、Property 标识（Enum 为 propertyId，Instance 为 propertyid）、objectTypeId、必要时脱敏后的 value、errorCode、errorMessage。
+表中的“建议业务动作”是接口设计建议，不是服务端布尔重试判定。业务可以按自身 SLA、重试次数、错误码组合和文件范围制定更严格策略，但不得依赖 `errorMessage` 自然语言文本做自动化决策。
+
+Task 失败时：
+
+```text
+ERROR_CODE
+  → 兼容主错误码
+
+ERROR_CODE_LIST
+  → 本次执行去重后的稳定错误码集合
+
+FILE_LIST
+  → 完整输入文件 objectKey 列表
+
+ERR_FILE_LIST
+  → 本次失败、重试时应优先处理的 objectKey 列表
+
+FILE_RETENTION_UNTIL
+  → 原 MinIO 文件可恢复窗口的硬截止时间
+```
+
+对于 MINIO Task，业务侧如果选择 retry，OAG 默认只重处理 `ERR_FILE_LIST`；如果失败发生在 VERIFY/PUBLISH 等 Task 级阶段，则按 `STAGE + CHECKPOINT` 恢复而不是机械重读全部文件。
+
+任务级错误通过 `ERROR_CODE / ERROR_CODE_LIST / ERROR_MESSAGE` 写入 `T_OAG_INDEX_TASK`；记录级错误至少保留 taskId、objectKey/rowNumber 或 recordIndex、Property 标识（Enum 为 propertyId，Instance 为 propertyid）、objectTypeId、必要时脱敏后的 value、errorCode、errorMessage。
 
 `GET /v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/errors` 继续按单任务分页返回记录级错误，避免将百万条错误塞入任务主表。
 
@@ -2841,12 +2969,13 @@ oag_index_task_duration
 oag_import_records_total
 oag_import_failed_records
 oag_import_deduplicated_records
+oag_import_retry_requested_total
+oag_import_source_file_expired_total
 oag_minio_read_bytes
 oag_embedding_qps
 oag_vector_write_qps
 oag_opensearch_write_qps
 ```
-
 ---
 
 ## 3.17 端到端时序
@@ -2881,17 +3010,18 @@ sequenceDiagram
 4. **两类入口使用 `dataType=METADATA_ENUM/INSTANCE_VALUE` 显式区分数据。**
 5. **REST/CSV 核心定位字段与第 2.8/2.10 节一致，不接受外部 vector/type；动态 Enum 导入不再接收 name，synonyms 使用换行分隔平铺字符串。**
 6. **DataSync → MinIO 数据文件统一使用 UTF-8 CSV。**
-7. **DataSync 与 OAG 约定专用 MinIO Bucket；使用 S3 API 和 Path-style 访问。**
+7. **DataSync 与 OAG 约定专用 MinIO Bucket；使用 S3 API 和 Path-style 访问；同一个 Task 的 files[] 必须位于同一 Bucket。**
 8. **索引任务必须先持久化到 GaussDB `T_OAG_INDEX_TASK`，再异步执行。**
-9. **任务查询以 GaussDB 为事实来源。**
+9. **任务查询以 GaussDB 为事实来源；`FILE_LIST / ERR_FILE_LIST / ERROR_CODE_LIST` 在数据库以 TEXT JSON Array 存储，在 API 以 Array[String] 返回。**
 10. **REST 和文件导入共享 Normalize/Dedup/Embedding/双写/Verify/Publish Pipeline。**
 11. **百万/千万级数据默认走 MinIO CSV Streaming，不通过超大 JSON Body。**
 12. **GaussVector/OpenSearch 不使用分布式事务，通过唯一键、幂等、Verify 和任务重试保证一致性。**
 13. **GaussVector 使用 `(objectTypeId, propertyId/propertyid, value)` 组合唯一索引和 `INSERT ... ON DUPLICATE KEY UPDATE`，保证重复导入覆盖而不是新增向量。**
 14. **任务查询、重试、取消统一提供批量接口；批量操作逐 task 返回结果，允许部分成功。**
-15. **批量重试以服务端 `retryable` 为最终判断，并公开可重试/不可重试错误码分类。**
-16. **批量取消幂等处理已经取消的任务；终态成功/失败任务不再进入取消流程。**
-
+15. **重试决策归业务侧：业务根据 `status + errorCode/errorCodes + fileList/errFileList + fileRetentionUntil` 选择 task；OAG 不再返回服务端布尔重试标记。**
+16. **OAG 重试接口只校验 Task 状态、重试次数、Checkpoint 和源文件存在性/完整性；MINIO Task 默认只重处理失败文件集合。**
+17. **DataSync/业务侧拥有源 CSV 生命周期；OAG 不主动删除源文件，MinIO Lifecycle 作为硬 TTL 兜底；OAG 仅清理自身 staging/cache 临时文件。**
+18. **批量取消幂等处理已经取消的任务；终态成功/失败任务不再进入取消流程。**
 ---
 
 ## 3.19 兼容与迁移说明
@@ -2919,7 +3049,7 @@ sourceType = REST | MINIO
 importMode = FULL_REPLACE | INCREMENTAL
 ```
 
-动态枚举和实例列值共享协议、任务、去重、Embedding 和双存储能力，同时保留 REST 的动态性和 MinIO CSV 的规模能力。任务管理采用 batch-query / batch-retry / batch-cancel，数据写入采用数据库级组合键 UPSERT，使接口幂等与存储幂等形成闭环。
+动态枚举和实例列值共享协议、任务、去重、Embedding 和双存储能力，同时保留 REST 的动态性和 MinIO CSV 的规模能力。任务管理采用 batch-query / batch-retry / batch-cancel；业务根据稳定错误码和失败文件列表决定是否重试，OAG 负责技术前置校验和失败文件恢复；DataSync/业务拥有源 CSV 生命周期，MinIO Lifecycle 提供硬 TTL 兜底。数据写入继续采用数据库级组合键 UPSERT，使接口幂等、重试幂等与存储幂等形成闭环。
 
 # 4. Query Understanding 与 6 路召回
 
