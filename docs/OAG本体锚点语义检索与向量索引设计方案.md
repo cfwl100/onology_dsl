@@ -1441,14 +1441,13 @@ POST
 
 ### 3.3.3 索引导入与任务接口清单
 
-| 场景         | Method | URI                                                           | OpenAPI operationId        | 说明                              |
-| ---------- | ------ | ------------------------------------------------------------- | -------------------------- | ------------------------------- |
-| REST 批量导入  | POST   | `/v1/onto-retrieval/{ontologyId}/index-data/notice`           | `batchImportIndexData`     | Body 直接提交 Enum/Instance records |
-| MinIO 文件导入 | POST   | `/v1/onto-retrieval/{ontologyId}/index-data/file-import`      | `importIndexDataFromMinio` | 注册已经上传到 MinIO 的 CSV 文件          |
-| 批量查询任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/batch-query`     | `batchQueryIndexTasks`     | Body 传 taskIds，批量查询持久化任务状态和进度   |
-| 批量重试任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/batch-retry`     | `batchRetryIndexTasks`     | 业务基于错误码与失败文件选择 task，OAG 校验状态和源文件可恢复性，允许部分成功      |
-| 批量取消任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/batch-cancel`    | `batchCancelIndexTasks`    | 逐 task 请求取消，允许部分成功              |
-| 查询错误       | GET    | `/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/errors` | `listIndexTaskErrors`      | 分页查询任务记录级错误                     |
+| 场景       | Method | URI                                                           | OpenAPI operationId        | 说明                                          |
+| -------- | ------ | ------------------------------------------------------------- | -------------------------- | ------------------------------------------- |
+| 索引数据通知接口 | POST   | `/v1/onto-retrieval/{ontologyId}/index-data/notice`           | `importIndexDataFromMinio` | 注册已经上传到 MinIO 的 CSV 文件                      |
+| 批量查询任务   | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/query`           | `batchQueryIndexTasks`     | Body 传 taskIds，批量查询持久化任务状态和进度               |
+| 批量重试任务   | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/retry`           | `batchRetryIndexTasks`     | 业务基于错误码与失败文件选择 task，OAG 校验状态和源文件可恢复性，允许部分成功 |
+| 批量取消任务   | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/cancel`          | `batchCancelIndexTasks`    | 逐 task 请求取消，允许部分成功                          |
+
 
 所有导入接口采用异步任务模型：
 
@@ -1645,8 +1644,8 @@ propertyId,objectTypeId,value,display_zh,display_en,display_lang_1,display_lang_
 
 | CSV 字段               | 目标字段                 | 说明                             |
 | -------------------- | -------------------- | ------------------------------ |
-| `propertyId`        | `propertyId`        | 引用 Enum 的 Property.id          |
-| `objectTypeId`     | `objectTypeId`     | Property 所属 ObjectType.id      |
+| `property_id`        | `property_id`        | 引用 Enum 的 Property.id          |
+| `property_id`        | `property_id`        | Property 所属 ObjectType.id      |
 | `value`              | `value`              | 真实枚举值                          |
 | `display_zh`         | `display_zh`         | 中文 display                     |
 | `display_en`         | `display_en`         | 英文 display                     |
@@ -1676,10 +1675,9 @@ propertyid,objectTypeId,value,language,op
 
 | CSV 字段           | 目标字段             | 说明                  |
 | ---------------- | ---------------- | ------------------- |
-| `propertyid`    | `propertyid`    | 所属 Property.id      |
-| `objectTypeId` | `objectTypeId` | 所属 ObjectType.id    |
+| `property_id`    | `property_id`    | 所属 Property.id      |
+| `object_type_id` | `object_type_id` | 所属 ObjectType.id    |
 | `value`          | `value`          | 真实 Instance Value   |
-| `language`       | `language`       | 可选语言标记，未知使用 `und` |
 | `op`             | 导入操作             | `UPSERT` / `DELETE` |
 
 ```csv
