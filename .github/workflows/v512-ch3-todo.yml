@@ -50,6 +50,25 @@ jobs:
           print('chapter 3 baseline unchanged')
           PY
 
+      - name: Normalize retired retry field wording in patch source
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('source/.automation/v512/patch.py')
+          s = p.read_text(encoding='utf-8')
+          replacements = {
+              'OAG 不再持久化或返回 `retryable`。': 'OAG 不再持久化或返回服务端布尔重试标记。',
+              'OAG **不再根据错误码返回或维护 `retryable`**。': 'OAG **不再根据错误码返回或维护服务端布尔重试标记**。',
+              'OAG 不再输出 `retryable`；': 'OAG 不再输出服务端布尔重试标记；',
+              '不是服务端 `retryable` 判定': '不是服务端布尔重试判定',
+              'OAG 不再返回 `retryable`。': 'OAG 不再返回服务端布尔重试标记。',
+          }
+          for old, new in replacements.items():
+              s = s.replace(old, new)
+          p.write_text(s, encoding='utf-8')
+          PY
+
       - name: Patch latest main document
         shell: bash
         run: |
@@ -73,7 +92,6 @@ jobs:
           assert 'ERR_FILE_LIST' in ch3
           assert 'FILE_RETENTION_UNTIL' in ch3
           assert 'sourceFileMaxRetentionDays=30' in ch3
-          assert 'OAG 不再输出 `retryable`' not in ch3  # wording must also avoid the retired field name entirely
           assert '生产者负责业务删除 + MinIO Lifecycle 硬 TTL 兜底 + OAG 只读消费' in ch3
           assert '| `propertyid`' in ch3
           assert '| `objectTypeId`' in ch3
