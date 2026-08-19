@@ -1,7 +1,7 @@
 # OAG 面向本体种子节点的语义检索、混合排序与本体子图构建设计方案
 
-> 版本：V5.12  
-> 目标：在不丢失既有 Bulk Import、混合召回、RRF、LLM 精排和子图算法设计的基础上，进一步对齐现有 OMS 本体 JSON 资产：统一三张索引表命名，种子节点和枚举值直接内嵌 `synonyms`，固定支持中文/英文并额外支持最多 2 种语言，实例索引只保存去重后的真实列值。  
+> 版本：V5.13  
+> 目标：在不丢失既有 Bulk Import、混合召回、RRF、LLM 精排和子图算法设计的基础上，进一步对齐现有 OMS 本体 JSON 资产，并补齐手动构建、OAC 数据抽取、MinIO 文件通知的对外接口及全量/增量组合：统一三张索引表命名，种子节点和枚举值直接内嵌 `synonyms`，固定支持中文/英文并额外支持最多 2 种语言，实例索引只保存去重后的真实列值。  
 > 核心决策：**ObjectType/Property = 种子节点；SynonymType 在 OMS 中保留多语言源结构，OAG 物理索引中的 `synonyms` 统一为 LF 分隔的平铺字符串且不建立独立物理行；Metadata Evidence 只承载 Enum Value；Instance Evidence 只承载真实 Instance Value；种子节点使用 `id`，Enum/Instance 统一使用 `propertyid + objectTypeId` 表达本体归属；每个 Semantic Unit 默认 6 路一次 Weighted RRF。**
 
 ---
@@ -10,7 +10,7 @@
 
 1. 设计目标、术语与总体架构  
 2. 数据模型与索引结构  
-3. 索引构建与入库  
+3. 索引构建、OAC 数据抽取与入库接口组合  
 4. Query Understanding 与 6 路召回  
 5. LLM 精排与最终检索结果  
 6. 种子节点投影与本体子图构建  
@@ -1155,7 +1155,7 @@ Metadata 与 Instance 分表的一个核心原因就是允许 ANN 算法独立�
 
 # 3. 索引构建与入库
 
-本章定义 OAG 索引数据的构建、动态导入、MinIO 文件交互、任务持久化和双存储发布机制。索引数据仍由第 2 章定义的三张物理表承载：
+本章定义 OAG 索引数据的构建、OAC 抽取编排、MinIO 文件交互、任务持久化和双存储发布机制。索引数据仍由第 2 章定义的三张物理表承载：
 
 ```text
 t_oag_{ontology_id} → ObjectType / Property 种子节点
@@ -1163,17 +1163,20 @@ t_oag_enum_{ontology_id} → Enum Value
 t_oag_instance_{ontology_id} → Instance Value
 ```
 
-其中种子节点索引由 OAG 根据 OMS 本体资产构建；Enum Value 和 Instance Value 除随本体构建外，还支持运行期动态导入。动态数据导入统一为两类入口：
+其中种子节点索引由 OAG 根据 OMS 本体资产构建；Enum Value 和 Instance Value 还支持运行期抽取与导入。有 OAC 的部署统一推荐两类写入入口：
 
 ```text
-REST 批量导入
-  → 适合动态枚举值、少量/中等规模实例值的实时或准实时更新
+手动构建/更新索引
+  → 管理台或 OMS 调用 OAG
+  → OAG 为动态数据编排 OAC 抽取
+  → 适合首次全量创建、人工全量重建和人工触发增量更新
 
-MinIO CSV 文件导入
-  → 适合 DataSync 生成的大规模枚举值/实例值全量或增量文件
+MinIO 索引数据通知
+  → OAC、DataSync 或业务服务先上传不可变 CSV，再通知 OAG 读取
+  → 适合大数据量首次全量和非首次增量
 ```
 
-两类入口最终进入同一套 OAG Import Pipeline，不允许分别维护两套 Embedding、去重、GaussVector/OpenSearch 写入和任务状态逻辑。
+OAC 小批/分页结果、MinIO CSV 以及无 OAC 部署保留的兼容 REST Batch 最终都进入同一套 OAG Import Pipeline，不允许分别维护多套 Embedding、去重、GaussVector/OpenSearch 写入和任务状态逻辑。
 
 ---
 
@@ -1181,11 +1184,26 @@ MinIO CSV 文件导入
 
 ### OMS
 
-负责提供 ObjectType / Property、多语言 display/description、SynonymType、EnumType / values[]、Property→ObjectType 和 Property→EnumType 等本体资产。OAG 根据 OMS 资产构建 `t_oag_{ontology_id}` 和静态 Enum Value 索引。
+负责提供 ObjectType / Property、多语言 display/description、SynonymType、EnumType / values[]、Property→ObjectType 和 Property→EnumType 等本体资产。OAG 根据 OMS 资产构建 `t_oag_{ontology_id}` 和静态 Enum Value 索引；App 安装事件可以触发 OAG 创建种子索引任务。
 
-### DataSync
+### OAC
 
-DataSync 负责大规模实例数据准备与文件交付：
+OAC 是有 OAC 部署中的业务数据统一抽取入口，负责：
+
+```text
+接收 OAG 下发的 tenantId / ontologyId / taskId / dataType / importMode
+根据本体映射访问业务数据源
+抽取 Enum Value / Instance Value
+执行源侧基础标准化和必要去重
+小数据量以小批或游标分页方式交付 OAG
+大数据量生成 UTF-8 CSV、上传 MinIO 并调用 OAG 通知接口
+```
+
+OAC 不负责 Embedding、GaussVector/OpenSearch 写入、Generation 发布或索引任务终态管理。手动构建场景由 OAG 编排 OAC，管理台/OMS 不直接调用 OAC 查询业务数据。
+
+### DataSync / 业务数据服务
+
+DataSync 或业务数据服务负责定时/事件驱动的大规模实例数据准备与文件交付：
 
 ```text
 读取 capability=DIMENSION 的 Property
@@ -1195,19 +1213,20 @@ DataSync 负责大规模实例数据准备与文件交付：
 建立 value 与 Property 的映射
 生成 UTF-8 CSV 文件
 上传到双方约定的 MinIO Bucket
-调用 OAG 文件导入接口注册导入任务
+调用 OAG index-data/notice 注册导入任务
 ```
 
-当 DataSync 能够产生动态 Enum Value 时，也可以使用相同 CSV 文件接口提交 `METADATA_ENUM` 数据。
+当生产者能够产生动态 Enum Value 时，也可以使用相同 CSV 通知接口提交 `METADATA_ENUM` 数据。
 
-DataSync 不负责 Embedding、GaussVector/OpenSearch Client、ANN/全文索引构建、OAG 物理表创建、Generation 发布以及最终去重和双存储一致性。
+DataSync/业务数据服务不负责 Embedding、GaussVector/OpenSearch Client、ANN/全文索引构建、OAG 物理表创建、Generation 发布以及最终去重和双存储一致性。
 
 ### OAG
 
 OAG 统一负责：
 
 ```text
-API / 文件导入任务创建
+对外 API 和索引任务创建
+OMS 资产读取与 OAC 抽取编排
 GaussDB 任务状态持久化
 请求 / CSV Schema 校验
 Enum / Instance 本体映射校验
@@ -1218,52 +1237,56 @@ OpenSearch Bulk Write
 ANN / 全文索引校验
 Generation 发布
 在线检索
-任务重试 / 取消 / 错误查询
+任务查询 / 重试 / 取消 / 错误查询
 ```
 
-> **DataSync/业务系统只提交业务语义数据，OAG 负责把业务数据转换为可检索的向量/全文索引。**
+> **OMS/OAC/DataSync/业务服务提供资产或业务语义数据，OAG 统一把数据转换为可检索的向量/全文索引并对发布结果负责。**
 
 ---
 
 ## 3.2 总体索引构建架构
 
 ```mermaid
-flowchart LR
-    subgraph SRC[数据来源]
+flowchart TD
+    subgraph T[触发方]
+      APP[App 安装或 OMS 事件]
+      MANUAL[手动构建或更新]
+      SYNC[定时或事件同步]
+    end
+
+    subgraph S[数据准备]
       OMS[OMS 本体资产]
-      APP[业务系统 / 动态枚举]
-      DS[DataSync]
+      OAC[OAC 抽取]
+      PRODUCER[DataSync 或业务服务]
+      MINIO[(MinIO)]
     end
-    subgraph IN[导入入口]
-      REST[REST Batch Import]
-      CSV[CSV]
-      MINIO[(双方约定 MinIO Bucket)]
-      FILEAPI[MinIO File Import API]
-    end
-    subgraph OAG[OAG Index Engine]
+
+    subgraph G[OAG Index Engine]
       API[Onto Retrieval API]
-      TM[IndexTaskManager]
-      DB[(GaussDB<br/>T_OAG_INDEX_TASK)]
-      VAL[Schema Validator]
-      NORM[Normalize / Dedup]
-      EMB[Embedding]
-      GV[GaussVector Writer]
-      OS[OpenSearch Writer]
-      VERIFY[Index Verifier]
-      PUB[Generation Publisher]
+      TASK[IndexTaskManager 和 GaussDB]
+      PIPE[Validate Normalize Dedup Embedding]
+      STORE[GaussVector 和 OpenSearch]
+      PUB[Verify 和 Publish]
     end
-    OMS --> API
-    APP --> REST --> API
-    DS --> CSV -->|S3 putObject| MINIO
-    DS --> FILEAPI --> API
-    MINIO -->|S3 getObject / stream| VAL
-    API --> TM --> DB
-    TM --> VAL --> NORM --> EMB --> GV --> VERIFY --> PUB
-    NORM --> OS --> VERIFY
-    PUB --> TM --> DB
+
+    APP --> API
+    MANUAL --> API
+    API --> TASK
+    TASK --> OMS
+    TASK --> OAC
+    OAC -->|小批或分页| PIPE
+    OAC -->|大数据 putObject| MINIO
+    SYNC --> PRODUCER
+    PRODUCER -->|putObject| MINIO
+    OAC -->|notice| API
+    PRODUCER -->|notice| API
+    MINIO -->|stream| PIPE
+    OMS --> PIPE
+    PIPE --> STORE --> PUB --> TASK
 ```
 
-两条入口仅在数据进入 OAG 前不同：REST 直接在 Body 中携带 records；MinIO 接口只携带 bucket/objectKey/checksum 等文件描述，OAG 从 MinIO 流式读取 CSV。从 `Schema Validator` 开始，两类入口使用完全相同的处理链路。
+三种数据交付方式只在进入 OAG 前不同：OMS 提供种子资产，OAC 可以交付小批/分页记录，OAC/DataSync/业务服务可以通过 MinIO 交付大文件。从 `Schema Validator` 开始统一使用 Normalize/Dedup/Embedding/双写/Verify/Publish 流水线。
+
 ## 3.3 统一 REST API 规范
 
 OAG 对外接口统一使用 Namespace：
@@ -1283,7 +1306,7 @@ Content-Type: application/json
 Accept: application/json
 ```
 
-MinIO 文件导入接口自身仍使用 JSON 注册文件，不通过 `multipart/form-data` 直接上传大文件；CSV 先由 DataSync 上传到双方约定的 MinIO Bucket，再调用 `file-import`。
+MinIO 文件导入接口自身仍使用 JSON 注册文件，不通过 `multipart/form-data` 直接上传大文件；CSV 先由 DataSync 上传到双方约定的 MinIO Bucket，再调用 `index-data/notice`。
 
 #### 公共 Path 参数
 
@@ -1443,7 +1466,8 @@ POST
 
 | 场景       | Method | URI                                                           | OpenAPI operationId        | 说明                                          |
 | -------- | ------ | ------------------------------------------------------------- | -------------------------- | ------------------------------------------- |
-| 索引数据通知接口 | POST   | `/v1/onto-retrieval/{ontologyId}/index-data/notice`           | `importIndexDataFromMinio` | 注册已经上传到 MinIO 的 CSV 文件                      |
+| 手动构建/更新索引 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/build` | `buildOrUpdateIndexFromOac` | 创建全量/增量任务；动态数据由 OAG 编排 OAC 抽取 |
+| 索引数据通知接口 | POST   | `/v1/onto-retrieval/{ontologyId}/index-data/notice`           | `importIndexDataFromMinio` | 注册已上传到 MinIO 的 CSV；可用 `triggerTaskId` 关联手动构建任务 |
 | 批量查询任务   | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/query`           | `batchQueryIndexTasks`     | Body 传 taskIds，批量查询持久化任务状态和进度               |
 | 批量重试任务   | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/retry`           | `batchRetryIndexTasks`     | 业务基于错误码与失败文件选择 task，OAG 校验状态和源文件可恢复性，允许部分成功 |
 | 批量取消任务   | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/cancel`          | `batchCancelIndexTasks`    | 逐 task 请求取消，允许部分成功                          |
@@ -1455,7 +1479,279 @@ POST
 提交请求 → 同步基础参数校验 → GaussDB 创建/复用 T_OAG_INDEX_TASK → HTTP 202 + taskId → 后台执行
 ```
 
-统一数据类型：`METADATA_ENUM`、`INSTANCE_VALUE`；统一导入模式：`FULL_REPLACE`、`INCREMENTAL`；统一记录操作：`UPSERT`、`DELETE`。
+手动构建的统一数据类型为 `SEED_NODE`、`METADATA_ENUM`、`INSTANCE_VALUE`；文件通知的数据类型为 `METADATA_ENUM`、`INSTANCE_VALUE`。统一导入模式为 `FULL_REPLACE`、`INCREMENTAL`，统一记录操作为 `UPSERT`、`DELETE`。
+
+---
+
+## 3.4 对外接口边界与调用组合
+
+本节给出索引写入侧的唯一推荐用法。调用方不需要理解 Embedding、GaussVector/OpenSearch 双写或 Generation 发布，只需要根据数据来源和规模选择入口，并通过任务接口闭环跟踪结果。
+
+### 3.4.1 对外接口清单
+
+| 接口角色 | Method | URI | 直接调用方 | 是否创建任务 | 用途 |
+|---|---|---|---|---|---|
+| 语义检索 | POST | `/v1/onto-retrieval/{ontologyId}/subgraph/semantic-search` | Agent、Skill、业务应用 | 否 | 查询已经发布的索引并返回语义结果与本体子图 |
+| 手动构建/更新索引 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/build` | 管理台、OMS、运维平台 | 是，每个 `dataType` 一个任务 | 首次全量创建、人工全量重建或人工触发增量更新；动态数据由 OAG 编排 OAC 抽取 |
+| MinIO 索引数据通知 | POST | `/v1/onto-retrieval/{ontologyId}/index-data/notice` | OAC、DataSync、业务数据服务 | 是；关联已有构建任务时复用原任务 | 文件已上传 MinIO 后通知 OAG 读取；适用于大数据量首次全量和后续增量 |
+| 批量查询任务 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/query` | 上述任务发起方 | 否 | 查询进度、终态、错误码及失败文件 |
+| 批量重试任务 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/retry` | 上述任务发起方 | 复用原任务 | 对可恢复失败任务进行幂等重试 |
+| 批量取消任务 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/cancel` | 上述任务发起方 | 复用原任务 | 请求取消尚未进入终态的任务 |
+
+边界约束：
+
+1. 有 OAC 的部署中，管理台/OMS 不直接访问业务库，也不把抽取后的大量业务记录塞进 OAG 请求体；调用手动构建接口后，由 OAG 调用 OAC 完成数据抽取。
+2. OAC、DataSync 和业务数据服务只负责抽取、源侧基础标准化、生成文件与通知；**Embedding、去重终检、向量/全文双写、校验和发布始终由 OAG 完成**。
+3. MinIO 是数据交付通道，不是任务状态源。任务状态以 GaussDB `T_OAG_INDEX_TASK` 为准。
+4. REST Batch 仅作为无 OAC 部署或存量调用方的兼容入口，不属于有 OAC 场景的推荐对外组合，不得形成另一套索引流水线。
+
+### 3.4.2 场景选择矩阵
+
+| 场景 | 外部调用组合 | `importMode` | 数据交付 | 说明 |
+|---|---|---|---|---|
+| App 安装触发种子索引 | OMS 内部事件 → OAG；外部不调用写入接口 | `FULL_REPLACE` | OMS 本体资产 | 构建 `SEED_NODE`；需要动态枚举/实例时继续按下述 OAC 组合执行 |
+| 首次全量，预计不超过配置阈值 | 手动构建 → 任务查询 | `FULL_REPLACE` | OAC 小批/分页返回 OAG | 图中建议阈值为 10000 条；实际值由服务配置，不由调用方传入 |
+| 首次全量，大数据量 | 手动构建 → OAC 上传 MinIO 并通知 OAG → 任务查询 | `FULL_REPLACE` | MinIO CSV | 手动调用方只调用构建接口；OAC 使用 `triggerTaskId` 自动关联原任务 |
+| 人工触发索引更新，小数据量 | 手动构建 → 任务查询 | `INCREMENTAL` | OAC 小批/分页返回 OAG | OAC 返回 UPSERT/DELETE 变化记录 |
+| 人工触发索引更新，大数据量 | 手动构建 → OAC 上传 MinIO 并通知 OAG → 任务查询 | `INCREMENTAL` | MinIO CSV | 仍复用手动构建产生的任务 |
+| 定时/事件增量同步 | 生产者上传 MinIO → 数据通知 → 任务查询 | `INCREMENTAL` | MinIO CSV | DataSync/业务服务直接调用通知接口，不需要先调用手动构建接口 |
+| 已有全量文件的首次导入或重建 | 生产者上传 MinIO → 数据通知 → 任务查询 | `FULL_REPLACE` | MinIO CSV | 已有文件时不要重复触发 OAC 抽取 |
+| 索引完成后的业务查询 | 语义检索 | - | 已发布索引 | 只有任务成功且 Generation 发布后，新数据才对检索可见 |
+
+`FULL_REPLACE` 与 `INCREMENTAL` 的选择规则：首次创建或明确重建选择 `FULL_REPLACE`；非首次、只提交变化数据选择 `INCREMENTAL`。不要用 `INCREMENTAL` 模拟首次全量，也不要把日常增量错误地提交为全量替换。
+
+### 3.4.3 组合一：手动构建/更新索引，经 OAC 抽取
+
+#### 3.4.3.1 外部接口
+
+```http
+POST /v1/onto-retrieval/{ontologyId}/index-tasks/build
+Content-Type: application/json
+x-gde-tenant-id: {tenantId}
+```
+
+`IndexBuildRequest`：
+
+| 参数 | 类型 | 必选 | 默认值 | 约束与说明 |
+|---|---|---|---|---|
+| `requestId` | String | 是 | - | 调用方幂等键，1～256 字符 |
+| `dataTypes` | Array[String] | 是 | - | 非空且不重复；可选 `SEED_NODE`、`METADATA_ENUM`、`INSTANCE_VALUE` |
+| `importMode` | String | 是 | - | `FULL_REPLACE` 或 `INCREMENTAL` |
+| `reason` | String | 否 | - | 人工操作原因或工单号，最大 512 字符；只用于审计 |
+
+请求示例：
+
+```json
+{
+  "requestId": "manual-build-20260820-000001",
+  "dataTypes": ["SEED_NODE", "METADATA_ENUM", "INSTANCE_VALUE"],
+  "importMode": "FULL_REPLACE",
+  "reason": "首次创建本体检索索引"
+}
+```
+
+路由规则：
+
+- `SEED_NODE`：OAG 读取 OMS 本体资产构建，不访问业务库。
+- `METADATA_ENUM`、`INSTANCE_VALUE`：有 OAC 时由 OAG 调用 OAC；调用方不能改为直接访问业务库。
+- OAG 为每个 `dataType` 创建一个可独立查询、重试和取消的持久化任务。相同 `requestId` 和相同请求语义返回同一组任务。
+
+HTTP `202 Accepted` 响应示例：
+
+```json
+{
+  "ontologyId": "dtmi.ontology.xxx.1",
+  "requestId": "manual-build-20260820-000001",
+  "status": "ACCEPTED",
+  "tasks": [
+    {"taskId": "task-seed-001", "dataType": "SEED_NODE", "sourceType": "OMS", "stage": "CREATED"},
+    {"taskId": "task-enum-001", "dataType": "METADATA_ENUM", "sourceType": "OAC", "stage": "WAITING_SOURCE"},
+    {"taskId": "task-instance-001", "dataType": "INSTANCE_VALUE", "sourceType": "OAC", "stage": "WAITING_SOURCE"}
+  ]
+}
+```
+
+OpenAPI 3.0.3 Path 定义：
+
+```yaml
+/v1/onto-retrieval/{ontologyId}/index-tasks/build:
+  post:
+    operationId: buildOrUpdateIndexFromOac
+    summary: 手动触发本体索引全量构建或增量更新
+    parameters:
+      - $ref: '#/components/parameters/OntologyId'
+      - $ref: '#/components/parameters/TenantId'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IndexBuildRequest'
+    responses:
+      '202':
+        description: 构建任务已接受
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IndexBuildAcceptedResponse'
+      '400': { $ref: '#/components/responses/BadRequest' }
+      '404': { $ref: '#/components/responses/NotFound' }
+      '409': { $ref: '#/components/responses/Conflict' }
+      '429': { $ref: '#/components/responses/TooManyRequests' }
+      '500': { $ref: '#/components/responses/InternalError' }
+      '503': { $ref: '#/components/responses/ServiceUnavailable' }
+```
+
+#### 3.4.3.2 OAG 与 OAC 的内部协作契约
+
+手动调用方不直接调用 OAC。OAG 向 OAC 下发抽取请求时至少传递 `tenantId / ontologyId / taskId / requestId / dataType / importMode`，OAC 根据本体到物理数据源的映射抽取 Enum/Instance 值，并选择交付方式：
+
+```text
+结果量 <= inlineThreshold（建议初值 10000，可配置）
+  → OAC 以小批或游标分页方式交付给 OAG
+
+结果量 > inlineThreshold
+  → OAC 生成不可变 UTF-8 CSV 并上传 MinIO
+  → OAC 调用 index-data/notice，携带 triggerTaskId 关联原构建任务
+```
+
+阈值属于 OAG/OAC 服务配置和容量治理项；外部构建接口不暴露 `inlineThreshold`，避免不同调用方产生不一致的分流行为。
+
+#### 3.4.3.3 小数据量时序
+
+```mermaid
+sequenceDiagram
+    participant C as 管理台或 OMS
+    participant G as OAG
+    participant A as OAC
+    participant S as 业务数据源
+    participant I as 索引存储
+
+    C->>G: POST index-tasks/build
+    G-->>C: 202 + tasks[]
+    G->>A: 按 taskId 请求抽取
+    A->>S: 查询并标准化
+    S-->>A: 小批结果
+    A-->>G: 小批或分页记录
+    G->>G: 校验、去重、Embedding
+    G->>I: GaussVector/OpenSearch 双写并发布
+    C->>G: POST index-tasks/query
+    G-->>C: SUCCESS 或失败详情
+```
+
+#### 3.4.3.4 大数据量时序
+
+```mermaid
+sequenceDiagram
+    participant C as 管理台或 OMS
+    participant G as OAG
+    participant A as OAC
+    participant M as MinIO
+    participant I as 索引存储
+
+    C->>G: POST index-tasks/build
+    G-->>C: 202 + taskId
+    G->>A: 请求抽取并传递 taskId
+    A->>A: 生成不可变 CSV
+    A->>M: putObject
+    A->>G: POST index-data/notice + triggerTaskId
+    G->>M: getObject 流式读取
+    G->>G: 校验、去重、Embedding
+    G->>I: 双写、校验并发布
+    C->>G: POST index-tasks/query
+    G-->>C: SUCCESS 或失败详情
+```
+
+大数据量分支中，管理台/OMS **不得再次调用** `index-data/notice`；该通知由持有文件信息和校验和的 OAC 发起，从而避免一个文件被重复注册为两个任务。
+
+### 3.4.4 组合二：MinIO 文件就绪后通知 OAG
+
+调用方已经拥有全量或增量文件时，不调用手动构建接口。推荐组合为：
+
+```text
+生成不可变 CSV
+  → S3 putObject
+  → POST index-data/notice
+  → POST index-tasks/query
+  → 失败时按错误码选择 retry、修复并重新提交或放弃
+```
+
+直接增量通知示例：
+
+```json
+{
+  "requestId": "datasync-incremental-20260820-000042",
+  "dataType": "INSTANCE_VALUE",
+  "importMode": "INCREMENTAL",
+  "files": [
+    {
+      "bucket": "oag-retrieval-import",
+      "objectKey": "onto-retrieval/t1/dtmi.ontology.xxx.1/INSTANCE_VALUE/datasync-incremental-20260820-000042/part-00000.csv",
+      "fileFormat": "CSV",
+      "encoding": "UTF-8",
+      "hasHeader": true,
+      "rowCount": 235000,
+      "size": 18922107,
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  ]
+}
+```
+
+OAC 关联手动任务的大文件通知示例：
+
+```json
+{
+  "requestId": "oac-delivery-20260820-000001",
+  "triggerTaskId": "task-instance-001",
+  "dataType": "INSTANCE_VALUE",
+  "importMode": "FULL_REPLACE",
+  "files": [
+    {
+      "bucket": "oag-retrieval-import",
+      "objectKey": "onto-retrieval/t1/dtmi.ontology.xxx.1/INSTANCE_VALUE/task-instance-001/part-00000.csv",
+      "fileFormat": "CSV",
+      "encoding": "UTF-8",
+      "hasHeader": true,
+      "rowCount": 1200000,
+      "size": 96733142,
+      "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    }
+  ]
+}
+```
+
+`triggerTaskId` 规则：
+
+- 不传：OAG 新建 `SOURCE_TYPE=MINIO` 的导入任务，适用于 DataSync/业务服务直接提交全量文件或增量文件。
+- 传入：OAG 校验任务属于相同 `tenantId + ontologyId`，且 `dataType/importMode` 与原任务一致；校验通过后把文件绑定到原任务，不再创建第二个任务。
+- 同一 `triggerTaskId` 重复提交完全相同的 `files + sha256` 时返回原任务；内容不同则返回 `409 IDEMPOTENCY_CONFLICT`。
+- 该字段只允许 OAC 或受信任的数据生产服务使用；普通管理台不应自行拼装。
+
+### 3.4.5 调用方完成条件
+
+所有写入接口返回 `202` 后，调用方必须继续使用任务查询接口，不能把 `202` 当作索引已经可检索：
+
+```text
+status=0
+  → 继续查询；stage 可用于展示当前阶段
+
+status=1 且 stage=FINISHED
+  → 索引已校验并发布，可以调用 semantic-search 验证
+
+status=2
+  → 根据 errorCodes、errFileList、fileRetentionUntil 决定 retry 或重新生成文件
+
+status=3
+  → 任务已取消；如仍需构建，使用新的 requestId 重新提交
+```
+
+推荐调用组合固定为：
+
+```text
+手动/OAC：build → query → [retry | cancel] → semantic-search
+文件直送：putObject → notice → query → [retry | cancel] → semantic-search
+```
 
 ---
 
@@ -1464,7 +1760,7 @@ POST
 对于百万/千万级实例值及大规模枚举数据，默认使用 MinIO 文件通道：
 
 ```text
-DataSync → 生成 CSV → S3 putObject 到双方约定 Bucket → POST file-import
+OAC / DataSync / 业务服务 → 生成 CSV → S3 putObject 到双方约定 Bucket → POST index-data/notice
          → OAG 创建任务 → S3 getObject 流式读取
          → Normalize/Dedup/Embedding/Bulk Write/Verify/Publish
 ```
@@ -1473,7 +1769,7 @@ DataSync → 生成 CSV → S3 putObject 到双方约定 Bucket → POST file-im
 
 #### 典型场景
 
-DataSync 定期或按事件生成大规模枚举/实例列值文件，数据量不适合通过 HTTP JSON Body 直接提交，需要使用 MinIO 进行解耦、流式消费和失败重试。
+OAC、DataSync 或业务数据服务定期或按事件生成大规模枚举/实例列值文件，数据量不适合通过 HTTP JSON Body 直接提交，需要使用 MinIO 进行解耦、流式消费和失败重试。
 
 #### 接口功能
 
@@ -1501,7 +1797,8 @@ POST
 
 | 参数名称         | 类型                  | 是否必选 | 默认值 | OpenAPI 约束                              | 说明                  |
 | :----------- | :------------------ | :--- | :-- | :-------------------------------------- | :------------------ |
-| `requestId`  | String              | 是    | -   | `minLength: 1`，`maxLength: 256`         | 调用方幂等键              |
+| `requestId`  | String              | 是    | -   | `minLength: 1`，`maxLength: 256`         | 调用方幂等键；文件直接导入时用于创建任务，关联任务时用于通知幂等 |
+| `triggerTaskId` | String           | 否    | -   | `maxLength: 256`                         | 手动构建的大文件交付时关联已有任务；不传则创建新的 MinIO 任务 |
 | `dataType`   | String              | 是    | -   | `enum: [METADATA_ENUM, INSTANCE_VALUE]` | 当前文件批次的数据类型         |
 | `importMode` | String              | 是    | -   | `enum: [FULL_REPLACE, INCREMENTAL]`     | 全量替换或增量导入           |
 | `files`      | Array[MinioCsvFile] | 是    | -   | `minItems: 1`                           | 待导入的 MinIO CSV 对象列表 |
@@ -1519,7 +1816,7 @@ POST
 | `size`       | Integer(int64) | 否    | -       | `minimum: 0`                     | 预期文件字节数；OAG 可通过 `headObject` 二次校验       |
 | `sha256`     | String         | 是    | -       | `pattern: ^[A-Fa-f0-9]{64}$`     | 文件 SHA-256；用于不可变校验和 Chunk 稳定标识          |
 
-MinIO 的 `endpoint / accessKey / secretKey` 属于部署配置，不属于业务 API 参数，禁止通过 `file-import` Body 传输。
+MinIO 的 `endpoint / accessKey / secretKey` 属于部署配置，不属于业务 API 参数，禁止通过 `index-data/notice` Body 传输。
 
 #### 请求示例
 
@@ -1545,13 +1842,7 @@ MinIO 的 `endpoint / accessKey / secretKey` 属于部署配置，不属于业�
 
 #### 返回参数
 
-复用表 8 `AsyncTaskAcceptedResponse`，其中：
-
-```text
-sourceType = MINIO
-status     = 0
-stage      = CREATED
-```
+复用表 8 `AsyncTaskAcceptedResponse`。未传 `triggerTaskId` 时新建任务并返回 `sourceType=MINIO, stage=CREATED`；传入 `triggerTaskId` 时绑定并返回原任务，原任务的 `sourceType` 保持 `OAC`，`stage` 从 `WAITING_SOURCE` 推进到 `VALIDATING`。两种情况均返回 `status=0`。
 
 #### 响应示例
 
@@ -1605,6 +1896,7 @@ stage      = CREATED
 ```text
 ontologyId / tenant 基础校验
 requestId 幂等校验
+triggerTaskId 存在时校验 tenant/ontology/dataType/importMode 与原任务一致
 dataType / importMode Schema 校验
 files 非空
 bucket allowlist 校验
@@ -1619,7 +1911,7 @@ MinIO 对象存在性、size/checksum、CSV Header、逐行 Schema、Ontology Ma
 
 ## 3.6 CSV 文件结构
 
-所有 DataSync → MinIO 的索引数据文件统一采用：
+所有 OAC / DataSync / 业务服务 → MinIO 的索引数据文件统一采用：
 
 ```text
 CSV
@@ -1630,7 +1922,7 @@ UTF-8
 LF 作为推荐换行符
 ```
 
-CSV 不包含 `vector`，因为向量必须由 OAG 使用当前配置的 Embedding 模型统一生成；CSV 也不要求携带物理 `type`，因为 `file-import.dataType` 已唯一确定目标类型。
+CSV 不包含 `vector`，因为向量必须由 OAG 使用当前配置的 Embedding 模型统一生成；CSV 也不要求携带物理 `type`，因为 `index-data/notice.dataType` 已唯一确定目标类型。
 
 文本中出现逗号、双引号或换行时按标准 CSV quoting 规则转义；双引号使用 `""` 表示。`synonyms` 不再保存 JSON Object。逻辑上仍以 LF 分隔；为保证“一条业务记录对应一条 CSV 物理行”，CSV 中推荐写入两个字符 `\n` 作为转义分隔，OAG 读取字段后一次性转换为 LF，再执行 trim/去空/去重。
 
@@ -1718,14 +2010,14 @@ S3Configuration.builder()
 
 ### 3.7.3 文件不可变与校验
 
-文件上传成功并提交 `file-import` 后，同一个 `objectKey` 在任务结束前不得覆盖。OAG 至少校验 Bucket 允许列表、Object 是否存在、size、sha256、CSV Header、dataType 对应 Schema 和可选 rowCount。百万/千万级数据必须流式读取，不允许一次性加载完整 CSV 到 JVM Heap。
+文件上传成功并提交 `index-data/notice` 后，同一个 `objectKey` 在任务结束前不得覆盖。OAG 至少校验 Bucket 允许列表、Object 是否存在、size、sha256、CSV Header、dataType 对应 Schema 和可选 rowCount。百万/千万级数据必须流式读取，不允许一次性加载完整 CSV 到 JVM Heap。
 
-同一个 `file-import` Task 内的所有 `files[]` 必须使用同一个 Bucket；`FILE_LIST` 只保存 objectKey 列表，Bucket 统一保存在任务级 `BUCKET_NAME`。如果调用方需要跨 Bucket 导入，应拆成多个 Task，避免任务持久化和重试语义出现歧义。
+同一个 `index-data/notice` Task 内的所有 `files[]` 必须使用同一个 Bucket；`FILE_LIST` 只保存 objectKey 列表，Bucket 统一保存在任务级 `BUCKET_NAME`。如果调用方需要跨 Bucket 导入，应拆成多个 Task，避免任务持久化和重试语义出现歧义。
 
 任务执行期间 OAG 将 `FILE_LIST` 视为不可变输入快照：
 
 ```text
-file-import.files[]
+index-data/notice.files[]
   ↓
 校验 bucket/objectKey/sha256
   ↓
@@ -1742,7 +2034,7 @@ file-import.files[]
 
 | 角色 | 职责 |
 |---|---|
-| DataSync / 业务系统 | 上传源 CSV；任务终态后根据业务重试、审计和留存要求决定是否提前删除源文件 |
+| OAC / DataSync / 业务系统 | 上传源 CSV；任务终态后根据业务重试、审计和留存要求决定是否提前删除源文件 |
 | OAG | 只读消费源 CSV；记录 `FILE_LIST / ERR_FILE_LIST / FILE_RETENTION_UNTIL`；不主动删除生产者源文件 |
 | MinIO / 平台 | 对 OAG 导入 Bucket/Prefix 配置 Lifecycle，作为最大保留期限的硬兜底 |
 
@@ -1769,7 +2061,7 @@ MinIO 最大保留时间必须配置化，例如可从 `sourceFileMaxRetentionDa
 OAG 自己产生的 staging/chunk/cache 临时文件不属于生产者源文件，可以由 OAG 独立定期清理。
 ## 3.8 GaussDB 索引任务持久化
 
-索引任务不能只保存在 JVM 内存中。REST Batch Import、MinIO File Import、OMS 全量索引构建都必须创建持久化任务。
+索引任务不能只保存在 JVM 内存中。手动构建、OAC 抽取、兼容 REST Batch、MinIO 文件通知和 OMS 全量索引构建都必须创建持久化任务。
 
 沿用现有关系：
 
@@ -1793,7 +2085,7 @@ T_OAG_INDEX_TASK (N)
 | `TASK_ID`             | VARCHAR(256)  | PK       | 索引任务 ID |
 | `REQUEST_ID`          | VARCHAR(256)  | NOT NULL | 调用幂等键 |
 | `DATA_TYPE`           | VARCHAR(64)   | NOT NULL | `SEED_NODE` / `METADATA_ENUM` / `INSTANCE_VALUE` |
-| `SOURCE_TYPE`         | VARCHAR(32)   | NOT NULL | `OMS` / `REST` / `MINIO` |
+| `SOURCE_TYPE`         | VARCHAR(32)   | NOT NULL | `OMS` / `OAC` / `REST` / `MINIO` |
 | `IMPORT_MODE`         | VARCHAR(32)   |          | `FULL_REPLACE` / `INCREMENTAL` |
 | `STATUS`              | INT           | NOT NULL | 0 构建中；1 成功；2 失败；3 已取消 |
 | `STAGE`               | VARCHAR(64)   |          | 当前执行阶段 |
@@ -1801,8 +2093,8 @@ T_OAG_INDEX_TASK (N)
 | `SUCCESS_COUNT`       | BIGINT        |          | 成功记录数 |
 | `FAILED_COUNT`        | BIGINT        |          | 失败记录数 |
 | `SKIPPED_COUNT`       | BIGINT        |          | 去重/过滤记录数 |
-| `BUCKET_NAME`         | VARCHAR(256)  |          | MinIO Bucket；REST/OMS 可空；同一 Task 只允许一个 Bucket |
-| `OBJECT_PREFIX`       | VARCHAR(1024) |          | MinIO 公共 Object Prefix；REST/OMS 可空 |
+| `BUCKET_NAME`         | VARCHAR(256)  |          | MinIO Bucket；OMS、OAC 小批/分页、REST 可空；同一 Task 只允许一个 Bucket |
+| `OBJECT_PREFIX`       | VARCHAR(1024) |          | MinIO 公共 Object Prefix；OMS、OAC 小批/分页、REST 可空 |
 | `FILE_LIST`           | TEXT          |          | JSON String Array；当前 Task 的全部 objectKey，MINIO 任务使用 |
 | `ERR_FILE_LIST`       | TEXT          |          | JSON String Array；本次执行失败或需要重处理的 objectKey |
 | `FILE_RETENTION_UNTIL`| TIMESTAMP     |          | 源文件硬 TTL 对应的最晚可恢复时间；REST/OMS 可空 |
@@ -1842,7 +2134,7 @@ ERR_FILE_LIST
   → 当前执行失败、重试时优先处理的文件集合
 ```
 
-`STATUS=0/1/2` 继续兼容现有构建中/成功/失败语义，`STATUS=3` 表示取消；更细执行阶段写入 `STAGE`：`CREATED / VALIDATING / READING / DEDUPLICATING / EMBEDDING / WRITING_VECTOR / WRITING_SEARCH / VERIFYING / PUBLISHING / CANCEL_REQUESTED / FINISHED`。
+`STATUS=0/1/2` 继续兼容现有构建中/成功/失败语义，`STATUS=3` 表示取消；更细执行阶段写入 `STAGE`：`CREATED / WAITING_SOURCE / EXTRACTING / VALIDATING / READING / DEDUPLICATING / EMBEDDING / WRITING_VECTOR / WRITING_SEARCH / VERIFYING / PUBLISHING / CANCEL_REQUESTED / FINISHED`。
 
 ### 3.8.2 索引与约束
 
@@ -2137,7 +2429,7 @@ PUBLISH_FAILED / VERIFY_FAILED 等文件已处理完成的 Task 级失败
   → 优先从对应 STAGE/Checkpoint 继续，不强制重新读取全部 CSV
 ```
 
-业务如果判断原始文件内容本身需要修正，不应覆盖原 objectKey 后调用 retry；应生成新文件、新 requestId，并重新调用 `file-import`。
+业务如果判断原始文件内容本身需要修正，不应覆盖原 objectKey 后调用 retry；应生成新文件、新 requestId，并重新调用 `index-data/notice`。
 
 批量操作采用**逐任务判定、允许部分成功**。一个 Task 因状态、重试次数或源文件过期被拒绝，不阻断其他 Task。
 
@@ -2383,6 +2675,52 @@ components:
         maxLength: 256
 
   schemas:
+    IndexBuildRequest:
+      type: object
+      required: [requestId, dataTypes, importMode]
+      properties:
+        requestId:
+          type: string
+          minLength: 1
+          maxLength: 256
+        dataTypes:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            enum: [SEED_NODE, METADATA_ENUM, INSTANCE_VALUE]
+        importMode:
+          type: string
+          enum: [FULL_REPLACE, INCREMENTAL]
+        reason:
+          type: string
+          maxLength: 512
+      additionalProperties: false
+
+    IndexBuildAcceptedTask:
+      type: object
+      required: [taskId, dataType, sourceType, stage]
+      properties:
+        taskId: { type: string }
+        dataType: { type: string, enum: [SEED_NODE, METADATA_ENUM, INSTANCE_VALUE] }
+        sourceType: { type: string, enum: [OMS, OAC] }
+        stage: { type: string, enum: [CREATED, WAITING_SOURCE] }
+      additionalProperties: false
+
+    IndexBuildAcceptedResponse:
+      type: object
+      required: [ontologyId, requestId, status, tasks]
+      properties:
+        ontologyId: { type: string }
+        requestId: { type: string }
+        status: { type: string, enum: [ACCEPTED] }
+        tasks:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/IndexBuildAcceptedTask' }
+      additionalProperties: false
+
     SemanticSearchRequest:
       type: object
       required: [query]
@@ -2523,6 +2861,7 @@ components:
       required: [requestId, dataType, importMode, files]
       properties:
         requestId: { type: string, minLength: 1, maxLength: 256 }
+        triggerTaskId: { type: string, maxLength: 256 }
         dataType: { type: string, enum: [METADATA_ENUM, INSTANCE_VALUE] }
         importMode: { type: string, enum: [FULL_REPLACE, INCREMENTAL] }
         files:
@@ -2538,8 +2877,8 @@ components:
         ontologyId: { type: string }
         taskId: { type: string }
         requestId: { type: string }
-        dataType: { type: string, enum: [METADATA_ENUM, INSTANCE_VALUE] }
-        sourceType: { type: string, enum: [REST, MINIO] }
+        dataType: { type: string, enum: [SEED_NODE, METADATA_ENUM, INSTANCE_VALUE] }
+        sourceType: { type: string, enum: [OMS, OAC, REST, MINIO] }
         status: { type: integer, enum: [0, 1, 2, 3] }
         stage: { type: string }
 
@@ -2552,7 +2891,7 @@ components:
         taskId: { type: string }
         requestId: { type: string }
         dataType: { type: string, enum: [SEED_NODE, METADATA_ENUM, INSTANCE_VALUE] }
-        sourceType: { type: string, enum: [OMS, REST, MINIO] }
+        sourceType: { type: string, enum: [OMS, OAC, REST, MINIO] }
         importMode: { type: string, enum: [FULL_REPLACE, INCREMENTAL], nullable: true }
         status: { type: integer, enum: [0, 1, 2, 3] }
         stage: { type: string }
@@ -2810,7 +3149,7 @@ OAG 重启后从 GaussDB 找到未完成任务，根据 `SOURCE_TYPE + CHECKPOIN
 
 ## 3.10 统一 Import Pipeline
 
-无论数据来自 REST 还是 MinIO，统一执行：
+无论数据来自 OMS、OAC 小批/分页、兼容 REST Batch 还是 MinIO，统一执行：
 
 ```text
 Input → SchemaValidator → OntologyMappingValidator → Normalizer → Deduplicator
@@ -2882,12 +3221,12 @@ INCREMENTAL 对同一业务唯一键在 GaussVector 使用 `INSERT ... ON DUPLIC
 
 | 数据规模/场景 | 首选入口 | 原因 |
 |---|---|---|
-| 单条/几十条动态枚举 | REST Batch | 延迟低、无需文件 |
-| 数百/数千动态枚举 | REST Batch 或 MinIO CSV | 按频率和批量选择 |
-| 少量实例增量 | REST Batch | 调用简单 |
-| 大规模实例全量 | MinIO CSV | 避免大 JSON、支持流式/断点 |
-| 百万/千万实例值 | MinIO CSV | 文件不可变、易重试、适合批处理 |
-| 定期 DataSync 同步 | MinIO CSV | DataSync/OAG 解耦 |
+| 首次全量或人工重建 | `index-tasks/build` | 由 OAG 编排 OMS/OAC；调用方无需准备记录 |
+| 少量动态枚举/实例更新 | `index-tasks/build` + OAC 小批/分页 | 有 OAC 时不由业务直接向 OAG 提交 records |
+| 大规模实例全量 | MinIO CSV + `index-data/notice` | 避免大 JSON、支持流式/断点 |
+| 百万/千万实例值 | MinIO CSV + `index-data/notice` | 文件不可变、易重试、适合批处理 |
+| 定期 DataSync/业务增量 | MinIO CSV + `index-data/notice` | 生产者与 OAG 解耦 |
+| 无 OAC 的存量小批调用 | 兼容 REST Batch | 仅兼容，不作为有 OAC 部署的推荐入口 |
 
 > **REST 解决动态性，MinIO CSV 解决规模；两者不能演化成两套索引实现。**
 
@@ -2982,21 +3321,23 @@ oag_opensearch_write_qps
 
 ```mermaid
 sequenceDiagram
-    participant DS as DataSync
+    participant P as OAC 或数据生产者
     participant M as MinIO
     participant A as OAG API
     participant D as GaussDB
     participant W as Import Worker
 
-    DS->>M: S3 putObject CSV
-    DS->>A: POST file-import(bucket, objectKey, sha256)
-    A->>D: INSERT T_OAG_INDEX_TASK
-    A-->>DS: 202 + taskId
+    P->>M: S3 putObject CSV
+    P->>A: POST index-data/notice
+    A->>D: 创建任务或绑定 triggerTaskId
+    A-->>P: 202 + taskId
     W->>M: S3 getObject stream
     W->>D: checkpoint/progress
     W->>W: validate/dedup/embed/write/verify
     W->>D: STATUS=SUCCESS/FAILED
 ```
+
+手动构建的 OAC 小数据与大数据分支见 3.4.3；定时/事件增量及已有全量文件直送见 3.4.4。
 
 ---
 
@@ -3004,36 +3345,42 @@ sequenceDiagram
 
 1. **所有 OAG REST API 统一使用 `/v1/onto-retrieval/{ontologyId}` Namespace。**
 2. **语义检索固定使用 `POST /subgraph/semantic-search`。**
-3. **Enum/Instance 动态索引支持 REST Batch 和 MinIO CSV 两类入口。**
-4. **两类入口使用 `dataType=METADATA_ENUM/INSTANCE_VALUE` 显式区分数据。**
-5. **REST/CSV 核心定位字段与第 2.8/2.10 节一致，不接受外部 vector/type；动态 Enum 导入不再接收 name，synonyms 使用换行分隔平铺字符串。**
-6. **DataSync → MinIO 数据文件统一使用 UTF-8 CSV。**
-7. **DataSync 与 OAG 约定专用 MinIO Bucket；使用 S3 API 和 Path-style 访问；同一个 Task 的 files[] 必须位于同一 Bucket。**
-8. **索引任务必须先持久化到 GaussDB `T_OAG_INDEX_TASK`，再异步执行。**
-9. **任务查询以 GaussDB 为事实来源；`FILE_LIST / ERR_FILE_LIST / ERROR_CODE_LIST` 在数据库以 TEXT JSON Array 存储，在 API 以 Array[String] 返回。**
-10. **REST 和文件导入共享 Normalize/Dedup/Embedding/双写/Verify/Publish Pipeline。**
-11. **百万/千万级数据默认走 MinIO CSV Streaming，不通过超大 JSON Body。**
-12. **GaussVector/OpenSearch 不使用分布式事务，通过唯一键、幂等、Verify 和任务重试保证一致性。**
-13. **GaussVector 使用 `(objectTypeId, propertyId/propertyid, value)` 组合唯一索引和 `INSERT ... ON DUPLICATE KEY UPDATE`，保证重复导入覆盖而不是新增向量。**
-14. **任务查询、重试、取消统一提供批量接口；批量操作逐 task 返回结果，允许部分成功。**
-15. **重试决策归业务侧：业务根据 `status + errorCode/errorCodes + fileList/errFileList + fileRetentionUntil` 选择 task；OAG 不再返回服务端布尔重试标记。**
-16. **OAG 重试接口只校验 Task 状态、重试次数、Checkpoint 和源文件存在性/完整性；MINIO Task 默认只重处理失败文件集合。**
-17. **DataSync/业务侧拥有源 CSV 生命周期；OAG 不主动删除源文件，MinIO Lifecycle 作为硬 TTL 兜底；OAG 仅清理自身 staging/cache 临时文件。**
-18. **批量取消幂等处理已经取消的任务；终态成功/失败任务不再进入取消流程。**
+3. **有 OAC 时，首次创建、人工重建和人工更新统一调用 `POST /index-tasks/build`，由 OAG 编排 OAC 抽取动态数据。**
+4. **大数据量首次全量和非首次增量统一采用“先上传不可变 CSV，再调用 `POST /index-data/notice`”的组合。**
+5. **手动构建产生大文件时由 OAC 携带 `triggerTaskId` 发起通知并复用原任务；管理台/OMS 不重复通知。**
+6. **`SEED_NODE` 从 OMS 读取；`METADATA_ENUM`、`INSTANCE_VALUE` 在有 OAC 时从 OAC 抽取或由受信任生产者通过 MinIO 交付。**
+7. **首次创建或重建使用 `FULL_REPLACE`；非首次变化数据使用 `INCREMENTAL`。**
+8. **OAC、DataSync 和业务服务不生成 vector；所有 Embedding 均由 OAG 使用当前生效模型统一完成。**
+9. **CSV 核心定位字段与第 2.8/2.10 节一致，不接受外部 vector/type；动态 Enum 导入不再接收 name，synonyms 使用换行分隔平铺字符串。**
+10. **MinIO 数据文件统一使用 UTF-8 CSV；同一个 Task 的 `files[]` 必须位于同一 Bucket。**
+11. **生产者与 OAG 约定专用 MinIO Bucket，并使用 S3 API 和 Path-style 访问。**
+12. **索引任务必须先持久化到 GaussDB `T_OAG_INDEX_TASK`，再异步执行。**
+13. **任务查询以 GaussDB 为事实来源；`FILE_LIST / ERR_FILE_LIST / ERROR_CODE_LIST` 在数据库以 TEXT JSON Array 存储，在 API 以 Array[String] 返回。**
+14. **OMS、OAC 小批/分页、兼容 REST Batch 和 MinIO 文件共用 Normalize/Dedup/Embedding/双写/Verify/Publish Pipeline。**
+15. **百万/千万级数据默认走 MinIO CSV Streaming，不通过超大 JSON Body。**
+16. **GaussVector/OpenSearch 不使用分布式事务，通过唯一键、幂等、Verify 和任务重试保证一致性。**
+17. **GaussVector 使用 `(objectTypeId, propertyId/propertyid, value)` 组合唯一索引和 `INSERT ... ON DUPLICATE KEY UPDATE`，保证重复导入覆盖而不是新增向量。**
+18. **任务查询、重试、取消统一提供批量接口；批量操作逐 task 返回结果，允许部分成功。**
+19. **重试决策归业务侧：业务根据 `status + errorCode/errorCodes + fileList/errFileList + fileRetentionUntil` 选择 task；OAG 不返回服务端布尔重试标记。**
+20. **OAG 重试接口只校验 Task 状态、重试次数、Checkpoint 和源文件存在性/完整性；MinIO Task 默认只重处理失败文件集合。**
+21. **OAC/DataSync/业务侧拥有源 CSV 生命周期；OAG 不主动删除源文件，MinIO Lifecycle 作为硬 TTL 兜底；OAG 仅清理自身 staging/cache 临时文件。**
+22. **批量取消幂等处理已经取消的任务；终态成功/失败任务不再进入取消流程。**
+
 ---
 
 ## 3.19 兼容与迁移说明
 
-本次只统一 API、动态导入、CSV 文件协议和任务持久化，不改变第 2 章已经确定的三类物理索引和向量化规则。
+本次增加手动构建入口、OAC 抽取编排和 `triggerTaskId` 文件关联语义，不改变第 2 章已经确定的三类物理索引和向量化规则。
 
 ```text
 历史 Ontologies Namespace → 统一 Onto Retrieval Namespace
-历史单一 Instance Import Job → batch-import / file-import + index-tasks
-历史文件导入格式 → DataSync 文件统一为 UTF-8 CSV
+历史人工直连业务库 → index-tasks/build → OAG 编排 OAC
+历史单一 Instance Import Job → index-data/notice + index-tasks
+历史文件导入格式 → OAC/DataSync/业务服务统一输出 UTF-8 CSV
 旧内存任务状态 → GaussDB T_OAG_INDEX_TASK 权威状态
 ```
 
-若已有线上调用方需要兼容窗口，可以在 Controller 层临时保留旧 URI 转发，但文档、SDK 和新代码只使用新 Namespace；兼容接口不得形成独立任务和索引处理链路。
+若已有线上调用方需要兼容窗口，可以在 Controller 层临时保留旧 URI 或 REST Batch 转发，但文档、SDK 和新代码只使用新组合；兼容入口不得形成独立任务和索引处理链路。
 
 ---
 
@@ -3042,12 +3389,12 @@ sequenceDiagram
 索引导入统一抽象为：
 
 ```text
-dataType   = METADATA_ENUM | INSTANCE_VALUE
-sourceType = REST | MINIO
+dataType   = SEED_NODE | METADATA_ENUM | INSTANCE_VALUE
+sourceType = OMS | OAC | REST | MINIO
 importMode = FULL_REPLACE | INCREMENTAL
 ```
 
-动态枚举和实例列值共享协议、任务、去重、Embedding 和双存储能力，同时保留 REST 的动态性和 MinIO CSV 的规模能力。任务管理采用 batch-query / batch-retry / batch-cancel；业务根据稳定错误码和失败文件列表决定是否重试，OAG 负责技术前置校验和失败文件恢复；DataSync/业务拥有源 CSV 生命周期，MinIO Lifecycle 提供硬 TTL 兜底。数据写入继续采用数据库级组合键 UPSERT，使接口幂等、重试幂等与存储幂等形成闭环。
+对外推荐组合只有两组：手动场景使用 `build → query → [retry|cancel]`，文件场景使用 `putObject → notice → query → [retry|cancel]`。有 OAC 时，OAG 负责抽取编排，OAC 负责业务数据访问；无论小批交付还是 MinIO 文件交付，OAG 始终统一完成去重、Embedding、双存储写入、校验与发布。业务根据稳定错误码和失败文件列表决定是否重试，生产者拥有源 CSV 生命周期，MinIO Lifecycle 提供硬 TTL 兜底。数据库级组合键 UPSERT 使接口幂等、重试幂等与存储幂等形成闭环。
 
 # 4. Query Understanding 与 6 路召回
 
