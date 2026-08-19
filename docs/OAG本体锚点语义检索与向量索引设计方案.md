@@ -1466,7 +1466,6 @@ POST
 
 | 场景       | Method | URI                                                           | OpenAPI operationId        | 说明                                          |
 | -------- | ------ | ------------------------------------------------------------- | -------------------------- | ------------------------------------------- |
-| 手动构建/更新索引 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/build` | `buildOrUpdateIndexFromOac` | 创建全量/增量任务；动态数据由 OAG 编排 OAC 抽取 |
 | 索引数据通知接口 | POST   | `/v1/onto-retrieval/{ontologyId}/index-data/notice`           | `importIndexDataFromMinio` | 注册已上传到 MinIO 的 CSV；可用 `triggerTaskId` 关联手动构建任务 |
 | 批量查询任务   | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/query`           | `batchQueryIndexTasks`     | Body 传 taskIds，批量查询持久化任务状态和进度               |
 | 批量重试任务   | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/retry`           | `batchRetryIndexTasks`     | 业务基于错误码与失败文件选择 task，OAG 校验状态和源文件可恢复性，允许部分成功 |
@@ -1492,7 +1491,6 @@ POST
 | 接口角色 | Method | URI | 直接调用方 | 是否创建任务 | 用途 |
 |---|---|---|---|---|---|
 | 语义检索 | POST | `/v1/onto-retrieval/{ontologyId}/subgraph/semantic-search` | Agent、Skill、业务应用 | 否 | 查询已经发布的索引并返回语义结果与本体子图 |
-| 手动构建/更新索引 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/build` | 管理台、OMS、运维平台 | 是，每个 `dataType` 一个任务 | 首次全量创建、人工全量重建或人工触发增量更新；动态数据由 OAG 编排 OAC 抽取 |
 | MinIO 索引数据通知 | POST | `/v1/onto-retrieval/{ontologyId}/index-data/notice` | OAC、DataSync、业务数据服务 | 是；关联已有构建任务时复用原任务 | 文件已上传 MinIO 后通知 OAG 读取；适用于大数据量首次全量和后续增量 |
 | 批量查询任务 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/query` | 上述任务发起方 | 否 | 查询进度、终态、错误码及失败文件 |
 | 批量重试任务 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/retry` | 上述任务发起方 | 复用原任务 | 对可恢复失败任务进行幂等重试 |
@@ -1798,7 +1796,6 @@ POST
 | 参数名称         | 类型                  | 是否必选 | 默认值 | OpenAPI 约束                              | 说明                  |
 | :----------- | :------------------ | :--- | :-- | :-------------------------------------- | :------------------ |
 | `requestId`  | String              | 是    | -   | `minLength: 1`，`maxLength: 256`         | 调用方幂等键；文件直接导入时用于创建任务，关联任务时用于通知幂等 |
-| `triggerTaskId` | String           | 否    | -   | `maxLength: 256`                         | 手动构建的大文件交付时关联已有任务；不传则创建新的 MinIO 任务 |
 | `dataType`   | String              | 是    | -   | `enum: [METADATA_ENUM, INSTANCE_VALUE]` | 当前文件批次的数据类型         |
 | `importMode` | String              | 是    | -   | `enum: [FULL_REPLACE, INCREMENTAL]`     | 全量替换或增量导入           |
 | `files`      | Array[MinioCsvFile] | 是    | -   | `minItems: 1`                           | 待导入的 MinIO CSV 对象列表 |
