@@ -1,6 +1,6 @@
 # OAG 本体子图语义检索接口 v2 设计规范
 
-> 文档版本：V2.2  
+> 文档版本：V2.3  
 > 更新日期：2026-08-19  
 > 接口版本：v2  
 > 参考：[OAG 本体锚点语义检索与向量索引设计方案](./OAG本体锚点语义检索与向量索引设计方案.md)
@@ -11,7 +11,7 @@
 
 - 接口地址和调用方式；
 - Header、Path 和 Body 参数；
-- `entityExtractContext` 动态实体提取上下文；
+- `searchContext` 动态实体提取与语义消歧上下文；
 - `extractedEntities` 结构；
 - ObjectType、Property、Relationship、RelationshipProperty、Enum Value 和 Instance Value 的检索规则；
 - 自适应检索与子图扩展策略；
@@ -24,7 +24,7 @@
 
 本体子图语义检索接口 v2。接口以自然语言问题 `query`、业务侧提取好的实体 `extractedEntities`，或者两者的组合作为检索输入，在指定本体中检索语义相关元素并构建本体子图。
 
-当只传递 `query` 时，OAG 可以结合可选的 `entityExtractContext`，从自然语言问题中提取 ObjectType、Property、Relationship、RelationshipProperty、Enum Value 和 Instance Value 等语义提示。
+当只传递 `query` 时，OAG 可以结合可选的 `searchContext`，从自然语言问题中提取 ObjectType、Property、Relationship、RelationshipProperty、Enum Value 和 Instance Value 等语义提示，并在召回后使用该上下文进行语义消歧。
 
 当传递 `extractedEntities` 时，OAG 使用业务 Skill 根据原始问题和专家查询路径生成的结构化提示查找种子节点、枚举值和实例值，并按照指定策略构建本体子图。
 
@@ -49,7 +49,7 @@ Action
 3. 关键词、向量或混合召回；
 4. 检索结果向 ObjectType/Property 种子节点投影；
 5. `minimal`、`khop` 或 `component` 子图构建；
-6. 使用业务动态注入的 few-shot、专家子图和领域术语辅助实体提取；
+6. 使用业务动态注入的 few-shot、专家子图和领域术语辅助实体提取及后续语义消歧；
 7. 按请求扩展 Function 和 Action。
 
 接口不负责：
@@ -93,11 +93,11 @@ Action
 
 接口支持三种输入模式：
 
-| 模式 | query | extractedEntities | entityExtractContext | 处理方式 |
+| 模式 | query | extractedEntities | searchContext | 处理方式 |
 |---|---:|---:|---:|---|
-| 自然语言模式 | 有 | 无 | 可选 | OAG 结合 `query` 和提取上下文生成语义提示并检索 |
-| 结构化模式 | 无 | 有 | 不生效 | OAG 直接使用业务 Skill 提取结果检索 |
-| 组合模式 | 有 | 有 | 可选 | `extractedEntities` 提供专家路径和强类型提示，`query` 和提取上下文用于补充提取、消歧和排序 |
+| 自然语言模式 | 有 | 无 | 可选 | OAG 结合 `query` 和 `searchContext` 提取实体，并用其进行候选消歧 |
+| 结构化模式 | 无 | 有 | 可选 | OAG 使用业务 Skill 提取结果检索，`searchContext` 用于召回后的语义消歧和排序 |
+| 组合模式 | 有 | 有 | 可选 | `extractedEntities` 提供专家路径和强类型提示，`query` 与 `searchContext` 用于补充提取、消歧和排序 |
 
 约束：
 
@@ -122,7 +122,7 @@ query 和 extractedEntities 至少一个不为空
 | 参数名称 | 必选 | 数据类型 | 默认值 | 约束 | 说明 |
 |---|---:|---|---|---|---|
 | `query` | 否 | String | 无 | 1～1024 字符 | 自然语言问题；与 `extractedEntities` 至少一个不为空 |
-| `entityExtractContext` | 否 | String | 无 | 建议 1～32768 字符 | 实体提取上下文；业务可动态注入 few-shot、专家查询路径、本体子图、领域术语和其他提取提示；仅在 OAG 执行或补充实体提取时生效 |
+| `searchContext` | 否 | String | 无 | 建议 1～32768 字符 | 搜索上下文提示词；业务可动态注入 few-shot、专家查询路径、本体子图、领域术语及消歧规则，用于实体提取和后续语义消歧 |
 | `extractedEntities` | 否 | `Array<ExtractedEntity>` | 无 | 非空时 `minItems: 1` | 业务 Skill 根据原始问题和专家查询路径生成的结构化检索提示；与 `query` 至少一个不为空 |
 | `adaptiveRetrieval` | 否 | Integer | `1` | `0` 或 `1` | 是否启用自适应检索 |
 | `seedRetrievalMode` | 否 | String | `vector` | `vector`、`keyword`、`hybrid` | 种子节点及其语义证据检索模式 |
@@ -137,9 +137,9 @@ query 和 extractedEntities 至少一个不为空
 
 `includeDimAndIndicator` 不属于 v2 有效请求 Schema，不在新接口中继续定义。
 
-### 5.4 entityExtractContext 使用规则
+### 5.4 searchContext 使用规则
 
-`entityExtractContext` 是实体提取阶段的业务上下文，可以包含：
+`searchContext` 是业务动态注入的搜索上下文提示词，同时服务于实体提取和后续语义消歧，可以包含：
 
 ```text
 领域 few-shot 示例
@@ -148,16 +148,18 @@ query 和 extractedEntities 至少一个不为空
 领域对象、属性和关系术语
 业务缩写和黑话说明
 实体提取补充提示
+候选选择和语义消歧规则
 ```
 
 处理边界：
 
-1. 仅在 OAG 需要从 `query` 执行或补充实体提取时使用；
-2. 不单独满足“`query` 和 `extractedEntities` 至少一个不为空”的校验条件；
-3. 不直接作为种子节点、枚举值或实例值的检索 Query；
-4. 不覆盖接口 Schema、系统级实体提取规则和服务安全约束；
-5. 业务传入内容应被视为不可信上下文，并执行长度限制和输入规范化；
-6. 结构化模式下如果 OAG 不再执行实体提取，该字段不生效。
+1. 在 OAG 从 `query` 执行或补充实体提取时，作为实体提取上下文使用；
+2. 在种子节点、Enum Value 和 Instance Value 召回后，作为候选精排与语义消歧上下文使用；
+3. 不单独满足“`query` 和 `extractedEntities` 至少一个不为空”的校验条件；
+4. 不直接拆分为种子节点、枚举值或实例值的独立检索 Query；
+5. 不覆盖接口 Schema、系统级实体提取/消歧规则和服务安全约束；
+6. 业务传入内容应被视为不可信上下文，并执行长度限制和输入规范化；
+7. 结构化模式下即使不再执行实体提取，仍可用于召回后的语义消歧。
 
 ## 6. extractedEntities 结构
 
@@ -406,7 +408,7 @@ traceId: 8b8ce86f0f934b0d
 ```json
 {
   "query": "本月个人客户中，信用额度超过200元的账户总数是多少？",
-  "entityExtractContext": "专家查询路径：IndividualCustomer通过OWNS关联PayRelation，PayRelation通过BELONGS_TO关联Account，Account通过HAS关联CreditLimitInstance。",
+  "searchContext": "专家查询路径：IndividualCustomer通过OWNS关联PayRelation，PayRelation通过BELONGS_TO关联Account，Account通过HAS关联CreditLimitInstance。该路径用于实体提取和候选关系消歧。",
   "extractedEntities": [
     {
       "ObjectType": "IndividualCustomer",
@@ -540,7 +542,7 @@ VIP
 
 Enum/Instance 命中后投影为 Property 和 ObjectType，再参与本体子图构建。
 
-## 10. entityExtractContext 与实体提取示例
+## 10. searchContext 与实体提取/语义消歧示例
 
 实体提取结果必须保留 ObjectType 与 Property 的从属关系：Property 放在所属 ObjectType 对应的 `Properties` 数组中，禁止把不同对象的 Property 合并成无归属的全局列表。
 
@@ -554,13 +556,14 @@ Enum/Instance 命中后投影为 Property 和 ObjectType，再参与本体子图
 WhatsApp应用 7月21日的体验质量
 ```
 
-#### entityExtractContext 示例
+#### searchContext 示例
 
 ```text
 应用体验质量问数场景：
 - “WhatsApp应用”识别为 ObjectType。
 - “体验质量”和“时间”识别为 WhatsApp应用 的 Property。
 - 日期值保留在原始 query 中，不作为 Instance Value 进行向量检索。
+- 当召回多个质量或时间属性时，优先选择与应用体验质量场景一致的候选。
 ```
 
 #### 最新实体提取结果
@@ -600,7 +603,7 @@ WhatsApp应用
 show active service affecting alarm for 12JKS0885_IN_RSNM_KALIBATA3_MC with TICKETID and time occurred
 ```
 
-#### entityExtractContext 示例
+#### searchContext 示例
 
 ```text
 告警查询场景：
@@ -609,6 +612,7 @@ show active service affecting alarm for 12JKS0885_IN_RSNM_KALIBATA3_MC with TICK
 - 12JKS0885_IN_RSNM_KALIBATA3_MC 是需要检索的 Instance Value。
 - 问题中没有 Site、基站或 nativeId 信息，不得根据实例值的编码形态推断 ObjectType 或 Property。
 - 未提供确定的本体关系名称时，不创造 Relationship。
+- 候选消歧时优先保留 ALARM 的 TICKET ID 和发生时间属性，并通过实例索引命中结果解析编码值归属。
 ```
 
 #### 最新实体提取结果
@@ -668,10 +672,11 @@ ALARM
 
 1. 校验 Header、Path 和 Body 参数；
 2. 校验 `query` 和 `extractedEntities` 至少一个不为空；
-3. 当需要实体提取时，将 `entityExtractContext` 作为受限的业务上下文与 `query` 一起输入实体提取组件；
+3. 当需要实体提取时，将 `searchContext` 作为受限的业务上下文与 `query` 一起输入实体提取组件；
 4. 对所有名称和值执行 trim、Unicode Normalize 和去空；
 5. 对重复 ObjectType、Property、Relationship、Enum Value 和 Instance Value 做规范化去重；
-6. 根据调用模式生成语义检索单元。
+6. 根据调用模式生成语义检索单元；
+7. 在候选召回后，将 `searchContext` 传递给精排/消歧组件，结合 `query`、结构化实体和候选上下文选择最终语义结果。
 
 ### 11.2 检索路由
 
@@ -907,11 +912,11 @@ components:
           type: string
           minLength: 1
           maxLength: 1024
-        entityExtractContext:
+        searchContext:
           type: string
           minLength: 1
           maxLength: 32768
-          description: 业务动态注入的实体提取上下文，可包含 few-shot、专家查询路径、本体子图和领域术语
+          description: 业务动态注入的搜索上下文提示词，可包含 few-shot、专家查询路径、本体子图、领域术语和消歧规则，用于实体提取和后续语义消歧
         extractedEntities:
           type: array
           minItems: 1
@@ -1102,7 +1107,7 @@ components:
 
 1. `tenantId` 和 `ontologyId` 必须存在且满足长度要求。
 2. `query` 和 `extractedEntities` 至少一个不为空。
-3. `entityExtractContext` 不能单独满足第 2 条校验；非空时长度不超过 32768 字符。
+3. `searchContext` 不能单独满足第 2 条校验；非空时长度不超过 32768 字符。
 4. `query` 去除首尾空白后长度必须为 1～1024。
 5. 每个 `ExtractedEntity` 至少包含非空 `ObjectType`、`Relationships`、`EnumValues` 或 `InstanceValues` 中的一种。
 6. 出现 `Properties` 时必须同时提供 `ObjectType`，Property 必须归属于该 ObjectType。
@@ -1158,7 +1163,7 @@ components:
 4. 业务侧只传递对象、属性、关系和值的业务名称，不传递本体内部 ID。
 5. `Relationships` 与 `ObjectType/Properties` 平级，每条关系显式声明 `SourceObjectType` 和 `TargetObjectType`。
 6. `Relationships` 支持方向和 RelationshipProperty 名称列表。
-7. 新增 `entityExtractContext`，用于业务动态注入 few-shot、专家路径、本体子图和领域术语。
+7. 新增 `searchContext`，用于业务动态注入 few-shot、专家路径、本体子图、领域术语和消歧规则，并贯穿实体提取与后续语义消歧。
 8. 新增 `EnumValues` 和 `InstanceValues`，分别检索枚举值索引和实例值索引。
 9. 不定义 `OriginalText`、`Operator` 和 `ConstraintHint`。
 10. 比较条件、时间范围、聚合方式和单位继续保留在原始 `query` 中。
