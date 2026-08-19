@@ -1153,7 +1153,7 @@ Metadata 与 Instance 分表的一个核心原因就是允许 ANN 算法独立�
 ---
 
 
-# 3. 索引构建与 DataSync Bulk Import
+# 3. 索引构建与入库
 
 本章定义 OAG 索引数据的构建、动态导入、MinIO 文件交互、任务持久化和双存储发布机制。索引数据仍由第 2 章定义的三张物理表承载：
 
@@ -1271,8 +1271,6 @@ OAG 对外接口统一使用 Namespace：
 ```text
 /v1/onto-retrieval/{ontologyId}
 ```
-
-不再新增 `/v1/ontologies/{ontologyId}/...` 或 `/instance-evidence/import-jobs/...` 风格接口。
 
 本章接口按 **OpenAPI 3.0.3** 规范定义。所有 URI、Path/Header/Query 参数、Request Body、HTTP Status Code 和 Response Schema 都必须能够直接映射为 OpenAPI `paths / parameters / requestBody / responses / components.schemas`。
 
@@ -1496,12 +1494,12 @@ POST
 
 **表 5  IndexBatchImportRequest 参数列表**
 
-| 参数名称 | 类型 | 是否必选 | 默认值 | OpenAPI 约束 | 说明 |
-|:--|:--|:--|:--|:--|:--|
-| `requestId` | String | 是 | - | `minLength: 1`，`maxLength: 256` | 调用方幂等键 |
-| `dataType` | String | 是 | - | `enum: [METADATA_ENUM, INSTANCE_VALUE]` | 指定本批记录类型，禁止一个请求混合两类数据 |
-| `importMode` | String | 是 | - | `enum: [FULL_REPLACE, INCREMENTAL]` | 全量替换或增量导入 |
-| `records` | Array[MetadataEnumRecord] / Array[InstanceValueRecord] | 是 | - | `minItems: 1`；最大条数由 `maxRecordsPerRequest` 配置 | 记录类型必须与 `dataType` 一致 |
+| 参数名称         | 类型                                                     | 是否必选 | 默认值 | OpenAPI 约束                                    | 说明                    |
+| :----------- | :----------------------------------------------------- | :--- | :-- | :-------------------------------------------- | :-------------------- |
+| `requestId`  | String                                                 | 是    | -   | `minLength: 1`，`maxLength: 256`               | 调用方幂等键                |
+| `dataType`   | String                                                 | 是    | -   | `enum: [METADATA_ENUM, INSTANCE_VALUE]`       | 指定本批记录类型，禁止一个请求混合两类数据 |
+| `importMode` | String                                                 | 是    | -   | `enum: [FULL_REPLACE, INCREMENTAL]`           | 全量替换或增量导入             |
+| `records`    | Array[MetadataEnumRecord] / Array[InstanceValueRecord] | 是    | -   | `minItems: 1`；最大条数由 `maxRecordsPerRequest` 配置 | 记录类型必须与 `dataType` 一致 |
 
 `records` 是 OpenAPI `oneOf` 语义：
 
@@ -1783,13 +1781,13 @@ POST
 #### URI
 
 ```text
-/v1/onto-retrieval/{ontologyId}/index-data/file-import
+/v1/onto-retrieval/{ontologyId}/index-data/notice
 ```
 
 对应 Spring 接口：
 
 ```java
-@PostMapping("/v1/onto-retrieval/{ontologyId}/index-data/file-notice")
+@PostMapping("/v1/onto-retrieval/{ontologyId}/index-data/notice")
 ```
 
 #### 请求参数
@@ -1867,7 +1865,7 @@ stage      = CREATED
 #### OpenAPI 3.0.3 Path 定义
 
 ```yaml
-/v1/onto-retrieval/{ontologyId}/index-data/file-import:
+/v1/onto-retrieval/{ontologyId}/index-data/notice:
   post:
     operationId: importIndexDataFromMinio
     summary: 从 MinIO CSV 导入枚举值或实例列值
@@ -2145,7 +2143,7 @@ POST
 ##### URI
 
 ```text
-/v1/onto-retrieval/{ontologyId}/index-tasks/batch-query
+/v1/onto-retrieval/{ontologyId}/index-tasks/query
 ```
 
 ##### 请求参数
@@ -2258,7 +2256,7 @@ POST
 ##### OpenAPI 3.0.3 Path 定义
 
 ```yaml
-/v1/onto-retrieval/{ontologyId}/index-tasks/batch-query:
+/v1/onto-retrieval/{ontologyId}/index-tasks/query:
   post:
     operationId: batchQueryIndexTasks
     summary: 批量查询索引任务
@@ -2313,7 +2311,7 @@ POST
 ##### URI
 
 ```text
-/v1/onto-retrieval/{ontologyId}/index-tasks/batch-retry
+/v1/onto-retrieval/{ontologyId}/index-tasks/retry
 ```
 
 ##### 请求参数
@@ -2414,7 +2412,7 @@ POST
 ##### OpenAPI 3.0.3 Path 定义
 
 ```yaml
-/v1/onto-retrieval/{ontologyId}/index-tasks/batch-retry:
+/v1/onto-retrieval/{ontologyId}/index-tasks/retry:
   post:
     operationId: batchRetryIndexTasks
     summary: 批量重试失败的索引任务
@@ -2462,7 +2460,7 @@ POST
 ##### URI
 
 ```text
-/v1/onto-retrieval/{ontologyId}/index-tasks/batch-cancel
+/v1/onto-retrieval/{ontologyId}/index-tasks/cancel
 ```
 
 ##### 请求参数
@@ -2517,7 +2515,7 @@ POST
 ##### OpenAPI 3.0.3 Path 定义
 
 ```yaml
-/v1/onto-retrieval/{ontologyId}/index-tasks/batch-cancel:
+/v1/onto-retrieval/{ontologyId}/index-tasks/cancel:
   post:
     operationId: batchCancelIndexTasks
     summary: 批量取消索引任务
