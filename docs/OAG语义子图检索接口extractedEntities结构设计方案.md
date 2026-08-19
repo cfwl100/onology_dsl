@@ -1,6 +1,6 @@
 # OAG 本体子图语义检索接口 v2 设计规范
 
-> 文档版本：V2.1  
+> 文档版本：V2.2  
 > 更新日期：2026-08-19  
 > 接口版本：v2  
 > 参考：[OAG 本体锚点语义检索与向量索引设计方案](./OAG本体锚点语义检索与向量索引设计方案.md)
@@ -169,17 +169,28 @@ query 和 extractedEntities 至少一个不为空
 
 业务问题中的完整条件继续保留在 `query` 中。
 
+当问题中只出现实例值、但没有足够信息判断其 ObjectType 或 Property 归属时，允许生成 value-only 的 `ExtractedEntity`。OAG 必须先跨 ObjectType/Property 检索该值，命中后再使用索引记录补齐真实归属，禁止根据值的外形猜测对象类型。
+
 ### 6.2 ExtractedEntity
 
 `Relationships` 与 `ObjectType`、`Properties` 平级。关系记录必须显式包含源 ObjectType 和目标 ObjectType，不再依赖所在 `ExtractedEntity` 隐式推断源端。
 
 | 字段 | 必选 | 数据类型 | 默认值 | 说明 |
 |---|---:|---|---|---|
-| `ObjectType` | 是 | String | 无 | 对象类型名称、显示名、同义词或业务术语 |
-| `Properties` | 否 | `Array<String>` | `[]` | 当前对象相关的 Property 名称列表 |
+| `ObjectType` | 否 | String | 无 | 对象类型名称、显示名、同义词或业务术语；仅包含未绑定 Enum/Instance Value 时可以省略 |
+| `Properties` | 否 | `Array<String>` | `[]` | 当前对象相关的 Property 名称列表；存在该字段时必须同时存在 `ObjectType` |
 | `Relationships` | 否 | `Array<RelationshipHint>` | `[]` | 与 ObjectType 平级的 Relationship 路径提示；每条记录显式声明源、目标 ObjectType |
-| `EnumValues` | 否 | `Array<EnumValueHint>` | `[]` | 当前对象属性相关的枚举值提示 |
-| `InstanceValues` | 否 | `Array<InstanceValueHint>` | `[]` | 当前对象属性相关的实例列值提示 |
+| `EnumValues` | 否 | `Array<EnumValueHint>` | `[]` | 枚举值提示；ObjectType/Property 归属未知时允许单独存在 |
+| `InstanceValues` | 否 | `Array<InstanceValueHint>` | `[]` | 实例列值提示；ObjectType/Property 归属未知时允许单独存在 |
+
+每个 `ExtractedEntity` 至少包含以下一种非空内容：
+
+```text
+ObjectType
+Relationships
+EnumValues
+InstanceValues
+```
 
 ### 6.3 RelationshipHint
 
@@ -228,7 +239,7 @@ VIP
 品牌名称
 ```
 
-不应放入 `InstanceValues`：
+默认不应由通用规则自动放入 `InstanceValues`：
 
 ```text
 连续数值
@@ -240,6 +251,8 @@ UUID
 ```
 
 上述不适合向量化的内容继续保留在原始 `query` 中。
+
+如果业务上下文明确确认某个编码是需要检索的实例值，则可以放入 `InstanceValues`，但应优先使用 `keyword` 或 `hybrid` 模式进行 Exact/关键词匹配，不依赖编码字符串的向量语义。业务明确标注优先于通用形态判断，但不能据此猜测该值所属的 ObjectType 或 Property。
 
 ### 6.6 通用结构示例
 
@@ -579,21 +592,22 @@ WhatsApp应用
 
 “7月21日”是时间条件，继续保留在 `query` 中，不进入 `InstanceValues`。
 
-### 10.2 Site 活跃业务影响告警
+### 10.2 未绑定实例值的活跃业务影响告警
 
 #### Query
 
 ```text
-show active service affecting alarm for base 12JKS0885_IN_RSNM_KALIBATA3_MC with TICKETID and time occurred
+show active service affecting alarm for 12JKS0885_IN_RSNM_KALIBATA3_MC with TICKETID and time occurred
 ```
 
 #### entityExtractContext 示例
 
 ```text
 告警查询场景：
-- base 标识对应 Site，查询标识属性 nativeId。
 - alarm 对应 ALARM。
 - TICKETID 和 time occurred 分别映射为 ALARM 的“告警TICKET ID”和“告警发生时间”属性。
+- 12JKS0885_IN_RSNM_KALIBATA3_MC 是需要检索的 Instance Value。
+- 问题中没有 Site、基站或 nativeId 信息，不得根据实例值的编码形态推断 ObjectType 或 Property。
 - 未提供确定的本体关系名称时，不创造 Relationship。
 ```
 
@@ -603,15 +617,6 @@ show active service affecting alarm for base 12JKS0885_IN_RSNM_KALIBATA3_MC with
 {
   "extractedEntities": [
     {
-      "ObjectType": "Site",
-      "Properties": [
-        "nativeId"
-      ],
-      "Relationships": [],
-      "EnumValues": [],
-      "InstanceValues": []
-    },
-    {
       "ObjectType": "ALARM",
       "Properties": [
         "告警TICKET ID",
@@ -620,6 +625,15 @@ show active service affecting alarm for base 12JKS0885_IN_RSNM_KALIBATA3_MC with
       "Relationships": [],
       "EnumValues": [],
       "InstanceValues": []
+    },
+    {
+      "Relationships": [],
+      "EnumValues": [],
+      "InstanceValues": [
+        {
+          "Value": "12JKS0885_IN_RSNM_KALIBATA3_MC"
+        }
+      ]
     }
   ]
 }
@@ -628,15 +642,25 @@ show active service affecting alarm for base 12JKS0885_IN_RSNM_KALIBATA3_MC with
 从属关系：
 
 ```text
-Site
-  └─ nativeId
-
 ALARM
   ├─ 告警TICKET ID
   └─ 告警发生时间
+
+未绑定 Instance Value
+  └─ 12JKS0885_IN_RSNM_KALIBATA3_MC
 ```
 
-`12JKS0885_IN_RSNM_KALIBATA3_MC` 是 `Site.nativeId` 的条件值。由于技术标识默认不进入 Instance Value 向量索引，该值继续保留在 `query` 中。
+该结果不包含 `Site`、`BaseStation`、`nativeId` 或其他基站信息。`12JKS0885_IN_RSNM_KALIBATA3_MC` 作为未绑定 Instance Value 进入检索，由 OAG 跨 ObjectType/Property 查找真实归属；命中之前不得人为补充所属对象或属性。
+
+该值具有明显的编码形态，推荐：
+
+```json
+{
+  "seedRetrievalMode": "hybrid"
+}
+```
+
+其中 Exact/关键词通道优先保证编码值准确匹配，向量通道只作为补充召回。
 
 ## 11. OAG 处理流程
 
@@ -669,7 +693,9 @@ ALARM
 3. 不把业务名称直接当作内部 ID；
 4. 使用索引命中记录的真实归属完成种子节点投影。
 
-当 `Property` 不存在时，OAG 可以跨 Property 检索该值，再结合 `query`、ObjectType 和专家关系路径进行消歧。
+当 `Property` 不存在但 `ObjectType` 已知时，OAG 在该 ObjectType 的相关 Property 范围内检索该值。
+
+当 `ObjectType` 和 `Property` 都不存在时，该值属于未绑定值。OAG 应跨 ObjectType/Property 检索 Enum/Instance 索引，命中后再根据索引记录补齐真实归属。对于编码型值，优先使用 Exact/关键词通道，禁止根据编码格式推断 Site、基站或其他对象类型。
 
 ### 11.4 关系路径
 
@@ -928,7 +954,20 @@ components:
 
     ExtractedEntity:
       type: object
-      required: [ObjectType]
+      anyOf:
+        - required: [ObjectType]
+        - required: [Relationships]
+          properties:
+            Relationships:
+              minItems: 1
+        - required: [EnumValues]
+          properties:
+            EnumValues:
+              minItems: 1
+        - required: [InstanceValues]
+          properties:
+            InstanceValues:
+              minItems: 1
       properties:
         ObjectType:
           type: string
@@ -1065,15 +1104,17 @@ components:
 2. `query` 和 `extractedEntities` 至少一个不为空。
 3. `entityExtractContext` 不能单独满足第 2 条校验；非空时长度不超过 32768 字符。
 4. `query` 去除首尾空白后长度必须为 1～1024。
-5. 每个 `ExtractedEntity` 必须包含非空 `ObjectType`。
-6. 每个 Relationship 必须包含 `Relationship`、`SourceObjectType` 和 `TargetObjectType`。
-7. Relationship 所在实体的 `ObjectType` 应与 `SourceObjectType` 一致，源和目标对象应出现在本次 `extractedEntities` 的 ObjectType 列表中。
-8. Enum Value 和 Instance Value 必须包含非空 `Value`。
-9. `similarityThreshold` 必须在 0～1 之间。
-10. `topk` 和 `hopLimit` 必须大于等于 1。
-11. 所有枚举型参数必须使用定义值。
-12. 所有输入名称和值在检索前统一执行 trim、Unicode Normalize 和规范化去重。
-13. 业务输入只作为检索提示，不能直接作为本体内部 ID 使用。
+5. 每个 `ExtractedEntity` 至少包含非空 `ObjectType`、`Relationships`、`EnumValues` 或 `InstanceValues` 中的一种。
+6. 出现 `Properties` 时必须同时提供 `ObjectType`，Property 必须归属于该 ObjectType。
+7. 每个 Relationship 必须包含 `Relationship`、`SourceObjectType` 和 `TargetObjectType`。
+8. Relationship 所在实体如果同时提供 `ObjectType`，该值应与 `SourceObjectType` 一致；源和目标对象应出现在本次 `extractedEntities` 的 ObjectType 列表中。
+9. Enum Value 和 Instance Value 必须包含非空 `Value`。
+10. Enum/Instance Value 未提供 ObjectType 和 Property 时，按未绑定值进行跨 ObjectType/Property 检索，不得通过值的格式猜测归属。
+11. `similarityThreshold` 必须在 0～1 之间。
+12. `topk` 和 `hopLimit` 必须大于等于 1。
+13. 所有枚举型参数必须使用定义值。
+14. 所有输入名称和值在检索前统一执行 trim、Unicode Normalize 和规范化去重。
+15. 业务输入只作为检索提示，不能直接作为本体内部 ID 使用。
 
 ## 16. 兼容策略
 
@@ -1122,10 +1163,12 @@ components:
 9. 不定义 `OriginalText`、`Operator` 和 `ConstraintHint`。
 10. 比较条件、时间范围、聚合方式和单位继续保留在原始 `query` 中。
 11. ObjectType 和 Property 使用嵌套结构表达明确的从属关系。
-12. `adaptiveRetrieval` 默认开启，默认规模阈值为 100。
-13. `seedRetrievalMode` 支持 `vector`、`keyword` 和 `hybrid`。
-14. `graphExpansionStrategy` 支持 `minimal`、`khop` 和 `component`。
-15. `includeFunctions` 和 `includeActions` 默认均为 0。
-16. `includeDimAndIndicator` 不属于 v2 有效请求 Schema。
-17. 成功响应统一返回 `resultCode/resultMessage/result`。
-18. `retrievalResults` 表达完整语义命中，`seedNodes/nodes/edges` 表达本体子图结果。
+12. ObjectType/Property 归属未知的 Enum/Instance Value 可以作为 value-only 实体输入，由 OAG 检索后解析归属。
+13. 编码型实例值优先使用 `keyword` 或 `hybrid` 模式，不根据编码形态推断对象类型。
+14. `adaptiveRetrieval` 默认开启，默认规模阈值为 100。
+15. `seedRetrievalMode` 支持 `vector`、`keyword` 和 `hybrid`。
+16. `graphExpansionStrategy` 支持 `minimal`、`khop` 和 `component`。
+17. `includeFunctions` 和 `includeActions` 默认均为 0。
+18. `includeDimAndIndicator` 不属于 v2 有效请求 Schema。
+19. 成功响应统一返回 `resultCode/resultMessage/result`。
+20. `retrievalResults` 表达完整语义命中，`seedNodes/nodes/edges` 表达本体子图结果。
