@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  publish:
+  build-output:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout source branch
@@ -19,44 +19,31 @@ jobs:
           path: source
           fetch-depth: 0
 
-      - name: Checkout latest main
+      - name: Checkout exact baseline
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: 4c17d2b316f9d6a2d9cf48b32bd08d8e33fc9680
           path: target
           fetch-depth: 0
 
-      - name: Guard chapter 3 baseline
+      - name: Normalize patch script escapes and retired retry field wording
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import subprocess
 
-          base_sha = '4c17d2b316f9d6a2d9cf48b32bd08d8e33fc9680'
-          doc = 'docs/OAG本体锚点语义检索与向量索引设计方案.md'
-          current = (Path('target') / doc).read_text(encoding='utf-8')
-          base = subprocess.check_output(
-              ['git', '-C', 'target', 'show', f'{base_sha}:{doc}'],
-              text=True,
-              encoding='utf-8',
-          )
-
-          def chapter3(t: str) -> str:
-              return t.split('# 3. 索引构建与入库', 1)[1].split('# 4. Query Understanding 与 6 路召回', 1)[0]
-
-          if chapter3(current) != chapter3(base):
-              raise SystemExit('chapter 3 changed on main after V5.12 baseline; refuse to overwrite concurrent chapter-3 edits')
-          print('chapter 3 baseline unchanged')
-          PY
-
-      - name: Normalize retired retry field wording in patch source
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
           p = Path('source/.automation/v512/patch.py')
           s = p.read_text(encoding='utf-8')
+
+          # The generated helper stored regex escapes one level too deep.
+          fixed = []
+          for line in s.splitlines(True):
+              if line.lstrip().startswith("sub_once(r'"):
+                  line = line.replace('\\\\.', '\\.')
+                  line = line.replace('\\\\n', '\\n')
+              fixed.append(line)
+          s = ''.join(fixed)
+
           replacements = {
               'OAG 不再持久化或返回 `retryable`。': 'OAG 不再持久化或返回服务端布尔重试标记。',
               'OAG **不再根据错误码返回或维护 `retryable`**。': 'OAG **不再根据错误码返回或维护服务端布尔重试标记**。',
@@ -66,16 +53,17 @@ jobs:
           }
           for old, new in replacements.items():
               s = s.replace(old, new)
+
           p.write_text(s, encoding='utf-8')
           PY
 
-      - name: Patch latest main document
+      - name: Apply chapter 3 patch
         shell: bash
         run: |
           python3 source/.automation/v512/patch.py \
             'target/docs/OAG本体锚点语义检索与向量索引设计方案.md'
 
-      - name: Verify diff scope and contract
+      - name: Validate generated document
         shell: bash
         run: |
           python3 - <<'PY'
@@ -83,7 +71,6 @@ jobs:
           p = Path('target/docs/OAG本体锚点语义检索与向量索引设计方案.md')
           t = p.read_text(encoding='utf-8')
           ch3 = t.split('# 3. 索引构建与入库', 1)[1].split('# 4. Query Understanding 与 6 路召回', 1)[0]
-
           assert '> 版本：V5.12' in t
           assert 'TODO' not in ch3
           assert 'retryable' not in ch3
@@ -93,22 +80,23 @@ jobs:
           assert 'FILE_RETENTION_UNTIL' in ch3
           assert 'sourceFileMaxRetentionDays=30' in ch3
           assert '生产者负责业务删除 + MinIO Lifecycle 硬 TTL 兜底 + OAG 只读消费' in ch3
+          assert 'ERROR_CODE_LIST  = ["VECTOR_WRITE_FAILED", "SEARCH_WRITE_FAILED"]' in ch3
           assert '| `propertyid`' in ch3
           assert '| `objectTypeId`' in ch3
-          print('V5.12 contract validation passed')
+          print('V5.12 chapter3 contract validated')
           PY
-
           cd target
           changed="$(git -c core.quotePath=false diff --name-only)"
           printf 'changed files:\n%s\n' "$changed"
           test "$changed" = 'docs/OAG本体锚点语义检索与向量索引设计方案.md'
 
-      - name: Commit and push main
+      - name: Publish generated document to output branch
         shell: bash
         run: |
           cd target
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B agent/v512-output
           git add 'docs/OAG本体锚点语义检索与向量索引设计方案.md'
-          git commit -m '落实第3章任务重试与MinIO文件老化TODO'
-          git push origin HEAD:main
+          git commit -m '生成V5.12第3章TODO方案'
+          git push --force origin HEAD:agent/v512-output
