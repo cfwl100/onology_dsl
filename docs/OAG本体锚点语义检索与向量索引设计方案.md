@@ -859,6 +859,395 @@ t_oag_instance_{ontology_id}
 2、按照对象分表
 3、不拆，规格约束
 
+需要同时覆盖三种情况：
+
+|场景|ObjectType/Property状态|路由方式|
+|---|---|---|
+|已识别对象和属性|已知|直接按照Property路由|
+|未识别属性，但提取到明确实例值|未知|使用实例值Locator精确定位|
+|只有语义描述，未识别属性和实例值|未知|使用轻量语义路由索引选择候选Property和分片|
+|数据入库时也没有归属信息|未知|进入暂存表，完成映射后再写正式实例分片|
+
+核心原则：
+
+> 分表不能只依赖查询阶段一定能够识别 ObjectType、Property，必须支持延迟路由和渐进式扩大检索范围。
+
+
+```text
+逻辑实例索引：t_oag_instance_{ontology_id}
+    │
+    ├─ 实例值精确定位表
+    │    t_oag_instance_locator_{ontology_id}
+    │
+    ├─ 实例语义路由索引
+    │    t_oag_instance_route_{ontology_id}
+    │
+    ├─ 实例物理分片
+    │    t_oag_instance_{ontology_id}_s000
+    │    t_oag_instance_{ontology_id}_s001
+    │    ...
+    │
+    └─ 待映射暂存表
+         t_oag_instance_pending_{ontology_id}
+```
+
+### 实例物理分片表
+
+物理表统一使用数字分片编号，不直接把 ObjectType、Property ID 放到表名中：
+
+```text
+t_oag_instance_{ontology_id}_s{shard_id}
+```
+
+例如：
+
+```text
+t_oag_instance_560d88f7_s000
+t_oag_instance_560d88f7_s001
+t_oag_instance_560d88f7_s002
+```
+
+建议表结构：
+
+|字段|类型|非空|说明|
+|---|---|--:|---|
+|`vector`|`DOUBLE[]`|✔|1024维Instance Value向量|
+|`property_id`|`VARCHAR(512 CHAR)`|✔|所属Property.id|
+|`object_type_id`|`VARCHAR(256 CHAR)`|✔|Property所属ObjectType.id|
+|`value`|`VARCHAR(4096 CHAR)`|✔|去重后的原始实例值|
+|`value_hash`|`VARCHAR(64 CHAR)`|✔|`normalized(value)`的SHA-256，用于去重和定位|
+|`virtual_bucket`|`INT`|✔|虚拟桶编号，用于稳定分片和扩容|
+
+原表中的 `object_type_id` 建议调整为非空。正式实例索引中的每条数据必须完成Property、ObjectType归属绑定。
+
+唯一约束建议为：
+
+```text
+UNIQUE(object_type_id, property_id, value_hash)
+```
+
+###  物理分片策略
+
+#### 虚拟桶
+
+实例记录完成归属映射后，计算：
+
+```text
+propertyKey =
+object_type_id + ":" + property_id
+
+virtualBucket =
+hash(propertyKey + ":" + value_hash) % virtualBucketCount
+```
+
+建议：
+
+```text
+virtualBucketCount = 256或1024
+```
+
+虚拟桶再映射到实际物理分片：
+
+```text
+virtualBucket → physicalShardId
+```
+
+不要直接使用：
+
+```text
+hash(...) % physicalShardCount
+```
+
+否则增加物理分片时，大量已有数据会因为取模结果变化而重新迁移。
+
+#### 普通Property与超大Property
+
+|Property规模|分片策略|
+|---|---|
+|小规模Property|多个Property共享一个Shard Group|
+|中等规模Property|Property独占一个物理分片|
+|超大Property|Property对应多个虚拟桶和物理分片|
+|超高频Property|使用专属Shard Group和独立ANN参数|
+
+### 5. ObjectType、Property未知时如何路由
+
+### 5.1 第一优先级：实例值精确定位
+
+例如用户问题：
+
+```text
+show active service affecting alarm for
+12JKS0885_IN_RSNM_KALIBATA3_MC
+```
+
+实体提取阶段虽然不知道它属于基站、站点还是其他对象，但可以识别出一个完整实例值：
+
+```text
+12JKS0885_IN_RSNM_KALIBATA3_MC
+```
+
+OAG计算：
+
+```text
+valueHash = sha256(normalize(instanceValue))
+```
+
+查询轻量定位表：
+
+```text
+t_oag_instance_locator_{ontology_id}
+```
+
+表结构建议：
+
+|字段|说明|
+|---|---|
+|`value_hash`|规范化实例值Hash|
+|`value`|原实例值，可按安全要求决定是否保存|
+|`object_type_id`|对应ObjectType|
+|`property_id`|对应Property|
+|`shard_id`|实例记录所在物理分片|
+|`record_key`|实例记录业务键|
+
+同一个实例值可能出现在多个Property中，因此Locator应允许：
+
+```text
+一个value_hash → 多个Locator记录
+```
+
+查询到Locator后，只检索对应分片。
+
+这种方式适合：
+
+- 基站编码
+    
+- 用户号码
+    
+- 告警ID
+    
+- 订单号
+    
+- 设备序列号
+    
+- 套餐编码
+    
+
+Locator只保存定位信息，不保存1024维向量，存储成本远低于实例向量表。
+
+## 5.2 第二优先级：语义路由索引
+
+如果查询没有可以精确定位的实例值，则查询：
+
+```text
+t_oag_instance_route_{ontology_id}
+```
+
+路由索引不保存全部实例值，而是按Property保存少量代表性信息：
+
+|字段|说明|
+|---|---|
+|`route_vector`|当前Property某个实例值簇的中心向量|
+|`route_id`|路由记录ID|
+|`object_type_id`|ObjectType ID|
+|`property_id`|Property ID|
+|`cluster_no`|Property内部实例值簇编号|
+|`representative_values`|代表性实例值|
+|`lexical_signature`|关键词、字符模式或值类型特征|
+|`shard_ids`|对应实例物理分片|
+|`row_count`|当前路由覆盖的实例数|
+
+一个Property不能只保存一个平均向量。因为实例值可能具有多种语义分布，建议每个Property生成多个路由中心：
+
+```text
+Property实例值
+  → 抽样
+  → MiniBatch K-Means
+  → 生成1～16个Route Centroid
+```
+
+路由阶段执行：
+
+```text
+查询文本
+  → Embedding + BM25
+  → Route Index
+  → TopN Property/Cluster
+  → 得到候选 shard_ids
+  → 检索实际实例分片
+```
+
+路由索引只用于选择分片，不作为最终业务检索结果。
+
+## 5.3 第三优先级：渐进式扩散
+
+当Locator未命中、路由分数又不够确定时，采用渐进式扩散：
+
+```text
+第一轮：检索路由Top 4个分片
+    ↓ 结果低于阈值
+第二轮：扩大到Top 8或Top 16个分片
+    ↓ 仍无合格结果
+第三轮：在高召回Profile下执行全分片检索
+```
+
+不建议普通在线查询直接广播所有实例分片。
+
+ 6. 查询流程
+
+```mermaid
+flowchart TD
+    Q["查询问题"] --> K{"已识别ObjectType/Property？"}
+    K -->|是| R1["Property路由"]
+    K -->|否| V{"存在明确实例值？"}
+    V -->|是| L["Value Locator定位"]
+    V -->|否| R2["Route Index语义路由"]
+    L --> S["候选实例分片"]
+    R1 --> S
+    R2 --> S
+    S --> M["分片并行召回与全局重排"]
+    M --> E{"结果是否可信？"}
+    E -->|否| X["渐进扩大分片范围"]
+    X --> S
+    E -->|是| O["Entity Linking结果"]
+```
+
+ 7. 分片检索与全局合并
+
+每个分片不能只返回最终 `topK`，否则容易因为ANN近似误差丢失跨分片候选。
+
+建议：
+
+```text
+localTopK = globalTopK × oversampleFactor
+oversampleFactor = 3～5
+```
+
+例如：
+
+```text
+globalTopK = 10
+localTopK = 30～50
+```
+
+全局合并流程：
+
+```text
+各分片ANN/BM25召回
+  → 按object_type_id + property_id + value_hash去重
+  → 使用原始向量重新计算精确距离
+  → 全局排序
+  → 选择最终TopK
+```
+
+ 8. 入库时ObjectType、Property也未知
+
+如果数据生产方提交的实例值没有 `property_id` 或 `object_type_id`，不能直接写入正式实例分片，否则无法：
+
+- 保证去重语义；
+    
+- 进行Property范围过滤；
+    
+- 生成正确的Entity Linking结果；
+    
+- 支持后续删除和增量更新；
+    
+- 确定实例属于哪个本体对象。
+    
+
+这类记录进入：
+
+```text
+t_oag_instance_pending_{ontology_id}
+```
+
+建议结构：
+
+|字段|说明|
+|---|---|
+|`pending_id`|暂存记录ID|
+|`value`|原实例值|
+|`source_ref`|数据源、表和列信息|
+|`candidate_object_type_id`|候选ObjectType，可空|
+|`candidate_property_id`|候选Property，可空|
+|`mapping_status`|`PENDING/MAPPED/REJECTED`|
+|`error_code`|映射失败原因|
+|`create_time`|创建时间|
+
+处理流程：
+
+```text
+实例值进入Pending
+  → 根据数据源列映射/OAC元数据完成Property绑定
+  → 补齐object_type_id
+  → 生成Embedding、value_hash和virtual_bucket
+  → 写入正式物理分片
+  → 写入Value Locator
+  → 删除或归档Pending记录
+```
+
+ 9. 分片元数据表
+
+新增：
+
+```text
+T_OAG_INSTANCE_SHARD_ROUTING
+```
+
+|字段|说明|
+|---|---|
+|`TENANT_ID`|租户ID|
+|`ONTOLOGY_ID`|本体ID|
+|`OBJECT_TYPE_ID`|ObjectType ID|
+|`PROPERTY_ID`|Property ID|
+|`VIRTUAL_BUCKET`|虚拟桶|
+|`SHARD_ID`|物理分片编号|
+|`TABLE_NAME`|GaussVector表名|
+|`SEARCH_INDEX_NAME`|OpenSearch索引名|
+|`GENERATION`|当前Generation|
+|`ROW_COUNT`|实例数量|
+|`STATUS`|`BUILDING/ACTIVE/OFFLINE`|
+|`UPDATE_TIME`|更新时间|
+
+OAG将该表加载到本地缓存，查询时不直接访问数据库路由表。
+
+ 10. 分片容量建议
+
+当前向量是1024维 `DOUBLE[]`：
+
+```text
+单条向量原始大小 =
+1024 × 8 Byte = 8192 Byte
+```
+
+仅100万条向量的原始向量数据约为：
+
+```text
+8.2 GB
+```
+
+还没有计算ANN索引、行存储和元数据开销。
+
+建议初始参数：
+
+|配置|建议值|
+|---|---|
+|单分片目标实例数|50万～100万|
+|单分片最大实例数|200万，需根据压测调整|
+|单分片ANN数据规模|建议8～20GB以内|
+|虚拟桶数量|256或1024|
+|普通查询最大分片数|8～16|
+|本地候选放大倍数|3～5|
+|Route TopN|5～20|
+
+分片数：
+
+```text
+shardCount =
+nextPowerOfTwo(
+  ceil(totalInstanceCount / targetRowsPerShard)
+)
+```
+
 ## 2.11 Instance Value 向量准入规则
 
 Property 中的 `"capability":"DIMENSION"` 是实例列值进入向量索引的准入标识，同时还需要满足数据类型和值形态约束：
@@ -1247,6 +1636,16 @@ Generation 发布
 
 ## 3.2 总体索引构建架构
 
+
+![[Pasted image 20260820085355.png]]
+
+1、手动创建索引->OAC : 应对首次全量索引创建 和 索引更新 场景  
+2、通知OAG->OAG读取minio文件：应对大数据量首次全量和非首次增量数据索引入库
+
+
+
+
+
 ```mermaid
 flowchart TD
     subgraph T[触发方]
@@ -1626,7 +2025,7 @@ sequenceDiagram
     participant S as 业务数据源
     participant I as 索引存储
 
-    C->>G: POST index-tasks/build
+    C->>G: POST 
     G-->>C: 202 + tasks[]
     G->>A: 按 taskId 请求抽取
     A->>S: 查询并标准化
@@ -1648,7 +2047,7 @@ sequenceDiagram
     participant M as MinIO
     participant I as 索引存储
 
-    C->>G: POST index-tasks/build
+    C->>G: POST 
     G-->>C: 202 + taskId
     G->>A: 请求抽取并传递 taskId
     A->>A: 生成不可变 CSV
@@ -3789,7 +4188,6 @@ RRF 前，OAG 将三张表的查询结果统一成 SearchHit，不向上层直�
   "objectTypeId": "subscriber-object-id",
   "type": "INSTANCE_VALUE",
   "value": "VIP",
-  "language": "und",
   "matched_field": "value",
   "matched_value": "VIP",
   "score": 0.88,
@@ -3867,12 +4265,12 @@ rrf:
   coarseTopKPerSemanticUnit: 20
   maxGlobalCandidates: 50
   channelWeights:
-    seedLexical: 1.3
-    seedDense: 1.0
-    metadataLexical: 1.2
-    metadataDense: 1.0
-    instanceLexical: 1.0
-    instanceDense: 0.8
+    metadataLexical: 1.0
+    metadataDense: 1.2
+    enumLexical: 1.2
+    enumDense: 1.1
+    instanceLexical: 1.4
+    instanceDense: 0.6
 ```
 
 若 Exact 与 BM25 后续拆成独立 Ranked List，则直接扩为 9 路一次融合。
