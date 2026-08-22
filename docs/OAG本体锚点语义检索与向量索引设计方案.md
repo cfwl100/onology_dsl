@@ -23,9 +23,21 @@
 # 1. 设计目标、术语与总体架构
 
 
+
+围绕软件、SEC、AMS等业务场景，明确实例值语义索引需求范围，确定语义索引内容全景如下：
+
+| 本体元素             | 自身语义化内容     | 同义词语义化 | 多语言(小语种)语义化       |
+| ---------------- | ----------- | ------ | ----------------- |
+| 对象类型（ObjectType） | 名称、显示名称、描述  | 名称同义词  | 多语言名称、显示名称、描述及同义词 |
+| 属性（Property）     | 名称、显示名称、描述  | 名称同义词  | 多语言名称、显示名称、描述及同义词 |
+| 枚举（Enum）         | 枚举值、显示名称、描述 | 枚举值同义词 | 多语言显示名称、描述及同义词    |
+| 实例数据（Instance）   | 实例值         | 实例值同义词 | × 不配置多语言          |
+
+
 ## 1.1 设计目标与边界
 
 OAG 同时承担索引构建、语义检索和本体子图构建三类能力。V5.7 进一步收敛检索数据模型，只保留三个业务层次：
+TODO : 种子节点 统一 改为 本体对象，元数据元素当前只有枚举值，统一改为 枚举元素，实例元素继续保留。
 
 ```text
 种子节点（Seed Node）
@@ -38,86 +50,17 @@ OAG 同时承担索引构建、语义检索和本体子图构建三类能力。V
   = 真实 Instance Value
 ```
 
-同义词统一使用 **Synonym** 概念，并且不再建成独立物理记录：
-
-```text
-ObjectType / Property Synonym
-  → 存在种子节点记录的 synonyms 字段
-
-Enum Value Synonym
-  → 存在 Enum Value 记录的 synonyms 字段
-
-Instance Value
-  → 只索引真实 value，不建立实例同义词记录
-```
-
-因此需要区分：
-
-```text
-最终检索命中（Matched Value）
-        ≠
-物理索引记录定位字段
-        ≠
-图算法输入（Seed Node）
-```
-
-种子节点记录继续使用自身 `id`；Enum Value / Instance Value 不再引入独立记录 `id`，而是使用 `propertyid + objectTypeId + value` 定位业务记录。
-
-最终检索可以命中：
-
-```text
-ObjectType / Property 的 name、display、description、synonyms
-Enum Value 的 value、name、display、description、synonyms
-Instance Value 的 value
-```
-
-如果命中的是 synonyms 中的某个词，OAG 必须保留：
-
-```text
-matched_field
-matched_value
-```
-
-命中 Synonym 时不为同义词制造新的业务 ID：ObjectType / Property 仍返回种子节点 `id`；Enum Value 返回 `propertyid + objectTypeId + value` 以及实际命中的 `matched_field/matched_value`。
-
-例如：
-
-```text
-用户：色泽
-   ↓
-命中：bodyColor 对应 Enum Value 的 synonyms 中的“色泽”
-   ↓
-propertyid = prop:ont:vehicle:sp:bodyColor
-objectTypeId = vehicle-object-id
-value = red
-matched_field = synonyms
-matched_value = 色泽
-```
-
-对于 Enum Value，还必须同时保留真实业务 `value`；对于 Property/Enum/Instance 场景，还要补齐 Property + ObjectType 上下文，供后续子图构建和 Cypher 生成使用。
-
-本方案只排除以下内容作为业务检索结果：
-
-```text
-底层 Vector 文档物理身份
-OpenSearch 内部 _id
-ANN distance / BM25 _score / RRF score 本身
-```
-
-这些只属于检索实现和排序证据。
-
-
-## 1.2 端到端总体架构
+## 1.2 子图端到端总体架构
 
 ```mermaid
 flowchart TD
     Q[用户原始问题] --> QU[Query Understanding<br/>Semantic Units]
 
     subgraph RET[每个 Semantic Unit 的 6 路召回]
-      QU --> SL[种子节点 OpenSearch<br/>Exact/BM25]
-      QU --> SD[种子节点 Dense<br/>GaussVector]
-      QU --> ML[元数据语义元素 OpenSearch<br/>Exact/BM25]
-      QU --> MD[元数据语义元素 Dense<br/>GaussVector]
+      QU --> SL[本体对象节点 OpenSearch<br/>Exact/BM25]
+      QU --> SD[本体对象节点 Dense<br/>GaussVector]
+      QU --> ML[枚举语义元素 OpenSearch<br/>Exact/BM25]
+      QU --> MD[枚举语义元素 Dense<br/>GaussVector]
       QU --> IL[实例语义元素 OpenSearch<br/>Exact/BM25]
       QU --> ID[实例语义元素 Dense<br/>GaussVector]
     end
@@ -252,46 +195,7 @@ t_oag_enum_{ontology_id}
 t_oag_instance_{ontology_id}
   → Instance Value
 ```
-
-Synonym 只是所属实体的一个可检索字段，不再单独占一行。
-
-### 设计原则 2：种子节点与 Evidence 使用各自最直接的本体定位字段
-
-```text
-种子节点：id = ObjectType / Property 本体 ID
-Enum Value：propertyid = Property.id，objectTypeId = ObjectType.id
-Instance Value：propertyid = Property.id，objectTypeId = ObjectType.id
-```
-
-Enum/Instance 不再增加额外的 Evidence 主键或父级映射字段；真实业务值由 `value` 保存，OAG 使用 `objectTypeId + propertyid + value` 作为去重和幂等定位依据。
-
-### 设计原则 3：Matched Value 必须保留
-
-无论命中：
-
-```text
-name
-display
-description
-synonyms
-value
-```
-
-都必须在 SearchHit / RetrievalResult 中保留 `matched_field + matched_value`。特别是 synonym 命中不能只剩所属种子节点或枚举值。
-
-### 设计原则 4：RRF 按种子节点分组，组内保留具体命中
-
-RRF 公平性单位仍然是带 ObjectType 作用域的种子节点：
-
-```text
-ObjectType hit：group_id = "OT:" + hit.id
-Property hit：group_id = "PROP:" + hit.parent_id + ":" + hit.id
-Enum Value / Instance Value hit：group_id = "PROP:" + hit.objectTypeId + ":" + hit.propertyid
-```
-
-`parent_id/objectTypeId` 把 Property 约束在所属 ObjectType 下。这样一个 Property 即使有大量枚举值、实例值或同义词，也不会因为记录/字段数量多而重复加分；不同 ObjectType 下的 Property 候选也不会进入同一个 RRF Group。
-
-### 设计原则 5：Core Graph 与检索字段分离
+### 设计原则 2：Core Graph 与检索字段分离
 
 ```text
 图算法：ObjectType / Property / Relation
@@ -300,27 +204,15 @@ Enum Value / Instance Value hit：group_id = "PROP:" + hit.objectTypeId + ":" + 
 
 Enum/Instance 和 synonym 都可以帮助形成最终语义结果，但不直接成为最短路径、K-hop、Connected Component 的拓扑节点。
 
-### 设计原则 6：召回保 Recall，RRF 保公平，LLM 保 Precision，Graph 保最小充分
-
-```text
-多路召回：宁可多召回
-RRF：稳定融合不同引擎排序
-LLM：结合原始问题、matched_value 和上下文做语义裁决
-Graph：只返回支持推理/Cypher 的必要拓扑
-```
-
 # 2. 数据模型与索引结构
-
 
 ## 2.1 数据模型：种子节点、枚举值、实例值与 Synonym
 
-V5.11 的物理索引模型仍只保留三类业务记录，但 Synonym 明确区分 **OMS 源模型** 与 **OAG 检索模型**：
-
-| 类型 | 物理实体 | Synonym 处理 | 本体归属字段 |
-|---|---|---|---|
-| 种子节点 | ObjectType / Property | `synonyms` 以 LF 分隔的平铺字符串内嵌 | 使用种子节点自身 `id`；Property→ObjectType 走拓扑 |
-| 元数据元素 | Enum Value | `synonyms` 以 LF 分隔的平铺字符串内嵌 | `propertyId + objectTypeId` |
-| 实例元素 | Instance Value | 不建立实例同义词记录 | `propertyid + objectTypeId` |
+| 类型     | 物理实体                  | Synonym 处理                 | 本体归属字段                                |
+| ------ | --------------------- | -------------------------- | ------------------------------------- |
+| 本体对象定义 | ObjectType / Property | `synonyms` 以 LF 分隔的平铺字符串内嵌 | 使用种子节点自身 `id`；Property→ObjectType 走拓扑 |
+| enum元素 | Enum Value            | `synonyms` 以 LF 分隔的平铺字符串内嵌 | `propertyId + objectTypeId`           |
+| 实例元素   | Instance Value        | 不建立实例同义词记录                 | `propertyid + objectTypeId`           |
 
 ### 2.1.1 OMS SynonymType：保留多语言源结构
 
@@ -408,11 +300,11 @@ SynonymType 自身不建立独立向量记录。其 `name/display/description` �
 
 三张 GaussVector 表和对应 OpenSearch Index 统一命名：
 
-| 逻辑类型 | 物理表 / Index | Owner | 数据 |
-|---|---|---|---|
-| 种子节点 | `t_oag_{ontology_id}` | OAG | ObjectType / Property |
-| 元数据元素 | `t_oag_enum_{ontology_id}` | OAG | Enum Value + Synonyms |
-| 实例元素 | `t_oag_instance_{ontology_id}` | OAG，DataSync 提供数据 | Instance Value |
+| 逻辑类型   | 物理表 / Index                    | Owner         | 数据                    |
+| ------ | ------------------------------ | ------------- | --------------------- |
+| 本体对象定义 | `t_oag_{ontology_id}`          | OAG           | ObjectType / Property |
+| enum元素 | `t_oag_enum_{ontology_id}`     | OAG           | Enum Value + Synonyms |
+| 实例元素   | `t_oag_instance_{ontology_id}` | OAG，业务服务 提供数据 | Instance Value        |
 
 三类数据继续物理隔离，原因不变：
 
@@ -429,22 +321,22 @@ ANN 算法差异
 
 种子节点表保留两个额外语言槽位，并增加平铺 `synonyms`。中文和英文仍保留固定列，另外最多支持 2 种 display/description 语言：
 
-| 字段                   | 类型 | 非空 | 说明 |
-|----------------------|---|--|---|
-| `vector`             | `DOUBLE[]` | ✔ | 1024 维向量 |
-| `type`               | `INT` |  | 0 ObjectType，1 Property |
-| `id`                 | `VARCHAR(256 CHAR)` | ✔ | ObjectType / Property 全局唯一 ID |
-| `parent_id`          | `VARCHAR(256 CHAR)` |  | 父元素 ID；当 type=1 时记录 Property 所属 ObjectType ID |
-| `name`               | `VARCHAR(256 CHAR)` |  | 本体真实名称 |
-| `display_zh`         | `VARCHAR(512 CHAR)` |  | 中文显示名 |
-| `display_en`         | `VARCHAR(512 CHAR)` |  | 英文显示名 |
-| `display_lang_1`     | `VARCHAR(512 CHAR)` |  | 第 1 个额外语言显示名 |
-| `display_lang_2`     | `VARCHAR(512 CHAR)` |  | 第 2 个额外语言显示名 |
-| `description_zh`     | `VARCHAR(1024 CHAR)` |  | 中文描述 |
-| `description_en`     | `VARCHAR(1024 CHAR)` |  | 英文描述 |
-| `description_lang_1` | `VARCHAR(1024 CHAR)` |  | 第 1 个额外语言描述 |
-| `description_lang_2` | `VARCHAR(1024 CHAR)` |  | 第 2 个额外语言描述 |
-| `synonyms`           | `TEXT` |  | LF 分隔的同义词平铺字符串；不保存 JSON Map/Array |
+| 字段                   | 类型                   | 非空  | 说明                                            |
+| -------------------- | -------------------- | --- | --------------------------------------------- |
+| `vector`             | `DOUBLE[]`           | ✔   | 1024 维向量                                      |
+| `type`               | `INT`                |     | 0 ObjectType，1 Property                       |
+| `id`                 | `VARCHAR(256 CHAR)`  | ✔   | ObjectType / Property 全局唯一 ID                 |
+| `parent_id`          | `VARCHAR(256 CHAR)`  |     | 父元素 ID；当 type=1 时记录 Property 所属 ObjectType ID |
+| `name`               | `VARCHAR(256 CHAR)`  |     | 本体真实名称                                        |
+| `display_zh`         | `VARCHAR(512 CHAR)`  |     | 中文显示名                                         |
+| `display_en`         | `VARCHAR(512 CHAR)`  |     | 英文显示名                                         |
+| `display_lang_1`     | `VARCHAR(512 CHAR)`  |     | 第 1 个额外语言显示名                                  |
+| `display_lang_2`     | `VARCHAR(512 CHAR)`  |     | 第 2 个额外语言显示名                                  |
+| `description_zh`     | `VARCHAR(1024 CHAR)` |     | 中文描述                                          |
+| `description_en`     | `VARCHAR(1024 CHAR)` |     | 英文描述                                          |
+| `description_lang_1` | `VARCHAR(1024 CHAR)` |     | 第 1 个额外语言描述                                   |
+| `description_lang_2` | `VARCHAR(1024 CHAR)` |     | 第 2 个额外语言描述                                   |
+| `synonyms`           | `TEXT`               |     | LF 分隔的同义词平铺字符串；不保存 JSON Map/Array             |
 
 `synonyms` 逻辑值示例：
 
@@ -463,7 +355,7 @@ Celda de radio
 小区\n无线小区\nCell\nRadio Cell\nCelda\nCelda de radio
 ```
 
-额外 display/description 最多 2 个语言槽位；“Synonym 最多 3 种语言”是 **OMS SynonymType 源模型约束**。平铺到 OAG 后不再保存 language key，因此热索引只校验 synonym 值本身，不再按语言字段拆列或拆对象。
+额外 display/description 最多 2 个语言槽位；“Synonym 最多 3 种语言”是 **OMS SynonymType 源模型约束**。
 
 ## 2.4 种子节点向量化内容
 
@@ -488,7 +380,6 @@ OAG 在内存中解析 ObjectType / Property 及其 SynonymType，先按 2.1.2 �
 
 ```text
 OMS 静态构建
-REST 动态导入
 MinIO CSV 动态导入
         ↓
 都使用同一种 synonyms 物理表达和 Embedding 规则
@@ -542,18 +433,6 @@ synonyms.<language>
 
 如果未来确实需要“按语言返回 synonym”或线上语言级统计，应从 OMS SynonymType 源资产补充上下文，或新增独立冷元数据能力；不应重新把多语言 Map 放回高频检索记录。
 
-## 2.6 Property Vector 是否带 ObjectType
-
-Property Dense 向量默认不增加 ObjectType 名称前缀。原因：
-
-1. 用户经常只表达属性概念；
-2. ObjectType 前缀可能改变语义重心；
-3. 同名 Property 的消歧由原始问题、其他 Semantic Units、LLM 精排和图关系完成；
-4. Property → ObjectType 由拓扑缓存确定，不依赖向量文本恢复。
-
-如果评测显示同名 Property 冲突严重，可以启用内部 Shadow Vector，但最终仍回到同一 Property `id`。
-
-
 ## 2.7 `t_oag_{ontology_id}` OpenSearch Index
 
 OpenSearch 与 GaussVector 共享同一业务字段语义：
@@ -576,14 +455,14 @@ synonyms
 
 推荐映射：
 
-| 字段 | OpenSearch 类型 | 说明 |
-|---|---|---|
-| `type` | `integer` | 0 ObjectType / 1 Property |
-| `id` | `keyword` | 本体 ID |
-| `name` | `keyword` + `text` | Exact / BM25 |
-| `display_*` | `keyword` + `text` | 多语言显示名 |
-| `description_*` | `text` | 多语言描述 |
-| `synonyms` | `text` multi-field | 主字段按 LF 切成“整条 synonym token”做 Exact；`synonyms.bm25` 用普通 Analyzer 做 BM25 |
+| 字段              | OpenSearch 类型      | 说明                                                                      |
+| --------------- | ------------------ | ----------------------------------------------------------------------- |
+| `type`          | `integer`          | 0 ObjectType / 1 Property                                               |
+| `id`            | `keyword`          | 本体 ID                                                                   |
+| `name`          | `keyword` + `text` | Exact / BM25                                                            |
+| `display_*`     | `keyword` + `text` | 多语言显示名                                                                  |
+| `description_*` | `text`             | 多语言描述                                                                   |
+| `synonyms`      | `text` multi-field | 主字段按 LF 切成“整条 synonym token”做 Exact；`synonyms.bm25` 用普通 Analyzer 做 BM25 |
 
 `synonyms` 不再映射为 dynamic object。推荐 Analyzer：
 
@@ -781,11 +660,9 @@ t_oag_enum_{ontology_id}
 | 字段                   | 类型                   | 非空  | 说明                                   |
 | -------------------- | -------------------- | --- | ------------------------------------ |
 | `vector`             | `DOUBLE[]`           | ✔   | Enum Value 向量                        |
-| `type`               | `INT`                |     | 固定为2                                 |
+| `value`              | `VARCHAR(4096 CHAR)` |     | 真实枚举值                                |
 | `property_id`        | `VARCHAR(512 CHAR)`  | ✔   | 引用该 Enum 的 Property.id               |
 | `object_type_id`     | `VARCHAR(256 CHAR)`  |     | Property 所属 ObjectType.id            |
-| `value`              | `VARCHAR(4096 CHAR)` |     | 真实枚举值                                |
-| `name`               | `VARCHAR(4096 CHAR)` |     | OMS 静态构建时可保存 `values[].name`；动态导入可为空 |
 | `display_zh`         | `VARCHAR(512 CHAR)`  |     | 中文 display                           |
 | `display_en`         | `VARCHAR(512 CHAR)`  |     | 英文 display                           |
 | `display_lang_1`     | `VARCHAR(512 CHAR)`  |     | 额外语言 1 display                       |
@@ -810,7 +687,6 @@ objectTypeId + propertyId + normalized(value)
 
 ```text
 {value}
-{name}
 {display_zh}
 {display_en}
 {display_lang_1}
@@ -822,7 +698,7 @@ objectTypeId + propertyId + normalized(value)
 {synonyms}
 ```
 
-其中 `{synonyms}` 为当前 Enum Value 关联 SynonymType 经 2.1.2 规则平铺后的 LF String。动态 REST/CSV 导入不携带 `name` 时，EmbeddingInputBuilder 直接跳过该项；不允许用 `value` 复制填充 `name`。
+其中 `{synonyms}` 为当前 Enum Value 关联 SynonymType 经 2.1.2 规则平铺后的 LF String。
 
 向量顺序坚持：
 
@@ -848,9 +724,10 @@ t_oag_instance_{ontology_id}
 | 字段               | 类型                   | 非空  | 说明                        |
 | ---------------- | -------------------- | --- | ------------------------- |
 | `vector`         | `DOUBLE[]`           | ✔   | Instance Value 向量         |
+| `value`          | `VARCHAR(4096 CHAR)` |     | 去重后的真实列值                  |
+| `synonym`        | `VARCHAR(4096 CHAR)` |     | 真实列值的同义词                  |
 | `property_id`    | `VARCHAR(512 CHAR)`  | ✔   | 所属 Property.id            |
 | `object_type_id` | `VARCHAR(256 CHAR)`  |     | Property 所属 ObjectType.id |
-| `value`          | `VARCHAR(4096 CHAR)` | ✔   | 去重后的真实列值                  |
 
 不同列做语义放在一个表里面？
 分表策略：水平拆分，达到一个上限后分表
@@ -891,7 +768,7 @@ t_oag_instance_{ontology_id}
          t_oag_instance_pending_{ontology_id}
 ```
 
-### 实例物理分片表
+实例物理分片表
 
 物理表统一使用数字分片编号，不直接把 ObjectType、Property ID 放到表名中：
 
@@ -926,9 +803,9 @@ t_oag_instance_560d88f7_s002
 UNIQUE(object_type_id, property_id, value_hash)
 ```
 
-###  物理分片策略
+物理分片策略
 
-#### 虚拟桶
+ 虚拟桶
 
 实例记录完成归属映射后，计算：
 
@@ -960,7 +837,7 @@ hash(...) % physicalShardCount
 
 否则增加物理分片时，大量已有数据会因为取模结果变化而重新迁移。
 
-#### 普通Property与超大Property
+普通Property与超大Property
 
 |Property规模|分片策略|
 |---|---|
@@ -969,9 +846,9 @@ hash(...) % physicalShardCount
 |超大Property|Property对应多个虚拟桶和物理分片|
 |超高频Property|使用专属Shard Group和独立ANN参数|
 
-### 5. ObjectType、Property未知时如何路由
+5. ObjectType、Property未知时如何路由
 
-### 5.1 第一优先级：实例值精确定位
+ **5.1 第一优先级：实例值精确定位**
 
 例如用户问题：
 
@@ -1034,7 +911,7 @@ t_oag_instance_locator_{ontology_id}
 
 Locator只保存定位信息，不保存1024维向量，存储成本远低于实例向量表。
 
-## 5.2 第二优先级：语义路由索引
+ **5.2 第二优先级：语义路由索引**
 
 如果查询没有可以精确定位的实例值，则查询：
 
@@ -1078,7 +955,7 @@ Property实例值
 
 路由索引只用于选择分片，不作为最终业务检索结果。
 
-## 5.3 第三优先级：渐进式扩散
+5.3 第三优先级：渐进式扩散
 
 当Locator未命中、路由分数又不够确定时，采用渐进式扩散：
 
@@ -1312,7 +1189,6 @@ type
 propertyId
 objectTypeId
 value
-name
 display_zh
 display_en
 display_lang_1
@@ -1330,7 +1206,6 @@ Exact 优先：
 propertyId
 objectTypeId
 value.keyword
-name.keyword
 display_*.keyword
 synonyms（synonym_line_analyzer，一行一个完整 synonym token）
 ```
@@ -1338,7 +1213,6 @@ synonyms（synonym_line_analyzer，一行一个完整 synonym token）
 BM25：
 
 ```text
-name
 display_*
 description_*
 synonyms.bm25
@@ -1641,10 +1515,10 @@ Generation 发布
 
 1、手动创建索引->OAC : 应对首次全量索引创建 和 索引更新 场景  
 2、通知OAG->OAG读取minio文件：应对大数据量首次全量和非首次增量数据索引入库
-
-
-
-
+评审点：
+1、按照OAC直接访问和不能访问的分数据流；是否采用OAC查询和通知的方式，通过配置开关控制
+2、针对不同的业务，明确语义向量数据量规格约束，软件1W用户，SEC最大100W
+3、语义索引能力需要与DataSeek对齐，为未来与NL2SQL融合做准备 
 
 ```mermaid
 flowchart TD
@@ -1864,12 +1738,12 @@ POST
 
 ### 3.3.3 索引导入与任务接口清单
 
-| 场景       | Method | URI                                                           | OpenAPI operationId        | 说明                                          |
-| -------- | ------ | ------------------------------------------------------------- | -------------------------- | ------------------------------------------- |
-| 索引数据通知接口 | POST   | `/v1/onto-retrieval/{ontologyId}/index-data/notice`           | `importIndexDataFromMinio` | 注册已上传到 MinIO 的 CSV；可用 `triggerTaskId` 关联手动构建任务 |
-| 批量查询任务   | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/query`           | `batchQueryIndexTasks`     | Body 传 taskIds，批量查询持久化任务状态和进度               |
-| 批量重试任务   | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/retry`           | `batchRetryIndexTasks`     | 业务基于错误码与失败文件选择 task，OAG 校验状态和源文件可恢复性，允许部分成功 |
-| 批量取消任务   | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/cancel`          | `batchCancelIndexTasks`    | 逐 task 请求取消，允许部分成功                          |
+| 场景       | Method | URI                                                  | OpenAPI operationId        | 说明                                             |
+| -------- | ------ | ---------------------------------------------------- | -------------------------- | ---------------------------------------------- |
+| 索引数据通知接口 | POST   | `/v1/onto-retrieval/{ontologyId}/index-data/notice`  | `importIndexDataFromMinio` | 注册已上传到 MinIO 的 CSV；可用 `triggerTaskId` 关联手动构建任务 |
+| 批量查询任务   | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/query`  | `batchQueryIndexTasks`     | Body 传 taskIds，批量查询持久化任务状态和进度                  |
+| 批量重试任务   | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/retry`  | `batchRetryIndexTasks`     | 业务基于错误码与失败文件选择 task，OAG 校验状态和源文件可恢复性，允许部分成功    |
+| 批量取消任务   | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/cancel` | `batchCancelIndexTasks`    | 逐 task 请求取消，允许部分成功                             |
 
 
 所有导入接口采用异步任务模型：
@@ -1905,16 +1779,16 @@ POST
 
 ### 3.4.2 场景选择矩阵
 
-| 场景 | 外部调用组合 | `importMode` | 数据交付 | 说明 |
-|---|---|---|---|---|
-| App 安装触发种子索引 | OMS 内部事件 → OAG；外部不调用写入接口 | `FULL_REPLACE` | OMS 本体资产 | 构建 `SEED_NODE`；需要动态枚举/实例时继续按下述 OAC 组合执行 |
-| 首次全量，预计不超过配置阈值 | 手动构建 → 任务查询 | `FULL_REPLACE` | OAC 小批/分页返回 OAG | 图中建议阈值为 10000 条；实际值由服务配置，不由调用方传入 |
-| 首次全量，大数据量 | 手动构建 → OAC 上传 MinIO 并通知 OAG → 任务查询 | `FULL_REPLACE` | MinIO CSV | 手动调用方只调用构建接口；OAC 使用 `triggerTaskId` 自动关联原任务 |
-| 人工触发索引更新，小数据量 | 手动构建 → 任务查询 | `INCREMENTAL` | OAC 小批/分页返回 OAG | OAC 返回 UPSERT/DELETE 变化记录 |
-| 人工触发索引更新，大数据量 | 手动构建 → OAC 上传 MinIO 并通知 OAG → 任务查询 | `INCREMENTAL` | MinIO CSV | 仍复用手动构建产生的任务 |
-| 定时/事件增量同步 | 生产者上传 MinIO → 数据通知 → 任务查询 | `INCREMENTAL` | MinIO CSV | DataSync/业务服务直接调用通知接口，不需要先调用手动构建接口 |
-| 已有全量文件的首次导入或重建 | 生产者上传 MinIO → 数据通知 → 任务查询 | `FULL_REPLACE` | MinIO CSV | 已有文件时不要重复触发 OAC 抽取 |
-| 索引完成后的业务查询 | 语义检索 | - | 已发布索引 | 只有任务成功且 Generation 发布后，新数据才对检索可见 |
+| 场景             | 外部调用组合                             | `importMode`   | 数据交付            | 说明                                          |
+| -------------- | ---------------------------------- | -------------- | --------------- | ------------------------------------------- |
+| App 安装触发种子索引   | OMS 内部事件 → OAG；外部不调用写入接口           | `FULL_REPLACE` | OMS 本体资产        | 构建 `SEED_NODE`；需要动态枚举/实例时继续按下述 OAC 组合执行     |
+| 首次全量，预计不超过配置阈值 | 手动构建 → 任务查询                        | `FULL_REPLACE` | OAC 小批/分页返回 OAG | 图中建议阈值为 10000 条；实际值由服务配置，不由调用方传入            |
+| 首次全量，大数据量      | 手动构建 → OAC 上传 MinIO 并通知 OAG → 任务查询 | `FULL_REPLACE` | MinIO CSV       | 手动调用方只调用构建接口；OAC 使用 `triggerTaskId` 自动关联原任务 |
+| 人工触发索引更新，小数据量  | 手动构建 → 任务查询                        | `INCREMENTAL`  | OAC 小批/分页返回 OAG | OAC 返回 UPSERT/DELETE 变化记录                   |
+| 人工触发索引更新，大数据量  | 手动构建 → OAC 上传 MinIO 并通知 OAG → 任务查询 | `INCREMENTAL`  | MinIO CSV       | 仍复用手动构建产生的任务                                |
+| 定时/事件增量同步      | 生产者上传 MinIO → 数据通知 → 任务查询          | `INCREMENTAL`  | MinIO CSV       | DataSync/业务服务直接调用通知接口，不需要先调用手动构建接口          |
+| 已有全量文件的首次导入或重建 | 生产者上传 MinIO → 数据通知 → 任务查询          | `FULL_REPLACE` | MinIO CSV       | 已有文件时不要重复触发 OAC 抽取                          |
+| 索引完成后的业务查询     | 语义检索                               | -              | 已发布索引           | 只有任务成功且 Generation 发布后，新数据才对检索可见            |
 
 `FULL_REPLACE` 与 `INCREMENTAL` 的选择规则：首次创建或明确重建选择 `FULL_REPLACE`；非首次、只提交变化数据选择 `INCREMENTAL`。不要用 `INCREMENTAL` 模拟首次全量，也不要把日常增量错误地提交为全量替换。
 
@@ -2047,7 +1921,7 @@ sequenceDiagram
     participant M as MinIO
     participant I as 索引存储
 
-    C->>G: POST 
+    C->>G: POST index-tasks/build
     G-->>C: 202 + taskId
     G->>A: 请求抽取并传递 taskId
     A->>A: 生成不可变 CSV
@@ -2193,12 +2067,12 @@ POST
 
 **表 9  IndexFileImportRequest 参数列表**
 
-| 参数名称         | 类型                  | 是否必选 | 默认值 | OpenAPI 约束                              | 说明                  |
-| :----------- | :------------------ | :--- | :-- | :-------------------------------------- | :------------------ |
-| `requestId`  | String              | 是    | -   | `minLength: 1`，`maxLength: 256`         | 调用方幂等键；文件直接导入时用于创建任务，关联任务时用于通知幂等 |
-| `dataType`   | String              | 是    | -   | `enum: [METADATA_ENUM, INSTANCE_VALUE]` | 当前文件批次的数据类型         |
-| `importMode` | String              | 是    | -   | `enum: [FULL_REPLACE, INCREMENTAL]`     | 全量替换或增量导入           |
-| `files`      | Array[MinioCsvFile] | 是    | -   | `minItems: 1`                           | 待导入的 MinIO CSV 对象列表 |
+| 参数名称         | 类型                  | 是否必选 | 默认值 | OpenAPI 约束                                 | 说明                                                             |
+| :----------- | :------------------ | :--- | :-- | :----------------------------------------- | :------------------------------------------------------------- |
+| `requestId`  | String              | 是    | -   | `minLength: 1`，`maxLength: 256`            | 调用方幂等键；文件直接导入时用于创建任务，关联任务时用于通知幂等                               |
+| `dataType`   | String              | 是    | -   | `enum: [METADATA_ENUM, INSTANCE_VALUE]`    | 当前文件批次的数据类型                                                    |
+| `importMode` | String              | 是    | -   | `enum: [FULL_REPLACE, INCREMENTAL, CLEAR]` | 全量替换或增量导入                                                      |
+| `files`      | Array[MinioCsvFile] | 是    | -   | `minItems: 1`                              | 待导入的 MinIO CSV 对象列表，当`importMode`是CLEAR时候选填，同时指定INSTANCE_VALUE |
 
 **表 10  MinioCsvFile 参数列表**
 
@@ -4104,7 +3978,7 @@ hybrid → Exact/BM25/Dense + 语义元素 + RRF
 
 RRF 前，OAG 将三张表的查询结果统一成 SearchHit，不向上层直接透出 GaussVector SQL 行格式或 OpenSearch 原生 `_source/_score` 包装。
 
-### 种子节点 Dense SearchHit
+### 对象属性节点 Dense SearchHit
 
 ```json
 {
@@ -4891,7 +4765,9 @@ extension:
     "seedNodes": [],
     "nodes": [],
     "edges": [],
-    "semanticExtensions": {},
+    "semanticExtensions": {
+     
+    },
     "capabilityExtensions": {
       "functions": [],
       "actions": []
