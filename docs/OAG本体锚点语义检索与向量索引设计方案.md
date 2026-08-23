@@ -1,4 +1,4 @@
-# OAG 面向本体本体对象的语义检索、混合排序与本体子图构建设计方案
+# OAG 面向本体对象的语义检索、混合排序与本体子图构建设计方案
 
 > 版本：V5.15  
 > 目标：在不丢失既有 Bulk Import、混合召回、RRF、LLM 精排和子图算法设计的基础上，进一步对齐现有 OMS 本体 JSON 资产，补齐手动构建、OAC 数据抽取、MinIO 文件通知的对外接口及全量/增量组合，并规范阶段 2 Entity Linking 的 ObjectType 作用域内 Property 匹配与 RRF 粗排输出：统一三张索引表命名，本体对象和枚举值直接内嵌 `synonyms`，固定支持中文/英文并额外支持最多 2 种语言，实例索引只保存去重后的真实列值。  
@@ -60,8 +60,8 @@ flowchart TD
     subgraph RET[每个 Semantic Unit 的 6 路召回]
       QU --> SL[本体对象节点 OpenSearch<br/>Exact/BM25]
       QU --> SD[本体对象节点 Dense<br/>GaussVector]
-      QU --> ML[枚举语义元素 OpenSearch<br/>Exact/BM25]
-      QU --> MD[枚举语义元素 Dense<br/>GaussVector]
+      QU --> ML[枚举元素 OpenSearch<br/>Exact/BM25]
+      QU --> MD[枚举元素 Dense<br/>GaussVector]
       QU --> IL[实例元素 OpenSearch<br/>Exact/BM25]
       QU --> ID[实例元素 Dense<br/>GaussVector]
     end
@@ -239,7 +239,7 @@ Enum/Instance 和 synonym 都可以帮助形成最终语义结果，但不直接
 | 类型     | 物理实体                  | Synonym 处理                 | 本体归属字段                                |
 | ------ | --------------------- | -------------------------- | ------------------------------------- |
 | 本体对象定义 | ObjectType / Property | `synonyms` 以 LF 分隔的平铺字符串内嵌 | 使用本体对象自身 `id`；Property→ObjectType 走拓扑 |
-| enum元素 | Enum Value            | `synonyms` 以 LF 分隔的平铺字符串内嵌 | `propertyId + objectTypeId`           |
+| 枚举元素 | Enum Value            | `synonyms` 以 LF 分隔的平铺字符串内嵌 | `propertyId + objectTypeId`           |
 | 实例元素   | Instance Value        | 不建立实例同义词记录                 | `propertyid + objectTypeId`           |
 
 ### 2.1.1 OMS SynonymType：保留多语言源结构
@@ -331,7 +331,7 @@ SynonymType 自身不建立独立向量记录。其 `name/display/description` �
 | 逻辑类型   | 物理表 / Index                    | Owner         | 数据                    |
 | ------ | ------------------------------ | ------------- | --------------------- |
 | 本体对象定义 | `t_oag_{ontology_id}`          | OAG           | ObjectType / Property |
-| enum元素 | `t_oag_enum_{ontology_id}`     | OAG           | Enum Value + Synonyms |
+| 枚举元素 | `t_oag_enum_{ontology_id}`     | OAG           | Enum Value + Synonyms |
 | 实例元素   | `t_oag_instance_{ontology_id}` | OAG，业务服务 提供数据 | Instance Value        |
 
 三类数据继续物理隔离，原因不变：
@@ -825,7 +825,7 @@ UUID
 人可理解业务分类
 ```
 
-高基数自由文本进入单独 Document/RAG Index，不进入本体本体对象 Resolver 的 Instance Value Index。
+高基数自由文本进入单独 Document/RAG Index，不进入本体对象 Resolver 的 Instance Value Index。
 
 
 ## 2.12 Instance Value 向量化内容
@@ -840,7 +840,7 @@ UUID
 
 可以只用组合的Struct 结构的value。
 
-## 2.13 Metadata / Instance OpenSearch Index
+## 2.13 Enum / Instance OpenSearch Index
 
 ### `t_oag_enum_{ontology_id}`
 
@@ -880,7 +880,7 @@ description_*
 synonyms.bm25
 ```
 
-Metadata 的 `synonyms` 映射与 2.7 完全一致，不再使用按语言展开的 keyword 子字段或语言 dynamic object。
+枚举元素的 `synonyms` 映射与 2.7 完全一致，不再使用按语言展开的 keyword 子字段或语言 dynamic object。
 
 ### `t_oag_instance_{ontology_id}`
 
@@ -1042,7 +1042,7 @@ Embedding 模型升级时：
 
 ## 2.18 GaussVector 索引算法
 
-本体对象 / Metadata 语义元素：
+本体对象 / 枚举元素：
 
 ```text
 GsIVFFLAT
@@ -1067,14 +1067,14 @@ IVF_NLIST = 4 * sqrt(N)
 N = 当前物理表实际记录数
 ```
 
-Instance 语义元素：
+实例元素：
 
 ```text
 中小规模 → GsIVFFLAT
 千万 / 亿级 → GsDiskANN
 ```
 
-Metadata 与 Instance 分表的一个核心原因就是允许 ANN 算法独立演进。
+枚举元素与实例元素分表的一个核心原因就是允许 ANN 算法独立演进。
 
 ---
 
@@ -3555,16 +3555,16 @@ optional → normal profile
 | 数据类型 | OpenSearch | GaussVector |
 |---|---|---|
 | 本体对象 | Exact/BM25 | Dense |
-| 枚举语义元素 | Exact/BM25 | Dense |
+| 枚举元素 | Exact/BM25 | Dense |
 | 实例元素 | Exact/BM25 | Dense |
 
 即：
 
 ```text
-1. seed_lexical
-2. seed_dense
-3. metadata_lexical
-4. metadata_dense
+1. ontology_object_lexical
+2. ontology_object_dense
+3. enum_lexical
+4. enum_dense
 5. instance_lexical
 6. instance_dense
 ```
@@ -3619,11 +3619,11 @@ semanticRetrieval:
     topK: 3
     similarityThreshold: 0.6
 
-  seed:
+  ontologyObject:
     topK: 10
     similarityThreshold: 0.6
 
-  metadata:
+  enum:
     topK: 10
     similarityThreshold: 0.6
 
@@ -3665,8 +3665,8 @@ legacy topK
 内部召回仍使用：
 
 ```text
-seed.topK
-metadata.topK
+ontologyObject.topK
+enum.topK
 instance.topK
 ```
 
@@ -3843,10 +3843,10 @@ hit_count
 ```text
 Semantic Unit
   ↓
-Seed Lexical
-Seed Dense
-Metadata Lexical
-Metadata Dense
+Ontology Object Lexical
+Ontology Object Dense
+Enum Lexical
+Enum Dense
 Instance Lexical
 Instance Dense
   ↓
@@ -3862,7 +3862,7 @@ Instance Dense
 公式：
 
 ```text
-RRF(seed) = Σ weight(channel) / (rrf_k + rank_channel(seed))
+RRF(candidate) = Σ weight(channel) / (rrf_k + rank_channel(candidate))
 ```
 
 初始权重：
@@ -5548,7 +5548,7 @@ table-level TopK
 similarityThreshold
 timeout
 并行通道隔离
-Instance 语义元素 限流
+实例元素 限流
 ```
 
 ### Candidate Normalize / RRF
@@ -5567,7 +5567,7 @@ maxGlobalCandidates
 每个 Group 内 Matched Item 数量
 ```
 
-否则虽然 RRF Group 数量可控，但某个高频 Property 仍可能携带过多 Enum/Instance 语义元素 进入 Prompt。
+否则虽然 RRF Group 数量可控，但某个高频 Property 仍可能携带过多 Enum/实例元素 进入 Prompt。
 
 ### LLM
 
@@ -5608,11 +5608,11 @@ oag:
       topK: 3
       similarityThreshold: 0.6
 
-    seed:
+    ontologyObject:
       topK: 10
       similarityThreshold: 0.6
 
-    metadata:
+    enum:
       topK: 10
       similarityThreshold: 0.6
 
@@ -5719,7 +5719,7 @@ oag:
 | 异常 | 降级 |
 |---|---|
 | 单个检索通道失败 | 其他通道继续 |
-| Instance 语义元素 超时 | 不阻塞 本体对象/Metadata |
+| 实例元素 超时 | 不阻塞 本体对象/Metadata |
 | RRF 无候选 | unresolved unit |
 | LLM 超时/JSON错误 | 重试1次 → RRF fallback |
 | LLM 返回不存在 ID | 丢弃并记录 |
@@ -5984,8 +5984,8 @@ Cypher accuracy
 
 ```text
 本体对象
-Metadata 语义元素
-Instance 语义元素
+枚举元素
+实例元素
 ```
 
 双写，旧检索保持。
