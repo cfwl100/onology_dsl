@@ -1,0 +1,45 @@
+name: Finalize OAG chapter 3
+
+on:
+  pull_request:
+    branches: [main]
+    types: [synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: docs/oag-chapter3-restructure
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Final cleanup
+        run: python3 tools/finalize_oag_chapter3.py
+
+      - name: Validate
+        run: |
+          DOC='docs/OAG本体锚点语义检索与向量索引设计方案.md'
+          grep -q '^## 3.1 职责边界与总体架构$' "$DOC"
+          grep -q '^## 3.11 端到端时序与最终约束$' "$DOC"
+          ! grep -q 'sourceType.*REST' "$DOC"
+          ! grep -q 'REST Batch' "$DOC"
+          ! grep -q 'PayloadTooLarge:' "$DOC"
+
+      - name: Remove helpers and commit
+        run: |
+          rm -f tools/finalize_oag_chapter3.py
+          rm -f .github/workflows/oag-chapter3-finalize.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config core.whitespace -trailing-space
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m 'docs: finalize OAG semantic index management chapter'
+          git push origin HEAD:docs/oag-chapter3-restructure
