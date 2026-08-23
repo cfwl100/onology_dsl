@@ -1,0 +1,54 @@
+name: Restructure OAG chapter 2
+
+on:
+  push:
+    branches:
+      - docs/oag-chapter2-restructure
+
+permissions:
+  contents: write
+
+jobs:
+  restructure:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: docs/oag-chapter2-restructure
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Restructure chapter 2
+        run: python3 tools/restructure_oag_chapter2.py
+
+      - name: Validate document
+        run: |
+          DOC='docs/OAG本体锚点语义检索与向量索引设计方案.md'
+          grep -q '^## 2.1 总体索引模型$' "$DOC"
+          grep -q '^## 2.2 公共建模与检索规则$' "$DOC"
+          grep -q '^## 2.3 本体对象索引：ObjectType / Property$' "$DOC"
+          grep -q '^## 2.4 枚举元素索引：Enum Value$' "$DOC"
+          grep -q '^## 2.5 实例元素索引：Instance Value$' "$DOC"
+          grep -q '^## 2.6 三类索引统一存储与治理$' "$DOC"
+          grep -q 'GsDiskANN' "$DOC"
+          grep -q 'SynonymMatchResolver' "$DOC"
+          grep -q 'semanticExtensions.valueMappings' "$DOC"
+          ! grep -q '^## 2.0 核心设计$' "$DOC"
+          ! grep -q '^## 2.1 详细设计与实现$' "$DOC"
+
+      - name: Remove one-shot helpers
+        run: |
+          rm -f tools/restructure_oag_chapter2.py
+          rm -f .github/workflows/oag-chapter2-restructure.yml
+
+      - name: Commit result
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config core.whitespace -trailing-space
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m 'docs: reorganize OAG semantic index data model chapter'
+          git push origin HEAD:docs/oag-chapter2-restructure
