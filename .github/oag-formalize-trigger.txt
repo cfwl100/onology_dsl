@@ -1,1 +1,0 @@
-trigger formal OAG design cleanup
