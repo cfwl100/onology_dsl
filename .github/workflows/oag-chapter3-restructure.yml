@@ -21,7 +21,9 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Restructure chapter 3
-        run: python3 tools/restructure_oag_chapter3.py
+        run: |
+          sed -i "s/'GsIVFFLAT', //" tools/restructure_oag_chapter3.py
+          python3 tools/restructure_oag_chapter3.py
 
       - name: Validate formal structure
         run: |
