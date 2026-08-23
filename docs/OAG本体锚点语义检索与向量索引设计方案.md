@@ -1305,11 +1305,6 @@ Generation 发布
 
 ### 3.1.2 总体索引构建架构
 
-#### DataSeek / NL2SQL 语义值模型对齐
-
-与 DataSeek/NL2SQL 的对齐采用统一语义值逻辑模型：`ontology_id / object_type_id / property_id / value / normalized_value / source / version / update_type`。OAG 保持 Exact/BM25 + Dense 的混合检索契约和“值 → Property/ObjectType”归属解析能力；未来 NL2SQL 可以复用同一语义值字典和归属信息，而不要求共享 OAG 的物理向量表。 
-
-
 ```mermaid
 flowchart TD
     subgraph T[触发方]
@@ -1347,6 +1342,11 @@ flowchart TD
     OMS --> PIPE
     PIPE --> STORE --> PUB --> TASK
 ```
+
+
+#### 与 DataSeek / NL2SQL 的模型边界
+
+与 DataSeek/NL2SQL 的对齐采用统一语义值逻辑模型：`ontology_id / object_type_id / property_id / value / normalized_value / source / version / update_type`。OAG 保持 Exact/BM25 + Dense 的混合检索契约和“值 → Property/ObjectType”归属解析能力；未来 NL2SQL 可以复用同一语义值字典和归属信息，而不要求共享 OAG 的物理向量表。
 
 
 ### 3.1.3 统一 Import Pipeline 边界
@@ -1916,9 +1916,9 @@ POST
 | `errorCode` | String | 兼容主错误码；无错误时为空 |
 | `errorCodes` | Array[String] | 本次执行出现的去重稳定错误码集合；业务重试判断优先使用 |
 | `errorMessage` | String | 错误摘要，仅用于展示/定位 |
-| `fileList` | Array[String] | MINIO Task 的全部 objectKey；其他来源返回空数组 |
+| `fileList` | Array[String] | 有 MinIO 文件输入 Task 的全部 objectKey；无文件输入时返回空数组 |
 | `errFileList` | Array[String] | 本次执行失败/需要重处理的 objectKey；其他来源或无失败返回空数组 |
-| `fileRetentionUntil` | String(date-time) | MinIO 源文件硬 TTL 对应的最晚恢复时间；其他来源为空 |
+| `fileRetentionUntil` | String(date-time) | MinIO 源文件硬 TTL 对应的最晚恢复时间；无文件输入时为空 |
 | `createTime` | String(date-time) | 创建时间 |
 | `startTime` | String(date-time) | 实际开始时间 |
 | `updateTime` | String(date-time) | 最近更新时间 |
@@ -2041,7 +2041,7 @@ AND RETRY_COUNT 未超过服务配置上限
 AND 原始 Source/Checkpoint 仍可恢复
 ```
 
-MINIO Task 额外校验：
+有 MinIO 文件输入的 Task 额外校验：
 
 ```text
 当前时间 < FILE_RETENTION_UNTIL（配置了硬 TTL 时）
@@ -2276,7 +2276,7 @@ POST
 
 ### 3.3.5 OpenAPI 3.0.3 公共 Components
 
-以下 Components 与 3.3～3.8 的 Path 定义组合后，可以直接形成 OpenAPI 3.0.3 契约。工程实现可以将这些定义拆到独立 `openapi.yaml`，设计文档保留同名 Schema 作为接口评审基线。
+以下 Components 与本节 Path 定义组合后，可以直接形成 OpenAPI 3.0.3 契约。工程实现可以将这些定义拆到独立 `openapi.yaml`，设计文档保留同名 Schema 作为接口评审基线。
 
 ```yaml
 openapi: 3.0.3
@@ -2815,7 +2815,7 @@ MinIO / 平台
 
 ### 3.5.1 GaussDB `T_OAG_INDEX_TASK`
 
-索引任务不能只保存在 JVM 内存中。手动构建、OAC 抽取、兼容 MinIO 文件通知和 OMS 全量索引构建都必须创建持久化任务。
+索引任务不能只保存在 JVM 内存中。手动构建、OAC 抽取、MinIO 文件通知和 OMS 全量索引构建都必须创建持久化任务。
 
 沿用现有关系：
 
@@ -2849,7 +2849,7 @@ T_OAG_INDEX_TASK (N)
 | `SKIPPED_COUNT`        | BIGINT        |          | 去重/过滤记录数                                                |
 | `BUCKET_NAME`          | VARCHAR(256)  |          | MinIO Bucket；OMS 任务可空；动态文件任务记录实际 Bucket；同一 Task 只允许一个 Bucket |
 | `OBJECT_PREFIX`        | VARCHAR(1024) |          | MinIO 公共 Object Prefix；OMS 任务可空            |
-| `FILE_LIST`            | TEXT          |          | JSON String Array；当前 Task 的全部 objectKey，MINIO 任务使用      |
+| `FILE_LIST`            | TEXT          |          | JSON String Array；当前 Task 的全部 objectKey；有 MinIO 文件输入的任务使用      |
 | `ERR_FILE_LIST`        | TEXT          |          | JSON String Array；本次执行失败或需要重处理的 objectKey               |
 | `FILE_RETENTION_UNTIL` | TIMESTAMP     |          | 源文件硬 TTL 对应的最晚可恢复时间；OMS 可空                         |
 | `CHECKPOINT`           | TEXT          |          | 版本化 JSON Checkpoint；数据库类型统一使用 TEXT |
@@ -2888,7 +2888,6 @@ ERR_FILE_LIST
   → 当前执行失败、重试时优先处理的文件集合
 ```
 
-`STATUS=0/1/2` 继续兼容现有构建中/成功/失败语义，`STATUS=3` 表示取消；更细执行阶段写入 `STAGE`：`CREATED / WAITING_SOURCE / EXTRACTING / VALIDATING / READING / DEDUPLICATING / EMBEDDING / WRITING_VECTOR / WRITING_SEARCH / VERIFYING / PUBLISHING / CANCEL_REQUESTED / FINISHED`。
 
 #### 索引与约束
 
@@ -2986,7 +2985,7 @@ FAILED    → STATUS=2, ERROR_CODE/ERROR_CODE_LIST/ERROR_MESSAGE/ERR_FILE_LIST, 
 CANCELLED → STATUS=3, COMPLETION_TIME
 ```
 
-OAG 重启后从 GaussDB 找到未完成任务，根据 `SOURCE_TYPE + CHECKPOINT + FILE_LIST` 决定恢复、重试或标记失败。对于 MINIO Task，如果源对象已经超过 `FILE_RETENTION_UNTIL` 或实际不存在，任务不能继续依赖原文件恢复。批量任务查询接口必须以 GaussDB 为事实来源，而不是以内存 Future/线程状态作为权威状态。
+OAG 重启后从 GaussDB 找到未完成任务，根据 `SOURCE_TYPE + CHECKPOINT + FILE_LIST` 决定恢复、重试或标记失败。对于有 MinIO 文件输入的 Task，如果源对象已经超过 `FILE_RETENTION_UNTIL` 或实际不存在，任务不能继续依赖原文件恢复。批量任务查询接口必须以 GaussDB 为事实来源，而不是以内存 Future/线程状态作为权威状态。
 
 ---
 
@@ -3306,7 +3305,7 @@ FILE_RETENTION_UNTIL
   → 原 MinIO 文件可恢复窗口的硬截止时间
 ```
 
-对于 MINIO Task，业务侧如果选择 retry，OAG 默认只重处理 `ERR_FILE_LIST`；如果失败发生在 VERIFY/PUBLISH 等 Task 级阶段，则按 `STAGE + CHECKPOINT` 恢复而不是机械重读全部文件。
+对于有 MinIO 文件输入的 Task，业务侧如果选择 retry，OAG 默认只重处理 `ERR_FILE_LIST`；如果失败发生在 VERIFY/PUBLISH 等 Task 级阶段，则按 `STAGE + CHECKPOINT` 恢复而不是机械重读全部文件。
 
 任务级错误通过 `ERROR_CODE / ERROR_CODE_LIST / ERROR_MESSAGE` 写入 `T_OAG_INDEX_TASK`；记录级错误至少保留 taskId、objectKey/rowNumber 或 recordIndex、Property 标识（Enum 为 propertyId，Instance 为 property_id）、objectTypeId、必要时脱敏后的 value、errorCode、errorMessage。
 
