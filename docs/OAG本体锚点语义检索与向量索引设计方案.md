@@ -1,8 +1,10 @@
-# OAG 面向本体种子节点的语义检索、混合排序与本体子图构建设计方案
+# OAG 面向本体对象的语义检索、混合排序与本体子图构建设计方案
 
-> 版本：V5.14  
-> 目标：在不丢失既有 Bulk Import、混合召回、RRF、LLM 精排和子图算法设计的基础上，进一步对齐现有 OMS 本体 JSON 资产，补齐手动构建、OAC 数据抽取、MinIO 文件通知的对外接口及全量/增量组合，并规范阶段 2 Entity Linking 的 ObjectType 作用域内 Property 匹配与 RRF 粗排输出：统一三张索引表命名，种子节点和枚举值直接内嵌 `synonyms`，固定支持中文/英文并额外支持最多 2 种语言，实例索引只保存去重后的真实列值。  
-> 核心决策：**ObjectType/Property = 种子节点；SynonymType 在 OMS 中保留多语言源结构，OAG 物理索引中的 `synonyms` 统一为 LF 分隔的平铺字符串且不建立独立物理行；Metadata Evidence 只承载 Enum Value；Instance Evidence 只承载真实 Instance Value；种子节点使用 `id`，Enum/Instance 统一使用 `propertyid + objectTypeId` 表达本体归属；每个 Semantic Unit 默认 6 路一次 Weighted RRF。**
+> 版本：V5.16  
+> 目标：在不丢失既有 Bulk Import、混合召回、RRF、LLM 精排和子图算法设计的基础上，进一步对齐现有 OMS 本体 JSON 资产，补齐手动构建、OAC 数据抽取、MinIO 文件通知的对外接口及全量/增量组合，并规范阶段 2 Entity Linking 的 ObjectType 作用域内 Property 匹配与 RRF 粗排输出：统一三张索引表命名，本体对象和枚举值直接内嵌 `synonyms`，固定支持中文/英文并额外支持最多 2 种语言，实例索引只保存去重后的真实列值。  
+> 核心决策：**ObjectType/Property = 本体对象；SynonymType 在 OMS 中保留多语言源结构，OAG 物理索引中的 `synonyms` 统一为 LF 分隔的平铺字符串且不建立独立物理行；Enum Evidence 只承载 Enum Value；Instance Evidence 只承载真实 Instance Value；本体对象使用 `id`，Enum/Instance 统一使用 `propertyid + objectTypeId` 表达本体归属；每个 Semantic Unit 默认 6 路一次 Weighted RRF。**
+
+> V5.16 检视收敛：**PR #42 检视意见优化方案已完整并入本文附录 A，本文成为唯一权威设计文档。对于 OAC/业务服务数据接入、MinIO 交付、Software/SEC 容量规格、文件摘要算法、Chunk/Checkpoint 恢复等内容，如正文历史段落与附录 A 存在差异，以附录 A 的 V5.16 规范为准；实体提取、Entity Linking、RRF、LLM 精排、PathProbePlan、nGQL 与结果生成设计保持正文定义。**
 
 ---
 
@@ -11,9 +13,9 @@
 1. 设计目标、术语与总体架构  
 2. 数据模型与索引结构  
 3. 索引构建、OAC 数据抽取与入库接口组合  
-4. Query Understanding 与 6 路召回  
+4. 实体提取、Entity Linking 与 6 路召回  
 5. LLM 精排与最终检索结果  
-6. 种子节点投影与本体子图构建  
+6. 本体对象投影、子图策略、路径探测与 nGQL 生成  
 7. 性能、配置、可观测性、评测与迁移  
 
 > 本次章节整理将原 V5.3 的 116 个一级章节完整归并到以上 7 个主章节；已有 Bulk Import、三类子图算法、GraphTopologyCache、性能/评测/灰度等信息均保留，只做术语、字段和执行顺序上的收敛。
@@ -36,19 +38,20 @@
 
 ## 1.1 设计目标与边界
 
-OAG 同时承担索引构建、语义检索和本体子图构建三类能力。V5.7 进一步收敛检索数据模型，只保留三个业务层次：
-TODO : 种子节点 统一 改为 本体对象，元数据元素当前只有枚举值，统一改为 枚举元素，实例元素继续保留。
+OAG 同时承担索引构建、语义检索和本体子图构建三类能力。V5.15 将检索数据模型统一为三个业务层次：
 
 ```text
-种子节点（Seed Node）
+本体对象（Ontology Object）
   = ObjectType / Property
 
-元数据元素（Metadata Element）
+枚举元素（Enum Element）
   = Enum Value
 
 实例元素（Instance Element）
   = 真实 Instance Value
 ```
+
+三类名称在索引、Entity Linking、RRF、精排和结果解释中保持一致。历史 API/代码中的 `seed*`、`metadata*` 字段可以在兼容层继续读取，但新设计文档统一使用“本体对象 / 枚举元素 / 实例元素”的逻辑术语。
 
 ## 1.2 子图端到端总体架构
 
@@ -59,10 +62,10 @@ flowchart TD
     subgraph RET[每个 Semantic Unit 的 6 路召回]
       QU --> SL[本体对象节点 OpenSearch<br/>Exact/BM25]
       QU --> SD[本体对象节点 Dense<br/>GaussVector]
-      QU --> ML[枚举语义元素 OpenSearch<br/>Exact/BM25]
-      QU --> MD[枚举语义元素 Dense<br/>GaussVector]
-      QU --> IL[实例语义元素 OpenSearch<br/>Exact/BM25]
-      QU --> ID[实例语义元素 Dense<br/>GaussVector]
+      QU --> ML[枚举元素 OpenSearch<br/>Exact/BM25]
+      QU --> MD[枚举元素 Dense<br/>GaussVector]
+      QU --> IL[实例元素 OpenSearch<br/>Exact/BM25]
+      QU --> ID[实例元素 Dense<br/>GaussVector]
     end
 
     SL --> N[SeedCandidateNormalizer]
@@ -73,7 +76,7 @@ flowchart TD
     ID --> N
 
     N --> RRF[Weighted RRF<br/>一次融合 6 条 Ranked List]
-    RRF --> COARSE[种子节点分组粗排<br/>保留具体语义元素]
+    RRF --> COARSE[本体对象分组粗排<br/>保留具体语义元素]
 
     Q --> RC[RerankContextBuilder]
     COARSE --> RC
@@ -99,15 +102,42 @@ flowchart TD
 阶段2：6 路召回
 阶段3：一次 Weighted RRF 粗排
 阶段4：LLM 精排
-阶段5：检索结果 → 种子节点投影
+阶段5：检索结果 → 本体对象投影
 阶段6：minimal / khop / component 子图构建
 阶段7：语义扩展与 Cypher 上下文组装
 ```
 
 核心边界：
 
-> **检索层返回“命中的对象本身”，图算法只消费 ObjectType / Property 种子节点。**
+> **检索层返回“命中的对象本身”，图算法只消费 ObjectType / Property 本体对象。**
 
+
+
+### 1.2.1 本体子图检索五阶段主流程
+
+对外统一把运行链路抽象为五个阶段，现有更细的“召回/RRF/精排/投影”仍作为阶段 ② 内部实现，不改变已有章节顺序：
+
+```mermaid
+flowchart TD
+    Q[用户 Query] --> EE[① 实体提取 Entity Extraction<br/>ObjectType / Properties / Values]
+    EE --> EL[② 实体链接 Entity Linking<br/>本体对象/枚举元素/实例元素<br/>Lexical + Dense + Weighted RRF]
+    EL --> GS[③ 子图检索策略<br/>minimal / khop / component]
+    GS --> PLAN[PathProbePlan<br/>统一策略抽象 + Loop 执行]
+    PLAN --> NQ[④ nGQL / 图算法参数生成]
+    NQ --> GE[图查询 / 图算法执行]
+    GE --> RG[⑤ 结果生成]
+    RG --> OUT[ObjectType / Property / Relationship<br/>RelationshipProperty / Function / Action]
+```
+
+阶段边界：
+
+1. **实体提取**只回答“用户提到了哪些对象、属性和值”，正式结构见 [extractedEntities / 实体提取设计方案](./OAG语义子图检索接口extractedEntities结构设计方案.md)；
+2. **实体链接**把业务表达链接到真实本体对象，并用枚举/实例命中作为语义证据；
+3. **子图策略**只消费已解析的 ObjectType/Property terminal，生成可执行 `PathProbePlan`；
+4. **nGQL 生成**只负责把 Plan 翻译成参数化图查询或图算法入参，不承载语义判断；
+5. **结果生成**把执行结果还原为稳定 API 结构，并按开关扩展 Function/Action。
+
+业务扩展原则：新增业务图策略时实现统一 Strategy SPI 生成 `PathProbePlan`，而不是在 Entity Linking 或 nGQL Assembler 中硬编码业务分支。
 
 ## 1.3 与现有 OAG 代码的兼容基线
 
@@ -150,7 +180,7 @@ SearchDispatcher
     ↓
 SemanticCandidateNormalizer
     ↓
-Weighted RRF 种子节点分组
+Weighted RRF 本体对象分组
     ↓
 LLM Fine Ranker
     ↓
@@ -161,10 +191,10 @@ Final Semantic Matches
     ↓
 SeedNodeProjector
     ↓
-最终图构建种子节点
+最终图构建本体对象
 ```
 
-现有 `seedIds` / `seedNodes` 仍然可以作为**图构建种子节点兼容字段**保留，但不能再代表完整检索结果；完整检索结果由新增的 `retrievalResults` 表达。
+现有 `seedIds` / `seedNodes` 仍然可以作为**图构建本体对象兼容字段**保留，但不能再代表完整检索结果；完整检索结果由新增的 `retrievalResults` 表达。
 
 现有 `subgraphQuery()`：
 
@@ -176,7 +206,7 @@ minimal / khop / component
 内部支持 legacy / enhanced 两套算法
 ```
 
-因此本次调整不改变三种图算法的边界，只改变“检索输出是什么”以及“何时投影成 种子节点”。
+因此本次调整不改变三种图算法的边界，只改变“检索输出是什么”以及“何时投影成 本体对象”。
 
 ---
 
@@ -206,12 +236,12 @@ Enum/Instance 和 synonym 都可以帮助形成最终语义结果，但不直接
 
 # 2. 数据模型与索引结构
 
-## 2.1 数据模型：种子节点、枚举值、实例值与 Synonym
+## 2.1 数据模型：本体对象、枚举值、实例值与 Synonym
 
 | 类型     | 物理实体                  | Synonym 处理                 | 本体归属字段                                |
 | ------ | --------------------- | -------------------------- | ------------------------------------- |
-| 本体对象定义 | ObjectType / Property | `synonyms` 以 LF 分隔的平铺字符串内嵌 | 使用种子节点自身 `id`；Property→ObjectType 走拓扑 |
-| enum元素 | Enum Value            | `synonyms` 以 LF 分隔的平铺字符串内嵌 | `propertyId + objectTypeId`           |
+| 本体对象定义 | ObjectType / Property | `synonyms` 以 LF 分隔的平铺字符串内嵌 | 使用本体对象自身 `id`；Property→ObjectType 走拓扑 |
+| 枚举元素 | Enum Value            | `synonyms` 以 LF 分隔的平铺字符串内嵌 | `propertyId + objectTypeId`           |
 | 实例元素   | Instance Value        | 不建立实例同义词记录                 | `propertyid + objectTypeId`           |
 
 ### 2.1.1 OMS SynonymType：保留多语言源结构
@@ -303,7 +333,7 @@ SynonymType 自身不建立独立向量记录。其 `name/display/description` �
 | 逻辑类型   | 物理表 / Index                    | Owner         | 数据                    |
 | ------ | ------------------------------ | ------------- | --------------------- |
 | 本体对象定义 | `t_oag_{ontology_id}`          | OAG           | ObjectType / Property |
-| enum元素 | `t_oag_enum_{ontology_id}`     | OAG           | Enum Value + Synonyms |
+| 枚举元素 | `t_oag_enum_{ontology_id}`     | OAG           | Enum Value + Synonyms |
 | 实例元素   | `t_oag_instance_{ontology_id}` | OAG，业务服务 提供数据 | Instance Value        |
 
 三类数据继续物理隔离，原因不变：
@@ -319,7 +349,7 @@ ANN 算法差异
 
 ## 2.3 `t_oag_{ontology_id}` GaussVector 表结构
 
-种子节点表保留两个额外语言槽位，并增加平铺 `synonyms`。中文和英文仍保留固定列，另外最多支持 2 种 display/description 语言：
+本体对象表保留两个额外语言槽位，并增加平铺 `synonyms`。中文和英文仍保留固定列，另外最多支持 2 种 display/description 语言：
 
 | 字段                   | 类型                   | 非空  | 说明                                            |
 | -------------------- | -------------------- | --- | --------------------------------------------- |
@@ -357,7 +387,7 @@ Celda de radio
 
 额外 display/description 最多 2 个语言槽位；“Synonym 最多 3 种语言”是 **OMS SynonymType 源模型约束**。
 
-## 2.4 种子节点向量化内容
+## 2.4 本体对象向量化内容
 
 OAG 在内存中解析 ObjectType / Property 及其 SynonymType，先按 2.1.2 生成 canonical `synonyms` 字符串，再按以下顺序构建 Embedding 文本：
 
@@ -729,7 +759,28 @@ t_oag_instance_{ontology_id}
 | `property_id`    | `VARCHAR(512 CHAR)`  | ✔   | 所属 Property.id            |
 | `object_type_id` | `VARCHAR(256 CHAR)`  |     | Property 所属 ObjectType.id |
 
-TODO：未来可能需要保证value唯一，存在一个相同的value对应多组property_id和object_type_id情况，property_id和object_type_id需要是一个数组，为了应对这种情况需要设计存储方案和上层查询方案，为未来演进预留口子。
+**实例值多归属演进方案：** 当前版本不要求 `value` 单列全局唯一，同一个规范化值如果属于多组 Property/ObjectType，允许保存多条物理记录，业务唯一键使用 `(normalized_value, property_id, object_type_id)`，从而避免数组字段导致的更新放大和索引过滤复杂化。
+
+未来如果业务明确要求“一个 value 只保存一份向量”，升级为**值表 + 归属映射表**两层模型，而不是直接把 `property_id/object_type_id` 改成数组：
+
+```text
+t_oag_instance_value_{ontology_id}
+  value_id
+  normalized_value UNIQUE
+  value
+  vector
+
+    1 : N
+      ↓
+
+t_oag_instance_binding_{ontology_id}
+  value_id
+  property_id
+  object_type_id
+  UNIQUE(value_id, property_id, object_type_id)
+```
+
+查询链路：先在 Value 表执行 Exact/BM25/Dense 召回得到 `value_id`，再批量查询 Binding 表展开成多组 `(property_id, object_type_id)`，随后按当前 ObjectType/Property 上下文进入 RRF/LLM 消歧。对上层统一预留 `ownerships[]` 逻辑结构；当前“一值多行”实现也在 Normalizer 层聚合成同一逻辑候选，因此未来切换两层存储不改变 Entity Linking 和子图构建接口。
 
 当前方案，实例数据先放在一张表里面，不同列做语义放在一个表里面，并明确数据量规模和性能规格，对于拆表方案，后续随着需求驱动。
 分表策略：水平拆分，达到一个上限后分表
@@ -776,7 +827,7 @@ UUID
 人可理解业务分类
 ```
 
-高基数自由文本进入单独 Document/RAG Index，不进入本体种子节点 Resolver 的 Instance Value Index。
+高基数自由文本进入单独 Document/RAG Index，不进入本体对象 Resolver 的 Instance Value Index。
 
 
 ## 2.12 Instance Value 向量化内容
@@ -791,7 +842,7 @@ UUID
 
 可以只用组合的Struct 结构的value。
 
-## 2.13 Metadata / Instance OpenSearch Index
+## 2.13 Enum / Instance OpenSearch Index
 
 ### `t_oag_enum_{ontology_id}`
 
@@ -831,7 +882,7 @@ description_*
 synonyms.bm25
 ```
 
-Metadata 的 `synonyms` 映射与 2.7 完全一致，不再使用按语言展开的 keyword 子字段或语言 dynamic object。
+枚举元素的 `synonyms` 映射与 2.7 完全一致，不再使用按语言展开的 keyword 子字段或语言 dynamic object。
 
 ### `t_oag_instance_{ontology_id}`
 
@@ -884,7 +935,7 @@ language_hint = BCP 47 language tag / mixed / und
 物理存储分三种情况：
 
 ```text
-种子节点 / Enum Value display、description
+本体对象 / Enum Value display、description
   → zh/en 固定 + lang_1/lang_2 两个 ontology 级语言槽位
 
 SynonymType 源资产
@@ -962,7 +1013,7 @@ unique_value_count
 三类表按各自稳定业务键做幂等 UPSERT / DELETE：
 
 ```text
-种子节点：id
+本体对象：id
 Enum Value：objectTypeId + propertyId + normalized(value)
 Instance Value：objectTypeId + propertyid + normalized(value)
 ```
@@ -993,7 +1044,7 @@ Embedding 模型升级时：
 
 ## 2.18 GaussVector 索引算法
 
-种子节点 / Metadata 语义元素：
+本体对象 / 枚举元素：
 
 ```text
 GsIVFFLAT
@@ -1018,14 +1069,14 @@ IVF_NLIST = 4 * sqrt(N)
 N = 当前物理表实际记录数
 ```
 
-Instance 语义元素：
+实例元素：
 
 ```text
 中小规模 → GsIVFFLAT
 千万 / 亿级 → GsDiskANN
 ```
 
-Metadata 与 Instance 分表的一个核心原因就是允许 ANN 算法独立演进。
+枚举元素与实例元素分表的一个核心原因就是允许 ANN 算法独立演进。
 
 ---
 
@@ -1035,12 +1086,12 @@ Metadata 与 Instance 分表的一个核心原因就是允许 ANN 算法独立�
 本章定义 OAG 索引数据的构建、OAC 抽取编排、MinIO 文件交互、任务持久化和双存储发布机制。索引数据仍由第 2 章定义的三张物理表承载：
 
 ```text
-t_oag_{ontology_id} → ObjectType / Property 种子节点
+t_oag_{ontology_id} → ObjectType / Property 本体对象
 t_oag_enum_{ontology_id} → Enum Value
 t_oag_instance_{ontology_id} → Instance Value
 ```
 
-其中种子节点索引由 OAG 根据 OMS 本体资产构建；Enum Value 和 Instance Value 还支持运行期抽取与导入。有 OAC 的部署统一推荐两类写入入口：
+其中本体对象索引由 OAG 根据 OMS 本体资产构建；Enum Value 和 Instance Value 还支持运行期抽取与导入。有 OAC 的部署统一推荐两类写入入口：
 
 ```text
 手动构建/更新索引
@@ -1127,11 +1178,31 @@ Generation 发布
 
 1、手动创建索引->OAC : 应对首次全量索引创建 和 索引更新 场景  
 2、通知OAG->OAG读取minio文件：应对大数据量首次全量和非首次增量数据索引入库
-评审点和遗留问题：
-TODO：
-1、按照OAC直接访问和不能访问的分数据流；是否采用OAC查询和通知的方式，通过配置开关控制
-2、针对不同的业务，明确语义向量数据量规格约束，软件1W用户，SEC最大100W
-3、语义索引能力需要与DataSeek对齐，为未来与NL2SQL融合做准备 
+### 数据源访问模式、容量规格与 DataSeek 对齐结论
+
+索引构建统一支持三种服务端配置模式，不把数据源选择暴露成业务侧每次请求都要判断的参数：
+
+```yaml
+indexBuild:
+  instanceDataSourceMode: AUTO   # OAC_QUERY | MINIO_NOTICE | AUTO
+  directQueryMaxRows: 10000
+```
+
+| 模式 | 数据流 | 适用场景 |
+|---|---|---|
+| `OAC_QUERY` | Build API → OAG → OAC 分页/流式查询 → 去重 → Embedding → 双写 | OAG 可访问 OAC；软件等中小规模场景；首次全量和日常更新 |
+| `MINIO_NOTICE` | 业务/DataSync → MinIO → notice → OAG 读取文件 → 去重 → Embedding → 双写 | OAG 不能直连 OAC，或大数据量全量/增量导入 |
+| `AUTO` | 按租户/本体配置和预估规模选择上面两条路径 | 默认模式；不依赖运行时临时探测网络可达性，保证行为可预测 |
+
+容量基线：
+
+| 业务档位 | 去重后语义值规模 | 默认路径 | 设计要求 |
+|---|---:|---|---|
+| Software | ≤ 1 万 | `OAC_QUERY` | 单表即可，支持在线重建/更新 |
+| SEC | ≤ 100 万 | `MINIO_NOTICE` | Bulk、Chunk、Checkpoint、限流、可恢复、双写幂等 |
+| > 100 万 | 超出当前基线 | MinIO + 水平分表 | 必须专项容量评估与压测后开放 |
+
+与 DataSeek/NL2SQL 的对齐采用统一语义值逻辑模型：`ontology_id / object_type_id / property_id / value / normalized_value / source / version / update_type`。OAG 保持 Exact/BM25 + Dense 的混合检索契约和“值 → Property/ObjectType”归属解析能力；未来 NL2SQL 可以复用同一语义值字典和归属信息，而不要求共享 OAG 的物理向量表。 
 
 
 ```mermaid
@@ -1286,8 +1357,8 @@ POST
 | `similarityThreshold` | Number(float) | 否 | `0.6` | `minimum: 0`，`maximum: 1` | Dense 相似度阈值；Exact 命中不受该阈值过滤 |
 | `includeFunctions` | Integer | 否 | `1` | `enum: [0,1]` | 是否返回 Function，1 返回，0 不返回 |
 | `includeActions` | Integer | 否 | `0` | `enum: [0,1]` | 是否返回 Action，1 返回，0 不返回 |
-| `seedRetrievalMode` | String | 否 | `vector` | 当前支持值以服务配置为准 | 种子节点检索模式 |
-| `topK` | Integer | 否 | `3` | `minimum: 1` | 种子节点候选 TopK |
+| `seedRetrievalMode` | String | 否 | `vector` | 当前支持值以服务配置为准 | 本体对象检索模式 |
+| `topK` | Integer | 否 | `3` | `minimum: 1` | 本体对象候选 TopK |
 | `graphExpansionStrategy` | String | 否 | `minimal` | `enum: [minimal,khop,component]` | 子图扩展策略 |
 | `hopLimit` | Integer | 否 | `3` | `minimum: 1` | `khop` 策略下的最大扩散深度 |
 
@@ -1661,7 +1732,29 @@ POST
 | `size`       | Integer(int64) | 否    | -       | `minimum: 0`                     | 预期文件字节数；OAG 可通过 `headObject` 二次校验       |
 | `sha256`     | String         | 是    | -       | `pattern: ^[A-Fa-f0-9]{64}$`     | 文件 SHA-256；用于不可变校验和 Chunk 稳定标识          |
 
-TODO：给出`sha256`具体的计算算法和代码样例
+`sha256` 定义为**MinIO 对象原始字节流**的 SHA-256（FIPS 180-4），按文件从第 0 字节顺序读取，不做换行符转换、字符集转码、CSV 解析或压缩内容重写；输出 64 位小写十六进制字符串。生产者上传完成后计算并发送，OAG 下载时再次流式计算并与 notice 值比较，校验失败立即终止任务，禁止对内容已变化的 objectKey 继续恢复。
+
+Java 参考实现：
+
+```java
+import java.io.InputStream;
+import java.security.MessageDigest;
+import java.util.HexFormat;
+
+public static String sha256(InputStream in) throws Exception {
+    MessageDigest md = MessageDigest.getInstance("SHA-256");
+    byte[] buffer = new byte[8 * 1024 * 1024]; // 8 MiB，避免整文件入内存
+    int n;
+    while ((n = in.read(buffer)) >= 0) {
+        if (n > 0) {
+  md.update(buffer, 0, n);
+        }
+    }
+    return HexFormat.of().formatHex(md.digest());
+}
+```
+
+校验顺序：`HEAD(size) → stream download + SHA-256 → 与 notice.sha256 比较 → 开始 Chunk 导入`。同一个任务恢复时必须再次确认 `objectKey + size + sha256` 未变化。
 
 
 MinIO 的 `endpoint / accessKey / secretKey` 属于部署配置，不属于业务 API 参数，禁止通过 `index-data/notice` Body 传输。
@@ -3020,7 +3113,18 @@ Input → SchemaValidator → OntologyMappingValidator → Normalizer → Dedupl
 ---
 
 
-TODO：首次入库，需要考虑性能，当前软件场景 1W，SEC 印尼IOH 场景100W。
+### 首次入库性能基线
+
+首次全量必须按规模分档，避免 1 万和 100 万数据走同一同步链路：
+
+| 档位 | 数据量（去重后 Value） | 推荐链路 | 默认执行模型 |
+|---|---:|---|---|
+| Software | ≤ 10,000 | OAC Query | 分页读取 + Embedding Batch + 双存储 Bulk，可单任务完成 |
+| SEC / IOH | ≤ 1,000,000 | MinIO Bulk | 文件切 Chunk、Embedding Worker 池、GaussVector/OpenSearch 独立 Bulk Writer、Checkpoint 恢复 |
+
+建议初始调优范围（均配置化，最终以环境压测为准）：Embedding batch `32~128`，写入 bulk `500~2000` 行，文件 Chunk `10,000~50,000` 行；Writer 队列达到高水位时必须反压读取和 Embedding，禁止无界缓存。性能验收至少同时记录 `readRows/s、embedRows/s、gaussRows/s、openSearchRows/s、endToEndRows/s、P95 chunk latency、retry rate、heap/direct-memory peak`。
+
+容量验收原则：1 万档验证在线构建体验；100 万档验证可恢复 Bulk 能力。端到端耗时受 Embedding 部署（CPU/GPU、batch、模型实例数）影响，因此不在协议中写死分钟级 SLA，而是在目标环境压测后固化成部署规格。
 
 ## 3.11 FULL_REPLACE 与 INCREMENTAL
 
@@ -3052,7 +3156,40 @@ Chunk 大小属于性能参数，通过压测配置，不写入协议常量。Ch
 
 稳定 Chunk ID 可由 `objectKey + file sha256 + row-range` 计算。只有 Chunk 完成 GaussVector/OpenSearch 写入并通过幂等校验后，才能推进 Checkpoint。
 
-TODO：稳定 Chunk ID 可由 `objectKey + file sha256 + row-range` 计算，但是文中没有提到 这些信息，以及如何恢复，请补充方案。
+稳定 Chunk 必须显式记录不可变文件身份和行范围：
+
+```text
+chunkSource = objectKey + "\n" + fileSha256 + "\n" + rowStart + ":" + rowEnd
+chunkId     = SHA-256(UTF-8(chunkSource))
+```
+
+任务/Checkpoint 至少持久化：
+
+| 字段 | 说明 |
+|---|---|
+| `object_key` | MinIO 对象键 |
+| `file_sha256` | 完整对象 SHA-256 |
+| `file_size` | 文件字节数 |
+| `row_start/row_end` | 当前 Chunk 半闭或闭区间，协议内固定一种口径 |
+| `chunk_id` | 上述稳定哈希 |
+| `committed_row_end` | 最近完成双写并校验通过的行 |
+| `gauss_status` / `opensearch_status` | 两端提交状态 |
+| `retry_count` | 重试次数 |
+| `updated_at` | Checkpoint 更新时间 |
+
+恢复流程：
+
+```text
+1. 读取任务 Checkpoint
+2. HEAD MinIO，校验 objectKey/size；重新计算或读取可信 sha256
+3. 若 fileSha256 变化 → FILE_CHANGED，禁止续跑
+4. 找到最后一个双端 COMMITTED 的 chunk
+5. 从 nextRow = committed_row_end + 1 重新生成确定性 chunk range/chunkId
+6. 对可能“单端成功”的 chunk 再执行幂等 UPSERT
+7. GaussVector + OpenSearch 均完成并通过计数/唯一键校验后推进 Checkpoint
+```
+
+因此 Chunk ID、文件身份、恢复 offset 是同一套协议数据，不允许只保存“最近行号”而丢失文件 SHA。
 
 ---
 
@@ -3225,8 +3362,47 @@ importMode = FULL_REPLACE | INCREMENTAL
 
 对外推荐组合只有两组：手动场景使用 `build → query → [retry|cancel]`，文件场景使用 `putObject → notice → query → [retry|cancel]`。有 OAC 时，OAG 负责抽取编排，OAC 负责业务数据访问；无论小批交付还是 MinIO 文件交付，OAG 始终统一完成去重、Embedding、双存储写入、校验与发布。业务根据稳定错误码和失败文件列表决定是否重试，生产者拥有源 CSV 生命周期，MinIO Lifecycle 提供硬 TTL 兜底。数据库级组合键 UPSERT 使接口幂等、重试幂等与存储幂等形成闭环。
 
-# 4. Query Understanding 与 6 路召回
+# 4. 实体提取、Entity Linking 与 6 路召回
 
+
+
+## 4.0 实体提取（Entity Extraction）
+
+实体提取是子图检索的第 ① 步，输入为 `query + searchContext`，或者直接接收业务侧提供的 `extractedEntities`。正式 `ExtractedEntity` 只包含：
+
+```text
+ObjectType
+Properties[]
+Values[]
+```
+
+其中 `Values` 统一承载需要语义定位的值，不在 NER 阶段区分 Enum/Instance：
+
+```json
+{
+  "extractedEntities": [
+    {
+      "ObjectType": "Account",
+      "Properties": ["accountStatus", "customerLevel"],
+      "Values": [
+        {"Property": "accountStatus", "Value": "在用"},
+        {"Property": "customerLevel", "Value": "VIP"}
+      ]
+    }
+  ]
+}
+```
+
+核心规则：
+
+1. Property 必须保持 ObjectType 作用域，Entity Linking 优先在该作用域匹配；
+2. ObjectType/Property 都未知的值允许 value-only，跨枚举/实例索引召回后再解析归属；
+3. 不根据编码形态猜测 Site/BaseStation/nativeId 等类型；
+4. Relationship 不由实体提取直接输出，专家路径放入 `searchContext`，在阶段 ③ 作为 PathPlan 约束；
+5. 连续数值、时间、比较和聚合语义默认留在原始 `query`，不强行塞入 Values；
+6. 实体提取结果转换为 OBJECT_TYPE / PROPERTY / VALUE 三种 Semantic Unit，再进入下文 6 路召回。
+
+完整 Schema、样例和兼容规则见 [OAG语义子图检索接口extractedEntities结构设计方案](./OAG语义子图检索接口extractedEntities结构设计方案.md)。
 
 ## 4.1 Query Understanding：Semantic Phrase Extraction
 
@@ -3376,21 +3552,21 @@ optional → normal profile
 
 每个 Semantic Unit 同时进入三类数据、两种检索方式，共 **6 条 Ranked List**：
 
-TODO: 修改数据类型，和前面章节统一，下文中的名称也同步修改
+本节逻辑数据类型统一使用 **本体对象 / 枚举元素 / 实例元素**。RRF 新配置名推荐 `ontologyObject* / enum* / instance*`；历史实现若仍读取 `seed* / metadata* / instance*`，只在配置兼容层做别名映射，业务语义和文档不再混用。
 
 | 数据类型 | OpenSearch | GaussVector |
 |---|---|---|
-| 种子节点 | Exact/BM25 | Dense |
-| 元数据语义元素 | Exact/BM25 | Dense |
-| 实例语义元素 | Exact/BM25 | Dense |
+| 本体对象 | Exact/BM25 | Dense |
+| 枚举元素 | Exact/BM25 | Dense |
+| 实例元素 | Exact/BM25 | Dense |
 
 即：
 
 ```text
-1. seed_lexical
-2. seed_dense
-3. metadata_lexical
-4. metadata_dense
+1. ontology_object_lexical
+2. ontology_object_dense
+3. enum_lexical
+4. enum_dense
 5. instance_lexical
 6. instance_dense
 ```
@@ -3445,11 +3621,11 @@ semanticRetrieval:
     topK: 3
     similarityThreshold: 0.6
 
-  seed:
+  ontologyObject:
     topK: 10
     similarityThreshold: 0.6
 
-  metadata:
+  enum:
     topK: 10
     similarityThreshold: 0.6
 
@@ -3461,8 +3637,8 @@ semanticRetrieval:
 说明：
 
 - `3 / 0.6` 只作为历史兼容默认值；
-- 种子节点优先 Recall；
-- Metadata Enum Value 允许多个值或 synonyms 命中同一种子节点；
+- 本体对象优先 Recall；
+- Metadata Enum Value 允许多个值或 synonyms 命中同一本体对象；
 - 实例数据量最大，TopK 初始更保守；
 - 三类 Dense 分数分布不同，阈值必须可独立校准。
 
@@ -3491,8 +3667,8 @@ legacy topK
 内部召回仍使用：
 
 ```text
-seed.topK
-metadata.topK
+ontologyObject.topK
+enum.topK
 instance.topK
 ```
 
@@ -3562,7 +3738,7 @@ RRF 前，OAG 将三张表的查询结果统一成 SearchHit，不向上层直�
 }
 ```
 
-### 种子节点 OpenSearch SearchHit
+### 本体对象 OpenSearch SearchHit
 
 ```json
 {
@@ -3641,7 +3817,7 @@ Instance Value hit：group_id = "PROP:" + hit.objectTypeId + ":" + hit.propertyi
 `matched_field/matched_value` 是最终解释“用户到底命中了 name/display/description/synonyms/value 哪一项”的关键字段，不能在 RRF 前丢失。
 
 
-## 4.10 通道内按种子节点去重并保留具体命中
+## 4.10 通道内按本体对象去重并保留具体命中
 
 同一 Property 可能通过多个 Enum Value、Instance Value 或 `synonyms` 字段命中。RRF 前按：
 
@@ -3649,7 +3825,7 @@ Instance Value hit：group_id = "PROP:" + hit.objectTypeId + ":" + hit.propertyi
 semantic_unit_id + target_object_type_id + channel + group_id
 ```
 
-去重，使同一种子节点在单通道只占一个排名位置。
+去重，使同一本体对象在单通道只占一个排名位置。
 
 组内保留：
 
@@ -3669,10 +3845,10 @@ hit_count
 ```text
 Semantic Unit
   ↓
-Seed Lexical
-Seed Dense
-Metadata Lexical
-Metadata Dense
+Ontology Object Lexical
+Ontology Object Dense
+Enum Lexical
+Enum Dense
 Instance Lexical
 Instance Dense
   ↓
@@ -3680,7 +3856,7 @@ Instance Dense
   ↓
 一次 Weighted RRF
   ↓
-种子节点分组粗排 + supporting_hits
+本体对象分组粗排 + supporting_hits
 ```
 
 原因保持不变：两级 RRF 会提前压缩 6 路 rank 信息、增加 TopK 截断风险、让权重解释和排障更复杂。只有离线评测证明一次 Weighted RRF 无法通过权重校准解决数据源噪声差异时，才作为实验 Profile。
@@ -3688,7 +3864,7 @@ Instance Dense
 公式：
 
 ```text
-RRF(seed) = Σ weight(channel) / (rrf_k + rank_channel(seed))
+RRF(candidate) = Σ weight(channel) / (rrf_k + rank_channel(candidate))
 ```
 
 初始权重：
@@ -3699,17 +3875,80 @@ rrf:
   coarseTopKPerSemanticUnit: 20
   maxGlobalCandidates: 50
   channelWeights:
-    metadataLexical: 1.0
-    metadataDense: 1.2
+    ontologyObjectLexical: 1.3
+    ontologyObjectDense: 1.0
     enumLexical: 1.2
-    enumDense: 1.1
-    instanceLexical: 1.4
-    instanceDense: 0.6
+    enumDense: 1.0
+    instanceLexical: 1.0
+    instanceDense: 0.8
 ```
 
 若 Exact 与 BM25 后续拆成独立 Ranked List，则直接扩为 9 路一次融合。
 
-**TODO**：针对加权的RRF，给出一个样例，用于说明RRF的算法执行过程，用于指导开发代码
+### Weighted RRF 执行样例
+
+对同一个 Semantic Unit，6 条通道先各自形成**有序列表**，RRF 不直接使用 BM25/Cosine 原始分数，只使用通道内 `rank`：
+
+```text
+score(candidate) = Σ channelWeight / (k + rank)
+k = 60
+```
+
+以下使用推荐权重：
+
+```yaml
+ontologyObjectLexical: 1.3
+ontologyObjectDense:   1.0
+enumLexical:           1.2
+enumDense:             1.0
+instanceLexical:       1.0
+instanceDense:         0.8
+```
+
+假设候选已经按真实归属聚合到两个 Property：
+
+| 通道 | A=`Account.customerLevel` | B=`Account.accountStatus` |
+|---|---:|---:|
+| 本体对象 Lexical | rank=2 | rank=1 |
+| 本体对象 Dense | rank=1 | rank=3 |
+| 枚举 Lexical | rank=1 | rank=3 |
+| 枚举 Dense | rank=2 | rank=1 |
+| 实例 Lexical | 未命中 | 未命中 |
+| 实例 Dense | 未命中 | 未命中 |
+
+则：
+
+```text
+A = 1.3/(60+2) + 1.0/(60+1) + 1.2/(60+1) + 1.0/(60+2)
+  = 0.020968 + 0.016393 + 0.019672 + 0.016129
+  = 0.073162
+
+B = 1.3/(60+1) + 1.0/(60+3) + 1.2/(60+3) + 1.0/(60+1)
+  = 0.021311 + 0.015873 + 0.019048 + 0.016393
+  = 0.072626
+```
+
+所以 A 的粗排分数略高于 B。若某通道未命中，该通道贡献为 0；同一 Property 被多个具体 Enum/Instance 值命中时，先按 `semantic_unit + channel + group_id` 做通道内去重并保留最佳 rank，同时把具体 `matchedItems` 留给后续 LLM Fine Rank 解释。
+
+开发伪代码：
+
+```java
+for (RankedList channel : channels) {
+    double w = weights.get(channel.name());
+    for (int i = 0; i < channel.size(); i++) {
+        int rank = i + 1; // rank 从 1 开始
+        Candidate c = normalizeAndProject(channel.get(i));
+        c.rrfScore += w / (k + rank);
+        c.addEvidence(channel.name(), rank, channel.get(i));
+    }
+}
+return candidates.values().stream()
+    .sorted(comparingDouble(Candidate::getRrfScore).reversed())
+    .limit(maxGlobalCandidates)
+    .toList();
+```
+
+注意：`similarityThreshold` 在进入 RRF 前过滤 Dense；Exact/BM25 是否进入列表由各自通道规则决定，RRF 本身不再比较原始异构分数。
 
 
 ## 4.12 Exact 不是绝对锁定
@@ -3720,7 +3959,7 @@ Exact 是强证据，但 `name/status/active/1/A` 或某个 synonym 仍可能在
 Exact/BM25 → 高权重 RRF → LLM 结合原始问题消歧
 ```
 
-只有种子节点全局唯一 `id` 的直接查询才可以绕过语义消歧；Enum/Instance 仍按 `objectTypeId + propertyid + value` 判断具体记录。
+只有本体对象全局唯一 `id` 的直接查询才可以绕过语义消歧；Enum/Instance 仍按 `objectTypeId + propertyid + value` 判断具体记录。
 
 
 ## 4.13 RRF 粗排输出：Entity Linking 结果
@@ -4078,7 +4317,7 @@ LLM 从 RRF 分组中选择用户真正命中的记录，并判断具体命中�
 ```text
 原始问题
 Semantic Units
-RRF 种子节点分组
+RRF 本体对象分组
 Seed / Enum / Instance 记录
 matched_field / matched_value
 ObjectType / Property 上下文
@@ -4159,7 +4398,7 @@ Role:
 你是 OAG 语义检索精排器。
 
 Rules:
-1. 只能选择输入候选中真实存在的记录；种子节点按 `id` 识别，Enum/Instance 按 `objectTypeId + propertyid + value` 识别。
+1. 只能选择输入候选中真实存在的记录；本体对象按 `id` 识别，Enum/Instance 按 `objectTypeId + propertyid + value` 识别。
 2. 必须结合原始问题，而不是只看相似度。
 3. Enum Value / Instance Value 必须结合 `propertyid + objectTypeId` 判断本体归属。
 4. synonym 命中时保留 matched_field/matched_value，不创建 synonym 独立记录。
@@ -4167,7 +4406,7 @@ Rules:
 6. 必须考虑不同 Semantic Unit 的上下文一致性。
 7. 每个 Unit 可以返回 0/1/N。
 8. 无匹配允许 no_match=true。
-9. 不创造不存在的种子节点 id、propertyid、objectTypeId 或 value。
+9. 不创造不存在的本体对象 id、propertyid、objectTypeId 或 value。
 10. 仅输出简短 reason，不输出详细思维过程。
 11. 严格输出 JSON Schema。
 ```
@@ -4200,7 +4439,7 @@ Rules:
 }
 ```
 
-Enum/Instance 的 Property/ObjectType 上下文直接来自 `propertyid + objectTypeId`；种子节点 Property 的父 ObjectType 仍由 GraphTopologyCache 补齐，不要求 LLM 推断。
+Enum/Instance 的 Property/ObjectType 上下文直接来自 `propertyid + objectTypeId`；本体对象 Property 的父 ObjectType 仍由 GraphTopologyCache 补齐，不要求 LLM 推断。
 
 
 ## 5.6 LLM 精排可靠性与降级
@@ -4227,7 +4466,7 @@ retrievalResults
   = 用户真正命中的 Seed / Enum Value / Instance Value，并保留 matched_field/matched_value
 
 ontologySubgraph
-  = 从 retrievalResults 投影种子节点后构建的本体核心图
+  = 从 retrievalResults 投影本体对象后构建的本体核心图
 
 semanticExtensions
   = 为结果补充的 synonyms / enum domain 等语义上下文
@@ -4357,7 +4596,7 @@ extension:
 
 ```text
 检索结果：id / type / value / name / matched_field / matched_value / source
-种子节点：ObjectType id/name + Property id/name
+本体对象：ObjectType id/name + Property id/name
 关系：relation id/name/businessSemanticType/cardinality/linkType/junctionConfig/source-target mapping
 ```
 
@@ -4394,7 +4633,7 @@ sequenceDiagram
     U->>QU: 原始问题
     QU-->>D: Semantic Units
 
-    par 种子节点
+    par 本体对象
       D->>OS: name/display/description/synonyms Exact/BM25
       D->>GV: Dense
     and Enum Value
@@ -4406,9 +4645,9 @@ sequenceDiagram
     end
 
     D->>N: 6路 Raw Hits
-    N->>N: 按种子节点 group_id 去重并保留 matched_field/value
+    N->>N: 按本体对象 group_id 去重并保留 matched_field/value
     N->>R: 6条 Ranked Lists
-    R-->>L: 种子节点分组 + supporting_hits
+    R-->>L: 本体对象分组 + supporting_hits
     U->>L: Original Query
     L-->>P: Final Retrieval Results
     P->>P: 投影 ObjectType / Property
@@ -4418,14 +4657,14 @@ sequenceDiagram
 ```
 
 
-# 6. 种子节点投影与本体子图构建
+# 6. 本体对象投影、子图策略、路径探测与 nGQL 生成
 
 
-## 6.1 检索结果 → 种子节点投影
+## 6.1 检索结果 → 本体对象投影
 
 `SeedNodeProjector` 只处理四类最终记录：
 
-| 最终结果类型 | 投影出的种子节点 |
+| 最终结果类型 | 投影出的本体对象 |
 |---|---|
 | ObjectType | 当前 `id` |
 | Property | 当前 `id` |
@@ -4447,7 +4686,7 @@ ObjectType.id
 
 ## 6.2 Property → ObjectType：Topology Cache 优先
 
-当前种子节点向量表保持现有 Seed Schema，不额外保存 Property 的 `objectTypeId`；但 Metadata/Instance Evidence 记录会直接保存 `propertyid + objectTypeId`。
+当前本体对象向量表保持现有 Seed Schema，不额外保存 Property 的 `objectTypeId`；但 Metadata/Instance Evidence 记录会直接保存 `propertyid + objectTypeId`。
 
 因此 Property → ObjectType 的推荐实现为：
 
@@ -4464,14 +4703,14 @@ GraphTopologyCache.propertyToObject
 流程：
 
 ```text
-Property 种子节点 id
+Property 本体对象 id
   ↓
 Topology Cache hit?
   ├─ yes → 直接得到 ObjectType id
   └─ no  → 调用现有 addObjectTypeByProperty() GQL 兜底
 ```
 
-这样既保持种子节点表职责简洁，又让 Enum/Instance 命中可以直接获得完整 Property/ObjectType 归属；只有 Property 种子节点自身需要通过拓扑缓存补父 ObjectType。
+这样既保持本体对象表职责简洁，又让 Enum/Instance 命中可以直接获得完整 Property/ObjectType 归属；只有 Property 本体对象自身需要通过拓扑缓存补父 ObjectType。
 
 
 ## 6.3 当前三种子图策略：接口语义与真实算法
@@ -4498,6 +4737,122 @@ component
 
 ---
 
+
+
+### 6.3.1 统一策略抽象与 PathProbePlan
+
+`minimal / khop / component` 不直接在 Controller 中拼 nGQL，而统一实现策略接口：
+
+```java
+public interface SubgraphRetrievalStrategy {
+    String name();
+    PathProbePlan plan(SubgraphPlanningContext context);
+}
+```
+
+建议 Plan 结构：
+
+```text
+PathProbePlan
+  strategy
+  terminals[]                 # 已解析的 ObjectType / Property
+  probes[]
+    probeId
+    probeType                 # SHORTEST_PATH / MULTI_SOURCE_BFS / COMPONENT
+    sources[]
+    targets[]
+    hopLimit
+    direction
+    edgeConstraints[]
+    required                  # 是否必须成功
+  limits
+    maxPaths
+    maxNodes
+    maxEdges
+    timeoutMs
+  fallbackPolicy
+```
+
+规划映射：
+
+| 策略 | Plan 重点 |
+|---|---|
+| `minimal` | terminal 两两/按启发式生成最短路径 probe，结果用于 MST/Steiner 近似连接 |
+| `khop` | 所有 terminal 作为多源起点，生成 Multi-Source BFS probe，受 `hopLimit` 限制 |
+| `component` | 以 terminal 为入口生成连通分量 probe，可优先走 GraphTopologyCache |
+| 业务扩展 | 注册新的 `SubgraphRetrievalStrategy`，只产出标准 Plan，不修改执行器 |
+
+执行器统一 Loop：
+
+```text
+for probe in plan.probes:
+    check limits/deadline
+    compile probe
+    execute
+    merge partial graph
+    update probe state
+    if fallback required -> generate next probe
+```
+
+这样 Strategy 只决定“探测什么”，Executor 只决定“如何执行”，便于后续增加业务定制策略而不侵入 Entity Linking。
+
+### 6.3.2 根据 PathProbePlan 动态装配 nGQL / 图算法入参
+
+新增 `GraphProbeAssembler`：
+
+```java
+CompiledProbe compile(PathProbe probe, GraphCapability capability);
+```
+
+推荐映射：
+
+```text
+SHORTEST_PATH
+  → 参数化 FIND SHORTEST PATH / 现有 shortest-path API
+
+MULTI_SOURCE_BFS
+  → 图算法服务支持时组装 BFS 入参
+  → 否则使用 GET SUBGRAPH / 分层 frontier 查询模板
+
+COMPONENT
+  → GraphTopologyCache 内存算法优先
+  → 缓存不可用时由图查询迭代扩展
+```
+
+装配原则：
+
+1. 所有 ID、hop、方向和过滤条件通过参数绑定/受控模板生成，禁止直接拼接用户 query；
+2. nGQL 模板只消费已完成 Entity Linking 的内部 ID；
+3. `hopLimit/maxPaths/maxNodes/maxEdges/timeout` 在编译和执行两层都校验；
+4. 图能力差异由 `GraphCapability` 决定使用 nGQL 还是内存/图算法实现；
+5. 每个 `probeId` 记录生成模板、参数摘要、耗时和返回规模，支持 Explain 与故障定位。
+
+### 6.3.3 结果生成
+
+所有 Probe 合并成统一 `OntologySubgraph` 后执行结果装配：
+
+```text
+OntologySubgraph
+  ├─ ObjectType
+  ├─ Property
+  ├─ Relationship
+  └─ RelationshipProperty
+
++ retrievalResults
+  └─ matched enum/instance evidence
+
++ includeFunctions/includeActions
+  ├─ Function
+  └─ Action
+```
+
+返回原则：
+
+1. ObjectType/Property 来自核心节点；
+2. Relationship 来自路径边，RelationshipProperty 作为边属性元数据返回；
+3. Enum/Instance 作为 `retrievalResults/semanticExtensions` 的语义证据，不作为图拓扑 terminal；
+4. `includeFunctions=1`、`includeActions=1` 时在核心子图完成后扩展能力元素；
+5. metadata 至少给出 `strategy/probeCount/connected/truncated/unresolvedSemanticUnits/unconnectedTerminals`，便于上层判断结果完整性。
 
 ## 6.4 minimal：当前实现分析
 
@@ -4566,7 +4921,7 @@ minimal.algorithm = metric_closure_mst
 6. 将 MST virtual edge 展开回原始 shortest path
 7. 合并节点 / 边
 8. 加回 Property + has_property
-9. 剪除非 种子节点 的无意义叶子
+9. 剪除非 本体对象 的无意义叶子
 ```
 
 这是更规范的：
@@ -4810,7 +5165,7 @@ component_id[node]
 请求时：
 
 ```text
-最终种子节点
+最终本体对象
   ↓
 component_id
   ↓
@@ -4921,7 +5276,7 @@ auto
 流程：
 
 ```text
-最终种子节点
+最终本体对象
   ↓
 minimal
   ↓
@@ -4944,9 +5299,9 @@ minimal
 ---
 
 
-## 6.17 子图构建中的种子节点 Terminal
+## 6.17 子图构建中的本体对象 Terminal
 
-LLM 最终 种子节点 可能包含：
+LLM 最终 本体对象 可能包含：
 
 ```text
 ObjectType
@@ -5024,7 +5379,7 @@ targetName
 
 ## 6.19 Relation 路径选择
 
-当一个 种子节点 Pair 存在多条路径：
+当一个 本体对象 Pair 存在多条路径：
 
 ```text
 A → B
@@ -5070,7 +5425,7 @@ CapabilityExtensionAssembler
   └─ includeActions=1   → 扩展相关 Action
 ```
 
-Function/Action 默认不进入 种子节点 RRF 主排序，除非未来明确把它们升级为 种子节点 类型。
+Function/Action 默认不进入 本体对象 RRF 主排序，除非未来明确把它们升级为 本体对象 类型。
 
 最终输出可独立：
 
@@ -5195,7 +5550,7 @@ table-level TopK
 similarityThreshold
 timeout
 并行通道隔离
-Instance 语义元素 限流
+实例元素 限流
 ```
 
 ### Candidate Normalize / RRF
@@ -5210,11 +5565,11 @@ maxGlobalCandidates
 这里必须同时控制：
 
 ```text
-种子节点分组 数量
+本体对象分组 数量
 每个 Group 内 Matched Item 数量
 ```
 
-否则虽然 RRF Group 数量可控，但某个高频 Property 仍可能携带过多 Enum/Instance 语义元素 进入 Prompt。
+否则虽然 RRF Group 数量可控，但某个高频 Property 仍可能携带过多 Enum/实例元素 进入 Prompt。
 
 ### LLM
 
@@ -5241,7 +5596,7 @@ maxEdges
 timeout
 ```
 
-Final Semantic Matches 可以多于最终图构建种子节点数，因为多个值可能映射到同一个 Property。
+Final Semantic Matches 可以多于最终图构建本体对象数，因为多个值可能映射到同一个 Property。
 
 ---
 
@@ -5255,11 +5610,11 @@ oag:
       topK: 3
       similarityThreshold: 0.6
 
-    seed:
+    ontologyObject:
       topK: 10
       similarityThreshold: 0.6
 
-    metadata:
+    enum:
       topK: 10
       similarityThreshold: 0.6
 
@@ -5288,10 +5643,10 @@ oag:
     maxGlobalCandidates: 50
     maxMatchedItemsPerSeedGroup: 5
     channelWeights:
-      seedLexical: 1.3
-      seedDense: 1.0
-      metadataLexical: 1.2
-      metadataDense: 1.0
+      ontologyObjectLexical: 1.3
+      ontologyObjectDense: 1.0
+      enumLexical: 1.2
+      enumDense: 1.0
       instanceLexical: 1.0
       instanceDense: 0.8
 
@@ -5366,7 +5721,7 @@ oag:
 | 异常 | 降级 |
 |---|---|
 | 单个检索通道失败 | 其他通道继续 |
-| Instance 语义元素 超时 | 不阻塞 种子节点/Metadata |
+| 实例元素 超时 | 不阻塞 本体对象/Metadata |
 | RRF 无候选 | unresolved unit |
 | LLM 超时/JSON错误 | 重试1次 → RRF fallback |
 | LLM 返回不存在 ID | 丢弃并记录 |
@@ -5375,7 +5730,7 @@ oag:
 | multi-source BFS 不可用 | fallback pairwise_all_path |
 | DSU component cache 不可用 | fallback legacy hop=10 |
 | K-hop 路径过多 | 截断，`truncated=true` |
-| 最终种子节点 不连通 | 返回 connected_groups |
+| 最终本体对象 不连通 | 返回 connected_groups |
 | Instance Extension 过大 | matched/topN |
 
 ---
@@ -5451,7 +5806,7 @@ graph_cache_hit
 
 ```text
 1. 用户最终命中了什么语义项？
-2. 这些语义项最终投影成了哪些图构建种子节点？
+2. 这些语义项最终投影成了哪些图构建本体对象？
 ```
 
 ---
@@ -5486,7 +5841,7 @@ SynonymMatchedValueAccuracy
 SynonymSourceLanguageAccuracy（离线标注）
 ```
 
-### 种子节点上下文
+### 本体对象上下文
 
 ```text
 ObjectSeedRecall@1/3/10
@@ -5545,7 +5900,7 @@ MatchedItemRetentionAfterRRF
 SynonymMatchedValueRetentionAfterRRF
 ```
 
-RRF 不仅看种子节点分组是否召回，还要确认正确的 Enum/Instance 记录以及 synonym `matched_value` 是否保留在 Group 内。
+RRF 不仅看本体对象分组是否召回，还要确认正确的 Enum/Instance 记录以及 synonym `matched_value` 是否保留在 Group 内。
 
 ### LLM 精排
 
@@ -5600,7 +5955,7 @@ component dsu_cached
 ```text
 节点数
 边数
-种子节点连通率
+本体对象连通率
 是否缺失正确路径
 NebulaGraph查询次数
 返回Path数量
@@ -5630,9 +5985,9 @@ Cypher accuracy
 ### Phase 1：索引 V2
 
 ```text
-种子节点
-Metadata 语义元素
-Instance 语义元素
+本体对象
+枚举元素
+实例元素
 ```
 
 双写，旧检索保持。
@@ -5692,7 +6047,7 @@ SeedNodeProjector
 现有/增强 SubgraphBuilder
 ```
 
-现有 Java 类名如果包含历史 `Anchor` 字样，可以在代码兼容期继续存在；文档、接口字段和新增类统一使用“种子节点/Seed”语义。详细方法级映射见下一节。
+现有 Java 类名如果包含历史 `Anchor` 字样，可以在代码兼容期继续存在；文档、接口字段和新增类统一使用“本体对象/Seed”语义。详细方法级映射见下一节。
 
 ## 7.9 现有方法级增强映射
 
@@ -5701,9 +6056,9 @@ SeedNodeProjector
 | `interpretQueryIntent()` | LLM 意图解析 | 输出 Semantic Units / hints |
 | `getSeedIds()` | Vector/ES 获取 Seed | 升级为 6 路 SearchDispatcher |
 | `hybridRecall()` | 混合召回 | 一次 Weighted RRF |
-| `AnchorCandidateNormalizer`（现有类名） | 旧 语义元素→种子节点 | 逻辑升级为 `SeedCandidateNormalizer`：保留语义元素并按种子节点分组 |
-| `OntologyAnchorRanker`（现有类名） | 旧 种子节点 精排 | 逻辑升级为 `SemanticResultRanker` |
-| 新增 `SeedNodeProjector` | 无 | Final Retrieval Result → ObjectType/Property 种子节点 |
+| `AnchorCandidateNormalizer`（现有类名） | 旧 语义元素→本体对象 | 逻辑升级为 `SeedCandidateNormalizer`：保留语义元素并按本体对象分组 |
+| `OntologyAnchorRanker`（现有类名） | 旧 本体对象 精排 | 逻辑升级为 `SemanticResultRanker` |
+| 新增 `SeedNodeProjector` | 无 | Final Retrieval Result → ObjectType/Property 本体对象 |
 | `addObjectTypeByProperty()` | Property 查父对象 | Topology Cache 优先，GQL fallback |
 | `loadAllEdges()` | 请求时加载拓扑 | `GraphTopologyCache` 按本体版本缓存 |
 | `computePairwiseShortestPaths()` | minimal 最短路径 | 复用为 Metric Closure 输入 |
@@ -5712,7 +6067,7 @@ SeedNodeProjector
 | `findAllPath()` | 枚举 k-hop 路径 | 仅 legacy 使用并增加防爆限制 |
 | `DisjointSet` | 子图连通性 | 扩展到 component cache |
 
-> 现有 Java 类名可以在代码迁移阶段保留，文档业务术语统一使用“种子节点”，避免继续扩散旧的 Anchor 术语。
+> 现有 Java 类名可以在代码迁移阶段保留，文档业务术语统一使用“本体对象”，避免继续扩散旧的 Anchor 术语。
 
 
 ## 7.10 设计中不应出现的误区
@@ -5737,37 +6092,905 @@ SeedNodeProjector
 
 ## 7.11 最终设计决策
 
-1. **ObjectType / Property 统一称为种子节点。**
-2. **种子节点表统一命名 `t_oag_{ontology_id}`。**
+1. **ObjectType / Property 统一称为本体对象。**
+2. **本体对象表统一命名 `t_oag_{ontology_id}`。**
 3. **Metadata 表统一命名 `t_oag_enum_{ontology_id}`，只承载 Enum Value。**
 4. **Instance 表统一命名 `t_oag_instance_{ontology_id}`，只承载 Instance Value。**
-5. **种子节点使用自身 `id`；Enum/Instance 使用 `propertyid + objectTypeId + value` 表达本体归属与业务值，不再引入额外 Evidence 主键。**
-6. **ObjectType/Property 同义词直接写入种子节点 `synonyms` 字段。**
+5. **本体对象使用自身 `id`；Enum/Instance 使用 `propertyid + objectTypeId + value` 表达本体归属与业务值，不再引入额外 Evidence 主键。**
+6. **ObjectType/Property 同义词直接写入本体对象 `synonyms` 字段。**
 7. **Enum Value 同义词直接写入 Enum Value 记录 `synonyms` 字段。**
 8. **Synonym 不建立独立物理行；Instance Evidence 只保存真实实例值。**
-9. **种子节点 display/description 固定 zh/en，并额外支持最多 2 个 ontology 级语言槽位 `lang_1/lang_2`。**
+9. **本体对象 display/description 固定 zh/en，并额外支持最多 2 个 ontology 级语言槽位 `lang_1/lang_2`。**
 10. **OMS SynonymType 的 `synonyms` 最多 3 个非固定 language key；OAG 物理 `synonyms` 统一平铺为 LF String，不保存 language key。**
-11. **种子节点向量化使用 name + 4语言 display/description + 平铺 synonyms。**
+11. **本体对象向量化使用 name + 4语言 display/description + 平铺 synonyms。**
 12. **Enum Value 向量化使用 value + 可选 name + 4语言 display/description + 平铺 synonyms。**
 13. **Instance Value 向量化严格只使用 `{value}`。**
-14. **Property 种子节点 → ObjectType 使用 GraphTopologyCache/has_property；Enum/Instance 记录直接保存 `objectTypeId`。**
+14. **Property 本体对象 → ObjectType 使用 GraphTopologyCache/has_property；Enum/Instance 记录直接保存 `objectTypeId`。**
 15. **每个 Semantic Unit 默认形成 6 条 Ranked List：三类数据 × Lexical/Dense。**
 16. **默认采用 6 路一次 Weighted RRF，不采用两级 RRF；Exact/BM25 独立后可扩为 9 路。**
 17. **RRF 每通道先按带 ObjectType 作用域的 group_id 去重：ObjectType 使用 `OT:{objectTypeId}`，Property/Enum/Instance 使用 `PROP:{objectTypeId}:{propertyId}`。**
 18. **SearchHit 必须保留 `matched_field/matched_value`，用于解释 synonym/display/value 等具体命中。**
-19. **LLM 使用原始问题 + 种子节点分组 + supporting hits + Graph Hint 精排，允许 0/1/N。**
+19. **LLM 使用原始问题 + 本体对象分组 + supporting hits + Graph Hint 精排，允许 0/1/N。**
 20. **SeedNodeProjector 只处理 ObjectType/Property/Enum Value/Instance Value 四类记录。**
 21. **Enum/Instance 可以是最终结果，但不直接参与 Core Graph 路径算法。**
 22. **minimal/khop/component 的 legacy 与 enhanced 算法设计保持不变。**
 23. **GraphTopologyCache 继续服务 Property→ObjectType、Graph Hint、BFS 和 Component。**
 24. **DataSync 对实例值做源侧预去重，OAG 按 `objectTypeId + propertyid + normalized(value)` 保证向量库最终无重复，并统一完成 Embedding、GaussVector/OpenSearch 和索引发布。**
 25. **FULL_REPLACE 使用 staging generation，INCREMENTAL 使用幂等 UPSERT/DELETE。**
-26. **最终优化目标：检索结果准确 + Synonym 命中可解释 + Enum/Instance Value 准确 + 种子节点上下文准确 + Relation 准确 + Cypher 端到端准确。**
+26. **最终优化目标：检索结果准确 + Synonym 命中可解释 + Enum/Instance Value 准确 + 本体对象上下文准确 + Relation 准确 + Cypher 端到端准确。**
 
 
 
 ## 7.12 一句话总结
 
-> **OAG 使用三张稳定索引表承载种子节点、Enum Value 和 Instance Value：种子节点使用 `id`，Enum/Instance 使用 `propertyid + objectTypeId + value`；ObjectType/Property 及 Enum Value 的 Synonym 在 OMS 中保留最多三个非固定 language key，进入 OAG 后统一平铺为 LF 分隔的 `synonyms` String；中文/英文之外最多再支持两个 display/description 语言槽位；Seed/Enum 向量直接包含平铺 synonyms，Instance 向量只包含 value。查询阶段对三类数据执行 6 路一次 Weighted RRF，Enum/Instance 按 `propertyid` 归并到 Property 种子节点，保留 `matched_field/matched_value` 后进行 LLM 精排，再构建本体子图。**
+> **OAG 使用三张稳定索引表承载本体对象、Enum Value 和 Instance Value：本体对象使用 `id`，Enum/Instance 使用 `propertyid + objectTypeId + value`；ObjectType/Property 及 Enum Value 的 Synonym 在 OMS 中保留最多三个非固定 language key，进入 OAG 后统一平铺为 LF 分隔的 `synonyms` String；中文/英文之外最多再支持两个 display/description 语言槽位；Seed/Enum 向量直接包含平铺 synonyms，Instance 向量只包含 value。查询阶段对三类数据执行 6 路一次 Weighted RRF，Enum/Instance 按 `propertyid` 归并到 Property 本体对象，保留 `matched_field/matched_value` 后进行 LLM 精排，再构建本体子图。**
 
+---
 
+# 附录 A：PR #42 检视意见优化方案（V5.16 规范）
+
+> 本附录由原独立文档 `OAG本体子图检索PR42检视意见优化方案.md` **完整原样合并**而来。  
+> 合并后独立文档删除，后续统一维护本文，避免双份规范漂移。
+
+# OAG 本体子图检索 PR #42 检视意见优化方案
+
+> 版本：V1.0  
+> 日期：2026-08-23  
+> 适用 PR：#42 `docs: 完善 OAG 本体子图检索完整方案`  
+> 关联主方案：[OAG本体锚点语义检索与向量索引设计方案.md](./OAG本体锚点语义检索与向量索引设计方案.md)  
+> 关联实体提取方案：[OAG语义子图检索接口extractedEntities结构设计方案.md](./OAG语义子图检索接口extractedEntities结构设计方案.md)
+
+---
+
+## 1. 文档定位
+
+本文对 PR #42 当前检视意见进行统一设计收敛，重点解决以下 4 类问题：
+
+1. **OAC 与业务服务两类数据接入模式如何统一**；
+2. **Software / SEC 实例索引容量边界如何定义**；
+3. **MinIO 文件校验使用 MD5 还是 SHA-256**；
+4. **不新增 Chunk 持久化表时如何实现断点恢复**。
+
+本文是主方案 V5.15 的 **V5.16 规范性增量设计**。对于索引构建、MinIO 文件交付、容量规格、文件校验、Chunk/Checkpoint 恢复等内容，如果本文与主方案 V5.15 存在冲突，**以本文为准**；主方案其他实体提取、Entity Linking、RRF、LLM 精排、子图策略、PathProbePlan、nGQL 和结果生成内容保持不变。
+
+本轮检视不改变本体子图检索五阶段主流程：
+
+```text
+① 实体提取
+  ↓
+② 实体链接
+  ↓
+③ 子图检索策略 / PathProbePlan
+  ↓
+④ nGQL / 图算法入参生成
+  ↓
+⑤ 结果生成
+```
+
+优化范围集中在上述流程依赖的 **索引构建与运行数据准备链路**。
+
+---
+
+# 2. 检视意见与设计结论总表
+
+| # | 检视意见 | 设计结论 |
+|---:|---|---|
+| 1 | 区分 OAC 可对接数据源与非 OAC 场景；增加配置项 | 增加 `indexBuild.instanceDataSourceMode=OAC\|BUSINESS_NOTICE`，配置“谁负责读取业务数据” |
+| 2 | OAC 场景无论大小数据量都由 OAC 读取后传 MinIO | **确认**。取消 `OAC_QUERY` 直返路径，OAC 动态数据统一 `OAC → MinIO → notice → OAG` |
+| 3 | Software 1W 用户、SEC 最大 100W | 作为当前正式源侧容量规格；同时监控实际去重 Value/索引记录数 |
+| 4 | 是否可用 MD5，比较并选择最优算法 | 正式协议统一选择 **SHA-256**；MD5 仅可做辅助诊断，MinIO ETag 不能当作 MD5/SHA-256 |
+| 5 | 首次入库性能基线按上述意见更新 | Software/SEC **对外协议不再分叉**，都走 MinIO；只在 OAG 内部选择 Lightweight/Recoverable Bulk Profile |
+| 6 | 没有持久化 Chunk 表，如何记录恢复信息 | **不新增 Chunk 表**；复用 `T_OAG_INDEX_TASK.CHECKPOINT` 保存最后一个双端成功连续检查点，故障后整 Chunk 幂等重放 |
+
+---
+
+# 3. 数据接入方案收敛：只区分数据读取方，MinIO 交付协议唯一
+
+## 3.1 核心设计
+
+原方案中存在以下潜在分叉：
+
+```text
+小数据量 → OAC 分页/流式直接返回 OAG
+大数据量 → OAC/业务服务写 MinIO → OAG 读取
+```
+
+本轮检视后取消该分叉。
+
+**新的核心原则：**
+
+> **动态 Enum Value / Instance Value 无论数据量大小，都通过 MinIO CSV 交付给 OAG。配置项只决定“谁负责读取业务数据”，不决定“是否使用 MinIO”。**
+
+统一配置：
+
+```yaml
+indexBuild:
+  instanceDataSourceMode: OAC   # OAC | BUSINESS_NOTICE
+```
+
+不再设计：
+
+```text
+OAC_QUERY
+MINIO_NOTICE
+AUTO
+ directQueryMaxRows
+```
+
+其中 `AUTO` 不建议保留，是因为数据源责任属于部署/业务架构决策，不应在运行时根据一次任务的数据量动态切换责任方，否则会导致调用链、权限、故障定位和 SLA 不可预测。
+
+## 3.2 模式一：OAC
+
+适用于 OAC 能够访问实际业务数据源的部署。
+
+```text
+管理台 / OMS
+  ↓ build
+OAG
+  ↓ 触发抽取（taskId / ontologyId / dataType / importMode）
+OAC
+  ↓ 访问业务数据源
+读取数据 / 标准化 / 源侧去重
+  ↓
+生成不可变 CSV
+  ↓
+MinIO putObject
+  ↓
+OAC → OAG index-data/notice(triggerTaskId)
+  ↓
+OAG Streaming Read
+  ↓
+Normalize / Dedup / Embedding
+  ↓
+GaussVector + OpenSearch
+  ↓
+Verify / Publish
+```
+
+**无论 100 条、1 万条还是百万级数据，时序不变。** 小数据量只意味着：
+
+```text
+CSV 更小
+Chunk 更少
+Embedding Batch 更少
+任务耗时更短
+```
+
+不能因此把协议切换成 OAC 直接返回记录给 OAG。
+
+### OAC 模式时序
+
+```mermaid
+sequenceDiagram
+    participant C as 管理台/OMS
+    participant G as OAG
+    participant O as OAC
+    participant M as MinIO
+    participant V as GaussVector
+    participant S as OpenSearch
+
+    C->>G: POST index-tasks/build
+    G-->>C: 202 + taskId
+    G->>O: Extract(taskId, ontologyId, dataType, importMode)
+    O->>O: 查询业务数据 + 标准化/去重
+    O->>M: putObject(CSV)
+    O->>G: POST index-data/notice(triggerTaskId, sha256)
+    G->>M: getObject stream
+    loop Chunk
+      G->>G: Normalize/Dedup/Embedding
+      G->>V: idempotent UPSERT/DELETE
+      G->>S: deterministic _id UPSERT/DELETE
+      G->>G: 双端成功后推进 Checkpoint
+    end
+    G->>G: Verify + Publish
+    C->>G: index-tasks/query
+    G-->>C: SUCCESS / FAILED
+```
+
+## 3.3 模式二：BUSINESS_NOTICE
+
+适用于：
+
+- OAC 无法访问目标业务数据源；
+- 业务已经有 DataSync / CDC / 定时同步服务；
+- 数据生产责任明确属于业务域服务。
+
+```text
+DataSync / 业务服务
+  ↓ 读取业务数据
+标准化 / 去重
+  ↓
+生成不可变 CSV
+  ↓
+MinIO putObject
+  ↓
+POST OAG index-data/notice
+  ↓
+OAG Streaming Read
+  ↓
+统一 Import Pipeline
+```
+
+OAG 在该模式下 **不主动调用 OAC**。
+
+## 3.4 两种模式的共同边界
+
+| 能力 | OAC | BUSINESS_NOTICE | OAG |
+|---|---|---|---|
+| 访问业务源 | ✔ | ✔（业务服务） | ✘ |
+| 源侧基础去重 | ✔ | ✔ | 再次兜底去重 |
+| 生成 CSV | ✔ | ✔ | ✘ |
+| 上传 MinIO | ✔ | ✔ | ✘ |
+| Embedding | ✘ | ✘ | ✔ |
+| GaussVector 写入 | ✘ | ✘ | ✔ |
+| OpenSearch 写入 | ✘ | ✘ | ✔ |
+| Checkpoint/恢复 | ✘ | ✘ | ✔ |
+| Verify/Publish | ✘ | ✘ | ✔ |
+
+从 `index-data/notice` 之后两种模式完全复用同一套代码：
+
+```text
+MinIO Reader
+→ Schema Validator
+→ Ontology Mapping Validator
+→ Normalizer
+→ Deduplicator
+→ Embedding
+→ GaussVector Writer
+→ OpenSearch Writer
+→ Verify
+→ Publish
+```
+
+---
+
+# 4. 容量规格：Software 1W、SEC 100W
+
+## 4.1 正式容量定义
+
+本轮评审将当前产品规格收敛为：
+
+| 业务档位 | 当前正式源侧用户规模 | 数据交付 | OAG 执行模式 |
+|---|---:|---|---|
+| Software | **≤ 10,000 用户（1W）** | MinIO CSV | `LIGHTWEIGHT_BULK` |
+| SEC | **≤ 1,000,000 用户（100W）** | MinIO CSV | `RECOVERABLE_BULK` |
+| > SEC 规格 | > 1,000,000 用户 | MinIO CSV | 专项容量与性能评估后开放 |
+
+这里的 **1W / 100W 是业务用户规模，不是去重后 Instance Value 条数**。
+
+例如：
+
+```text
+100 万用户
+× 10 个 capability=DIMENSION Property
+≠ 必然只有 100 万条索引记录
+```
+
+不同 Property 的基数不同，因此容量验收必须同时记录：
+
+```text
+sourceUsers
+sourceRows
+semanticProperties
+uniqueValues
+finalIndexRows
+```
+
+## 4.2 为什么用户规模和索引规模必须同时观测
+
+假设 100 万用户存在：
+
+```text
+customerLevel → 4 个唯一值
+province      → 31 个唯一值
+brand         → 500 个唯一值
+productName   → 20,000 个唯一值
+```
+
+源数据量可能为千万级，但最终向量值远小于源记录数。
+
+反过来，如果多个 DIMENSION Property 都是高基数业务文本，最终索引记录也可能显著增大。因此：
+
+> **用户规模用于产品规格约束，uniqueValues/finalIndexRows 用于存储、Embedding 和检索性能容量控制。**
+
+## 4.3 OAG 内部执行 Profile
+
+外部协议固定 MinIO，只在 OAG 内部根据任务规模选择执行 Profile。
+
+### LIGHTWEIGHT_BULK
+
+适用于 Software 和小文件：
+
+```text
+单文件或少量文件
+较少 Chunk
+Embedding Batch
+GaussVector Bulk
+OpenSearch Bulk
+Checkpoint 仍启用
+```
+
+### RECOVERABLE_BULK
+
+适用于 SEC 最大规格：
+
+```text
+Streaming CSV Parser
+固定 Chunk
+Embedding Worker Pool
+Vector / Search 独立 Writer Queue
+Backpressure
+Checkpoint
+失败重试
+Verify / Publish
+```
+
+推荐初始参数仍保持配置化：
+
+```yaml
+embeddingBatchSize: 32~128
+storageBulkSize: 500~2000
+chunkRows: 10000~50000
+```
+
+这些值不是协议常量，最终由目标环境压测确定。
+
+---
+
+# 5. 文件完整性算法：MD5 vs SHA-256
+
+## 5.1 使用场景
+
+本方案的文件摘要不仅用于发现随机传输错误，还用于：
+
+```text
+1. index-data/notice 文件不可变校验
+2. request/task 幂等判断
+3. Chunk ID 稳定生成
+4. OAG 重启后的断点恢复
+5. 判断 objectKey 是否被覆盖成另一份内容
+```
+
+因此它本质上是 **恢复协议中的文件身份标识**。
+
+## 5.2 对比
+
+| 对比项 | MD5 | SHA-256 |
+|---|---|---|
+| 输出长度 | 128 bit / 32 hex | 256 bit / 64 hex |
+| 随机错误检测 | 可以 | 可以 |
+| 碰撞安全性 | 已存在实际可构造碰撞，不适合作为可信内容身份 | 当前工程场景下安全裕量高 |
+| 流式计算 | 支持 | 支持 |
+| CPU 开销 | 较低 | 略高 |
+| 相对 OAG 总成本 | 很低 | 同样很低；通常远低于 MinIO IO / Embedding / 双写成本 |
+| 适合恢复协议 | 不推荐作为权威身份 | **推荐** |
+
+## 5.3 MinIO ETag 为什么不能替代
+
+不能使用：
+
+```text
+ETag == MD5(file)
+```
+
+作为协议假设。
+
+在 S3 / MinIO Multipart Upload、服务端实现差异等情况下，ETag 不保证等于完整对象的 MD5。因此：
+
+```text
+MinIO ETag
+  ≠ 权威 MD5
+  ≠ SHA-256
+  ≠ OAG 文件身份
+```
+
+## 5.4 最终选择
+
+> **正式协议统一使用 SHA-256。**
+
+原因：
+
+1. 校验结果需要参与恢复与不可变文件身份判断，而非只做偶发传输错误检测；
+2. SHA-256 可流式计算，不需要把完整文件加载到内存；
+3. 相比 Embedding、MinIO IO、GaussVector/OpenSearch 写入，其额外 CPU 开销通常不是端到端瓶颈；
+4. 避免未来在任务幂等和恢复协议中再次迁移摘要算法。
+
+正式 Schema 保持：
+
+```yaml
+sha256:
+  type: string
+  pattern: '^[A-Fa-f0-9]{64}$'
+```
+
+MD5 如业务已有，可作为生产者本地诊断信息，但：
+
+```text
+不进入 OAG 正式必选 Schema
+不参与 task 幂等
+不参与 Chunk ID
+不替代 sha256
+```
+
+---
+
+# 6. Checkpoint 持久化：不新增 Chunk 表
+
+## 6.1 问题
+
+原方案描述了每个 Chunk 的：
+
+```text
+gauss_status
+opensearch_status
+retry_count
+row range
+chunk_id
+```
+
+但当前没有 `T_OAG_INDEX_CHUNK` 持久化表。如果强行保存所有 Chunk 状态，需要新增一套表和生命周期管理，复杂度较高。
+
+本轮设计不引入该表。
+
+## 6.2 设计原则
+
+> **只持久化“最后一个 GaussVector + OpenSearch 都成功的连续安全恢复点”，不持久化所有 Chunk 的执行历史。**
+
+现有任务表已经有：
+
+```text
+T_OAG_INDEX_TASK.CHECKPOINT
+```
+
+将该字段定义为版本化 JSON，推荐数据库类型由：
+
+```text
+VARCHAR(1024)
+```
+
+扩展为：
+
+```text
+TEXT
+```
+
+这是已有表字段演进，不是新增持久化表。
+
+## 6.3 Checkpoint 数据结构
+
+```json
+{
+  "version": 1,
+  "fileIndex": 0,
+  "objectKey": "onto-retrieval/t1/ontology/INSTANCE_VALUE/task/part-00000.csv",
+  "fileSha256": "7c222fb2927d828af22f592134e8932480637c0d4d7b31a7d7e6c80b7f5506ab",
+  "fileSize": 183421234,
+  "committedRowEnd": 49999,
+  "lastChunkId": "c4b2...",
+  "updatedAt": "2026-08-23T15:00:00+08:00"
+}
+```
+
+字段语义：
+
+| 字段 | 说明 |
+|---|---|
+| `version` | Checkpoint Schema 版本，便于后续演进 |
+| `fileIndex` | 当前处理的 `FILE_LIST` 下标 |
+| `objectKey` | 当前 MinIO 对象 |
+| `fileSha256` | 当前对象权威 SHA-256 |
+| `fileSize` | 文件大小，恢复时和 MinIO HEAD 对比 |
+| `committedRowEnd` | 最后一个双端成功 Chunk 的最后一行 |
+| `lastChunkId` | 最后一个成功 Chunk 的确定性 ID |
+| `updatedAt` | 最近推进时间 |
+
+`FILE_LIST` 本身是有序、不可变的任务输入快照，因此不需要在 Checkpoint 里重复保存全部文件。
+
+## 6.4 Chunk ID
+
+```text
+chunkSource =
+    objectKey
+    + "\n"
+    + fileSha256
+    + "\n"
+    + rowStart + ":" + rowEnd
+
+chunkId = SHA-256(UTF-8(chunkSource))
+```
+
+只要：
+
+```text
+objectKey
+fileSha256
+row range
+```
+
+不变，重试时生成的 Chunk ID 就稳定。
+
+## 6.5 Checkpoint 推进原则
+
+```text
+Chunk N
+  ↓
+GaussVector UPSERT 成功
+  ↓
+OpenSearch UPSERT 成功
+  ↓
+必要 Verify 成功
+  ↓
+UPDATE T_OAG_INDEX_TASK.CHECKPOINT = Chunk N
+```
+
+**只有双端都成功才推进。**
+
+不需要持久化：
+
+```text
+chunkN.gauss_status
+chunkN.opensearch_status
+```
+
+这些信息写日志和指标即可。
+
+## 6.6 单端成功后进程崩溃怎么办
+
+例如：
+
+```text
+Chunk 10
+GaussVector → SUCCESS
+OpenSearch  → 尚未执行
+OAG         → Crash
+```
+
+此时 Checkpoint 仍然停在 Chunk 9。
+
+重启后：
+
+```text
+从 Chunk 10 重新执行
+  ├─ GaussVector：组合业务键幂等 UPSERT，覆盖原记录
+  └─ OpenSearch：确定性 _id UPSERT，补齐记录
+```
+
+因此不需要知道“Chunk 10 的 GaussVector 曾经成功过”。
+
+幂等键：
+
+```text
+Enum:
+objectTypeId + propertyId + normalized(value)
+
+Instance:
+objectTypeId + propertyid + normalized(value)
+```
+
+OpenSearch `_id` 从相同业务键确定性生成。
+
+## 6.7 恢复流程
+
+```text
+1. 从 T_OAG_INDEX_TASK 读取 FILE_LIST + CHECKPOINT
+2. 使用 fileIndex 定位当前 objectKey
+3. HEAD MinIO 校验 size
+4. 流式重新计算 SHA-256
+5. 若 objectKey / size / sha256 变化：
+      → CHECKSUM_MISMATCH / FILE_CHANGED
+      → 禁止续跑
+6. nextRow = committedRowEnd + 1
+7. 按固定 chunkRows 重新生成 row range + chunkId
+8. 对当前 Chunk 双端幂等重放
+9. 两端成功并 Verify 后，单次 DB UPDATE 原子推进 Checkpoint
+10. 当前文件完成：fileIndex++
+11. 全部文件完成：VERIFYING → PUBLISHING → FINISHED
+```
+
+## 6.8 多文件任务
+
+```text
+FILE_LIST = [part-00000, part-00001, part-00002]
+```
+
+如果 Checkpoint：
+
+```json
+{
+  "fileIndex": 1,
+  "committedRowEnd": 99999
+}
+```
+
+则：
+
+```text
+part-00000 → 已完成
+part-00001 → 从 100000 行继续
+part-00002 → 未开始
+```
+
+不需要逐文件建立独立持久化记录。
+
+## 6.9 与 FULL_REPLACE / INCREMENTAL 的关系
+
+### FULL_REPLACE
+
+```text
+Old Active Generation
+  ↓ 在线继续服务
+New Staging Generation
+  ↓ Chunk 导入 + Checkpoint
+Verify
+  ↓
+Atomic Publish
+```
+
+失败恢复不会污染旧在线 Generation。
+
+### INCREMENTAL
+
+依赖幂等 UPSERT/DELETE；同一 Chunk 可安全重放。
+
+---
+
+# 7. 首次入库性能基线更新
+
+检视后，原先：
+
+```text
+Software → OAC Query
+SEC      → MinIO Bulk
+```
+
+收敛为：
+
+```text
+Software → MinIO + LIGHTWEIGHT_BULK
+SEC      → MinIO + RECOVERABLE_BULK
+```
+
+外部链路一致：
+
+```text
+Producer(OAC/Business)
+→ CSV
+→ MinIO
+→ notice
+→ OAG
+```
+
+内部差异：
+
+| 能力 | Software ≤1W | SEC ≤100W |
+|---|---|---|
+| Streaming | 支持 | 必须 |
+| Chunk | 支持，可少量 | 必须 |
+| Checkpoint | 启用 | 必须 |
+| Worker Pool | 小规模 | 按压测配置 |
+| Writer Backpressure | 支持 | 必须 |
+| 双写幂等 | 必须 | 必须 |
+| 故障恢复压测 | 基础 | 必须专项验证 |
+
+性能验收指标：
+
+```text
+sourceUsers
+sourceRows
+uniqueValues
+finalIndexRows
+fileBytes
+readRows/s
+embedRows/s
+gaussRows/s
+opensearchRows/s
+endToEndRows/s
+P50/P95/P99 Chunk Latency
+retryRate
+checkpointReplayRows
+heapPeak
+directMemoryPeak
+```
+
+端到端分钟级 SLA 不在接口协议中写死，由最终 Embedding CPU/GPU 实例数、Batch、存储规格和网络环境压测确定。
+
+---
+
+# 8. 推荐配置
+
+```yaml
+oag:
+  indexBuild:
+    # 谁负责访问源业务数据；不决定是否使用 MinIO
+    instanceDataSourceMode: OAC  # OAC | BUSINESS_NOTICE
+
+    capacity:
+      softwareMaxUsers: 10000
+      secMaxUsers: 1000000
+
+    fileIntegrity:
+      algorithm: SHA-256
+      trustMinioETagAsChecksum: false
+
+    importProfile:
+      software: LIGHTWEIGHT_BULK
+      sec: RECOVERABLE_BULK
+
+    chunk:
+      rows: 20000
+
+    checkpoint:
+      store: T_OAG_INDEX_TASK.CHECKPOINT
+      format: JSON
+      version: 1
+      persistOnlyAfterBothStoresCommitted: true
+      replayIncompleteChunk: true
+
+    embedding:
+      batchSize: 64
+
+    writer:
+      bulkSize: 1000
+      backpressureEnabled: true
+```
+
+上述数值属于起始值，容量与性能参数必须根据正式部署环境压测调整。
+
+---
+
+# 9. 错误码补充
+
+| 错误码 | 含义 | 动作 |
+|---|---|---|
+| `CHECKSUM_MISMATCH` | 实际 SHA-256 与 notice 不一致 | 禁止继续，重新上传新 objectKey 并新建任务 |
+| `FILE_CHANGED` | 恢复时文件 size/hash 与 Task 快照变化 | 禁止续跑 |
+| `SOURCE_FILE_EXPIRED` | MinIO 文件超过硬 TTL | 重新上传并新建任务 |
+| `MINIO_READ_FAILED` | 临时读取失败 | 原 Task Retry |
+| `VECTOR_WRITE_FAILED` | Vector 临时写失败 | 从 Checkpoint 幂等重放 |
+| `SEARCH_WRITE_FAILED` | OpenSearch 临时写失败 | 从 Checkpoint 幂等重放 |
+| `VERIFY_FAILED` | 双端写后校验异常 | 按 Stage/Checkpoint 恢复 |
+| `PUBLISH_FAILED` | Generation 发布失败 | 从 Publish 阶段恢复 |
+
+业务侧自动化判断只能依赖稳定错误码和任务状态，不解析 `errorMessage` 自然语言。
+
+---
+
+# 10. 可观测性补充
+
+索引构建新增/明确以下指标：
+
+```text
+oag_import_source_users
+oag_import_source_rows
+oag_import_unique_values
+oag_import_final_index_rows
+oag_import_file_bytes
+oag_import_sha256_verify_duration
+oag_import_chunk_total
+oag_import_chunk_duration
+oag_import_checkpoint_advance_total
+oag_import_checkpoint_replay_rows
+oag_import_vector_write_rows
+oag_import_opensearch_write_rows
+oag_import_retry_total
+```
+
+必须能够回答：
+
+```text
+1. 当前业务规模是否超过 Software / SEC 规格？
+2. 源数据到去重 Value 的压缩比例是多少？
+3. 瓶颈在 MinIO、Embedding、GaussVector 还是 OpenSearch？
+4. 发生过多少 Chunk 重放？
+5. Checkpoint 是否持续前进？
+```
+
+---
+
+# 11. 验收与故障注入测试
+
+## 11.1 容量测试
+
+至少覆盖：
+
+```text
+Software：1 万用户 FULL_REPLACE
+Software：1 万用户 INCREMENTAL
+SEC：100 万用户 FULL_REPLACE
+SEC：100 万用户 INCREMENTAL
+```
+
+同时记录 sourceRows / uniqueValues / finalIndexRows。
+
+## 11.2 两种数据源模式一致性
+
+同一数据集分别执行：
+
+```text
+instanceDataSourceMode=OAC
+instanceDataSourceMode=BUSINESS_NOTICE
+```
+
+最终：
+
+```text
+GaussVector 业务键集合一致
+OpenSearch _id 集合一致
+Embedding 输入一致
+检索结果一致
+```
+
+## 11.3 文件校验测试
+
+覆盖：
+
+```text
+正确 SHA-256
+错误 SHA-256
+同 objectKey 内容被覆盖
+Multipart Upload ETag 与文件摘要不相等
+文件 size 变化
+```
+
+## 11.4 Checkpoint 故障注入
+
+在每个 Chunk 的以下时刻强制 Kill OAG：
+
+```text
+CSV 已读，Embedding 前
+Embedding 后，Vector 前
+Vector 成功，OpenSearch 前
+Vector + OpenSearch 成功，Checkpoint 前
+Checkpoint 成功后
+Verify 阶段
+Publish 阶段
+```
+
+验证：
+
+```text
+无重复业务记录
+无漏数据
+Checkpoint 单调前进
+重启后能够从安全点恢复
+FULL_REPLACE 未发布前不影响旧 Generation
+INCREMENTAL 重放幂等
+```
+
+---
+
+# 12. 对主方案的具体修订规则
+
+后续将 V5.16 增量完全吸收到主方案时，必须按以下规则统一，避免只修改评论所在行：
+
+1. 第 3 章所有 `OAC_QUERY / AUTO / directQueryMaxRows` 删除，统一为 `OAC / BUSINESS_NOTICE`；
+2. 所有“OAC 小数据量直接分页返回 OAG”的描述删除；
+3. 所有动态 Enum/Instance 的 OAC 时序改为 `OAC → MinIO → notice → OAG`；
+4. 场景选择矩阵中大小数据量不再决定数据交付协议；
+5. 首次入库性能表改为 Software/SEC 同协议、不同 OAG 内部 Profile；
+6. Software/SEC 容量字段明确单位为“源侧用户数”；
+7. `MinioCsvFile.sha256` 保持正式必选字段，并新增 MD5/ETag 选型解释；
+8. `T_OAG_INDEX_TASK.CHECKPOINT` 改为 `TEXT`，明确 JSON Schema；
+9. 删除“持久化每个 Chunk 的 gauss/opensearch status”要求；
+10. 恢复策略统一为“最后双端成功安全点 + 未完成 Chunk 整体幂等重放”；
+11. `SOURCE_TYPE` 新任务正式值统一为 `OMS / OAC / MINIO`，`REST` 只保留历史兼容读取；
+12. 第 7 章配置、可观测性、评测和灰度策略同步增加本方案配置与验收项。
+
+---
+
+# 13. 最终设计决策
+
+1. **动态 Enum/Instance 的唯一数据交付协议是 MinIO CSV + `index-data/notice`。**
+2. **OAG 配置 `instanceDataSourceMode=OAC|BUSINESS_NOTICE` 只决定源数据读取责任方。**
+3. **OAC 可对接业务数据源时，无论大小数据量，都由 OAC 读取后上传 MinIO，不直接返回 OAG。**
+4. **Software 当前正式规格为 ≤1 万用户，SEC 当前最大正式规格为 ≤100 万用户。**
+5. **用户规模是产品容量规格；`uniqueValues/finalIndexRows` 是实际索引容量和性能指标，两者同时观测。**
+6. **MinIO 文件正式校验算法统一为 SHA-256；MD5 不作为恢复协议权威身份，ETag 不作为文件摘要。**
+7. **Chunk 恢复不新增持久化表，复用 `T_OAG_INDEX_TASK.CHECKPOINT`。**
+8. **Checkpoint 只记录最后一个双端成功连续点，单端成功窗口通过幂等 Chunk 重放恢复。**
+9. **GaussVector 使用组合业务键幂等 UPSERT，OpenSearch 使用确定性 `_id`，共同保证重放安全。**
+10. **Software/SEC 对外协议一致，仅 OAG 内部 Bulk Profile 不同。**
+
+## 一句话总结
+
+> **OAG 将索引数据接入收敛为“一种 MinIO 交付协议、两种数据读取责任模式”：OAC 能访问数据源时统一由 OAC 抽取后写 MinIO，不能访问时由业务服务写 MinIO；Software 规格 ≤1 万用户、SEC ≤100 万用户；文件身份统一使用 SHA-256；Chunk 状态不新增表，只在 `T_OAG_INDEX_TASK.CHECKPOINT` 保存最后双端成功安全点，通过幂等重放实现可恢复导入。**
