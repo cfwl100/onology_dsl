@@ -1,0 +1,51 @@
+name: OAG full design merge
+
+on:
+  pull_request:
+    types: [synchronize]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build-full-design:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'docs/oag-subgraph-complete-20260823' &&
+      github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build exhaustive merged design
+        run: python3 tools/build_oag_full_design.py
+
+      - name: Validate generated document
+        run: |
+          test -s 'docs/OAG本体语义索引管理和语义检索.md'
+          grep -q '^# OAG 本体语义索引管理和语义检索$' 'docs/OAG本体语义索引管理和语义检索.md'
+          grep -q 'semanticExtensions' 'docs/OAG本体语义索引管理和语义检索.md'
+          grep -q 'PathProbePlan' 'docs/OAG本体语义索引管理和语义检索.md'
+          grep -q 'instanceDataSourceMode' 'docs/OAG本体语义索引管理和语义检索.md'
+          ! grep -q '^# 附录 A：PR #42' 'docs/OAG本体语义索引管理和语义检索.md'
+
+      - name: Remove one-shot helper files
+        run: |
+          rm -f tools/build_oag_full_design.py
+          rm -f .github/workflows/oag-full-design-merge.yml
+          rm -f .github/oag-full-design-trigger.txt
+
+      - name: Commit final merged design
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'docs: add exhaustive OAG semantic index and retrieval design'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
