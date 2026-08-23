@@ -1,4 +1,4 @@
-name: OAG docs cleanup
+name: OAG docs final validation
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  cleanup-docs:
+  validate-docs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,7 +17,7 @@ jobs:
           ref: docs/oag-subgraph-complete-20260823
           fetch-depth: 0
 
-      - name: Cleanup OAG design terminology
+      - name: Fix OpenAPI formatting and validate TODOs
         shell: bash
         run: |
           python - <<'PY'
@@ -25,55 +25,149 @@ jobs:
 
           main_path = Path('docs/OAG本体锚点语义检索与向量索引设计方案.md')
           extracted_path = Path('docs/OAG语义子图检索接口extractedEntities结构设计方案.md')
-          text = main_path.read_text(encoding='utf-8')
-
-          replacements = [
-              ('# OAG 面向本体本体对象的语义检索、混合排序与本体子图构建设计方案', '# OAG 面向本体对象的语义检索、混合排序与本体子图构建设计方案'),
-              ('本体本体对象 Resolver', '本体对象 Resolver'),
-              ('| enum元素 | Enum Value', '| 枚举元素 | Enum Value'),
-              ('| enum元素 | `t_oag_enum_{ontology_id}`', '| 枚举元素 | `t_oag_enum_{ontology_id}`'),
-              ('## 2.13 Metadata / Instance OpenSearch Index', '## 2.13 Enum / Instance OpenSearch Index'),
-              ('Metadata 的 `synonyms` 映射', '枚举元素的 `synonyms` 映射'),
-              ('本体对象 / Metadata 语义元素：', '本体对象 / 枚举元素：'),
-              ('Metadata 与 Instance 分表的一个核心原因', '枚举元素与实例元素分表的一个核心原因'),
-              ('枚举语义元素', '枚举元素'),
-              ('Metadata 语义元素', '枚举元素'),
-              ('Instance 语义元素', '实例元素'),
-              ('1. seed_lexical\n2. seed_dense\n3. metadata_lexical\n4. metadata_dense\n5. instance_lexical\n6. instance_dense',
-               '1. ontology_object_lexical\n2. ontology_object_dense\n3. enum_lexical\n4. enum_dense\n5. instance_lexical\n6. instance_dense'),
-              ('Seed Lexical\nSeed Dense\nMetadata Lexical\nMetadata Dense\nInstance Lexical\nInstance Dense',
-               'Ontology Object Lexical\nOntology Object Dense\nEnum Lexical\nEnum Dense\nInstance Lexical\nInstance Dense'),
-              ('RRF(seed) = Σ weight(channel) / (rrf_k + rank_channel(seed))',
-               'RRF(candidate) = Σ weight(channel) / (rrf_k + rank_channel(candidate))'),
-              ('seed.topK\nmetadata.topK\ninstance.topK', 'ontologyObject.topK\nenum.topK\ninstance.topK'),
-          ]
-          for old, new in replacements:
-              text = text.replace(old, new)
-
-          # Recommended semanticRetrieval config names. Legacy seed/metadata identifiers remain only in compatibility/API contexts.
-          text = text.replace('''  seed:\n    topK: 10\n    similarityThreshold: 0.6\n\n  metadata:\n    topK: 10\n    similarityThreshold: 0.6\n\n  instance:''',
-                              '''  ontologyObject:\n    topK: 10\n    similarityThreshold: 0.6\n\n  enum:\n    topK: 10\n    similarityThreshold: 0.6\n\n  instance:''')
-          text = text.replace('''    seed:\n      topK: 10\n      similarityThreshold: 0.6\n\n    metadata:\n      topK: 10\n      similarityThreshold: 0.6\n\n    instance:''',
-                              '''    ontologyObject:\n      topK: 10\n      similarityThreshold: 0.6\n\n    enum:\n      topK: 10\n      similarityThreshold: 0.6\n\n    instance:''')
-
-          if 'TODO' in text:
-              raise RuntimeError('main design still contains TODO')
-          if '本体本体对象' in text:
-              raise RuntimeError('duplicate ontology-object wording remains')
 
           extracted = extracted_path.read_text(encoding='utf-8')
-          if 'TODO' in extracted:
-              raise RuntimeError('extractedEntities design still contains TODO')
+          start_marker = '## 10. OpenAPI Schema 核心定义\n\n'
+          end_marker = '\n---\n\n## 11. 兼容迁移策略'
+          start = extracted.index(start_marker)
+          end = extracted.index(end_marker, start)
 
-          main_path.write_text(text, encoding='utf-8')
+          lines = [
+              '## 10. OpenAPI Schema 核心定义',
+              '',
+              '```yaml',
+              'components:',
+              '  schemas:',
+              '    SemanticSearchRequest:',
+              '      type: object',
+              '      anyOf:',
+              '        - required: [query]',
+              '        - required: [extractedEntities]',
+              '      properties:',
+              '        query:',
+              '          type: string',
+              '          minLength: 1',
+              '          maxLength: 1024',
+              '        searchContext:',
+              '          type: string',
+              '          minLength: 1',
+              '          maxLength: 32768',
+              '        extractedEntities:',
+              '          type: array',
+              '          minItems: 1',
+              '          items:',
+              "            $ref: '#/components/schemas/ExtractedEntity'",
+              '        adaptiveRetrieval:',
+              '          type: integer',
+              '          default: 1',
+              '          enum: [0, 1]',
+              '        seedRetrievalMode:',
+              '          type: string',
+              '          default: vector',
+              '          enum: [vector, keyword, hybrid]',
+              '        similarityThreshold:',
+              '          type: number',
+              '          minimum: 0',
+              '          maximum: 1',
+              '          default: 0.6',
+              '        topk:',
+              '          type: integer',
+              '          minimum: 1',
+              '          default: 3',
+              '        graphExpansionStrategy:',
+              '          type: string',
+              '          default: minimal',
+              '          enum: [minimal, khop, component]',
+              '        hopLimit:',
+              '          type: integer',
+              '          minimum: 1',
+              '          default: 3',
+              '        includeFunctions:',
+              '          type: integer',
+              '          default: 0',
+              '          enum: [0, 1]',
+              '        includeActions:',
+              '          type: integer',
+              '          default: 0',
+              '          enum: [0, 1]',
+              '',
+              '    ExtractedEntity:',
+              '      type: object',
+              '      description: 仅允许 ObjectType、Properties、Values 三个顶层业务字段',
+              '      anyOf:',
+              '        - required: [ObjectType]',
+              '        - required: [Values]',
+              '          properties:',
+              '            Values:',
+              '              minItems: 1',
+              '      properties:',
+              '        ObjectType:',
+              '          type: string',
+              '          minLength: 1',
+              '        Properties:',
+              '          type: array',
+              '          default: []',
+              '          items:',
+              '            type: string',
+              '            minLength: 1',
+              '        Values:',
+              '          type: array',
+              '          default: []',
+              '          items:',
+              "            $ref: '#/components/schemas/ValueHint'",
+              '      additionalProperties: false',
+              '',
+              '    ValueHint:',
+              '      type: object',
+              '      required: [Value]',
+              '      properties:',
+              '        Property:',
+              '          type: string',
+              '          minLength: 1',
+              '        Value:',
+              '          type: string',
+              '          minLength: 1',
+              '      additionalProperties: false',
+              '```',
+              '',
+              '`Properties → ObjectType` 和 `ValueHint.Property → Properties` 的交叉字段约束由服务端 Validator 执行。',
+          ]
+          section = '\n'.join(lines) + '\n'
+          extracted = extracted[:start] + section + extracted[end:]
+          extracted_path.write_text(extracted, encoding='utf-8')
+
+          main = main_path.read_text(encoding='utf-8')
+          checks = {
+              'main TODO': 'TODO' not in main,
+              'duplicate wording': '本体本体对象' not in main,
+              'five-step entity extraction': '① 实体提取' in main,
+              'five-step entity linking': '② 实体链接' in main,
+              'subgraph strategy': '③ 子图检索策略' in main,
+              'nGQL stage': '④ nGQL' in main,
+              'result generation': '⑤ 结果生成' in main,
+              'PathProbePlan': 'PathProbePlan' in main,
+              'weighted RRF example': 'Weighted RRF 执行样例' in main,
+          }
+          extracted_checks = {
+              'extracted TODO': 'TODO' not in extracted,
+              'ObjectType field': '`ObjectType`' in extracted,
+              'Properties field': '`Properties`' in extracted,
+              'Values field': '`Values`' in extracted,
+              'old Relationships field removed': '`Relationships`' not in extracted,
+              'old EnumValues field removed': '`EnumValues`' not in extracted,
+              'old InstanceValues field removed': '`InstanceValues`' not in extracted,
+          }
+          failed = [k for k, ok in {**checks, **extracted_checks}.items() if not ok]
+          if failed:
+              raise RuntimeError('validation failed: ' + ', '.join(failed))
           PY
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/OAG本体锚点语义检索与向量索引设计方案.md docs/OAG语义子图检索接口extractedEntities结构设计方案.md
+          git add docs/OAG语义子图检索接口extractedEntities结构设计方案.md docs/OAG本体锚点语义检索与向量索引设计方案.md
           if git diff --cached --quiet; then
-            echo "No cleanup changes"
+            echo "No final changes"
             exit 0
           fi
-          git commit -m "docs: normalize OAG retrieval terminology"
+          git commit -m "docs: fix extractedEntities OpenAPI formatting"
           git push origin HEAD:docs/oag-subgraph-complete-20260823
