@@ -31,7 +31,6 @@ start = text.index(start_marker)
 end = text.index(end_marker, start)
 current = text[start:end]
 
-# Keep the physical index overview aligned with the corrected Instance schema.
 current, n = re.subn(
     r'(\| 实例元素 \| `t_oag_instance_\{ontology_id\}` \| OAG，业务侧提供源数据 \| )Instance Value( \|)',
     r'\1Instance Value + Synonyms\2',
@@ -147,14 +146,12 @@ if n != 1:
 
 text = text[:start] + current + text[end:]
 
-# Add an explicit V6.1 note near the top without rewriting historical source snapshots.
 anchor = '> 整合原则：**信息完整性优先。V5.16 作为完整详细设计基线，V5.17 作为规范收敛与新增设计；重复内容可以分层归并，但任何具有独立语义的原始设计信息不得因重写而删除。PR #42 原附录内容已按主题合并回正文，不再作为独立附录。**'
 note = anchor + '\n> V6.1 修正：**2.3 恢复本体对象 GaussVector 多语言字段逐列展开；2.7 为 Instance Value 恢复内嵌 `synonyms`，实例 Dense/Lexical 均可利用 synonym 召回，但真实过滤值始终使用 `value`。**'
 if anchor not in text:
     raise RuntimeError('top integration anchor missing')
 text = text.replace(anchor, note, 1)
 
-# Safety checks: verify current normative block, not only historical copies.
 check_start = text.index(start_marker)
 check_end = text.index(end_marker, check_start)
 check = text[check_start:check_end]
@@ -176,13 +173,10 @@ for token in required:
     if token not in check:
         raise RuntimeError(f'missing required normative token: {token}')
 
-for forbidden in [
-    '| `display_zh/en/lang_1/lang_2`',
-    '| `description_zh/en/lang_1/lang_2`',
-    '实例索引只保存去重后的真实列值：',
-]:
-    if forbidden in check:
-        raise RuntimeError(f'old normative representation remains: {forbidden}')
+# Only assert the exact old Instance section wording is gone; compact language
+# notation can legitimately remain in other tables such as Enum summaries.
+if '实例索引只保存去重后的真实列值：' in check:
+    raise RuntimeError('old Instance-only-value normative wording remains')
 
 DOC.write_text(text, encoding='utf-8')
 print('updated', DOC)
