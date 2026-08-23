@@ -1404,7 +1404,7 @@ INSTANCE_VALUE
 ```text
 dataType   = SEED_NODE | METADATA_ENUM | INSTANCE_VALUE
 sourceType = OMS | OAC | MINIO
-importMode = FULL_REPLACE | INCREMENTAL
+importMode = FULL_REPLACE | INCREMENTAL | CLEAR
 ```
 
 其中 `BUSINESS_NOTICE` 是数据读取责任模式；直接文件通知创建的 Task 使用 `sourceType=MINIO`。OAC 手动构建 Task 使用 `sourceType=OAC`，OAC 后续通过 `triggerTaskId` 绑定文件时仍保持原 Task 和原 sourceType。
@@ -1418,8 +1418,9 @@ importMode = FULL_REPLACE | INCREMENTAL
 | 人工触发增量更新，有 OAC | build → OAC → MinIO → notice → query | `OAC` | `INCREMENTAL` | MinIO CSV |
 | 定时/事件同步，由业务侧负责 | putObject → notice → query | `BUSINESS_NOTICE` | `INCREMENTAL` | MinIO CSV |
 | 已有全量文件导入/重建 | putObject → notice → query | `BUSINESS_NOTICE` | `FULL_REPLACE` | MinIO CSV |
+| 清理当前本体全量实例索引 | `index-data/notice` → query | - | `CLEAR` | 无需文件；`dataType=INSTANCE_VALUE` |
 
-选择规则：首次创建或明确重建使用 `FULL_REPLACE`；只提交变化数据使用 `INCREMENTAL`。不要用 `INCREMENTAL` 模拟首次全量，也不要把日常增量提交为全量替换。
+选择规则：首次创建或明确重建使用 `FULL_REPLACE`；只提交变化数据使用 `INCREMENTAL`；需要清空当前本体全部实例值索引时使用 `INSTANCE_VALUE + CLEAR`。不要用 `INCREMENTAL` 模拟首次全量，也不要把日常增量提交为全量替换。
 
 ### 3.2.4 容量规格
 
@@ -1674,7 +1675,7 @@ OAC、DataSync 或业务数据服务定期或按事件生成大规模枚举/实�
 
 ##### 接口功能
 
-注册已经上传到 MinIO 的一个或多个 UTF-8 CSV 对象。接口同步校验请求结构和基础资源信息，创建持久化异步任务。
+注册已经上传到 MinIO 的一个或多个 UTF-8 CSV 对象，或在 `dataType=INSTANCE_VALUE, importMode=CLEAR` 时发起实例值全量索引清理。接口同步校验请求结构和基础资源信息，创建持久化异步任务。
 
 ##### 调用方法
 
@@ -1701,8 +1702,8 @@ POST
 | `requestId`  | String              | 是    | -   | `minLength: 1`，`maxLength: 256`            | 调用方幂等键；文件直接导入时用于创建任务，关联任务时用于通知幂等                               |
 | `triggerTaskId` | String | 否 | - | `maxLength: 256` | OAC 交付文件时关联手动构建产生的原任务；直接文件导入不传 |
 | `dataType`   | String              | 是    | -   | `enum: [METADATA_ENUM, INSTANCE_VALUE]`    | 当前文件批次的数据类型                                                    |
-| `importMode` | String              | 是    | -   | `enum: [FULL_REPLACE, INCREMENTAL]` | 全量替换或增量导入                                               |
-| `files`      | Array[MinioCsvFile] | 是    | -   | `minItems: 1`                              | 待导入的 MinIO CSV 对象列表 |
+| `importMode` | String              | 是    | -   | `enum: [FULL_REPLACE, INCREMENTAL, CLEAR]` | 全量替换、增量导入或全量清理索引；`CLEAR` 仅允许 `dataType=INSTANCE_VALUE` |
+| `files`      | Array[MinioCsvFile] | 条件必选 | -   | `minItems: 1`                              | `FULL_REPLACE/INCREMENTAL` 时必选；`CLEAR` 时选填，同时必须指定 `INSTANCE_VALUE` |
 
 **MinioCsvFile 参数列表**
 
@@ -1766,6 +1767,27 @@ MinIO 的 `endpoint / accessKey / secretKey` 属于部署配置，不属于业�
 }
 ```
 
+
+
+##### CLEAR 请求示例
+
+`CLEAR` 用于清理当前本体的全量 `INSTANCE_VALUE` 索引，不依赖 MinIO 文件，因此 `files` 可以省略：
+
+```json
+{
+  "requestId": "clear-instance-20260823-000001",
+  "dataType": "INSTANCE_VALUE",
+  "importMode": "CLEAR"
+}
+```
+
+约束：
+
+- `dataType` 必须为 `INSTANCE_VALUE`；
+- `files` 为选填，OAG 不以文件内容作为 CLEAR 的执行前提；
+- `METADATA_ENUM + CLEAR` 返回 `400 INVALID_IMPORT_MODE`；
+- CLEAR 仍创建持久化 Task，并按双存储一致性规则完成清理、Verify 与 Publish。
+
 ##### 返回参数
 
 复用 `AsyncTaskAcceptedResponse`。未传 `triggerTaskId` 时新建任务并返回 `sourceType=MINIO, stage=CREATED`；传入 `triggerTaskId` 时绑定并返回原任务，原任务的 `sourceType` 保持 `OAC`，`stage` 从 `WAITING_SOURCE` 推进到 `VALIDATING`。两种情况均返回 `status=0`。
@@ -1790,7 +1812,7 @@ MinIO 的 `endpoint / accessKey / secretKey` 属于部署配置，不属于业�
 /v1/onto-retrieval/{ontologyId}/index-data/notice:
   post:
     operationId: importIndexDataFromMinio
-    summary: 从 MinIO CSV 导入枚举值或实例列值
+    summary: 从 MinIO CSV 导入枚举/实例值，或清理全量实例值索引
     parameters:
       - $ref: '#/components/parameters/OntologyId'
       - $ref: '#/components/parameters/TenantId'
@@ -1824,10 +1846,9 @@ ontologyId / tenant 基础校验
 requestId 幂等校验
 triggerTaskId 存在时校验 tenant/ontology/dataType/importMode 与原任务一致
 dataType / importMode Schema 校验
-files 非空
-bucket allowlist 校验
-objectKey 格式校验
-sha256 格式校验
+FULL_REPLACE / INCREMENTAL：files 非空
+CLEAR：dataType 必须为 INSTANCE_VALUE，files 可省略
+存在 files 时：bucket allowlist / objectKey / sha256 格式校验
 T_OAG_INDEX_TASK 持久化成功
 ```
 
@@ -1905,7 +1926,7 @@ POST
 | `requestId` | String | 调用幂等键 |
 | `dataType` | String | `SEED_NODE / METADATA_ENUM / INSTANCE_VALUE` |
 | `sourceType` | String | `OMS / OAC / MINIO` |
-| `importMode` | String | `FULL_REPLACE / INCREMENTAL`；OMS 内部任务可为空 |
+| `importMode` | String | `FULL_REPLACE / INCREMENTAL / CLEAR`；OMS 内部任务可为空；`CLEAR` 仅用于 `INSTANCE_VALUE` 全量清理 |
 | `status` | Integer | 0 构建中；1 成功；2 失败；3 已取消 |
 | `stage` | String | 当前执行阶段 |
 | `totalCount` | Integer(int64) | 总记录数；未知时可为空 |
@@ -2373,15 +2394,20 @@ components:
 
     IndexFileImportRequest:
       type: object
-      required: [requestId, dataType, importMode, files]
+      required: [requestId, dataType, importMode]
+      description: FULL_REPLACE/INCREMENTAL 时 files 必选；CLEAR 时仅允许 dataType=INSTANCE_VALUE，files 选填
       properties:
         requestId: { type: string, minLength: 1, maxLength: 256 }
         triggerTaskId: { type: string, maxLength: 256 }
         dataType: { type: string, enum: [METADATA_ENUM, INSTANCE_VALUE] }
-        importMode: { type: string, enum: [FULL_REPLACE, INCREMENTAL] }
+        importMode:
+          type: string
+          enum: [FULL_REPLACE, INCREMENTAL, CLEAR]
+          description: CLEAR 用于清理全量 INSTANCE_VALUE 索引
         files:
           type: array
           minItems: 1
+          description: FULL_REPLACE/INCREMENTAL 时必选；CLEAR 时选填
           items: { $ref: '#/components/schemas/MinioCsvFile' }
       additionalProperties: false
 
@@ -2407,7 +2433,7 @@ components:
         requestId: { type: string }
         dataType: { type: string, enum: [SEED_NODE, METADATA_ENUM, INSTANCE_VALUE] }
         sourceType: { type: string, enum: [OMS, OAC, MINIO] }
-        importMode: { type: string, enum: [FULL_REPLACE, INCREMENTAL], nullable: true }
+        importMode: { type: string, enum: [FULL_REPLACE, INCREMENTAL, CLEAR], nullable: true }
         status: { type: integer, enum: [0, 1, 2, 3] }
         stage: { type: string }
         totalCount: { type: integer, format: int64, nullable: true }
@@ -2608,7 +2634,7 @@ components:
 
 ## 3.4 CSV 与 MinIO 文件交付协议
 
-动态 Enum / Instance 的唯一正式交付形式是**不可变 UTF-8 CSV + MinIO/S3 对象 + SHA-256 文件身份**。接口只注册文件，不通过超大 JSON Body 传输业务记录。
+除 `INSTANCE_VALUE + CLEAR` 外，动态 Enum / Instance 的唯一正式数据交付形式是**不可变 UTF-8 CSV + MinIO/S3 对象 + SHA-256 文件身份**。`CLEAR` 不要求源 CSV；其他导入模式只注册文件，不通过超大 JSON Body 传输业务记录。
 
 ### 3.4.1 CSV Schema 与编码规则
 
@@ -2840,7 +2866,7 @@ T_OAG_INDEX_TASK (N)
 | `REQUEST_ID`           | VARCHAR(256)  | NOT NULL | 调用幂等键                                                   |
 | `DATA_TYPE`            | VARCHAR(64)   | NOT NULL | `SEED_NODE` / `METADATA_ENUM` / `INSTANCE_VALUE`        |
 | `SOURCE_TYPE`          | VARCHAR(32)   | NOT NULL | `OMS` / `OAC` / `MINIO`                                        |
-| `IMPORT_MODE`          | VARCHAR(32)   |          | `FULL_REPLACE` / `INCREMENTAL`                          |
+| `IMPORT_MODE`          | VARCHAR(32)   |          | `FULL_REPLACE` / `INCREMENTAL` / `CLEAR`                          |
 | `STATUS`               | INT           | NOT NULL | 0 构建中；1 成功；2 失败；3 已取消                                   |
 | `STAGE`                | VARCHAR(64)   |          | 当前执行阶段                                                  |
 | `TOTAL_COUNT`          | BIGINT        |          | 总记录数                                                    |
@@ -3065,7 +3091,7 @@ Input → SchemaValidator → OntologyMappingValidator → Normalizer → Dedupl
 ---
 
 
-### 3.6.2 FULL_REPLACE 与 INCREMENTAL
+### 3.6.2 FULL_REPLACE、INCREMENTAL 与 CLEAR
 
 #### FULL_REPLACE
 
@@ -3080,6 +3106,31 @@ Create Task → Build Staging Generation → Import/Embed/Write → Verify → A
 #### INCREMENTAL
 
 适用于动态 Enum Value UPSERT/DELETE、实例值新增/删除和小规模业务数据变化。METADATA_ENUM 使用 `object_type_id + property_id + normalized(value)`，INSTANCE_VALUE 使用 `object_type_id + property_id + normalized(value)` 作为幂等业务键；相同请求或 Chunk 重试只能覆盖原记录，不能追加重复记录。
+
+#### CLEAR
+
+`CLEAR` 用于清理当前本体的**全量实例值索引**，只允许：
+
+```text
+dataType = INSTANCE_VALUE
+importMode = CLEAR
+files = optional
+```
+
+执行语义：
+
+```text
+Create Task
+→ Validate INSTANCE_VALUE + CLEAR
+→ Build Empty/Staging Instance Generation
+→ Verify GaussVector/OpenSearch 目标 Generation 为空
+→ Atomic Publish Empty Generation
+→ Retire/Cleanup Old Instance Generation
+→ FINISHED
+```
+
+CLEAR 不要求读取 MinIO、不执行 Embedding，也不通过逐条 DELETE 清理百万/千万级实例数据。通过空 Staging Generation + Verify + Publish 保证 GaussVector/OpenSearch 清理边界一致；失败时旧 Active Generation 继续在线，避免单侧清空导致检索不一致。
+
 
 ---
 
@@ -3097,6 +3148,12 @@ FULL_REPLACE
 INCREMENTAL
   → 对 Active Generation 使用稳定业务键幂等 UPSERT / DELETE
   → 双端均成功并校验后推进 Task/Checkpoint
+
+CLEAR
+  → 构建空的 Instance Staging Generation
+  → 双端 Verify 为空
+  → 原子 Publish
+  → 再清理旧 Instance Generation
 ```
 
 因此 `202 Accepted`、文件读取完成、Embedding 完成均不代表新数据已经对在线检索可见；只有 Publish/增量双端提交完成后才可见。
@@ -3478,11 +3535,11 @@ sequenceDiagram
 
 ### 3.11.3 最终约束
 
-1. 动态 Enum / Instance 统一使用 **MinIO CSV + `index-data/notice`**，不再区分小数据直返和大数据文件两套实现；
+1. 除 `dataType=INSTANCE_VALUE, importMode=CLEAR` 外，动态 Enum / Instance 统一使用 **MinIO CSV + `index-data/notice`**；`CLEAR` 复用同一任务接口但不要求 `files`；
 2. `instanceDataSourceMode=OAC|BUSINESS_NOTICE` 只决定谁读取业务源；
 3. OAC 手动构建通过 `triggerTaskId` 将文件绑定到原 Task，不重复创建 Task；
 4. `SEED_NODE` 读取 OMS，本体外部生产者不生成 vector；
-5. 首次创建/重建使用 `FULL_REPLACE`，变化数据使用 `INCREMENTAL`；
+5. 首次创建/重建使用 `FULL_REPLACE`，变化数据使用 `INCREMENTAL`；清理当前本体全量实例索引使用 `dataType=INSTANCE_VALUE, importMode=CLEAR`，此时 `files` 选填；
 6. MinIO 文件必须不可变，权威身份使用 `objectKey + size + SHA-256`，ETag/MD5 不参与恢复身份；
 7. Task 必须先写入 `T_OAG_INDEX_TASK` 再异步执行，GaussDB 是任务事实来源；
 8. Checkpoint 使用 TEXT JSON，只保存双端成功的连续安全点，不新增 Chunk 状态表；
@@ -3495,232 +3552,30 @@ sequenceDiagram
 
 # 4. 实体提取、Entity Linking 与 6 路混合召回
 
----
-
-## 4.0 核心设计
-
----
-
-### 4.0 实体提取 Entity Extraction
-
-正式 `ExtractedEntity` 只包含三个顶层业务字段：
+本章定义从自然语言实体到真实本体对象/属性/值归属的**粗召回与 Entity Linking**。执行主线统一为：
 
 ```text
-ObjectType
-Properties[]
-Values[]
+query + searchContext / extractedEntities
+→ Entity Extraction
+→ Semantic Phrase Extraction
+→ OBJECT_TYPE / PROPERTY / VALUE Semantic Units
+→ 6 路 Lexical + Dense Recall
+→ SearchHit 标准化
+→ 通道内按真实本体归属去重
+→ 一次 Weighted RRF
+→ ObjectType 作用域内 Property Linking
+→ Enum / Instance Value Linking
+→ Entity Linking 粗排结果 + supporting_hits
+→ 第 5 章 LLM Fine Rank
 ```
 
-`ValueHint`：
-
-```text
-Property   # optional
-Value      # required
-```
-
-原则：
-
-- Extraction 不区分 Enum/Instance；
-- 不直接输出 Relationship；
-- 不根据编码形状猜 ObjectType/Property；
-- 专家关系/路径提示放 `searchContext`；
-- Value-only 合法，归属由 Entity Linking 识别。
-
-示例：
-
-```json
-{
-  "extractedEntities": [
-    {
-      "ObjectType": "ALARM",
-      "Properties": ["告警TICKET ID", "告警发生时间"],
-      "Values": []
-    },
-    {
-      "Values": [
-        {"Value": "12JKS0885_IN_RSNM_KALIBATA3_MC"}
-      ]
-    }
-  ]
-}
-```
-
-这里 Extraction **不**直接推断该值属于 Site/BaseStation/nativeId。
-
-### 4.1 Query Understanding 与 Semantic Unit
-
-输入：
-
-```json
-{
-  "query": "查询站点 12JKS0885_IN_RSNM_KALIBATA3_MC 的严重告警",
-  "searchContext": "..."
-}
-```
-
-Query Understanding 负责：实体提取、语义单元拆分、语言/领域提示；不负责生成最终本体 ID。
-
-### 4.2 6 路召回
-
-每个 Semantic Unit 默认产生六条 Ranked List：
-
-```text
-ontologyObjectLexical
-ontologyObjectDense
-enumLexical
-enumDense
-instanceLexical
-instanceDense
-```
-
-Lexical：OpenSearch Exact/BM25；Dense：GaussVector BGE-M3 1024。
-
-### 4.3 ObjectType 作用域内 Property 检索
-
-固定顺序：
-
-```text
-sourceObjectType
-→ targetObjectTypes[]
-→ 对每个 targetObjectType.id 单独检索其所属 Property
-→ propertyLinks[]
-```
-
-Property 检索必须增加归属约束：
-
-```text
-GaussVector: type=PROPERTY AND parent_id=targetObjectType.id
-OpenSearch:   type=PROPERTY AND parent_id.keyword=targetObjectType.id
-Topology:     has_property 必须成立
-```
-
-禁止全本体检索 Property 后无条件挂到所有 ObjectType 候选。
-
-### 4.4 SearchHit 标准化
-
-三类索引统一为 SearchHit，不向上层暴露数据库原生行格式：
-
-```json
-{
-  "semanticUnitId": "u1",
-  "recordType": "ENUM_VALUE",
-  "objectTypeId": "obj:alarm:Alarm",
-  "propertyId": "prop:alarm:severity",
-  "value": "CRITICAL",
-  "matchedField": "synonyms",
-  "matchedValue": "严重",
-  "channel": "enumLexical",
-  "rank": 1,
-  "rawScore": 12.37
-}
-```
-
-必须保留 `matchedField/matchedValue`，用于解释具体是 name/display/synonym/value 哪个字段命中。
-
-### 4.5 归并 group_id
-
-RRF 前按真实本体归属聚合：
-
-```text
-ObjectType        → OT:{objectTypeId}
-Property          → PROP:{objectTypeId}:{propertyId}
-Enum/Instance     → PROP:{objectTypeId}:{propertyId}
-```
-
-Enum/Instance 自身的具体 value 作为 supporting hit 保留，但在图规划层投影到 Property/ObjectType。
-
-### 4.6 Weighted RRF
-
-推荐参数：
-
-```yaml
-rrf:
-  k: 60
-  coarseTopKPerSemanticUnit: 20
-  maxGlobalCandidates: 50
-  channelWeights:
-    ontologyObjectLexical: 1.3
-    ontologyObjectDense: 1.0
-    enumLexical: 1.2
-    enumDense: 1.0
-    instanceLexical: 1.0
-    instanceDense: 0.8
-```
-
-公式：
-
-```text
-RRF(c) = Σ_channel weight(channel) / (k + rank_channel(c))
-```
-
-同一 `semanticUnit + channel + group_id` 只保留最佳 rank，具体多个 Enum/Instance 命中仍作为 `matchedItems/supportingHits` 保存。
-
-Dense 的 similarityThreshold 在进入 RRF 前过滤；RRF 本身不比较异构原始分数。
-
-### 4.7 Exact 不是绝对锁定
-
-`status/active/A/1` 等文本可能在多个属性中重复。推荐：
-
-```text
-Exact/BM25 → 高权重 RRF → LLM 结合原始问题消歧
-```
-
-只有本体全局唯一 ID 的直接查询可以绕过语义消歧。
-
-### 4.8 Entity Linking 粗排结构
-
-```text
-seedNodes[]
-  ├─ sourceObjectType
-  └─ targetObjectTypes[]
-       ├─ name / id / score
-       └─ propertyLinks[]
-            ├─ sourceProperty
-            └─ targetProperties[]
-                 └─ name / id / score
-```
-
-规则：
-
-- `targetObjectTypes` 按归一化 RRF 分数降序；
-- 每个 `targetProperties` 只在当前 ObjectType 范围内排序；
-- 默认 ObjectType Top3、Property Top3，可配置；
-- 低于阈值允许空，不为保证非空制造候选；
-- Property 未解析时保留 `sourceProperty`，`targetProperties=[]`；
-- ID 必须来自真实本体/索引，不允许 LLM 生成。
-
-### 4.9 Enum / Instance Entity Linking
-
-对于 `Values[]`，同时查询 Enum 与 Instance 索引：
-
-```text
-sourceValue
-→ enumLexical / enumDense
-→ instanceLexical / instanceDense
-→ RRF + context disambiguation
-→ actual value + property_id + object_type_id
-```
-
-Entity Linking 在这里补齐：
-
-```text
-valueType = ENUM_VALUE | INSTANCE_VALUE
-canonical/actual value
-Property
-ObjectType
-```
-
-其中“canonical”只是对真实索引 `value` 的下游投影名称，不维护第二套 canonical 字典。
+本章只负责**候选召回、归属解析和粗排**；LLM 最终选择、0/1/N 判定与 `retrievalResults` 生成由第 5 章负责。
 
 ---
 
----
+## 4.1 实体提取与 Query Understanding
 
-## 4.1 详细设计与实现
-
----
-
-### 4.0 实体提取（Entity Extraction）
+### 4.1.1 ExtractedEntity 数据模型
 
 实体提取是子图检索的第 ① 步，输入为 `query + searchContext`，或者直接接收业务侧提供的 `extractedEntities`。正式 `ExtractedEntity` 只包含：
 
@@ -3758,7 +3613,8 @@ Values[]
 
 完整 Schema、样例和兼容规则见 [OAG语义子图检索接口extractedEntities结构设计方案](./OAG语义子图检索接口extractedEntities结构设计方案.md)。
 
-### 4.1 Query Understanding：Semantic Phrase Extraction
+
+### 4.1.2 Semantic Phrase Extraction
 
 LLM 应执行：
 
@@ -3796,7 +3652,7 @@ Mobile Number
 ---
 
 
-### 4.2 Query Understanding 推荐结构
+### 4.1.3 Query Understanding 推荐结构
 
 兼容现有：
 
@@ -3870,7 +3726,7 @@ zh / en / es / es-MX / pt-BR / fr / ar / id / mixed / und
 ---
 
 
-### 4.3 为什么不建议 LLM 直接输出底层 TopK
+### 4.1.4 检索参数职责边界
 
 TopK 属于检索系统策略，应由：
 
@@ -3902,7 +3758,11 @@ optional → normal profile
 ---
 
 
-### 4.4 6 路检索通道
+---
+
+## 4.2 6 路混合召回与 Retrieval Profile
+
+### 4.2.1 六路检索通道
 
 每个 Semantic Unit 同时进入三类数据、两种检索方式，共 **6 条 Ranked List**：
 
@@ -3945,7 +3805,7 @@ keyword exact（最高 boost）
 此时仍建议一次性进入 Weighted RRF，而不是先做类内 RRF。
 
 
-### 4.5 Exact/BM25 与 Dense 阈值关系
+### 4.2.2 Exact/BM25 与 Dense 阈值边界
 
 Exact/BM25 与 Dense 的分数空间不同：
 
@@ -3965,7 +3825,7 @@ Exact/BM25：不使用 Dense similarityThreshold 过滤
 Exact 命中仍不是绝对最终结果，因为 `name/status/active/1` 等值可能跨对象重复；它应获得较高 RRF 权重并进入 LLM 精排。
 
 
-### 4.6 topK / similarityThreshold 分表配置
+### 4.2.3 topK / similarityThreshold 分表配置
 
 三类物理索引独立配置召回参数：
 
@@ -4007,7 +3867,7 @@ System Defaults
 ```
 
 
-### 4.7 legacy GraphSearchRequest.topK 兼容语义
+### 4.2.4 legacy GraphSearchRequest.topK 兼容
 
 现有 `GraphSearchRequest.topK=3` 不应被复用于所有内部通道。
 
@@ -4029,7 +3889,7 @@ instance.topK
 避免所有通道只取 3 条，导致正确候选在 RRF 之前被裁掉。
 
 
-### 4.8 seedRetrievalMode 兼容
+### 4.2.5 seedRetrievalMode 兼容
 
 现有：
 
@@ -4064,7 +3924,11 @@ hybrid → Exact/BM25/Dense + 语义元素 + RRF
 ---
 
 
-### 4.9 GaussVector / OpenSearch 返回结构与结果标准化
+---
+
+## 4.3 SearchHit 标准化与通道证据保留
+
+### 4.3.1 GaussVector / OpenSearch SearchHit 标准化
 
 RRF 前，OAG 将三张表的查询结果统一成 SearchHit，不向上层直接透出 GaussVector SQL 行格式或 OpenSearch 原生 `_source/_score` 包装。
 
@@ -4171,7 +4035,7 @@ Instance Value hit：group_id = "PROP:" + hit.objectTypeId + ":" + hit.propertyi
 `matched_field/matched_value` 是最终解释“用户到底命中了 name/display/description/synonyms/value 哪一项”的关键字段，不能在 RRF 前丢失。
 
 
-### 4.10 通道内按本体对象去重并保留具体命中
+### 4.3.2 通道内去重与 supporting_hits
 
 同一 Property 可能通过多个 Enum Value、Instance Value 或 `synonyms` 字段命中。RRF 前按：
 
@@ -4192,7 +4056,11 @@ hit_count
 每个 supporting hit 都保留实际身份字段：Seed 保留 `id/type/name`；Enum/Instance 保留 `propertyid/objectTypeId/type/value`，Enum 可继续携带 `name`；所有命中统一保留 `matched_field/matched_value`。
 
 
-### 4.11 RRF Aggregator：一次 Weighted RRF
+---
+
+## 4.4 Weighted RRF 粗排融合
+
+### 4.4.1 一次 Weighted RRF
 
 默认仍采用一次 Weighted RRF，不做“类内 RRF → 总 RRF”两级融合。
 
@@ -4305,7 +4173,7 @@ return candidates.values().stream()
 注意：`similarityThreshold` 在进入 RRF 前过滤 Dense；Exact/BM25 是否进入列表由各自通道规则决定，RRF 本身不再比较原始异构分数。
 
 
-### 4.12 Exact 不是绝对锁定
+### 4.4.2 Exact 是强证据但不是绝对锁定
 
 Exact 是强证据，但 `name/status/active/1/A` 或某个 synonym 仍可能在多个记录中重复。推荐：
 
@@ -4316,13 +4184,17 @@ Exact/BM25 → 高权重 RRF → LLM 结合原始问题消歧
 只有本体对象全局唯一 `id` 的直接查询才可以绕过语义消歧；Enum/Instance 仍按 `objectTypeId + propertyid + value` 判断具体记录。
 
 
-### 4.13 RRF 粗排输出：Entity Linking 结果
+---
+
+## 4.5 ObjectType / Property Entity Linking
+
+### 4.5.1 ObjectType 作用域内 Property Linking 与粗排输出
 
 阶段 2 的目标是完成实体映射与消歧（Entity Linking）：使用 Exact/BM25、Embedding 召回和 Weighted RRF，将实体提取阶段得到的 `ObjectType / Property` 文本对齐到 NebulaGraph 中真实存在的 ObjectType、Property 节点。
 
-> 当前阶段只处理 ObjectType、Property。Relationship、RelationshipProperty 不在本阶段实体链接范围内。
+> ObjectType/Property 使用本节的作用域化链接流程；`Values[]` 使用第 4.6 节的 Enum/Instance Value Linking。Relationship、RelationshipProperty 不作为 Entity Linking 的直接检索目标。
 
-#### 4.13.1 Property 必须在候选 ObjectType 范围内检索
+#### Property 必须在候选 ObjectType 范围内检索
 
 实体提取结果中的 ObjectType 与 Property 具有明确从属关系。因此链接顺序固定为：
 
@@ -4352,7 +4224,7 @@ Nebula / GraphTopologyCache:
 
 如果一个 `sourceObjectType` 有多个 ObjectType 候选，`propertyLinks` 必须放在每个 `targetObjectTypes[]` 元素内部，不能放在 `sourceObjectType` 层级。否则无法表达 Property 是在哪个候选 ObjectType 范围内完成匹配的。
 
-#### 4.13.2 输出结构
+#### 输出结构
 
 ```text
 seedNodes[]
@@ -4386,7 +4258,7 @@ seedNodes[]
 
 本阶段的 `seedNodes` 表示“实体链接候选集合”；第 5、6 章最终响应中的 `seedNodes` 是经过 LLM 精排和 SeedNodeProjector 投影后的图构建种子，两者处于不同生命周期，不能直接等同。
 
-#### 4.13.3 示例1：单个 ObjectType
+#### 示例1：单个 ObjectType
 
 实体提取输入：
 
@@ -4454,7 +4326,7 @@ RRF 粗排输出：
 
 这里 `体验质量` 和 `时间` 的 Property 候选只从 `WhatsAPP应用(id=xx)` 所属 Property 中产生。
 
-#### 4.13.4 示例2：多个 ObjectType，且一个源对象存在多个候选
+#### 示例2：多个 ObjectType，且一个源对象存在多个候选
 
 ```json
 {
@@ -4620,7 +4492,7 @@ RRF 粗排输出：
 
 `4G小区` 同时链接到 `4G小区` 和 `无线小区` 两个候选时，两者的 `propertyLinks` 分别在各自 ObjectType 归属范围内检索和排序，不能复用同一个全局 Property 候选列表。
 
-#### 4.13.5 排序、裁剪与异常规则
+#### 排序、裁剪与异常规则
 
 1. `targetObjectTypes` 按 ObjectType 的归一化 RRF 粗排分数降序排列。
 2. 每个 `targetProperties` 只在对应 `targetObjectType.id` 范围内排序和裁剪。
@@ -4632,7 +4504,8 @@ RRF 粗排输出：
 
 LLM 面对的是“源实体 → ObjectType 候选 → 该候选范围内的 Property 候选 + 内部 RRF 证据”，而不是只看到脱离 ObjectType 归属的全局 Property 列表。
 
-### 4.14 RRF 与 LLM 的分组层级
+
+### 4.5.2 ObjectType / Property 分组与 LLM 衔接
 
 ObjectType 与 Property 仍以 Semantic Unit 为召回和 RRF 计算单元，但 Property 必须在 ObjectType 候选确定后按候选作用域执行：
 
@@ -4657,6 +4530,108 @@ ObjectType Semantic Unit
 不要直接按 synonyms 数量计分；Synonym 是记录字段，不形成额外 RRF 行。
 
 推荐裁剪：每个源 ObjectType 保留 Top 3 ObjectType 候选；每个候选 ObjectType 下，每个源 Property 保留 Top 3 Property 候选；内部每组保留 3~5 个 supporting hits，全局候选数量继续受 `maxGlobalCandidates` 控制，LLM 每个 Unit 允许选择 0~5 个最终结果。
+
+---
+
+
+---
+
+## 4.6 Enum / Instance Value Entity Linking
+
+对于 `ExtractedEntity.Values[]`，OAG 不在 NER 阶段预判 Enum/Instance，而是同时查询枚举索引和实例索引：
+
+```text
+sourceValue
+→ enumLexical / enumDense
+→ instanceLexical / instanceDense
+→ 按真实 Property/ObjectType 归属聚合
+→ Weighted RRF + 上下文消歧
+→ actual value + property_id + object_type_id
+```
+
+最终补齐：
+
+```text
+valueType = ENUM_VALUE | INSTANCE_VALUE
+canonical/actual value
+Property
+ObjectType
+matched_field / matched_value
+supporting_hits
+```
+
+其中 `canonical` 只是对真实索引 `value` 的下游投影名称，不维护第二套 canonical 字典。
+
+### 4.6.1 Property Hint 与 Value-only
+
+两种输入都合法：
+
+```json
+{
+  "ObjectType": "Account",
+  "Properties": ["accountStatus"],
+  "Values": [
+    {"Property": "accountStatus", "Value": "在用"}
+  ]
+}
+```
+
+以及完全不知道归属时的 value-only：
+
+```json
+{
+  "extractedEntities": [
+    {
+      "ObjectType": "ALARM",
+      "Properties": ["告警TICKET ID", "告警发生时间"],
+      "Values": []
+    },
+    {
+      "Values": [
+        {"Value": "12JKS0885_IN_RSNM_KALIBATA3_MC"}
+      ]
+    }
+  ]
+}
+```
+
+规则：
+
+1. Value 携带 `Property` Hint 时优先在该 Property / ObjectType 作用域内召回；
+2. Value-only 时允许跨 Enum/Instance 索引召回后再确定归属；
+3. 不根据编码形态猜 Site/BaseStation/nativeId 等 ObjectType/Property；
+4. Enum/Instance 自身不是本体图顶点，图规划时投影到其真实 Property/ObjectType；
+5. 具体 `value/matched_field/matched_value/supporting_hits` 必须继续传给第 5 章 LLM Fine Rank，不能只留下 Property 节点。
+
+### 4.6.2 Relationship 边界
+
+Relationship / RelationshipProperty 不由 Entity Extraction 或 Entity Linking 直接输出。业务提供的专家路径、关系和方向提示进入 `searchContext`，在后续图规划阶段作为 PathPlan/Graph Hint 约束使用。
+
+
+---
+
+## 4.7 本章输出与第 5 章衔接
+
+本章粗排阶段的输出不是最终语义检索结果，而是可供 LLM Fine Rank 使用的**真实候选集合 + 归属 + 证据**：
+
+```text
+ObjectType / Property
+  → seedNodes[].targetObjectTypes[].propertyLinks[]
+  → 每个候选携带 rrfScore/channelHits/supporting_hits
+
+Enum / Instance Value
+  → valueType + actual value + property_id + object_type_id
+  → matched_field / matched_value + supporting_hits
+```
+
+核心约束：
+
+1. ObjectType 候选先粗排，Property 必须在每个候选 ObjectType 作用域内独立召回和排序；
+2. Enum/Instance 按真实 `Property + ObjectType` 归属聚合，具体 value 证据不能在投影时丢失；
+3. `matched_field/matched_value` 必须一直保留到 LLM Fine Rank，用于解释 name/display/description/synonyms/value 的真实命中来源；
+4. RRF 只融合各通道 rank，不直接比较 BM25、Exact 与 cosine 原始分数；
+5. LLM 只能从这些真实候选中选择，不能生成新的 ObjectType/Property/Value ID；
+6. Relationship 不在本章直接 Entity Linking，由后续图规划结合 `searchContext` 和 Graph Hint 处理。
 
 ---
 
@@ -4799,7 +4774,7 @@ LLM 不创造新的 `id/value/synonyms`，只能从候选中选择。
 
 ### 5.3 Rerank Context
 
-`RerankContextBuilder` 将 4.13 的嵌套 Entity Linking 结果与内部保留的 `rrfScore/channelHits/supportingHits` 合并为 LLM 输入。每个 Property Group 必须携带已经确定的 `objectType`，不得在此阶段丢失 ObjectType 作用域。以下 `groups` 是内部精排视图，不替代 4.13 对外输出的 `seedNodes[].targetObjectTypes[].propertyLinks[]`。
+`RerankContextBuilder` 将 4.5 的嵌套 Entity Linking 结果与内部保留的 `rrfScore/channelHits/supportingHits` 合并为 LLM 输入。每个 Property Group 必须携带已经确定的 `objectType`，不得在此阶段丢失 ObjectType 作用域。以下 `groups` 是内部精排视图，不替代 4.5 对外输出的 `seedNodes[].targetObjectTypes[].propertyLinks[]`。
 
 ```json
 {
