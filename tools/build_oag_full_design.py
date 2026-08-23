@@ -35,7 +35,6 @@ def split_main_chapters(text: str):
 
 
 def parse_appendix(text: str):
-    # Preserve the source metadata + section 1 before the first top-level numbered section (# 2.).
     matches = list(re.finditer(r"(?m)^# (\d+)\. ([^\n]+)$", text))
     if not matches:
         raise RuntimeError("appendix numbered sections not found")
@@ -62,20 +61,14 @@ def demote_headings(text: str, levels: int = 1):
         if not in_fence:
             m = re.match(r"^(#{1,6}) (.*)$", line)
             if m:
-                hashes = m.group(1)
-                hashes = "#" * min(6, len(hashes) + levels)
+                hashes = "#" * min(6, len(m.group(1)) + levels)
                 line = f"{hashes} {m.group(2)}"
         out.append(line)
     return "\n".join(out).strip()
 
 
 def quote_source(text: str):
-    # Preserve original preamble information without introducing competing document-level headings.
     return "\n".join("> " + line if line else ">" for line in text.splitlines())
-
-
-def section_block(title: str, body: str, level: int = 3):
-    return f"{'#' * level} {title}\n\n{demote_headings(body, 1)}\n"
 
 
 backup_main, appendix = split_before_appendix(backup)
@@ -83,10 +76,9 @@ b_preamble, b_chapters = split_main_chapters(backup_main)
 c_preamble, c_chapters = split_main_chapters(current)
 appendix_intro, appendix_sections = parse_appendix(appendix)
 
-# Appendix routing: PR #42 review information is moved back into the body by topic.
-route_to_chapter_1 = [2]  # review conclusion summary; appendix intro contains positioning + section 1
-route_to_chapter_3 = [3, 4, 5, 6, 7, 9]  # data access/capacity/hash/checkpoint/perf/errors
-route_to_chapter_7 = [8, 10, 11, 12, 13]  # config/metrics/tests/revision rules/final decisions
+route_to_chapter_1 = [2]
+route_to_chapter_3 = [3, 4, 5, 6, 7, 9]
+route_to_chapter_7 = [8, 10, 11, 12, 13]
 all_routed = set(route_to_chapter_1 + route_to_chapter_3 + route_to_chapter_7)
 missing = sorted(set(appendix_sections) - all_routed)
 if missing:
@@ -141,11 +133,9 @@ parts.append("""
 for n in range(1, 8):
     parts.append(f"# {n}. {chapter_titles[n]}")
 
-    # Current V5.17 content is preserved in full and positioned first as current normative/converged design.
     parts.append(f"## {n}.0 V5.17 规范收敛与新增设计（完整保留）")
     parts.append(demote_headings(c_chapters[n]["body"], 1))
 
-    # V5.16 content is preserved in full as detailed design baseline.
     parts.append(f"## {n}.1 V5.16 完整详细设计（信息基线，完整保留）")
     parts.append(demote_headings(b_chapters[n]["body"], 1))
 
@@ -188,7 +178,7 @@ V5.16 完整详细设计
 
 final = "\n\n---\n\n".join(p.strip() for p in parts if p and p.strip()) + "\n"
 
-# Clarify known conflicts without deleting historical information.
+# Clarify known conflicts without deleting the original design intent.
 final = final.replace(
     "索引构建统一支持三种服务端配置模式，不把数据源选择暴露成业务侧每次请求都要判断的参数：",
     "**历史方案（保留演进信息，不作为当前最终规范）：** 索引构建曾设计三种服务端配置模式，不把数据源选择暴露成业务侧每次请求都要判断的参数："
@@ -206,56 +196,59 @@ final = final.replace(
     "| `gauss_status` / `opensearch_status` | 历史方案曾建议持久化两端提交状态；当前仅作为运行时日志/指标，不逐 Chunk 持久化 |"
 )
 final = final.replace(
-    "三种数据交付方式只在进入 OAG 前不同：OMS 提供种子资产，OAC 可以交付小批/分页记录，OAC/DataSync/业务服务可以通过 MinIO 交付大文件。",
-    "**历史兼容描述：** 三种数据交付方式曾在进入 OAG 前区分 OMS、OAC 小批/分页和 MinIO 大文件；当前动态 Enum/Instance 已统一收敛为 MinIO CSV + notice，原小批/分页信息仅用于理解旧实现。"
+    "三种数据交付方式只在进入 OAG 前不同：OMS 提供种子资产，OAC 可以交付小批/分页记录，OAC/DataSync/业务服务可以通过 MinIO 交付大文件。从 `Schema Validator` 开始统一使用 Normalize/Dedup/Embedding/双写/Verify/Publish 流水线。",
+    "**历史兼容描述：** 三种数据交付方式曾在进入 OAG 前区分 OMS、OAC 小批/分页和 MinIO 大文件；当前动态 Enum/Instance 已统一收敛为 MinIO CSV + notice，原小批/分页信息仅用于理解旧实现。从 `Schema Validator` 开始统一使用 Normalize/Dedup/Embedding/双写/Verify/Publish 流水线。"
 )
 final = final.replace(
-    "人工触发索引更新，小数据量  | 手动构建 → 任务查询                        | `INCREMENTAL`  | OAC 小批/分页返回 OAG | OAC 返回 UPSERT/DELETE 变化记录",
-    "人工触发索引更新，小数据量  | 手动构建 → OAC → MinIO → notice → 任务查询 | `INCREMENTAL` | MinIO CSV | 历史曾支持 OAC 小批/分页直返；当前统一 MinIO"
+    "| 人工触发索引更新，小数据量  | 手动构建 → 任务查询                        | `INCREMENTAL`  | OAC 小批/分页返回 OAG | OAC 返回 UPSERT/DELETE 变化记录                   |",
+    "| 人工触发索引更新，小数据量  | 手动构建 → OAC → MinIO → notice → 任务查询 | `INCREMENTAL` | MinIO CSV | 历史曾支持 OAC 小批/分页直返并返回 UPSERT/DELETE 变化记录；当前统一 MinIO |"
 )
 
-# Coverage validation: every substantive source line must be represented after normalizing heading depth/quotes.
+# Coverage validation: headings can be reorganized, but every substantive source line must remain.
 def norm(line: str):
     x = line.strip()
-    x = re.sub(r"^>\s?", "", x)
+    x = re.sub(r"^(?:>\s*)+", "", x)
     x = re.sub(r"^#{1,6}\s+", "", x)
     return x.strip()
 
 final_norm_lines = {norm(line) for line in final.splitlines() if norm(line)}
 
-# Some explicitly reconciled conflicting lines are intentionally rewritten but their information is preserved in the replacement text.
-allowed_rewrites = [
-    "索引构建统一支持三种服务端配置模式，不把数据源选择暴露成业务侧每次请求都要判断的参数：",
-    "| `CHECKPOINT`           | VARCHAR(1024) |          | CSV 文件/行号或内部 Chunk Checkpoint                           |",
-    "    CHECKPOINT            VARCHAR(1024),",
-    "| `gauss_status` / `opensearch_status` | 两端提交状态 |",
-    "三种数据交付方式只在进入 OAG 前不同：OMS 提供种子资产，OAC 可以交付小批/分页记录，OAC/DataSync/业务服务可以通过 MinIO 交付大文件。从 `Schema Validator` 开始统一使用 Normalize/Dedup/Embedding/双写/Verify/Publish 流水线。",
+# Exact source lines intentionally rewritten to reconcile old and current norms.
+rewrite_contains = [
+    "索引构建统一支持三种服务端配置模式",
+    "CHECKPOINT`           | VARCHAR(1024)",
+    "CHECKPOINT            VARCHAR(1024)",
+    "gauss_status` / `opensearch_status",
+    "三种数据交付方式只在进入 OAG 前不同",
+    "人工触发索引更新，小数据量",
 ]
-allowed_norm = {norm(x) for x in allowed_rewrites}
+
+
+def is_heading(line: str):
+    return bool(re.match(r"^\s*#{1,6}\s+", line))
 
 
 def coverage(source: str, name: str):
     missing_lines = []
+    checked = 0
     for line in source.splitlines():
         n = norm(line)
-        if not n or n in {"---"}:
+        if not n or n == "---" or is_heading(line):
             continue
-        if n in final_norm_lines or n in allowed_norm:
+        checked += 1
+        if n in final_norm_lines:
             continue
-        # Document-level source titles / appendix routing heading can be represented by the new title/section structure.
-        if n.startswith("OAG 面向本体对象的语义检索、混合排序与本体子图构建设计方案"):
-            continue
-        if n.startswith("附录 A：PR #42 检视意见优化方案"):
+        if any(token in line for token in rewrite_contains):
             continue
         missing_lines.append(line)
     if missing_lines:
-        sample = "\n".join(missing_lines[:30])
-        raise RuntimeError(f"{name} coverage failure: {len(missing_lines)} missing lines\n{sample}")
+        sample = "\n".join(missing_lines[:40])
+        raise RuntimeError(f"{name} substantive coverage failure: {len(missing_lines)}/{checked} missing lines\n{sample}")
+    print(f"{name}: {checked} substantive lines covered")
 
 coverage(backup, "V5.16 backup")
 coverage(current, "V5.17 current")
 
-# Structural assertions for the requested final design.
 required = [
     "# OAG 本体语义索引管理和语义检索",
     "instanceDataSourceMode",
