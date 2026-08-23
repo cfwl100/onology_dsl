@@ -1,0 +1,53 @@
+name: Restructure OAG chapter 4 and restore CLEAR
+
+on:
+  push:
+    branches:
+      - docs/oag-chapter3-restructure
+
+permissions:
+  contents: write
+
+jobs:
+  restructure:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: docs/oag-chapter3-restructure
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Restore CLEAR and restructure chapter 4
+        run: python3 tools/restructure_oag_chapter4_and_restore_clear.py
+
+      - name: Validate headings and contract
+        run: |
+          DOC='docs/OAG本体锚点语义检索与向量索引设计方案.md'
+          grep -q '^### 3.6.2 FULL_REPLACE、INCREMENTAL 与 CLEAR$' "$DOC"
+          grep -q '^## 4.1 实体提取与 Query Understanding$' "$DOC"
+          grep -q '^## 4.2 6 路混合召回与 Retrieval Profile$' "$DOC"
+          grep -q '^## 4.3 SearchHit 标准化与通道证据保留$' "$DOC"
+          grep -q '^## 4.4 Weighted RRF 粗排融合$' "$DOC"
+          grep -q '^## 4.5 ObjectType / Property Entity Linking$' "$DOC"
+          grep -q '^## 4.6 Enum / Instance Value Entity Linking$' "$DOC"
+          grep -q '^## 4.7 本章输出与第 5 章衔接$' "$DOC"
+          ! grep -q '^## 4.0 核心设计$' "$DOC"
+          ! grep -q '^## 4.1 详细设计与实现$' "$DOC"
+
+      - name: Remove one-shot helpers
+        run: |
+          rm -f tools/restructure_oag_chapter4_and_restore_clear.py
+          rm -f .github/workflows/oag-ch4-clear.yml
+
+      - name: Commit result
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config core.whitespace -trailing-space
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m 'docs: restore CLEAR and reorganize entity linking chapter'
+          git push origin HEAD:docs/oag-chapter3-restructure
