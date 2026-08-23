@@ -1,16 +1,19 @@
 name: OAG schema V6.1 correction
 
 on:
-  push:
-    branches:
-      - docs/oag-subgraph-complete-20260823
+  pull_request:
+    types: [synchronize]
+    branches: [main]
 
 permissions:
   contents: write
 
 jobs:
   update-oag-schema:
-    if: github.actor != 'github-actions[bot]'
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'docs/oag-subgraph-complete-20260823' &&
+      github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout branch
@@ -37,6 +40,7 @@ jobs:
         run: |
           rm -f tools/update_oag_schema_v61.py
           rm -f .github/workflows/oag-schema-v61.yml
+          rm -f .github/oag-schema-v61-trigger.txt
 
       - name: Commit and push
         run: |
