@@ -1,932 +1,463 @@
-# OAG 本体子图语义检索接口 v2 设计规范
+# OAG 本体子图语义检索接口 extractedEntities / 实体提取设计方案
 
-> 文档版本：V2.3  
-> 更新日期：2026-08-19  
+> 文档版本：V2.4  
+> 更新日期：2026-08-23  
 > 接口版本：v2  
-> 参考：[OAG 本体锚点语义检索与向量索引设计方案](./OAG本体锚点语义检索与向量索引设计方案.md)
+> 上位方案：[OAG 本体锚点语义检索与向量索引设计方案](./OAG本体锚点语义检索与向量索引设计方案.md)
+
+---
 
 ## 1. 文档目的
 
-本文定义 OAG 本体子图语义检索接口 v2 的正式接口契约，包括：
+本文定义本体子图检索第 ① 步“实体提取（Entity Extraction）”的输入、输出和约束，并作为 `/v2/onto-retrieval/{ontologyId}/subgraph/semantic-search` 的 `extractedEntities` 正式结构规范。
 
-- 接口地址和调用方式；
-- Header、Path 和 Body 参数；
-- `searchContext` 动态实体提取与语义消歧上下文；
-- `extractedEntities` 结构；
-- ObjectType、Property、Relationship、RelationshipProperty、Enum Value 和 Instance Value 的检索规则；
-- 自适应检索与子图扩展策略；
-- 成功响应、失败响应和 OpenAPI Schema；
-- 旧版 `extractedEntities` 字符串结构的兼容策略。
+本次结构收敛遵循一个核心原则：
 
-## 2. 接口概述
+> **`ExtractedEntity` 只保留 `ObjectType`、`Properties`、`Values` 三个字段。实体提取只负责识别“对象类型、对象属性和值”，不在本阶段绑定 Relationship，也不要求提前判断 Value 属于 Enum 还是 Instance。**
 
-### 2.1 接口描述
-
-本体子图语义检索接口 v2。接口以自然语言问题 `query`、业务侧提取好的实体 `extractedEntities`，或者两者的组合作为检索输入，在指定本体中检索语义相关元素并构建本体子图。
-
-当只传递 `query` 时，OAG 可以结合可选的 `searchContext`，从自然语言问题中提取 ObjectType、Property、Relationship、RelationshipProperty、Enum Value 和 Instance Value 等语义提示，并在召回后使用该上下文进行语义消歧。
-
-当传递 `extractedEntities` 时，OAG 使用业务 Skill 根据原始问题和专家查询路径生成的结构化提示查找种子节点、枚举值和实例值，并按照指定策略构建本体子图。
-
-返回结果包括：
+完整本体子图检索链路为：
 
 ```text
-ObjectType
-Property
-Relationship
-RelationshipProperty
-Function
-Action
-命中的 Enum Value / Instance Value 语义结果
+① Entity Extraction
+   query → ObjectType / Properties / Values
+
+② Entity Linking
+   本体对象 / 枚举元素 / 实例元素
+   → Exact/BM25 + Dense
+   → Weighted RRF + 可选 LLM Fine Rank
+
+③ Subgraph Retrieval Strategy
+   minimal / khop / component
+   → 生成 PathProbePlan
+   → Loop 执行，可扩展业务策略
+
+④ nGQL / Graph Algorithm Assembly
+   PathProbePlan
+   → 动态装配 nGQL 模板或图算法参数
+
+⑤ Result Generation
+   → ObjectType / Property / Relationship / RelationshipProperty
+   → Function / Action
 ```
 
-### 2.2 能力边界
+---
 
-接口负责：
+## 2. 接口角色与能力边界
 
-1. 自然语言语义提取或结构化实体接收；
-2. 实体节点、枚举值和实例值检索；
-3. 关键词、向量或混合召回；
-4. 检索结果向 ObjectType/Property 种子节点投影；
-5. `minimal`、`khop` 或 `component` 子图构建；
-6. 使用业务动态注入的 few-shot、专家子图和领域术语辅助实体提取及后续语义消歧；
-7. 按请求扩展 Function 和 Action。
-
-接口不负责：
-
-1. 将“超过 200 元”“本月”等条件转换为底层查询表达式；
-2. 执行 OQL、SQL、Cypher 或数据源查询；
-3. 由业务侧提供或推断本体内部 ID；
-4. 索引数据导入、更新或删除。
-
-## 3. 接口基本信息
+### 2.1 接口地址
 
 | 项目 | 定义 |
 |---|---|
-| 接口名称 | 本体子图语义检索接口 v2 |
 | Method | `POST` |
 | Content-Type | `application/json` |
-| 规范 URI | `/v2/onto-retrieval/{ontologyId}/subgraph/semantic-search` |
+| URI | `/v2/onto-retrieval/{ontologyId}/subgraph/semantic-search` |
 | 成功 HTTP 状态码 | `200` |
 
-### 3.1 URI 规范化说明
+### 2.2 三种调用模式
 
-原始接口描述中的 URL 为：
-
-```text
-/v2/onto-retrieval/subgraph/semantic-search
-```
-
-但同时将 `ontologyId` 定义为必选 Path 参数。Path 参数必须在 URI 中存在对应占位符，因此本规范统一为：
-
-```text
-/v2/onto-retrieval/{ontologyId}/subgraph/semantic-search
-```
-
-对应 Spring 接口建议为：
-
-```java
-@PostMapping("/v2/onto-retrieval/{ontologyId}/subgraph/semantic-search")
-```
-
-### 现有body体
-
-|                        |          |       |            |         |                                                                                                                                                                                                                                      |
-| ---------------------- | -------- | ----- | ---------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 参数名称                   | 参数类型     | 必选    | 数据类型       | 默认值     | 说明                                                                                                                                                                                                                                   |
-| tenantId               | header   | 是     | String     | 无       | 租户ID，约束：1~256字符                                                                                                                                                                                                                      |
-| traceId                | header   | 否     | String     | 无       | Trace ID，约束：1~256字符                                                                                                                                                                                                                  |
-| ontologyId             | path     | 是     | String     | 无       | 本体ID，约束：1~256字符                                                                                                                                                                                                                      |
-| **query**              | **body** | **否** | **String** | **无**   | **自然语言问题，query和extractedEntities参数至少一个不为空。约束：1~1024字符**                                                                                                                                                                              |
-| **extractedEntities**  | **body** | **否** | **String** | **无**   | **原始query提取好的实体，query和extractedEntities参数至少一个不为空。约束：1~1024字符<br><br>结构：{"extractedEntities":[{"ObjectType":" ObjectType1","Properties":[" Propery1-1"]},{"ObjectType":" ObjectType2","Properties":[" Propery2-1"," Propery2-2"]}]}** |
-| adaptiveRetrieval      | body     | 否     | int        | 1       | 是否自适应检索：<br><br>•  0：否<br><br>•  1：是<br><br>默认值：1<br><br>当开启自适应检索：<br><br>•  若本体规模 <= 阈值（默认100节点，即ObjectType+Property+Relationship+ RelationshiProperty数），直接返回全量本体子图<br><br>•  若本体规模 > 阈值，退化为按检索策略检索                                 |
-| seedRetrievalMode      | body     | 否     | String     | vector  | 种子节点检索模式：<br><br>•  vector：向量检索<br><br>•  keyword：关键词检索<br><br>•  hybrid：混合检索                                                                                                                                                        |
-| similarityThreshold    | body     | 否     | double     | 0.6     | 种子节点语义检索相似度匹配阈值，仅对seedRetrievalMode为vector和hybrid时有效，默认值0.6                                                                                                                                                                          |
-| topk                   | body     | 否     | int        | 3       | 种子节点语义检索相似度匹配阈值内，取前k个结果，默认值3                                                                                                                                                                                                         |
-| graphExpansionStrategy | body     | 否     | String     | minimal | 子图检索策略，<br><br>•  minimal：最小连通子图<br><br>•  khop：多源BFS<br><br>•  component：全连通分量<br><br>默认值：minimal                                                                                                                                   |
-| hopLimit               | body     | 否     | int        | 3       | 种子节点之间路径最大层数，当graphExpansionStrategy = khop时该值有意义                                                                                                                                                                                    |
-| includeFunctions       | body     | 否     | int        | 0       | 是否返回Function，0：否，1：是，默认值：0                                                                                                                                                                                                           |
-| includeActions         | body     | 否     | int        | 0       | 是否返回Action，0：否，1：是，默认值：0                                                                                                                                                                                                             |
-
-
-
-
-## 4. 变化后的调用模式
-
-接口支持三种输入模式：
-
-| 模式     | query | extractedEntities | searchContext | 处理方式                                                                    |
-| ------ | ----: | ----------------: | ------------: | ----------------------------------------------------------------------- |
-| 自然语言模式 |     有 |                 无 |            可选 | OAG 结合 `query` 和 `searchContext` 提取实体，并用其进行候选消歧                         |
-| 结构化模式  |     无 |                 有 |            可选 | OAG 使用业务 Skill 提取结果检索，`searchContext` 用于召回后的语义消歧和排序                     |
-| 组合模式   |     有 |                 有 |            可选 | `extractedEntities` 提供专家路径和强类型提示，`query` 与 `searchContext` 用于补充提取、消歧和排序 |
+| 模式 | query | extractedEntities | searchContext | 说明 |
+|---|---:|---:|---:|---|
+| 自然语言模式 | 有 | 无 | 可选 | OAG 从 `query` 自动执行实体提取 |
+| 结构化模式 | 无 | 有 | 可选 | 业务 Skill 已完成实体提取，OAG 直接进入 Entity Linking |
+| 组合模式 | 有 | 有 | 可选 | 结构化结果提供强提示，`query` 和 `searchContext` 用于补充与消歧，推荐模式 |
 
 约束：
 
 ```text
 query 和 extractedEntities 至少一个不为空
+searchContext 不能单独满足该约束
 ```
 
-组合模式为推荐方式。OAG 不使用 `query` 覆盖业务侧明确提供的结构，但可以使用 `query` 完成候选消歧、排序和语义完整性判断。
+### 2.3 实体提取阶段负责什么
 
-## 5. 请求参数
+实体提取负责：
 
-### 5.1 Header 和 Path 参数
+1. 从用户问题识别 ObjectType 业务表达；
+2. 识别属于该 ObjectType 的 Property，并保持从属关系；
+3. 识别需要通过语义索引定位的业务值，输出到 `Values`；
+4. 在归属未知时允许输出 value-only 实体；
+5. 使用 `searchContext` 中的 few-shot、专家路径、领域术语、黑话和消歧规则辅助提取。
 
-| 参数名称 | 参数位置 | 必选 | 数据类型 | 默认值 | 约束 | 说明 |
-|---|---|---:|---|---|---|---|
-| `tenantId` | header | 是 | String | 无 | 1～256 字符 | 租户 ID |
-| `traceId` | header | 否 | String | 无 | 1～256 字符 | 调用链 Trace ID；未传时可由服务生成 |
-| `ontologyId` | path | 是 | String | 无 | 1～256 字符 | 本体 ID |
+实体提取不负责：
 
-### 5.2 Body 参数
+1. 输出本体内部 ObjectType/Property ID；
+2. 提前生成或绑定 Relationship；
+3. 将 Value 强制分类为 Enum Value 或 Instance Value；
+4. 把“超过 200”“本月”“总数”等条件直接翻译为 OQL/SQL/Cypher；
+5. 决定 `minimal/khop/component` 路径算法；
+6. 生成 nGQL。
 
-| 参数名称                     |    必选 | 数据类型                         | 默认值       | 约束                           | 说明                                                                |
-| ------------------------ | ----: | ---------------------------- | --------- | ---------------------------- | ----------------------------------------------------------------- |
-| `query`                  |     否 | String                       | 无         | 1～1024 字符                    | 自然语言问题；与 `extractedEntities` 至少一个不为空                              |
-| **`searchContext`**      | **否** | **String**                   | **无**     | **建议 1～32768 字符**            | **搜索上下文提示词；业务可动态注入 few-shot、专家查询路径、本体子图、领域术语及消歧规则，用于实体提取和后续语义消歧** |
-| **`extractedEntities`**  | **否** | **`Array<ExtractedEntity>`** | **无**     | **非空时 `minItems: 1`**        | **业务 Skill 根据原始问题和专家查询路径生成的结构化检索提示；与 `query` 至少一个不为空**            |
-| `adaptiveRetrieval`      |     否 | Integer                      | `1`       | `0` 或 `1`                    | 是否启用自适应检索                                                         |
-| `seedRetrievalMode`      |     否 | String                       | `vector`  | `vector`、`keyword`、`hybrid`  | 种子节点及其语义证据检索模式                                                    |
-| `similarityThreshold`    |     否 | Double                       | `0.6`     | 0～1                          | 向量相似度阈值，仅对 `vector` 和 `hybrid` 有效                                 |
-| `topk`                   |     否 | Integer                      | `3`       | `minimum: 1`                 | 相似度阈值内每个语义单元保留的前 k 个候选                                            |
-| `graphExpansionStrategy` |     否 | String                       | `minimal` | `minimal`、`khop`、`component` | 子图扩展策略                                                            |
-| `hopLimit`               |     否 | Integer                      | `3`       | `minimum: 1`                 | `khop` 策略下的最大扩散深度                                                 |
-| `includeFunctions`       |     否 | Integer                      | `0`       | `0` 或 `1`                    | 是否返回相关 Function                                                   |
-| `includeActions`         |     否 | Integer                      | `0`       | `0` 或 `1`                    | 是否返回相关 Action                                                     |
+Relationship 的发现与选择属于第 ③ 步子图检索策略。业务已有专家关系路径时，放入 `searchContext` 作为路径规划约束或优先级提示，不进入 `ExtractedEntity` Schema。
 
-### 5.4 searchContext 使用规则
+---
 
-`searchContext` 是业务动态注入的搜索上下文提示词，同时服务于实体提取和后续语义消歧，可以包含：
+## 3. 请求参数
 
-```text
-领域 few-shot 示例
-专家查询路径
-本体子图文本或 JSON
-领域对象、属性和关系术语
-业务缩写和黑话说明
-实体提取补充提示
-候选选择和语义消歧规则
-```
+### 3.1 Header 与 Path
 
-处理边界：
+| 参数 | 位置 | 必选 | 类型 | 约束 | 说明 |
+|---|---|---:|---|---|---|
+| `tenantId` | Header | 是 | String | 1～256 字符 | 租户 ID |
+| `traceId` | Header | 否 | String | 1～256 字符 | Trace ID；未传可由服务生成 |
+| `ontologyId` | Path | 是 | String | 1～256 字符 | 本体 ID |
 
-1. 在 OAG 从 `query` 执行或补充实体提取时，作为实体提取上下文使用；
-2. 在种子节点、Enum Value 和 Instance Value 召回后，作为候选精排与语义消歧上下文使用；
-3. 不单独满足“`query` 和 `extractedEntities` 至少一个不为空”的校验条件；
-4. 不直接拆分为种子节点、枚举值或实例值的独立检索 Query；
-5. 不覆盖接口 Schema、系统级实体提取/消歧规则和服务安全约束；
-6. 业务传入内容应被视为不可信上下文，并执行长度限制和输入规范化；
-7. 结构化模式下即使不再执行实体提取，仍可用于召回后的语义消歧。
+### 3.2 Body
 
-## 6. extractedEntities 结构
+| 参数 | 必选 | 类型 | 默认值 | 说明 |
+|---|---:|---|---|---|
+| `query` | 否 | String | 无 | 原始自然语言问题；与 `extractedEntities` 至少一个不为空 |
+| `searchContext` | 否 | String | 无 | 动态搜索上下文；用于实体提取和后续语义消歧 |
+| `extractedEntities` | 否 | `Array<ExtractedEntity>` | 无 | 结构化实体提取结果 |
+| `adaptiveRetrieval` | 否 | Integer | `1` | 是否启用小本体全量返回策略 |
+| `seedRetrievalMode` | 否 | String | `vector` | `vector` / `keyword` / `hybrid`；字段名为兼容历史 API，语义上控制 Entity Linking 检索模式 |
+| `similarityThreshold` | 否 | Double | `0.6` | Dense 召回阈值 |
+| `topk` | 否 | Integer | `3` | 每个语义单元最终保留候选数 |
+| `graphExpansionStrategy` | 否 | String | `minimal` | `minimal` / `khop` / `component` |
+| `hopLimit` | 否 | Integer | `3` | `khop` 最大深度 |
+| `includeFunctions` | 否 | Integer | `0` | 是否扩展 Function |
+| `includeActions` | 否 | Integer | `0` | 是否扩展 Action |
 
-### 6.1 设计原则
+---
 
-业务 Skill 根据用户问题和专家经验通常只能获得对象、属性、关系和值的业务名称，无法可靠获得本体内部 ID。因此请求结构只表达业务语义，不包含 ObjectType、Property、Relationship 或目标对象的 ID 字段。
+## 4. extractedEntities 正式结构
 
-`extractedEntities` 不承载比较操作、时间范围和聚合操作，也不定义 `OriginalText`、`Operator` 或 `ConstraintHint`。
+### 4.1 ExtractedEntity
 
-业务问题中的完整条件继续保留在 `query` 中。
-
-当问题中只出现实例值、但没有足够信息判断其 ObjectType 或 Property 归属时，允许生成 value-only 的 `ExtractedEntity`。OAG 必须先跨 ObjectType/Property 检索该值，命中后再使用索引记录补齐真实归属，禁止根据值的外形猜测对象类型。
-
-### 6.2 ExtractedEntity
-
-`Relationships` 与 `ObjectType`、`Properties` 平级。关系记录必须显式包含源 ObjectType 和目标 ObjectType，不再依赖所在 `ExtractedEntity` 隐式推断源端。
-
-| 字段                   |    必选 | 数据类型                           | 默认值      | 说明                                                             |
-| -------------------- | ----: | ------------------------------ | -------- | -------------------------------------------------------------- |
-| `ObjectType`         |     否 | String                         | 无        | 对象类型名称、显示名、同义词或业务术语；仅包含未绑定 Enum/Instance Value 时可以省略           |
-| `Properties`         |     否 | `Array<String>`                | `[]`     | 当前对象相关的 Property 名称列表；存在该字段时必须同时存在 `ObjectType`                |
-| **`Relationships`**  | **否** | **`Array<RelationshipHint>`**  | **`[]`** | **与 ObjectType 平级的 Relationship 路径提示；每条记录显式声明源、目标 ObjectType** |
-| **`EnumValues`**     | **否** | **`Array<EnumValueHint>`**     | **`[]`** | **枚举值提示；ObjectType/Property 归属未知时允许单独存在**                      |
-| **`InstanceValues`** | **否** | **`Array<InstanceValueHint>`** | **`[]`** | **实例列值提示；ObjectType/Property 归属未知时允许单独存在**                     |
-对象 和 实例区分开，NER 
-
-每个 `ExtractedEntity` 至少包含以下一种非空内容：
-
-```text
-ObjectType
-Relationships
-EnumValues
-InstanceValues
-```
-
-
-**TODO：全文的方案只保留如下表三个字段，ObjectType，Properties，Values，在原有的基础上，新增`Values`，同步更新全文中的其他内容。**
-
-| 字段           |    必选 | 数据类型                   | 默认值      | 说明                                                   |
-| ------------ | ----: | ---------------------- | -------- | ---------------------------------------------------- |
-| `ObjectType` |     否 | String                 | 无        | 对象类型名称、显示名、同义词或业务术语；仅包含未绑定 Enum/Instance Value 时可以省略 |
-| `Properties` |     否 | `Array<String>`        | `[]`     | 当前对象相关的 Property 名称列表；存在该字段时必须同时存在 `ObjectType`      |
-| `Values`     | **否** | **`Array<ValueHint>`** | **`[]`** | **实例列值提示；ObjectType/Property 归属未知时允许单独存在**           |
-
-
-
-### 6.3 RelationshipHint
+`ExtractedEntity` **只定义三个顶层字段**：
 
 | 字段 | 必选 | 数据类型 | 默认值 | 说明 |
 |---|---:|---|---|---|
-| `Relationship` | 是 | String | 无 | 关系名称、显示名、同义词或业务术语 |
-| `SourceObjectType` | 是 | String | 无 | 关系源 ObjectType 名称 |
-| `TargetObjectType` | 是 | String | 无 | 关系目标 ObjectType 名称 |
-| `Direction` | 否 | String | `OUT` | 可取 `OUT`、`IN`、`BOTH` |
-| `Properties` | 否 | `Array<String>` | `[]` | 需要检索或返回的 RelationshipProperty 名称列表 |
+| `ObjectType` | 否 | String | 无 | 对象类型名称、显示名、同义词或业务术语；value-only 场景可以省略 |
+| `Properties` | 否 | `Array<String>` | `[]` | 当前 ObjectType 相关的 Property 名称；非空时必须同时存在 `ObjectType` |
+| `Values` | 否 | `Array<ValueHint>` | `[]` | 需要语义检索的业务值；ObjectType/Property 归属未知时允许单独存在 |
 
-### 6.4 EnumValueHint
-
-| 字段         |  必选 | 数据类型   | 默认值 | 说明                          |
-| ---------- | --: | ------ | --- | --------------------------- |
-| `Property` |   否 | String | 无   | 枚举值所属 Property 名称；无法确定时可以省略 |
-| `Value`    |   是 | String | 无   | 枚举值、显示名、同义词或用户使用的业务表达       |
-
-OAG 使用 `Value` 检索 Enum Value 的：
+每个 `ExtractedEntity` 至少满足下列之一：
 
 ```text
-value
-name
-display
-description
-synonyms
+ObjectType 非空
+或
+Values 非空
 ```
 
-命中 Enum Value 后，由 OAG 根据索引记录的真实归属投影为 Property 和 ObjectType 种子节点。业务侧不提供该归属的内部 ID。
+不允许只有 `Properties` 而没有 `ObjectType`。
 
-### 6.5 InstanceValueHint
+### 4.2 ValueHint
 
-| 字段 | 必选 | 数据类型 | 默认值 | 说明 |
+`Values` 统一承载“值语义提示”，不在实体提取阶段区分枚举值或实例值。
+
+| 字段 | 必选 | 类型 | 默认值 | 说明 |
 |---|---:|---|---|---|
-| `Property` | 否 | String | 无 | 实例值所属 Property 名称；无法确定时可以省略 |
-| `Value` | 是 | String | 无 | 实例数据中适合语义检索的真实业务列值 |
+| `Property` | 否 | String | 无 | 已知时填写所属 Property 的业务名称；未知时省略 |
+| `Value` | 是 | String | 无 | 用户问题中需要语义定位的真实业务表达 |
 
-适合放入 `InstanceValues`：
-
-```text
-VIP
-东京
-华东区域
-钻石客户
-产品名称
-品牌名称
-```
-
-默认不应由通用规则自动放入 `InstanceValues`：
-
-```text
-连续数值
-日期和时间戳
-手机号
-UUID
-纯技术主键
-高随机编码
-```
-
-上述不适合向量化的内容继续保留在原始 `query` 中。
-
-如果业务上下文明确确认某个编码是需要检索的实例值，则可以放入 `InstanceValues`，但应优先使用 `keyword` 或 `hybrid` 模式进行 Exact/关键词匹配，不依赖编码字符串的向量语义。业务明确标注优先于通用形态判断，但不能据此猜测该值所属的 ObjectType 或 Property。
-
-### 6.6 通用结构示例
+示例：
 
 ```json
 {
-  "extractedEntities": [
-    {
-      "ObjectType": "ObjectType1",
-      "Properties": [
-        "Property1",
-        "Property2"
-      ],
-      "Relationships": [
-        {
-          "Relationship": "RELATIONSHIP_NAME",
-          "SourceObjectType": "ObjectType1",
-          "Direction": "OUT",
-          "TargetObjectType": "ObjectType2",
-          "Properties": [
-            "RelationshipProperty1"
-          ]
-        }
-      ],
-      "EnumValues": [
-        {
-          "Property": "EnumProperty",
-          "Value": "EnumValue"
-        }
-      ],
-      "InstanceValues": [
-        {
-          "Property": "InstanceProperty",
-          "Value": "InstanceValue"
-        }
-      ]
-    }
+  "ObjectType": "Account",
+  "Properties": ["accountStatus", "customerLevel"],
+  "Values": [
+    {"Property": "accountStatus", "Value": "在用"},
+    {"Property": "customerLevel", "Value": "VIP"}
   ]
 }
 ```
 
-## 7. 检索参数语义
-
-### 7.1 adaptiveRetrieval
-
-| 值 | 语义 |
-|---:|---|
-| `0` | 不启用自适应检索，始终按 `seedRetrievalMode` 和 `graphExpansionStrategy` 检索 |
-| `1` | 启用自适应检索 |
-
-当 `adaptiveRetrieval=1`：
+Entity Linking 阶段对 `Value` 同时考虑：
 
 ```text
-本体规模 <= 自适应阈值
-  → 返回全量本体核心子图
-  → 不再执行基于种子节点的图扩展
+枚举元素索引
+  value / name / display / description / synonyms
 
-本体规模 > 自适应阈值
-  → 按 seedRetrievalMode 检索候选
-  → 按 graphExpansionStrategy 构建子图
+实例元素索引
+  真实去重 value
 ```
 
-默认阈值为 100 个节点，统计口径为：
+最终由索引记录中的 `property_id + object_type_id` 解析真实归属，而不是由 NER 根据字符串外形猜测。
+
+### 4.3 value-only 结构
+
+当问题只给出一个值而无法判断其对象和属性，例如：
 
 ```text
-ObjectType + Property + Relationship + RelationshipProperty
+12JKS0885_IN_RSNM_KALIBATA3_MC
 ```
 
-阈值属于服务端配置，不由业务请求动态修改。
-
-### 7.2 seedRetrievalMode
-
-| 值 | 处理方式 |
-|---|---|
-| `vector` | 使用向量索引执行语义召回 |
-| `keyword` | 使用关键词、Exact 或 BM25 召回 |
-| `hybrid` | 同时执行关键词和向量召回，并进行融合排序 |
-
-Enum Value 和 Instance Value 是种子节点的语义证据：OAG 先在对应索引中检索值，再投影到所属 Property/ObjectType 种子节点。因此 `seedRetrievalMode` 同时决定这些语义证据使用的检索通道。
-
-### 7.3 similarityThreshold
-
-`similarityThreshold` 只过滤向量召回结果：
-
-```text
-vector
-  → 生效
-
-hybrid
-  → 对其中的向量通道生效
-
-keyword
-  → 不生效
-```
-
-关键词 Exact 命中不应被向量阈值过滤。
-
-### 7.4 topk
-
-`topk` 表示相似度阈值内每个语义单元最终保留的前 k 个候选，不等同于底层每个检索通道的内部召回数量。OAG 可以使用更大的内部 TopK 完成融合和精排，最终输出数量受 `topk` 控制。
-
-### 7.5 graphExpansionStrategy
-
-| 策略 | 语义 |
-|---|---|
-| `minimal` | 构建覆盖全部种子节点的最小连通子图 |
-| `khop` | 以多个种子节点为起点执行多源 BFS；最大深度由 `hopLimit` 控制 |
-| `component` | 返回种子节点所属的全连通分量 |
-
-`hopLimit` 仅在 `graphExpansionStrategy=khop` 时参与路径深度控制，其他策略可以接收该字段但不使用。
-
-### 7.6 includeFunctions 和 includeActions
-
-在本体核心子图构建完成后：
-
-```text
-includeFunctions = 1
-  → 扩展与核心子图相关的 Function
-
-includeActions = 1
-  → 扩展与核心子图相关的 Action
-```
-
-Function 和 Action 默认不作为主检索种子参与路径算法。
-
-## 8. 业务专家经验请求样例
-
-### 8.1 用户问题
-
-> 本月个人客户中，信用额度超过 200 元的账户总数是多少？
-
-### 8.2 查询路径
-
-```text
-IndividualCustomer ──[OWNS]──→ PayRelation ──[BELONGS_TO]──→ Account ──[HAS]──→ CreditLimitInstance
-
-IndividualCustomer: id
-PayRelation: objectId → accountId
-Account: accountId
-CreditLimitInstance: accountId、本月、initialAmount > 200
-```
-
-### 8.3 HTTP 请求
-
-```http
-POST /v2/onto-retrieval/dtmi.ontology.example.1/subgraph/semantic-search HTTP/1.1
-Content-Type: application/json
-tenantId: tenant-a
-traceId: 8b8ce86f0f934b0d
-```
+允许输出：
 
 ```json
 {
-  "query": "本月个人客户中，信用额度超过200元的账户总数是多少？",
-  "searchContext": "专家查询路径：IndividualCustomer通过OWNS关联PayRelation，PayRelation通过BELONGS_TO关联Account，Account通过HAS关联CreditLimitInstance。该路径用于实体提取和候选关系消歧。",
-  "extractedEntities": [
-    {
-      "ObjectType": "IndividualCustomer",
-      "Properties": [
-        "id"
-      ],
-      "Relationships": [
-        {
-          "Relationship": "OWNS",
-          "SourceObjectType": "IndividualCustomer",
-          "Direction": "OUT",
-          "TargetObjectType": "PayRelation",
-          "Properties": []
-        }
-      ],
-      "EnumValues": [],
-      "InstanceValues": []
-    },
-    {
-      "ObjectType": "PayRelation",
-      "Properties": [
-        "objectId",
-        "accountId"
-      ],
-      "Relationships": [
-        {
-          "Relationship": "BELONGS_TO",
-          "SourceObjectType": "PayRelation",
-          "Direction": "OUT",
-          "TargetObjectType": "Account",
-          "Properties": []
-        }
-      ],
-      "EnumValues": [],
-      "InstanceValues": []
-    },
-    {
-      "ObjectType": "Account",
-      "Properties": [
-        "accountId"
-      ],
-      "Relationships": [
-        {
-          "Relationship": "HAS",
-          "SourceObjectType": "Account",
-          "Direction": "OUT",
-          "TargetObjectType": "CreditLimitInstance",
-          "Properties": []
-        }
-      ],
-      "EnumValues": [],
-      "InstanceValues": []
-    },
-    {
-      "ObjectType": "CreditLimitInstance",
-      "Properties": [
-        "accountId",
-        "initialAmount"
-      ],
-      "Relationships": [],
-      "EnumValues": [],
-      "InstanceValues": []
-    }
-  ],
-  "adaptiveRetrieval": 0,
-  "seedRetrievalMode": "vector",
-  "similarityThreshold": 0.6,
-  "topk": 3,
-  "graphExpansionStrategy": "minimal",
-  "hopLimit": 3,
-  "includeFunctions": 0,
-  "includeActions": 0
+  "Values": [
+    {"Value": "12JKS0885_IN_RSNM_KALIBATA3_MC"}
+  ]
 }
 ```
 
-### 8.4 样例说明
+OAG 在 Entity Linking 阶段跨枚举元素/实例元素检索，并根据命中记录补齐 Property/ObjectType 归属。编码形态本身不能作为 Site、BaseStation、nativeId 等类型推断依据。
 
-该问题中的 `EnumValues` 和 `InstanceValues` 为空是正确的：
+---
 
-1. “个人客户”已由专家路径明确为 `IndividualCustomer`，不是枚举值。
-2. `CreditLimitInstance` 是 ObjectType，不是实例列值。
-3. “200”是连续数值，不进入 Instance Value 向量索引。
-4. “本月”是相对时间，不进入 Instance Value 向量索引。
-5. “超过”和“总数”属于条件与聚合语义，由原始 `query` 保留。
+## 5. 实体提取规则
 
-OAG 根据结构化提示检索相关 ObjectType、Property 和 Relationship，构建支持后续查询生成的本体子图。
+### 5.1 ObjectType
 
-## 9. EnumValues 和 InstanceValues 请求样例
-
-```json
-{
-  "query": "查询在用状态的VIP客户账户",
-  "extractedEntities": [
-    {
-      "ObjectType": "Account",
-      "Properties": [
-        "accountStatus",
-        "customerLevel"
-      ],
-      "Relationships": [],
-      "EnumValues": [
-        {
-          "Property": "accountStatus",
-          "Value": "在用"
-        }
-      ],
-      "InstanceValues": [
-        {
-          "Property": "customerLevel",
-          "Value": "VIP"
-        }
-      ]
-    }
-  ],
-  "seedRetrievalMode": "hybrid"
-}
-```
-
-OAG 对该请求分别执行：
+ObjectType 识别优先使用：
 
 ```text
-Account / accountStatus / customerLevel
-  → 种子节点索引
-
-在用
-  → Enum Value 索引
-
-VIP
-  → Instance Value 索引
+业务对象名
+显示名
+别名/同义词
+searchContext 中的术语映射
+few-shot 中明确的对象表达
 ```
 
-Enum/Instance 命中后投影为 Property 和 ObjectType，再参与本体子图构建。
+实体提取只输出业务表达，不输出内部 ID。
 
-## 10. searchContext 与实体提取/语义消歧示例
+### 5.2 Property 必须保留 ObjectType 从属关系
 
-实体提取结果必须保留 ObjectType 与 Property 的从属关系：Property 放在所属 ObjectType 对应的 `Properties` 数组中，禁止把不同对象的 Property 合并成无归属的全局列表。
-
-以下示例统一使用接口 Schema 规定的 `ObjectType`、`Properties`、`Relationships`、`EnumValues` 和 `InstanceValues` 字段名。可选空数组可以省略，但完整示例中显式保留，便于说明结构层级。
-
-### 10.1 WhatsApp 应用体验质量
-
-#### Query
-
-```text
-WhatsApp应用 7月21日的体验质量
-```
-
-#### searchContext 示例
-
-```text
-应用体验质量问数场景：
-- “WhatsApp应用”识别为 ObjectType。
-- “体验质量”和“时间”识别为 WhatsApp应用 的 Property。
-- 日期值保留在原始 query 中，不作为 Instance Value 进行向量检索。
-- 当召回多个质量或时间属性时，优先选择与应用体验质量场景一致的候选。
-```
-
-#### 最新实体提取结果
+正确：
 
 ```json
 {
   "extractedEntities": [
     {
       "ObjectType": "WhatsApp应用",
-      "Properties": [
-        "体验质量",
-        "时间"
-      ],
-      "Relationships": [],
-      "EnumValues": [],
-      "InstanceValues": []
+      "Properties": ["体验质量", "时间"],
+      "Values": []
     }
   ]
 }
 ```
 
-从属关系：
+禁止把不同 ObjectType 的 Property 合并成无归属全局列表。Entity Linking 会优先在 ObjectType 作用域内匹配 Property；只有 ObjectType 无法解析时才按降级策略扩大搜索范围。
+
+### 5.3 Values 的提取边界
+
+适合进入 `Values` 的内容：
 
 ```text
-WhatsApp应用
-  ├─ 体验质量
-  └─ 时间
+状态名：在用、停用
+等级：VIP、钻石客户
+地域：东京、华东区域
+产品/品牌名称
+业务定义的编码型实例值（需要 Exact/BM25 参与）
 ```
 
-“7月21日”是时间条件，继续保留在 `query` 中，不进入 `InstanceValues`。
+默认只保留在原始 `query`、不自动进入 `Values` 的内容：
 
-### 10.2 未绑定实例值的活跃业务影响告警
+```text
+连续数值及比较条件：超过 200、10~30
+日期、相对时间、时间戳：7月21日、本月
+手机号、UUID、纯技术主键
+高随机且未声明可检索的编码
+聚合词：总数、平均值、TopN
+```
 
-#### Query
+业务明确声明某 Property 的编码值需要语义索引时，可以进入 `Values`；此时推荐 `keyword` 或 `hybrid`，Exact/BM25 为主、Dense 为补充。
+
+### 5.4 不在 NER 阶段区分 Enum/Instance
+
+NER 很难仅依靠用户表达稳定判断一个值是模型枚举还是实例列值，因此统一输出 `Values`：
+
+```text
+NER
+  → ValueHint
+  → Entity Linking
+       ├─ Enum Index
+       └─ Instance Index
+  → 命中记录决定真实类型与归属
+```
+
+该设计减少实体提取 Prompt 对本体内部实现细节的依赖，也避免业务 Skill 必须理解索引物理分层。
+
+---
+
+## 6. searchContext 使用规则
+
+`searchContext` 同时服务实体提取和后续消歧，可动态包含：
+
+```text
+领域 few-shot
+专家查询路径
+本体子图文本或 JSON
+领域对象/属性术语
+缩写、黑话与同义表达
+实体提取约束
+候选消歧和路径优先级规则
+```
+
+处理原则：
+
+1. 只作为上下文，不覆盖接口 Schema；
+2. 不单独满足 `query/extractedEntities` 非空校验；
+3. 业务专家路径可用于第 ③ 步路径规划，但不改变 `ExtractedEntity` 三字段结构；
+4. 输入必须做长度限制、Unicode Normalize 和基本安全规范化；
+5. 结构化模式下仍可用于 Entity Linking 的候选精排。
+
+---
+
+## 7. Entity Extraction → Semantic Units
+
+实体提取完成后，OAG 将结果转换为 Entity Linking 的语义单元：
+
+```text
+ExtractedEntity
+  ├─ ObjectType != null
+  │    → OBJECT_TYPE semantic unit
+  │
+  ├─ Properties[*]
+  │    → PROPERTY semantic unit
+  │       scope = ObjectType
+  │
+  └─ Values[*]
+       → VALUE semantic unit
+context = ObjectType? + Property? + query
+```
+
+规则：
+
+1. ObjectType 单元检索本体对象索引中的 ObjectType；
+2. Property 单元在已解析 ObjectType 作用域内优先匹配 Property；
+3. Value 单元同时检索枚举元素和实例元素；
+4. 值命中后通过真实归属投影回 Property/ObjectType；
+5. 所有候选统一进入 6 路融合与精排，不在实体提取阶段决定 TopK。
+
+---
+
+## 8. 请求样例
+
+### 8.1 WhatsApp 应用体验质量
+
+Query：
+
+```text
+WhatsApp应用 7月21日的体验质量
+```
+
+提取结果：
+
+```json
+{
+  "extractedEntities": [
+    {
+      "ObjectType": "WhatsApp应用",
+      "Properties": ["体验质量", "时间"],
+      "Values": []
+    }
+  ]
+}
+```
+
+说明：“7月21日”属于查询时间条件，继续保留在 `query` 中，不进入 `Values`。
+
+### 8.2 告警场景中的未绑定编码值
+
+Query：
 
 ```text
 show active service affecting alarm for 12JKS0885_IN_RSNM_KALIBATA3_MC with TICKETID and time occurred
 ```
 
-#### searchContext 示例
-
-```text
-告警查询场景：
-- alarm 对应 ALARM。
-- TICKETID 和 time occurred 分别映射为 ALARM 的“告警TICKET ID”和“告警发生时间”属性。
-- 12JKS0885_IN_RSNM_KALIBATA3_MC 是需要检索的 Instance Value。
-- 问题中没有 Site、基站或 nativeId 信息，不得根据实例值的编码形态推断 ObjectType 或 Property。
-- 未提供确定的本体关系名称时，不创造 Relationship。
-- 候选消歧时优先保留 ALARM 的 TICKET ID 和发生时间属性，并通过实例索引命中结果解析编码值归属。
-```
-
-#### 最新实体提取结果
+提取结果：
 
 ```json
 {
   "extractedEntities": [
     {
       "ObjectType": "ALARM",
-      "Properties": [
-        "告警TICKET ID",
-        "告警发生时间"
-      ],
+      "Properties": ["告警TICKET ID", "告警发生时间"],
+      "Values": []
     },
     {
       "Values": [
-        {
-          "Value": "12JKS0885_IN_RSNM_KALIBATA3_MC"
-          
-        }
+        {"Value": "12JKS0885_IN_RSNM_KALIBATA3_MC"}
       ]
     }
   ]
 }
 ```
 
-从属关系：
+说明：问题中没有足够信息证明该编码属于 Site/BaseStation/nativeId，因此保持 value-only，由索引命中后解析真实归属。
+
+### 8.3 同时包含枚举语义和实例语义的值
+
+Query：
 
 ```text
-ALARM
-  ├─ 告警TICKET ID
-  └─ 告警发生时间
-
-未绑定 Instance Value
-  └─ 12JKS0885_IN_RSNM_KALIBATA3_MC
+查询在用状态的VIP客户账户
 ```
 
-该结果不包含 `Site`、`BaseStation`、`nativeId` 或其他基站信息。`12JKS0885_IN_RSNM_KALIBATA3_MC` 作为未绑定 Instance Value 进入检索，由 OAG 跨 ObjectType/Property 查找真实归属；命中之前不得人为补充所属对象或属性。
-
-该值具有明显的编码形态，推荐：
+提取结果：
 
 ```json
 {
+  "extractedEntities": [
+    {
+      "ObjectType": "Account",
+      "Properties": ["accountStatus", "customerLevel"],
+      "Values": [
+        {"Property": "accountStatus", "Value": "在用"},
+        {"Property": "customerLevel", "Value": "VIP"}
+      ]
+    }
+  ],
   "seedRetrievalMode": "hybrid"
 }
 ```
 
-其中 Exact/关键词通道优先保证编码值准确匹配，向量通道只作为补充召回。
+NER 不需要知道“在用”最终来自枚举索引还是“VIP”最终来自实例索引；Entity Linking 负责查询并根据索引记录判断。
 
-## 11. OAG 处理流程
+### 8.4 带专家路径的组合模式
 
-### 11.1 输入处理
+专家路径不写入 `ExtractedEntity`，而写入 `searchContext`：
 
-1. 校验 Header、Path 和 Body 参数；
-2. 校验 `query` 和 `extractedEntities` 至少一个不为空；
-3. 当需要实体提取时，将 `searchContext` 作为受限的业务上下文与 `query` 一起输入实体提取组件；
-4. 对所有名称和值执行 trim、Unicode Normalize 和去空；
-5. 对重复 ObjectType、Property、Relationship、Enum Value 和 Instance Value 做规范化去重；
-6. 根据调用模式生成语义检索单元；
-7. 在候选召回后，将 `searchContext` 传递给精排/消歧组件，结合 `query`、结构化实体和候选上下文选择最终语义结果。
+```json
+{
+  "query": "本月个人客户中，信用额度超过200元的账户总数是多少？",
+  "searchContext": "专家路径：IndividualCustomer -> PayRelation -> Account -> CreditLimitInstance。路径只用于后续候选消歧和子图路径规划。",
+  "extractedEntities": [
+    {"ObjectType": "IndividualCustomer", "Properties": ["id"], "Values": []},
+    {"ObjectType": "PayRelation", "Properties": ["objectId", "accountId"], "Values": []},
+    {"ObjectType": "Account", "Properties": ["accountId"], "Values": []},
+    {"ObjectType": "CreditLimitInstance", "Properties": ["accountId", "initialAmount"], "Values": []}
+  ],
+  "graphExpansionStrategy": "minimal"
+}
+```
 
-### 11.2 检索路由
+“本月”“超过 200”“总数”继续由原始 query 保存，后续查询生成阶段解释。
 
-| 输入元素 | 检索对象 | 处理方式 |
-|---|---|---|
-| `ObjectType` | ObjectType 种子节点 | 检索 `name/display/description/synonyms` |
-| `Properties` | Property 种子节点 | 检索 `name/display/description/synonyms` |
-| `Relationships` | Relationship 和拓扑 | 解析关系名称，用于路径校验、候选排序和子图扩展 |
-| `RelationshipHint.Properties` | RelationshipProperty | 检索关系属性名称，并保留在命中边的元数据中 |
-| `EnumValues` | Enum Value | 检索 `value/name/display/description/synonyms` |
-| `InstanceValues` | Instance Value | 使用真实业务 `value` 检索实例值索引 |
+---
 
-### 11.3 Property 上下文
+## 9. 校验与归一化规则
 
-当 Enum Value 或 Instance Value 中存在 `Property`：
+1. `tenantId`、`ontologyId` 必须存在且满足长度要求；
+2. `query` 与 `extractedEntities` 至少一个不为空；
+3. 每个 `ExtractedEntity` 至少存在非空 `ObjectType` 或非空 `Values`；
+4. `Properties` 非空时必须存在 `ObjectType`；
+5. `ValueHint.Value` 必须为非空字符串；
+6. `ValueHint.Property` 非空且同一实体有 `ObjectType` 时，应同时出现在该实体 `Properties` 中；
+7. 所有文本执行 trim、Unicode Normalize、去空和规范化去重；
+8. 业务名称不能直接当作本体内部 ID；
+9. value-only 不允许根据值的格式猜测 ObjectType/Property；
+10. `similarityThreshold` 范围为 0～1；`topk/hopLimit >= 1`。
 
-1. 同时检索 Property 名称和值；
-2. 将 Property 名称作为候选分组和精排上下文；
-3. 不把业务名称直接当作内部 ID；
-4. 使用索引命中记录的真实归属完成种子节点投影。
-
-当 `Property` 不存在但 `ObjectType` 已知时，OAG 在该 ObjectType 的相关 Property 范围内检索该值。
-
-当 `ObjectType` 和 `Property` 都不存在时，该值属于未绑定值。OAG 应跨 ObjectType/Property 检索 Enum/Instance 索引，命中后再根据索引记录补齐真实归属。对于编码型值，优先使用 Exact/关键词通道，禁止根据编码格式推断 Site、基站或其他对象类型。
-
-### 11.4 关系路径
-
-`Relationships` 是专家路径提示，不是已经解析的本体关系。OAG 应：
-
-1. 按关系名称、显示名或同义词解析 Relationship；
-2. 使用 `SourceObjectType`、`Direction` 和 `TargetObjectType` 校验关系候选；
-3. 使用 `Properties` 解析 RelationshipProperty；
-4. 将正确关系作为子图构建路径提示；
-5. 未匹配时不创造关系，将其记录为未解析提示并按配置降级。
-
-### 11.5 种子节点投影与子图构建
+推荐归一化：
 
 ```text
-ObjectType / Property 命中
-  → 直接形成种子节点
-
-Enum Value / Instance Value 命中
-  → 投影到所属 Property
-  → 补齐所属 ObjectType
-  → 形成图构建种子节点
-
-全部种子节点
-  → minimal / khop / component
-  → 本体核心子图
-  → Function / Action 扩展
+Unicode NFKC
+trim
+连续空白折叠
+大小写策略按 Analyzer/语言配置处理
+数组稳定去重并保留首次出现顺序
 ```
 
-## 12. 响应参数
+---
 
-### 12.1 顶层响应
-
-| 参数名称 | 必选 | 数据类型 | 默认值 | 说明 |
-|---|---:|---|---|---|
-| `resultCode` | 是 | String | 无 | 业务响应码；成功返回 `200`，失败返回具体错误码 |
-| `resultMessage` | 是 | String | 无 | 成功返回 `success`，失败返回错误信息 |
-| `result` | 是 | Object | 无 | 最终语义检索结果、本体子图和执行元数据；失败时可以为 `null` |
-
-### 12.2 result 结构
-
-| 字段 | 数据类型 | 说明 |
-|---|---|---|
-| `retrievalResults` | Array | 完整语义命中结果，包括 Seed、Enum Value 和 Instance Value |
-| `seedNodes` | Array | 从语义命中结果投影得到的 ObjectType/Property 图构建种子节点 |
-| `nodes` | Array | 本体子图节点，主要承载 ObjectType 和 Property |
-| `edges` | Array | 本体子图关系；RelationshipProperty 作为关系元数据返回 |
-| `semanticExtensions` | Object | 命中值的同义词、枚举域等可选语义上下文 |
-| `capabilityExtensions` | Object | 按请求返回的 Function 和 Action |
-| `metadata` | Object | 检索模式、图策略、连通性、截断和未解析信息 |
-
-返回元素映射：
-
-| 业务元素 | 响应位置 |
-|---|---|
-| ObjectType、Property | `seedNodes`、`nodes`、`retrievalResults` |
-| Relationship、RelationshipProperty | `edges` |
-| Enum Value、Instance Value | `retrievalResults`、`semanticExtensions` |
-| Function、Action | `capabilityExtensions` |
-
-### 12.3 成功响应示例
-
-```json
-{
-  "resultCode": "200",
-  "resultMessage": "success",
-  "result": {
-    "retrievalResults": [],
-    "seedNodes": [],
-    "nodes": [],
-    "edges": [],
-    "semanticExtensions": {},
-    "capabilityExtensions": {
-      "functions": [],
-      "actions": []
-    },
-    "metadata": {
-      "retrievalMode": "vector",
-      "graphStrategy": "minimal",
-      "connected": true,
-      "truncated": false,
-      "unresolvedSemanticUnits": [],
-      "unconnectedSeedNodeIds": []
-    }
-  }
-}
-```
-
-`retrievalResults` 是完整语义命中的权威字段；`seedNodes`、`nodes` 和 `edges` 表达图构建结果。
-
-## 13. 错误处理
-
-### 13.1 HTTP 状态码
-
-| HTTP 状态码 | 场景 |
-|---:|---|
-| `200` | 检索成功，包括合法的空匹配结果 |
-| `400` | 参数格式错误、枚举值非法、`query` 和 `extractedEntities` 同时为空 |
-| `404` | 指定租户或本体不存在 |
-| `429` | 服务限流或并发超过限制 |
-| `500` | 服务内部错误 |
-| `503` | 向量库、关键词索引或图存储暂不可用 |
-
-### 13.2 失败响应示例
-
-```json
-{
-  "resultCode": "INVALID_REQUEST",
-  "resultMessage": "query and extractedEntities cannot both be empty",
-  "result": null
-}
-```
-
-## 14. OpenAPI 3.0.3 定义
+## 10. OpenAPI Schema 核心定义
 
 ```yaml
-openapi: 3.0.3
-info:
-  title: OAG Ontology Subgraph Semantic Search API
-  version: 2.0.0
-
-paths:
-  /v2/onto-retrieval/{ontologyId}/subgraph/semantic-search:
-    post:
-      operationId: semanticSearchSubgraphV2
-      summary: 本体子图语义检索接口 v2
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
-        - $ref: '#/components/parameters/TraceId'
-        - $ref: '#/components/parameters/OntologyId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SemanticSearchRequest'
-      responses:
-        '200':
-          description: 检索成功
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SemanticSearchResponse'
-        '400':
-          description: 请求参数错误
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SemanticSearchResponse'
-        '404':
-          description: 本体不存在
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SemanticSearchResponse'
-        '429':
-          description: 请求被限流
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SemanticSearchResponse'
-        '500':
-          description: 服务内部错误
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SemanticSearchResponse'
-        '503':
-          description: 依赖服务暂不可用
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SemanticSearchResponse'
-
 components:
-  parameters:
-    TenantId:
-      name: tenantId
-      in: header
-      required: true
-      schema:
-        type: string
-        minLength: 1
-        maxLength: 256
-    TraceId:
-      name: traceId
-      in: header
-      required: false
-      schema:
-        type: string
-        minLength: 1
-        maxLength: 256
-    OntologyId:
-      name: ontologyId
-      in: path
-      required: true
-      schema:
-        type: string
-        minLength: 1
-        maxLength: 256
-
   schemas:
     SemanticSearchRequest:
       type: object
@@ -935,271 +466,114 @@ components:
         - required: [extractedEntities]
       properties:
         query:
-          type: string
-          minLength: 1
-          maxLength: 1024
+type: string
+minLength: 1
+maxLength: 1024
         searchContext:
-          type: string
-          minLength: 1
-          maxLength: 32768
-          description: 业务动态注入的搜索上下文提示词，可包含 few-shot、专家查询路径、本体子图、领域术语和消歧规则，用于实体提取和后续语义消歧
+type: string
+minLength: 1
+maxLength: 32768
         extractedEntities:
-          type: array
-          minItems: 1
-          items:
-            $ref: '#/components/schemas/ExtractedEntity'
+type: array
+minItems: 1
+items:
+  $ref: '#/components/schemas/ExtractedEntity'
         adaptiveRetrieval:
-          type: integer
-          default: 1
-          enum: [0, 1]
+type: integer
+default: 1
+enum: [0, 1]
         seedRetrievalMode:
-          type: string
-          default: vector
-          enum: [vector, keyword, hybrid]
+type: string
+default: vector
+enum: [vector, keyword, hybrid]
         similarityThreshold:
-          type: number
-          format: double
-          default: 0.6
-          minimum: 0
-          maximum: 1
+type: number
+minimum: 0
+maximum: 1
+default: 0.6
         topk:
-          type: integer
-          default: 3
-          minimum: 1
+type: integer
+minimum: 1
+default: 3
         graphExpansionStrategy:
-          type: string
-          default: minimal
-          enum: [minimal, khop, component]
+type: string
+default: minimal
+enum: [minimal, khop, component]
         hopLimit:
-          type: integer
-          default: 3
-          minimum: 1
+type: integer
+minimum: 1
+default: 3
         includeFunctions:
-          type: integer
-          default: 0
-          enum: [0, 1]
+type: integer
+default: 0
+enum: [0, 1]
         includeActions:
-          type: integer
-          default: 0
-          enum: [0, 1]
+type: integer
+default: 0
+enum: [0, 1]
 
     ExtractedEntity:
       type: object
+      description: 仅允许 ObjectType、Properties、Values 三个顶层业务字段
       anyOf:
         - required: [ObjectType]
-        - required: [Relationships]
-          properties:
-            Relationships:
-              minItems: 1
-        - required: [EnumValues]
-          properties:
-            EnumValues:
-              minItems: 1
-        - required: [InstanceValues]
-          properties:
-            InstanceValues:
-              minItems: 1
+        - required: [Values]
       properties:
         ObjectType:
-          type: string
-          minLength: 1
+type: string
+minLength: 1
         Properties:
-          type: array
-          default: []
-          items:
-            type: string
-            minLength: 1
-        Relationships:
-          type: array
-          default: []
-          items:
-            $ref: '#/components/schemas/RelationshipHint'
-        EnumValues:
-          type: array
-          default: []
-          items:
-            $ref: '#/components/schemas/EnumValueHint'
-        InstanceValues:
-          type: array
-          default: []
-          items:
-            $ref: '#/components/schemas/InstanceValueHint'
+type: array
+default: []
+items:
+  type: string
+  minLength: 1
+        Values:
+type: array
+default: []
+items:
+  $ref: '#/components/schemas/ValueHint'
+      additionalProperties: false
 
-    RelationshipHint:
-      type: object
-      required: [Relationship, SourceObjectType, TargetObjectType]
-      properties:
-        Relationship:
-          type: string
-          minLength: 1
-        SourceObjectType:
-          type: string
-          minLength: 1
-        Direction:
-          type: string
-          default: OUT
-          enum: [OUT, IN, BOTH]
-        TargetObjectType:
-          type: string
-          minLength: 1
-        Properties:
-          type: array
-          default: []
-          items:
-            type: string
-            minLength: 1
-
-    EnumValueHint:
+    ValueHint:
       type: object
       required: [Value]
       properties:
         Property:
-          type: string
-          minLength: 1
+type: string
+minLength: 1
         Value:
-          type: string
-          minLength: 1
-
-    InstanceValueHint:
-      type: object
-      required: [Value]
-      properties:
-        Property:
-          type: string
-          minLength: 1
-        Value:
-          type: string
-          minLength: 1
-
-    SemanticSearchResponse:
-      type: object
-      required: [resultCode, resultMessage, result]
-      properties:
-        resultCode:
-          type: string
-        resultMessage:
-          type: string
-        result:
-          type: object
-          nullable: true
-          allOf:
-            - $ref: '#/components/schemas/SemanticSearchResult'
-
-    SemanticSearchResult:
-      type: object
-      properties:
-        retrievalResults:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-        seedNodes:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-        nodes:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-        edges:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-        semanticExtensions:
-          type: object
-          additionalProperties: true
-        capabilityExtensions:
-          type: object
-          properties:
-            functions:
-              type: array
-              items:
-                type: object
-                additionalProperties: true
-            actions:
-              type: array
-              items:
-                type: object
-                additionalProperties: true
-        metadata:
-          type: object
-          additionalProperties: true
+type: string
+minLength: 1
+      additionalProperties: false
 ```
 
-## 15. 校验规则
+`Properties → ObjectType` 和 `ValueHint.Property → Properties` 的交叉字段约束由服务端 Validator 执行。
 
-1. `tenantId` 和 `ontologyId` 必须存在且满足长度要求。
-2. `query` 和 `extractedEntities` 至少一个不为空。
-3. `searchContext` 不能单独满足第 2 条校验；非空时长度不超过 32768 字符。
-4. `query` 去除首尾空白后长度必须为 1～1024。
-5. 每个 `ExtractedEntity` 至少包含非空 `ObjectType`、`Relationships`、`EnumValues` 或 `InstanceValues` 中的一种。
-6. 出现 `Properties` 时必须同时提供 `ObjectType`，Property 必须归属于该 ObjectType。
-7. 每个 Relationship 必须包含 `Relationship`、`SourceObjectType` 和 `TargetObjectType`。
-8. Relationship 所在实体如果同时提供 `ObjectType`，该值应与 `SourceObjectType` 一致；源和目标对象应出现在本次 `extractedEntities` 的 ObjectType 列表中。
-9. Enum Value 和 Instance Value 必须包含非空 `Value`。
-10. Enum/Instance Value 未提供 ObjectType 和 Property 时，按未绑定值进行跨 ObjectType/Property 检索，不得通过值的格式猜测归属。
-11. `similarityThreshold` 必须在 0～1 之间。
-12. `topk` 和 `hopLimit` 必须大于等于 1。
-13. 所有枚举型参数必须使用定义值。
-14. 所有输入名称和值在检索前统一执行 trim、Unicode Normalize 和规范化去重。
-15. 业务输入只作为检索提示，不能直接作为本体内部 ID 使用。
+---
 
-## 16. 兼容策略
+## 11. 兼容迁移策略
 
-### 16.1 原有结构兼容
+旧版结构中“关系路径提示”和“值类型拆分”不再属于正式 `ExtractedEntity` Schema。迁移原则：
 
-以下已有结构仍是合法的 v2 请求：
+1. 所有值提示统一合并到 `Values`；
+2. 已知 Property 的值保留 `Property + Value`；
+3. 未知归属的值转换为 value-only；
+4. 专家关系路径移动到 `searchContext`，由第 ③ 步路径规划使用；
+5. 服务端可设置一个灰度兼容期解析旧请求，但新 SDK/OpenAPI 只生成三字段结构；
+6. 灰度结束后开启 `additionalProperties=false` 强校验，防止结构继续分叉。
 
-```json
-{
-  "extractedEntities": [
-    {
-      "ObjectType": "ObjectType1",
-      "Properties": [
-        "Property1"
-      ]
-    }
-  ]
-}
-```
+---
 
-`Relationships`、`EnumValues` 和 `InstanceValues` 均为可选字段，默认空数组。
+## 12. 最终设计决策
 
-### 16.2 字符串形式迁移
-
-原接口文档将 `extractedEntities` 标注为 String，但示例实际为 JSON 对象。v2 正式 Schema 使用 `Array<ExtractedEntity>`。
-
-如果现网调用方将整个结构作为转义 JSON 字符串传入，建议服务端在迁移期同时支持：
-
-```text
-结构化 Array<ExtractedEntity>
-字符串形式的 legacy extractedEntities
-```
-
-迁移完成后废弃字符串形式，避免二次 JSON 解析和类型不一致。
-
-## 17. 最终设计决策
-
-1. 规范 URI 为 `/v2/onto-retrieval/{ontologyId}/subgraph/semantic-search`。
-2. `query` 和 `extractedEntities` 至少一个不为空，推荐同时传递。
-3. `extractedEntities` 正式类型为 `Array<ExtractedEntity>`，不再定义为 String。
-4. 业务侧只传递对象、属性、关系和值的业务名称，不传递本体内部 ID。
-5. `Relationships` 与 `ObjectType/Properties` 平级，每条关系显式声明 `SourceObjectType` 和 `TargetObjectType`。
-6. `Relationships` 支持方向和 RelationshipProperty 名称列表。
-7. 新增 `searchContext`，用于业务动态注入 few-shot、专家路径、本体子图、领域术语和消歧规则，并贯穿实体提取与后续语义消歧。
-8. 新增 `EnumValues` 和 `InstanceValues`，分别检索枚举值索引和实例值索引。
-9. 不定义 `OriginalText`、`Operator` 和 `ConstraintHint`。
-10. 比较条件、时间范围、聚合方式和单位继续保留在原始 `query` 中。
-11. ObjectType 和 Property 使用嵌套结构表达明确的从属关系。
-12. ObjectType/Property 归属未知的 Enum/Instance Value 可以作为 value-only 实体输入，由 OAG 检索后解析归属。
-13. 编码型实例值优先使用 `keyword` 或 `hybrid` 模式，不根据编码形态推断对象类型。
-14. `adaptiveRetrieval` 默认开启，默认规模阈值为 100。
-15. `seedRetrievalMode` 支持 `vector`、`keyword` 和 `hybrid`。
-16. `graphExpansionStrategy` 支持 `minimal`、`khop` 和 `component`。
-17. `includeFunctions` 和 `includeActions` 默认均为 0。
-18. `includeDimAndIndicator` 不属于 v2 有效请求 Schema。
-19. 成功响应统一返回 `resultCode/resultMessage/result`。
-20. `retrievalResults` 表达完整语义命中，`seedNodes/nodes/edges` 表达本体子图结果。
+1. 实体提取是本体子图检索的第 ① 步，输出只描述对象、属性和值；
+2. `ExtractedEntity` 顶层只保留 `ObjectType`、`Properties`、`Values`；
+3. `Properties` 必须保持与 ObjectType 的从属关系；
+4. `Values` 使用统一 `ValueHint`，NER 不区分 Enum/Instance；
+5. Value 的真实类型、Property/ObjectType 归属由 Entity Linking 根据索引命中记录确定；
+6. 归属未知时允许 value-only，禁止按编码形态猜测对象类型；
+7. Relationship 不在实体提取阶段建模，由子图策略从本体拓扑中发现；
+8. 专家关系路径通过 `searchContext` 传给后续路径规划；
+9. 比较、时间、聚合等查询语义保留在原始 `query`；
+10. 该结构直接生成 Entity Linking Semantic Units，与主方案中的本体对象/枚举元素/实例元素 6 路召回衔接。
