@@ -19,7 +19,7 @@
 6. 本体对象投影、子图策略、路径探测、nGQL 与最终返回  
 7. 性能、配置、可观测性、评测与迁移
 
-阅读规则：本文按“核心设计 + 详细设计与实现”组织。核心设计定义当前规范，详细设计补充接口、DDL、算法、错误处理、性能、评测、兼容和灰度要求；同一主题如存在多处说明，应保持字段、接口和执行语义一致。
+阅读规则：第 2 章按“总体规则 → 本体对象 → 枚举元素 → 实例元素 → 统一治理”组织，其他章节保留“核心设计 + 详细设计与实现”；同一主题只保留一处权威定义，接口、DDL、算法与运行规则引用该定义。
 
 ---
 
@@ -333,18 +333,122 @@ Enum/Instance 和 synonym 都可以帮助形成最终语义结果，但不直接
 
 # 2. 数据模型与语义索引结构
 
+本章只定义 OAG 语义索引的**数据模型、向量化规则、全文索引规则和物理存储结构**。索引构建任务、MinIO、Checkpoint、FULL_REPLACE / INCREMENTAL 等生命周期机制统一在第 3 章定义。
+
+整体按照三类稳定语义实体组织：
+
+```text
+本体对象：ObjectType / Property
+枚举元素：Enum Value
+实例元素：Instance Value
+```
+
+三类数据分别建立 GaussVector 向量索引和 OpenSearch 全文索引；两种存储使用同一业务语义和稳定业务键，在检索层统一归一化为 SearchHit。
+
 ---
 
-## 2.0 核心设计
+## 2.1 总体索引模型
+
+### 2.1.1 三类物理索引与统一命名
+
+| 逻辑类型 | GaussVector 表 | OpenSearch Index | Owner | 索引粒度 | 稳定业务键 |
+|---|---|---|---|---|---|
+| 本体对象 | `t_oag_{ontology_id}` | `t_oag_{ontology_id}` | OAG | 1 个 ObjectType / Property 1 条记录 | `id` |
+| 枚举元素 | `t_oag_enum_{ontology_id}` | `t_oag_enum_{ontology_id}` | OAG | 1 个 Property 下的 1 个 Enum Value 1 条记录 | `object_type_id + property_id + normalized(value)` |
+| 实例元素 | `t_oag_instance_{ontology_id}` | `t_oag_instance_{ontology_id}` | OAG；业务侧提供源数据 | 1 个 Property 下去重后的 1 个 Instance Value 1 条记录 | `object_type_id + property_id + normalized(value)` |
+
+三类数据保持物理隔离，主要原因：
+
+```text
+数据规模不同
+更新频率不同
+ANN 算法和参数不同
+数据 Owner / 来源不同
+TopK / similarityThreshold 不同
+容量与分表策略不同
+```
+
+### 2.1.2 统一索引处理链路
+
+```text
+OMS / OAC / Business Data
+        ↓
+Schema / Ontology Mapping
+        ↓
+Normalize + Synonym Flatten + Dedup
+        ↓
+┌──────────────────────────┬──────────────────────────┐
+│ EmbeddingInputBuilder    │ LexicalDocumentBuilder   │
+│ BGE-M3 / 1024 dim        │ Exact / BM25             │
+└────────────┬─────────────┴─────────────┬────────────┘
+             ↓                           ↓
+        GaussVector                 OpenSearch
+             └────────────┬──────────────┘
+                          ↓
+                 SearchHit Normalizer
+```
+
+统一原则：
+
+1. GaussVector 和 OpenSearch 必须使用同一条业务记录的相同 `id / property_id / object_type_id / value / synonyms` 语义；
+2. Dense 与 Lexical 的差异只体现在索引方式和查询方式，不允许形成两套业务数据模型；
+3. 同一业务键重复导入只能覆盖原记录，不能产生重复向量或重复全文文档；
+4. Enum / Instance 可以成为最终语义检索结果，但不直接成为 Core Graph 路径算法顶点。
+
+### 2.1.3 Core Graph 与语义索引边界
+
+```text
+语义索引负责：
+ObjectType / Property / Enum Value / Instance Value 的语义定位
+
+Core Graph 负责：
+ObjectType / Property / Relationship 的拓扑连接
+```
+
+Enum / Instance 命中后，通过 `property_id + object_type_id` 投影回 Property / ObjectType，再进入子图算法。Synonym 只作为所属业务记录的检索字段，不建立独立图节点或独立物理索引记录。
 
 ---
 
-### 2.1 OMS SynonymType 到 OAG 的统一表达
+## 2.2 公共建模与检索规则
 
-OMS 继续保留结构化多语言 SynonymType：
+### 2.2.1 多语言字段规则
+
+本体对象和 Enum Value 的 Display / Description 使用固定槽位：
+
+```text
+固定语言：zh + en
+额外语言：lang_1 + lang_2
+总计最多 4 种语言
+```
+
+对应物理字段：
+
+```text
+display_zh
+display_en
+display_lang_1
+display_lang_2
+
+description_zh
+description_en
+description_lang_1
+description_lang_2
+```
+
+规则：
+
+- `lang_1 / lang_2` 是 ontology 级可配置语言槽位，不把具体小语种语言码写死到数据库 Schema；
+- 未配置的语言槽位保持 NULL / 空值；
+- Instance Value 不配置 `display_* / description_*` 多语言列；
+- 不通过不断增加 `display_xx / description_xx` 列扩展语言数量。
+
+### 2.2.2 OMS SynonymType 到 OAG `synonyms` 的统一表达
+
+OMS 继续保留结构化、多语言 SynonymType：
 
 ```json
 {
+  "id": "term-color-synonyms",
   "synonyms": {
     "zh": ["颜色", "色彩", "色泽"],
     "en": ["Color", "Colour"],
@@ -353,7 +457,16 @@ OMS 继续保留结构化多语言 SynonymType：
 }
 ```
 
-进入 OAG 物理索引后统一平铺为 LF String：
+OMS 源模型约束：
+
+```text
+synonyms 最多 3 个 language key
+language key 不固定
+每个 language 可包含多个 synonym
+language key 使用 BCP 47 风格，例如 zh / en / es / es-MX / pt-BR
+```
+
+进入 OAG 后不保存 language Map，而统一平铺成 LF String：
 
 ```text
 颜色
@@ -368,483 +481,63 @@ Colour
 ```text
 SynonymType.synonyms(language → values[])
   ↓
-zh/en 优先，其余 language tag 字典序
+zh / en 存在时优先，其余 language tag 按字典序
   ↓
 语言内保持源数组顺序
   ↓
 trim / Unicode normalize / 去空
   ↓
-按规范化值去重，保留首次出现原文
+按规范化值去重，保留第一次出现的原文
   ↓
 LF join
+  ↓
+synonyms TEXT/String
 ```
 
-边界：
-
-- OMS 保留多语言源结构；
-- GaussVector/OpenSearch/REST Batch/CSV 使用同一个 `synonyms` 平铺字段；
-- SynonymType 不建立独立向量记录；
-- SynonymType 自身 name/display/description 不重复拼入所属元素 Embedding，避免重复权重。
-
-### 2.2 三类物理索引与统一命名
-
-| 逻辑类型 | GaussVector / OpenSearch | Owner | 数据 |
-|---|---|---|---|
-| 本体对象 | `t_oag_{ontology_id}` | OAG | ObjectType / Property |
-| 枚举元素 | `t_oag_enum_{ontology_id}` | OAG | Enum Value + Synonyms |
-| 实例元素 | `t_oag_instance_{ontology_id}` | OAG，业务侧提供源数据 | Instance Value + Synonyms |
-
-保持物理隔离的原因：规模、更新频率、ANN 参数、数据 Owner、TopK/阈值不同。
-
-### 2.3 `t_oag_{ontology_id}` GaussVector 表结构
-
-本体对象表保持原有的**各语言字段逐列展开**结构，不使用 `display_zh/en/lang_1/lang_2`、`description_zh/en/lang_1/lang_2` 这类合并字段表示。中文、英文为固定字段，另外最多保留 2 个可演进语言槽位：
-
-| 字段 | 类型 | 非空 | 说明 |
-|---|---|---:|---|
-| `vector` | `DOUBLE[]` | ✔ | BGE-M3 1024 维向量 |
-| `type` | `INT` |  | 0 ObjectType，1 Property |
-| `id` | `VARCHAR(256 CHAR)` | ✔ | ObjectType / Property 全局唯一 ID |
-| `parent_id` | `VARCHAR(256 CHAR)` |  | 父元素 ID；当 type=1 时记录 Property 所属 ObjectType ID |
-| `name` | `VARCHAR(256 CHAR)` |  | 本体真实名称 |
-| `display_zh` | `VARCHAR(512 CHAR)` |  | 中文显示名 |
-| `display_en` | `VARCHAR(512 CHAR)` |  | 英文显示名 |
-| `display_lang_1` | `VARCHAR(512 CHAR)` |  | 第 1 个额外语言显示名 |
-| `display_lang_2` | `VARCHAR(512 CHAR)` |  | 第 2 个额外语言显示名 |
-| `description_zh` | `VARCHAR(1024 CHAR)` |  | 中文描述 |
-| `description_en` | `VARCHAR(1024 CHAR)` |  | 英文描述 |
-| `description_lang_1` | `VARCHAR(1024 CHAR)` |  | 第 1 个额外语言描述 |
-| `description_lang_2` | `VARCHAR(1024 CHAR)` |  | 第 2 个额外语言描述 |
-| `synonyms` | `TEXT` |  | LF 分隔的同义词平铺字符串；不保存 JSON Map/Array |
-
-约束：
-
-1. Schema 层始终逐语言列展开，便于字段类型、Analyzer、查询过滤和运维观测独立配置；
-2. `lang_1/lang_2` 是本体级可配置语言槽位，不把具体语言码写死进数据库 Schema；
-3. `synonyms` 仍采用语言无关的 LF 平铺 String/TEXT，语言信息只在 OMS SynonymType 源模型中保留；
-4. 空语言字段保持 NULL/空值，不写占位文本。
-### 2.4 多语言规则
-
-Display/Description：固定 `zh + en`，额外 `lang_1 + lang_2`，总计最多 4 种语言。
-
-Synonym：OMS SynonymType 最多 3 个非固定 language key；进入 OAG 后语言无关平铺，不建立 `synonyms.zh` / `synonyms.en` 动态字段。
-
-### 2.5 `t_oag_{ontology_id}` OpenSearch
-
-字段与 GaussVector 共享业务语义：`type/id/parent_id/name/display_*/description_*/synonyms`。
-
-建议：
-
-- `id`：keyword；
-- `name/display_*`：keyword + text；
-- `description_*`：text；
-- `synonyms`：主字段按 LF 切成整条 synonym token 用于 Exact，`synonyms.bm25` 用全文 Analyzer。
-
-检索优先级：
-
-```text
-id/name/display exact
-> synonyms line-exact
-> name/display phrase/BM25
-> synonyms.bm25
-> description BM25
-```
-
-Synonym 命中统一保留：
-
-```text
-matched_field = synonyms
-matched_value = 实际命中的 synonym 行
-```
-
-### 2.6 `t_oag_enum_{ontology_id}` Enum Value
-
-真正入索引的粒度是 `EnumType.values[]` 的每一个枚举值；一个 EnumType 被多个 Property 复用时按实际 Property 引用展开。
-
-表结构保持与原有设计一致，**各语言字段逐列展开**，中文、英文为固定字段，另外最多保留 2 个可演进语言槽位：
-
-| 字段 | 类型 | 非空 | 说明 |
-|---|---|---:|---|
-| `vector` | `DOUBLE[]` | ✔ | Enum Value 1024 维语义向量 |
-| `value` | `VARCHAR(4096 CHAR)` |  | 真实标准枚举值 |
-| `property_id` | `VARCHAR(512 CHAR)` | ✔ | 引用该 Enum 的 Property.id |
-| `object_type_id` | `VARCHAR(256 CHAR)` |  | Property 所属 ObjectType.id |
-| `display_zh` | `VARCHAR(512 CHAR)` |  | 中文 display |
-| `display_en` | `VARCHAR(512 CHAR)` |  | 英文 display |
-| `display_lang_1` | `VARCHAR(512 CHAR)` |  | 第 1 个额外语言 display |
-| `display_lang_2` | `VARCHAR(512 CHAR)` |  | 第 2 个额外语言 display |
-| `description_zh` | `TEXT` |  | 中文 description |
-| `description_en` | `TEXT` |  | 英文 description |
-| `description_lang_1` | `TEXT` |  | 第 1 个额外语言 description |
-| `description_lang_2` | `TEXT` |  | 第 2 个额外语言 description |
-| `synonyms` | `TEXT` |  | LF 分隔的 Enum Value 同义词平铺字符串 |
-
-业务唯一键：
-
-```text
-objectTypeId + propertyId + normalized(value)
-```
-
-`synonyms` 不参与业务唯一键；同义词变化通过相同业务键覆盖当前记录。
-
-向量化顺序：
-
-```text
-{value}
-{display_zh}
-{display_en}
-{display_lang_1}
-{display_lang_2}
-{description_zh}
-{description_en}
-{description_lang_1}
-{description_lang_2}
-{synonyms}
-```
-
-约束：
-
-1. Schema 层按语言逐列展开，不使用 `display_zh/en/lang_1/lang_2`、`description_zh/en/lang_1/lang_2` 这类合并表示；
-2. `lang_1/lang_2` 为 ontology 级可配置语言槽位；
-3. `value` 是权威真实过滤值；display/description/synonyms 只负责召回、排序与解释；
-4. Synonym 仍统一使用 LF 平铺 String/TEXT，不建立独立 Enum Synonym 物理记录。
-### 2.7 `t_oag_instance_{ontology_id}` Instance Value
-
-实例索引保存**去重后的真实列值 + 内嵌同义词**。`synonyms` 用于召回和命中解释，但不建立独立 Instance Synonym 记录；真实查询过滤值始终以 `value` 为准。
-
-| 字段 | 类型 | 非空 | 说明 |
-|---|---|---:|---|
-| `vector` | `DOUBLE[]` | ✔ | Instance Value 语义向量，1024 维 |
-| `property_id` | `VARCHAR(512 CHAR)` | ✔ | 所属 Property.id |
-| `object_type_id` | `VARCHAR(256 CHAR)` |  | Property 所属 ObjectType.id |
-| `value` | `VARCHAR(4096 CHAR)` | ✔ | 去重后的真实标准列值；下游过滤条件使用该值 |
-| `synonyms` | `TEXT` |  | 实例值同义词，LF 分隔平铺字符串；只作为召回/解释字段，不作为真实过滤值 |
-
-业务唯一键继续使用：
-
-```text
-(normalized_value, property_id, object_type_id)
-```
-
-`synonyms` 不参与业务唯一键，避免同义词变化导致同一个真实 Instance Value 被误判为新业务记录。
-
-Instance 不配置多语言 `display/description` 列；同义词统一使用与本体对象/Enum 相同的 LF 平铺表达：
-
-```text
-别名1
-别名2
-Alias-1
-Alias-2
-```
-
-Dense Embedding 输入调整为：
-
-```text
-{value}
-{synonyms}
-```
-
-其中 `value` 放在首行并作为主语义，`synonyms` 仅用于增强用户别名/黑话表达的 Dense 召回。OpenSearch `instanceLexical` 同时检索：
-
-```text
-value       → Exact / BM25
-synonyms    → Exact / BM25
-```
-
-命中 synonym 时必须保留：
-
-```text
-matchedField = synonyms
-matchedValue = 实际命中的实例同义词
-value        = 真实标准实例值
-```
-
-Entity Linking 最终仍输出：
-
-```text
-sourceValue
-→ canonical/actual value = value
-→ Property
-→ ObjectType
-```
-
-因此下游 Agent/LLM 可以使用 synonym 理解用户表达，但生成过滤条件时统一使用真实 `value`。
-
-未来如需进一步节省空间，可演进为 value 表 + binding 表，但不改变 Entity Linking 和 `semanticExtensions.valueMappings` 的结果语义。
-### 2.8 数据归属与拓扑
-
-- Property → ObjectType：优先由 `parent_id` + GraphTopologyCache/`has_property` 双重校验；
-- Enum/Instance：记录直接保存 `property_id + object_type_id`；
-- Enum/Instance 可以成为最终语义结果，但不直接作为 Core Graph 路径算法顶点；
-- SeedNodeProjector 将 Enum/Instance 证据投影回其 Property/ObjectType 后再进入图算法。
-
----
-
----
-
-## 2.1 详细设计与实现
-
----
-
-### 2.1 数据模型：本体对象、枚举值、实例值与 Synonym
-
-| 类型     | 物理实体                  | Synonym 处理                 | 本体归属字段                                |
-| ------ | --------------------- | -------------------------- | ------------------------------------- |
-| 本体对象定义 | ObjectType / Property | `synonyms` 以 LF 分隔的平铺字符串内嵌 | 使用本体对象自身 `id`；Property→ObjectType 走拓扑 |
-| 枚举元素 | Enum Value            | `synonyms` 以 LF 分隔的平铺字符串内嵌 | `propertyId + objectTypeId`           |
-| 实例元素   | Instance Value        | `synonyms` 以内嵌 LF 平铺字段保存；不建立独立同义词记录 | `propertyid + objectTypeId`           |
-
-#### 2.1.1 OMS SynonymType：保留多语言源结构
-
-OMS 的 `synonym-type` 仍是建模资产，允许保留语言信息、显示名和描述。例如：
+传输到 JSON / CSV 时可使用字面量 `\n`：
 
 ```json
 {
-  "id": "term-color-synonyms",
-  "name": "color-synonyms",
-  "display": {
-    "zh": "颜色近义词",
-    "en": "Color Synonyms"
-  },
-  "description": {
-    "zh": "颜色相关术语的近义词定义",
-    "en": "Synonyms for color-related terms"
-  },
-  "synonyms": {
-    "zh": ["颜色", "色彩", "色泽", "色"],
-    "en": ["Color", "Colour", "Hue", "Tint"]
-  },
-  "status": "ACTIVE"
+  "synonyms": "颜色\n色彩\n色泽\nColor\nColour"
 }
 ```
 
-源模型约束保持：
+关键边界：
+
+1. OMS 保留多语言源结构，OAG 热索引只保留 LF 平铺 String；
+2. GaussVector / OpenSearch / REST Batch / CSV 使用同一个 `synonyms` 物理表达；
+3. SynonymType 不建立独立向量记录或独立全文记录；
+4. SynonymType 自身的 `name / display / description` 不重复拼入所属实体 Embedding；
+5. OAG 不建立 `synonyms.zh / synonyms.en / synonyms.<language>` dynamic object。
+
+### 2.2.3 文本规范化规则
+
+规范化属于索引构建和查询处理逻辑，不额外增加 `normalized_*` 持久化字段：
 
 ```text
-synonyms 最多包含 3 个 language key
-语言组合不固定
-每种语言可包含多个同义词
-language key 使用 BCP 47 风格，如 zh/en/es/es-MX/pt-BR
+trim
+Unicode normalize
+casefold（适用语言）
+连续空白归一
+全半角归一
 ```
 
-这些语言 key 用于 OMS 建模、治理和离线评测，不直接作为 OAG 热索引字段层级。
+`name / value / display / description` 保留原始业务文本；规范化值只用于去重、业务键比较、Exact 匹配和幂等判断。
 
-#### 2.1.2 OAG `synonyms`：统一平铺为 String/TEXT
-
-OAG 解析 ObjectType / Property / Enum Value 的 `refSynonymTypeId` 后，只提取 SynonymType 中真正参与检索的同义词值，并规范化为一个平铺字符串：
+`SynonymFlattener` 额外执行：
 
 ```text
-颜色
-色彩
-色泽
-色
-Color
-Colour
-Hue
-Tint
-```
-
-逻辑分隔符固定为 **LF**。在 JSON/CSV 传输中用字面量 `\n` 表达，例如：
-
-```json
-{
-  "synonyms": "颜色\n色彩\n色泽\n色\nColor\nColour\nHue\nTint"
-}
-```
-
-统一转换流程：
-
-```text
-SynonymType.synonyms(language → values[])
-  ↓
-语言块稳定排序
-  ↓
-语言内保持源数组顺序
-  ↓
-trim / Unicode normalize / 去空
-  ↓
+CRLF / CR → LF
+按 LF split
+trim
+去空行
 按规范化值去重并保留首次出现原文
-  ↓
-LF join
-  ↓
-OAG synonyms TEXT/String
+重新 LF join
 ```
 
-稳定排序规则：`zh`、`en` 存在时优先，其余 language tag 按字典序排列；同一语言内保持 OMS 数组顺序。这样同一 SynonymType 在重复构建、FULL_REPLACE 和增量 UPSERT 时可得到确定性字符串。
+### 2.2.4 OpenSearch `synonyms` 公共 Analyzer
 
-> **关键边界：** OMS 保留“语言 → 同义词列表”的建模结构；GaussVector、OpenSearch、REST Batch 和 CSV 使用同一个平铺 `synonyms` 字段。OAG 不在热路径中重复反序列化 Synonym Map。
-
-SynonymType 自身不建立独立向量记录。其 `name/display/description` 继续作为 OMS 管理元数据保留，但默认不复制到 `synonyms` 热索引字段，也不再通过 `synonyms_description` 重复拼入 Embedding；真正参与检索的是所属业务实体自身的 name/display/description 与平铺后的 synonym values。
-
-### 2.2 三类物理索引与统一命名
-
-三张 GaussVector 表和对应 OpenSearch Index 统一命名：
-
-| 逻辑类型   | 物理表 / Index                    | Owner         | 数据                    |
-| ------ | ------------------------------ | ------------- | --------------------- |
-| 本体对象定义 | `t_oag_{ontology_id}`          | OAG           | ObjectType / Property |
-| 枚举元素 | `t_oag_enum_{ontology_id}`     | OAG           | Enum Value + Synonyms |
-| 实例元素   | `t_oag_instance_{ontology_id}` | OAG，业务服务 提供数据 | Instance Value + Synonyms |
-
-三类数据继续物理隔离，原因不变：
-
-```text
-规模差异
-更新频率差异
-ANN 算法差异
-数据 Owner 差异
-检索 TopK / 阈值差异
-```
-
-
-### 2.3 `t_oag_{ontology_id}` GaussVector 表结构
-
-本体对象表保留两个额外语言槽位，并增加平铺 `synonyms`。中文和英文仍保留固定列，另外最多支持 2 种 display/description 语言：
-
-| 字段                   | 类型                   | 非空  | 说明                                            |
-| -------------------- | -------------------- | --- | --------------------------------------------- |
-| `vector`             | `DOUBLE[]`           | ✔   | 1024 维向量                                      |
-| `type`               | `INT`                |     | 0 ObjectType，1 Property                       |
-| `id`                 | `VARCHAR(256 CHAR)`  | ✔   | ObjectType / Property 全局唯一 ID                 |
-| `parent_id`          | `VARCHAR(256 CHAR)`  |     | 父元素 ID；当 type=1 时记录 Property 所属 ObjectType ID |
-| `name`               | `VARCHAR(256 CHAR)`  |     | 本体真实名称                                        |
-| `display_zh`         | `VARCHAR(512 CHAR)`  |     | 中文显示名                                         |
-| `display_en`         | `VARCHAR(512 CHAR)`  |     | 英文显示名                                         |
-| `display_lang_1`     | `VARCHAR(512 CHAR)`  |     | 第 1 个额外语言显示名                                  |
-| `display_lang_2`     | `VARCHAR(512 CHAR)`  |     | 第 2 个额外语言显示名                                  |
-| `description_zh`     | `VARCHAR(1024 CHAR)` |     | 中文描述                                          |
-| `description_en`     | `VARCHAR(1024 CHAR)` |     | 英文描述                                          |
-| `description_lang_1` | `VARCHAR(1024 CHAR)` |     | 第 1 个额外语言描述                                   |
-| `description_lang_2` | `VARCHAR(1024 CHAR)` |     | 第 2 个额外语言描述                                   |
-| `synonyms`           | `TEXT`               |     | LF 分隔的同义词平铺字符串；不保存 JSON Map/Array             |
-
-`synonyms` 逻辑值示例：
-
-```text
-小区
-无线小区
-Cell
-Radio Cell
-Celda
-Celda de radio
-```
-
-传输表示：
-
-```text
-小区\n无线小区\nCell\nRadio Cell\nCelda\nCelda de radio
-```
-
-额外 display/description 最多 2 个语言槽位；“Synonym 最多 3 种语言”是 **OMS SynonymType 源模型约束**。
-
-### 2.4 本体对象向量化内容
-
-OAG 在内存中解析 ObjectType / Property 及其 SynonymType，先按 2.1.2 生成 canonical `synonyms` 字符串，再按以下顺序构建 Embedding 文本：
-
-```text
-{name}
-{display_zh}
-{display_en}
-{display_lang_1}
-{display_lang_2}
-{description_zh}
-{description_en}
-{description_lang_1}
-{description_lang_2}
-{synonyms}
-```
-
-其中 `{synonyms}` 就是 LF 分隔后的同义词值列表。EmbeddingInputBuilder 可以直接把该字符串作为最后一个文本块追加，不再构造 `synonyms_value` / `synonyms_description` 两个中间字段。
-
-这样可保证：
-
-```text
-OMS 静态构建
-MinIO CSV 动态导入
-        ↓
-都使用同一种 synonyms 物理表达和 Embedding 规则
-```
-
-SynonymType 的 `name/display/description` 不再额外重复拼接到向量中，避免与所属 ObjectType / Property 自身的 name/display/description 形成重复语义权重。
-
-空字段直接跳过，不写占位字符串。不要把 ObjectType 名称额外强制拼到 Property 向量开头；Property 自身语义、display、description、synonyms 已足够作为主表达。
-
-当前 BGE-M3 向量维度继续沿用 1024。Embedding 批大小和重试次数属于 OAG 工程配置，不进入表 Schema。
-
-### 2.5 多语言槽位与 Synonym 语言规则
-
-#### 2.5.1 Display / Description 最多 4 种语言
-
-```text
-固定语言：zh + en
-额外语言：lang_1 + lang_2
-总计最多 4 种
-```
-
-没有配置某个额外语言时，对应列为空。
-
-#### 2.5.2 Synonym：源模型保留语言，索引模型语言无关
-
-Synonym 的语言规则只在 OMS 源模型层生效：
-
-```text
-OMS SynonymType.synonyms
-  → 最多 3 个 language key
-  → language key 不固定
-  → 每种语言可有多个词
-```
-
-进入 OAG 后统一转换为：
-
-```text
-synonyms = term1<LF>term2<LF>term3...
-```
-
-因此 OAG 物理索引不再存在：
-
-```text
-synonyms.zh
-synonyms.en
-synonyms.es
-synonyms.<language>
-```
-
-也不再通过 language key 对 synonym 做 Dense 过滤或 Lexical 硬过滤。`language_hint` 仍可作用于 display/description Analyzer 和查询理解，但 synonym 字段本身按语言无关文本检索。
-
-如果未来确实需要“按语言返回 synonym”或线上语言级统计，应从 OMS SynonymType 源资产补充上下文，或新增独立冷元数据能力；不应重新把多语言 Map 放回高频检索记录。
-
-### 2.7 `t_oag_{ontology_id}` OpenSearch Index
-
-OpenSearch 与 GaussVector 共享同一业务字段语义：
-
-```text
-type
-id
-parent_id
-name
-display_zh
-display_en
-display_lang_1
-display_lang_2
-description_zh
-description_en
-description_lang_1
-description_lang_2
-synonyms
-```
-
-推荐映射：
-
-| 字段              | OpenSearch 类型      | 说明                                                                      |
-| --------------- | ------------------ | ----------------------------------------------------------------------- |
-| `type`          | `integer`          | 0 ObjectType / 1 Property                                               |
-| `id`            | `keyword`          | 本体 ID                                                                   |
-| `name`          | `keyword` + `text` | Exact / BM25                                                            |
-| `display_*`     | `keyword` + `text` | 多语言显示名                                                                  |
-| `description_*` | `text`             | 多语言描述                                                                   |
-| `synonyms`      | `text` multi-field | 主字段按 LF 切成“整条 synonym token”做 Exact；`synonyms.bm25` 用普通 Analyzer 做 BM25 |
-
-`synonyms` 不再映射为 dynamic object。推荐 Analyzer：
+ObjectType / Property / Enum / Instance 的 `synonyms` 统一使用“整行 Exact + 普通 BM25”双模式：
 
 ```yaml
 analysis:
@@ -859,7 +552,7 @@ analysis:
       filter: [lowercase, asciifolding]
 ```
 
-字段映射示意：
+字段映射：
 
 ```yaml
 synonyms:
@@ -872,198 +565,225 @@ synonyms:
       analyzer: standard
 ```
 
-这样：
+语义：
 
 ```text
-Exact synonym
-  → 查询 synonyms 主字段；一个 LF 行作为一个完整 token
+synonyms 主字段
+  → 一个 LF 行作为一个完整 synonym token
+  → 用于 synonym line-exact
 
-BM25 synonym
-  → 查询 synonyms.bm25；把平铺文本按普通全文规则召回
+synonyms.bm25
+  → 普通全文 Analyzer
+  → 用于 synonym BM25
 ```
 
-检索优先级：
+Synonym 命中统一保留：
 
 ```text
-id/name/display exact
+matched_field = synonyms
+matched_value = 实际命中的 synonym 行
+```
+
+Exact 可直接定位命中行；BM25 命中由 `SynonymMatchResolver` 对原始 `synonyms` 做 LF split，再使用与检索一致的 normalizer 选择最匹配的 `matched_value`，不执行 JSON 反序列化。
+
+### 2.2.5 `language_hint` 与语言检索规则
+
+Query Understanding 可以输出：
+
+```text
+language_hint = BCP 47 language tag / mixed / und
+```
+
+使用规则：
+
+```text
+display / description
+  → 可根据 language_hint 选择 Analyzer 或 Boost
+
+synonyms
+  → 不按 language_hint 硬过滤
+  → 不做 synonyms.<language> Boost
+
+Dense
+  → 不按 language_hint 硬过滤
+
+LLM Rerank
+  → 始终看到原始 Query 与全部候选
+```
+
+由于 OAG `synonyms` 已经平铺，线上不能从字段名反推出 synonym 的源语言；需要语言级统计时，应使用 OMS SynonymType 或离线标注数据。
+
+---
+
+## 2.3 本体对象索引：ObjectType / Property
+
+本体对象使用同一张物理表，通过 `type` 区分 ObjectType 和 Property。
+
+### 2.3.1 GaussVector / OpenSearch 数据结构
+
+```text
+t_oag_{ontology_id}
+```
+
+| 字段 | GaussVector 类型 | OpenSearch 类型 | 非空 | 说明 |
+|---|---|---|---:|---|
+| `vector` | `DOUBLE[]` | - | ✔ | BGE-M3 1024 维向量，仅 GaussVector 保存 |
+| `type` | `INT` | `integer` |  | 0 ObjectType；1 Property |
+| `id` | `VARCHAR(256 CHAR)` | `keyword` | ✔ | ObjectType / Property 全局唯一 ID，也是业务键 |
+| `parent_id` | `VARCHAR(256 CHAR)` | `keyword` |  | Property 所属 ObjectType.id；ObjectType 可空 |
+| `name` | `VARCHAR(256 CHAR)` | `keyword + text` |  | 本体真实名称，支持 Exact / BM25 |
+| `display_zh` | `VARCHAR(512 CHAR)` | `keyword + text` |  | 中文显示名 |
+| `display_en` | `VARCHAR(512 CHAR)` | `keyword + text` |  | 英文显示名 |
+| `display_lang_1` | `VARCHAR(512 CHAR)` | `keyword + text` |  | 第 1 个额外语言显示名 |
+| `display_lang_2` | `VARCHAR(512 CHAR)` | `keyword + text` |  | 第 2 个额外语言显示名 |
+| `description_zh` | `VARCHAR(1024 CHAR)` | `text` |  | 中文描述 |
+| `description_en` | `VARCHAR(1024 CHAR)` | `text` |  | 英文描述 |
+| `description_lang_1` | `VARCHAR(1024 CHAR)` | `text` |  | 第 1 个额外语言描述 |
+| `description_lang_2` | `VARCHAR(1024 CHAR)` | `text` |  | 第 2 个额外语言描述 |
+| `synonyms` | `TEXT` | `text multi-field` |  | LF 分隔同义词；主字段 Exact，`.bm25` 全文检索 |
+
+Schema 必须逐语言列展开，不使用 `display_zh/en/lang_1/lang_2` 或 `description_zh/en/lang_1/lang_2` 这种合并字段定义。
+
+### 2.3.2 向量化内容和规则
+
+Embedding 文本固定按以下顺序拼接：
+
+```text
+{name}
+{display_zh}
+{display_en}
+{display_lang_1}
+{display_lang_2}
+{description_zh}
+{description_en}
+{description_lang_1}
+{description_lang_2}
+{synonyms}
+```
+
+规则：
+
+1. 使用 BGE-M3，向量维度 1024；
+2. 空字段直接跳过，不写占位字符串；
+3. `{synonyms}` 使用 2.2.2 生成的 canonical LF String；
+4. SynonymType 自身 `name / display / description` 不重复加入 Embedding；
+5. Property 不额外强制拼接所属 ObjectType 名称，避免父对象语义重复注入；
+6. Embedding Batch、重试等属于第 3 / 7 章工程配置，不进入 Schema。
+
+### 2.3.3 全文索引内容和规则
+
+OpenSearch 检索字段：
+
+```text
+Exact / Filter:
+  id
+  type
+  parent_id
+  name.keyword
+  display_*.keyword
+  synonyms
+
+BM25 / Phrase:
+  name
+  display_*
+  description_*
+  synonyms.bm25
+```
+
+推荐优先级：
+
+```text
+id / name / display exact
 > synonyms line-exact
-> name/display phrase/BM25
+> name / display phrase/BM25
 > synonyms.bm25
 > description BM25
 ```
 
-Synonym 命中统一返回：
+Property 检索时使用 `type=1 + parent_id=<ObjectType.id>` 约束所属 ObjectType 范围，避免跨 ObjectType 错挂 Property。
+
+### 2.3.4 索引存储具体实现
+
+GaussVector：
 
 ```text
-matched_field = synonyms
-matched_value = 实际命中的某一行 synonym
+ANN：GsIVFFLAT
+Distance：COSINE
+适用规模：约 1*10^4 ～ 2*10^6
+IVF_NLIST 推荐初值：4 * sqrt(N)
+N = 当前物理表实际记录数
 ```
 
-Exact 命中可以直接定位匹配行；BM25 命中由 `SynonymMatchResolver` 对 `synonyms` 做一次 LF split，并用与检索一致的 normalizer 在候选行中选出最匹配的 `matched_value`。这一步是简单字符串处理，不再执行 JSON 反序列化。
-
-不再使用扁平 `i18n_content`，也不再建立 `synonyms.*` dynamic template。
-
-### 2.8 `t_oag_enum_{ontology_id}`：Enum Value 模型与表结构
-
-t_oag_enum 只承载本体模型中定义的枚举值。
-
-#### 2.8.1 EnumType 源结构
-
-```json
-{
-  "id": "ei.veh12.enum.Col35.1",
-  "name": "Color",
-  "display": {
-    "en": "Color",
-    "zh": "颜色"
-  },
-  "description": {
-    "en": "Vehicle body color enumeration",
-    "zh": "车身颜色枚举"
-  },
-  "status": "ACTIVE",
-  "creatorByOntology": "vehicle",
-  "valueType": "string",
-  "refSynonymTypeId": "term-color-synonyms",
-  "values": [
-    {
-      "id": "ei.veh12.enum.Col35.val.red8.1",
-      "code": "0",
-      "value": "red",
-      "description": {
-        "en": "Red color",
-        "zh": "红色"
-      },
-      "order": 1,
-      "refSynonymTypeId": "term-color-red-synonyms"
-    },
-    {
-      "id": "ei.veh12.enum.Col35.val.blue9.1",
-      "value": "blue",
-      "description": {
-        "en": "Blue color",
-        "zh": "蓝色"
-      },
-      "order": 2,
-      "refSynonymTypeId": "term-color-blue-synonyms"
-    }
-  ],
-  "extensions": {}
-}
-```
-
-真正进入 `t_oag_enum_{ontology_id}` 的粒度是 `values[]` 中的每个枚举值。
-
-#### 2.8.2 SynonymType 源结构与索引转换
-
-OMS SynonymType 仍保留结构化多语言信息：
-
-```json
-{
-  "id": "term-color-red-synonyms",
-  "name": "color-red-synonyms",
-  "display": {
-    "zh": "红色近义词",
-    "en": "Red Synonyms"
-  },
-  "description": {
-    "zh": "红色相关术语",
-    "en": "Synonyms for red"
-  },
-  "synonyms": {
-    "zh": ["红", "赤色"],
-    "en": ["Red"],
-    "es": ["Rojo"]
-  },
-  "status": "ACTIVE"
-}
-```
-
-OMS 源模型仍要求 `synonyms` 最多 3 个 language key，语言不固定。OAG 建索引时只把 synonym values 平铺：
+OpenSearch：
 
 ```text
-红
-赤色
-Red
-Rojo
+_id = id
+业务过滤字段：type / parent_id
+全文字段：name / display_* / description_* / synonyms
 ```
 
-最终 `t_oag_enum_{ontology_id}.synonyms` 保存：
+GaussVector 与 OpenSearch 都以 `id` 做幂等覆盖和删除定位。
 
-```text
-红\n赤色\nRed\nRojo
-```
+### 2.3.5 注意事项
 
-其中不再包含 language key、JSON Object 或 Array。
+- Property → ObjectType 优先使用 `parent_id`，并由 GraphTopologyCache / `has_property` 做拓扑校验；
+- `synonyms` 是所属 ObjectType / Property 的内嵌字段，不建立独立 synonym 记录；
+- 不再使用扁平 `i18n_content`，也不建立 `synonyms.*` dynamic template；
+- `name / display / description / synonyms` 负责语义召回，`id / parent_id / type` 负责确定性身份和归属。
 
-#### 2.8.3 Property 引用 Enum
+---
 
-```json
-{
-  "id": "prop:ont:vehicle:sp:bodyColor",
-  "name": "bodyColor",
-  "display": {
-    "en": "Body Color",
-    "zh": "车身颜色"
-  },
-  "description": {
-    "en": "Vehicle body color",
-    "zh": "车身颜色"
-  },
-  "dataType": "enum",
-  "valueType": "string",
-  "referenceEnumName": "Color",
-  "referenceEnumId": "ei.vehicle.enum.Color.1",
-  "extensions": {}
-}
-```
+## 2.4 枚举元素索引：Enum Value
 
-OAG 按：
+`t_oag_enum_{ontology_id}` 只承载本体模型中真正定义的 Enum Value，不承载 EnumType 管理对象本身。
+
+### 2.4.1 数据来源与 GaussVector / OpenSearch 数据结构
+
+索引展开链路：
 
 ```text
 Property.referenceEnumId
   → EnumType.values[]
+  → EnumValue.value
   → EnumValue.refSynonymTypeId
   → SynonymType.synonyms
   → SynonymFlattener
-  → LF String
+  → t_oag_enum_{ontology_id}
 ```
 
-展开索引。
-
-#### 2.8.4 向量库 表结构
+真正入索引的粒度是 `EnumType.values[]` 的每一个枚举值。如果同一个 EnumType 被多个 Property 复用，必须按照实际引用 Property 展开为多条归属明确的记录。
 
 ```text
 t_oag_enum_{ontology_id}
 ```
 
-| 字段                   | 类型                   | 非空  | 说明                                   |
-| -------------------- | -------------------- | --- | ------------------------------------ |
-| `vector`             | `DOUBLE[]`           | ✔   | Enum Value 向量                        |
-| `value`              | `VARCHAR(4096 CHAR)` |     | 真实枚举值                                |
-| `property_id`        | `VARCHAR(512 CHAR)`  | ✔   | 引用该 Enum 的 Property.id               |
-| `object_type_id`     | `VARCHAR(256 CHAR)`  |     | Property 所属 ObjectType.id            |
-| `display_zh`         | `VARCHAR(512 CHAR)`  |     | 中文 display                           |
-| `display_en`         | `VARCHAR(512 CHAR)`  |     | 英文 display                           |
-| `display_lang_1`     | `VARCHAR(512 CHAR)`  |     | 额外语言 1 display                       |
-| `display_lang_2`     | `VARCHAR(512 CHAR)`  |     | 额外语言 2 display                       |
-| `description_zh`     | `TEXT`               |     | 中文 description                       |
-| `description_en`     | `TEXT`               |     | 英文 description                       |
-| `description_lang_1` | `TEXT`               |     | 额外语言 1 description                   |
-| `description_lang_2` | `TEXT`               |     | 额外语言 2 description                   |
-| `synonyms`           | `TEXT`               |     | LF 分隔的 Enum Value 同义词平铺字符串           |
+| 字段 | GaussVector 类型 | OpenSearch 类型 | 非空 | 说明 |
+|---|---|---|---:|---|
+| `vector` | `DOUBLE[]` | - | ✔ | Enum Value 1024 维向量，仅 GaussVector 保存 |
+| `value` | `VARCHAR(4096 CHAR)` | `keyword + text` |  | 真实标准枚举值，是权威过滤值 |
+| `property_id` | `VARCHAR(512 CHAR)` | `keyword` | ✔ | 引用该 Enum 的 Property.id |
+| `object_type_id` | `VARCHAR(256 CHAR)` | `keyword` |  | Property 所属 ObjectType.id |
+| `display_zh` | `VARCHAR(512 CHAR)` | `keyword + text` |  | 中文 display |
+| `display_en` | `VARCHAR(512 CHAR)` | `keyword + text` |  | 英文 display |
+| `display_lang_1` | `VARCHAR(512 CHAR)` | `keyword + text` |  | 第 1 个额外语言 display |
+| `display_lang_2` | `VARCHAR(512 CHAR)` | `keyword + text` |  | 第 2 个额外语言 display |
+| `description_zh` | `TEXT` | `text` |  | 中文 description |
+| `description_en` | `TEXT` | `text` |  | 英文 description |
+| `description_lang_1` | `TEXT` | `text` |  | 第 1 个额外语言 description |
+| `description_lang_2` | `TEXT` | `text` |  | 第 2 个额外语言 description |
+| `synonyms` | `TEXT` | `text multi-field` |  | LF 分隔的 Enum Value 同义词 |
 
-如果一个 EnumType 被多个 Property 复用，需要按实际引用 Property 展开记录。Evidence 不重新引入 `id/parent_id`；业务定位和数据库唯一性统一使用：
+业务唯一键：
 
 ```text
-objectTypeId + propertyId + normalized(value)
+object_type_id + property_id + normalized(value)
 ```
 
-`values[].id` 仍可用于 OMS 源数据追踪和质量校验，但不作为 `t_oag_enum_{ontology_id}` 的持久化字段。
+`values[].id` 可用于 OMS 源数据追踪和质量校验，但不作为 `t_oag_enum_{ontology_id}` 持久化字段。SearchHit 层的 `recordType=ENUM_VALUE` 由 Normalizer 统一补充，不要求为此增加物理 `type` 字段。
 
-### 2.9 Enum Value 向量化规则
+### 2.4.2 向量化内容和规则
 
-每个 `values[]` 元素按以下内容生成一个向量：
+每个 Enum Value 独立生成一个向量：
 
 ```text
 {value}
@@ -1078,50 +798,215 @@ objectTypeId + propertyId + normalized(value)
 {synonyms}
 ```
 
-其中 `{synonyms}` 为当前 Enum Value 关联 SynonymType 经 2.1.2 规则平铺后的 LF String。
+规则：
 
-向量顺序坚持：
+1. **Value First**：真实 `value` 始终放在首行；
+2. Display / Description / Synonyms 用于增强自然语言和多语言召回；
+3. `{synonyms}` 使用 LF 平铺 String；
+4. 不再构造 `synonyms_value / synonyms_description`；
+5. 不追加 SynonymType 自身 `name / display / description`；
+6. 不在向量前追加 ObjectType / Property 文本，归属由 `property_id + object_type_id` 确定；
+7. 空字段跳过，不写占位值。
+
+### 2.4.3 全文索引内容和规则
+
+OpenSearch 检索字段：
 
 ```text
-Value First
-→ Name（存在时）/ Display
-→ Description
-→ Synonyms
+Exact / Filter:
+  property_id
+  object_type_id
+  value.keyword
+  display_*.keyword
+  synonyms
+
+BM25 / Phrase:
+  value
+  display_*
+  description_*
+  synonyms.bm25
 ```
 
-不再构造 `synonyms_value` / `synonyms_description`，也不把 SynonymType 自身的 name/display/description 追加到向量文本。
+推荐优先级：
 
-不在向量文本开头追加 ObjectType / Property 文本；`propertyId + objectTypeId` 已提供确定性归属。
+```text
+value exact
+> display exact
+> synonyms line-exact
+> value / display phrase/BM25
+> synonyms.bm25
+> description BM25
+```
 
-### 2.10 `t_oag_instance_{ontology_id}` 实例列值表结构
+命中 display / synonym 时，最终结果仍必须返回真实 `value`；`matched_field / matched_value` 只用于说明用户实际命中了哪一种表达。
 
-实例索引保存去重后的真实列值及其内嵌同义词，每条记录直接携带所属 Property 和 ObjectType。`synonyms` 不建立独立物理行，真实过滤值始终使用 `value`。
+### 2.4.4 索引存储具体实现
+
+GaussVector：
+
+```text
+ANN：GsIVFFLAT
+Distance：COSINE
+推荐规模：约 1*10^4 ～ 2*10^6
+IVF_NLIST 推荐初值：4 * sqrt(N)
+```
+
+数据库唯一性和 OpenSearch `_id` 均基于：
+
+```text
+object_type_id + property_id + normalized(value)
+```
+
+同一业务键再次 UPSERT 时覆盖原记录，包括 `display / description / synonyms / vector`；同义词变化不会生成新的 Enum 记录。
+
+### 2.4.5 注意事项
+
+- `value` 是唯一权威业务过滤值，display / description / synonyms 只负责召回、排序和解释；
+- 一个 EnumType 被多个 Property 引用时必须展开，不能只按 EnumType/value 全局去重；
+- Enum synonym 不建立独立记录；
+- Enum / Property / ObjectType 的归属信息必须在入库前完成 Ontology Mapping 校验；
+- 物理 Schema 按语言字段逐列展开，不能重新合并成多语言 JSON 对象。
+
+---
+
+## 2.5 实例元素索引：Instance Value
+
+Instance 索引保存去重后的真实业务列值及其内嵌同义词，不保存整行业务数据。
+
+### 2.5.1 数据范围与 GaussVector / OpenSearch 数据结构
+
+入库粒度：
+
+```text
+同一个 Property / ObjectType 作用域内
+按 normalized(value) 去重
+每个真实 Instance Value 保存 1 条记录
+```
+
+例如 5000 万条 Subscriber 数据中，如果 `subLevel` 最终只有 `VIP / GOLD / SILVER / NORMAL` 四个唯一值，则该 Property 最终只保存 4 条实例语义索引记录。
 
 ```text
 t_oag_instance_{ontology_id}
 ```
 
-| 字段               | 类型                   | 非空  | 说明                        |
-| ---------------- | -------------------- | --- | ------------------------- |
-| `vector`         | `DOUBLE[]`           | ✔   | Instance Value 向量         |
-| `value`          | `VARCHAR(4096 CHAR)` |     | 去重后的真实列值                  |
-| `synonyms`       | `TEXT`               |     | 实例值同义词，LF 分隔平铺字符串；仅用于召回与解释 |
-| `property_id`    | `VARCHAR(512 CHAR)`  | ✔   | 所属 Property.id            |
-| `object_type_id` | `VARCHAR(256 CHAR)`  |     | Property 所属 ObjectType.id |
+| 字段 | GaussVector 类型 | OpenSearch 类型 | 非空 | 说明 |
+|---|---|---|---:|---|
+| `vector` | `DOUBLE[]` | - | ✔ | Instance Value 1024 维向量，仅 GaussVector 保存 |
+| `value` | `VARCHAR(4096 CHAR)` | `keyword + text` | ✔ | 去重后的真实标准列值，是权威过滤值 |
+| `synonyms` | `TEXT` | `text multi-field` |  | 实例值同义词，LF 分隔；用于召回与解释 |
+| `property_id` | `VARCHAR(512 CHAR)` | `keyword` | ✔ | 所属 Property.id |
+| `object_type_id` | `VARCHAR(256 CHAR)` | `keyword` |  | Property 所属 ObjectType.id |
 
-**实例值多归属演进方案：** 当前版本不要求 `value` 单列全局唯一，同一个规范化值如果属于多组 Property/ObjectType，允许保存多条物理记录，业务唯一键使用 `(normalized_value, property_id, object_type_id)`，从而避免数组字段导致的更新放大和索引过滤复杂化。
+业务唯一键：
 
-未来如果业务明确要求“一个 value 只保存一份向量”，升级为**值表 + 归属映射表**两层模型，而不是直接把 `property_id/object_type_id` 改成数组：
+```text
+object_type_id + property_id + normalized(value)
+```
+
+`synonyms` 不参与业务唯一键。SearchHit 层的 `recordType=INSTANCE_VALUE` 由 Normalizer 统一补充，不要求增加物理 `type` 字段。
+
+### 2.5.2 向量化内容和规则
+
+Instance Dense 只使用真实值及其同义词：
+
+```text
+{value}
+{synonyms}
+```
+
+规则：
+
+1. `value` 必须放在首行并作为主语义；
+2. `synonyms` 只增强别名、黑话、业务俗称的 Dense 召回；
+3. 不拼接 Property / ObjectType 名称、display、description，归属由结构字段确定；
+4. Instance 不配置 `display_* / description_*` 多语言字段；
+5. 对 Struct 等组合值，使用规范化后的可读 `value` 表达作为 `{value}`，不额外注入父对象文本。
+
+### 2.5.3 全文索引内容和规则
+
+OpenSearch 检索字段：
+
+```text
+Exact / Filter:
+  property_id
+  object_type_id
+  value.keyword
+  synonyms
+
+BM25:
+  value
+  synonyms.bm25
+```
+
+推荐优先级：
+
+```text
+value exact
+> synonyms line-exact
+> value BM25
+> synonyms.bm25
+```
+
+命中 synonym 时统一返回：
+
+```text
+matched_field = synonyms
+matched_value = 实际命中的实例同义词
+value         = 真实标准实例值
+```
+
+下游过滤条件和 `semanticExtensions.valueMappings[].canonicalValue` 始终使用 `value`，不能使用 synonym 作为真实过滤值。
+
+### 2.5.4 索引存储具体实现
+
+#### 当前实现
+
+当前版本使用单张 `t_oag_instance_{ontology_id}`，同一个规范化值如果属于多组 Property / ObjectType，允许保存多条物理记录：
+
+```text
+(value=A, property=P1, objectType=O1)
+(value=A, property=P2, objectType=O2)
+```
+
+这样可以避免 `property_id / object_type_id` 数组化带来的更新放大和索引过滤复杂度。
+
+GaussVector ANN：
+
+```text
+中小规模：GsIVFFLAT + COSINE
+千万 / 亿级：GsDiskANN
+```
+
+OpenSearch `_id` 与 GaussVector 幂等键均由：
+
+```text
+object_type_id + property_id + normalized(value)
+```
+
+确定。
+
+#### 容量与分表演进
+
+当前正式方案：
+
+```text
+单表 + 产品规格约束
+```
+
+达到单表容量或性能上限后，优先评估水平拆分；按 ObjectType 分表作为备选，不能在没有容量数据时提前制造大量物理表。
+
+如果未来明确要求“同一个 value 只保存一份向量”，演进为值表 + 归属映射表：
 
 ```text
 t_oag_instance_value_{ontology_id}
   value_id
   normalized_value UNIQUE
   value
+  synonyms
   vector
 
-    1 : N
-      ↓
+        1 : N
+          ↓
 
 t_oag_instance_binding_{ontology_id}
   value_id
@@ -1130,18 +1015,20 @@ t_oag_instance_binding_{ontology_id}
   UNIQUE(value_id, property_id, object_type_id)
 ```
 
-查询链路：先在 Value 表执行 Exact/BM25/Dense 召回得到 `value_id`，再批量查询 Binding 表展开成多组 `(property_id, object_type_id)`，随后按当前 ObjectType/Property 上下文进入 RRF/LLM 消歧。对上层统一预留 `ownerships[]` 逻辑结构；当前“一值多行”实现也在 Normalizer 层聚合成同一逻辑候选，因此未来切换两层存储不改变 Entity Linking 和子图构建接口。
+查询链路：
 
-当前方案，实例数据先放在一张表里面，不同列做语义放在一个表里面，并明确数据量规模和性能规格，对于拆表方案，后续随着需求驱动。
-分表策略：水平拆分，达到一个上限后分表
-候选方案：
-1、水平拆
-2、按照对象分表
-3、不拆，规格约束
+```text
+Value 表 Exact/BM25/Dense
+  → value_id
+  → Binding 批量展开 property_id / object_type_id
+  → Entity Linking / RRF / LLM 消歧
+```
 
-### 2.11 Instance Value 向量准入规则
+存储演进不能改变上层 Entity Linking 和 `semanticExtensions.valueMappings` 的结果语义。
 
-Property 中的 `"capability":"DIMENSION"` 是实例列值进入向量索引的准入标识，同时还需要满足数据类型和值形态约束：
+### 2.5.5 注意事项：索引准入与高基数控制
+
+Instance Value 进入语义索引的基础准入条件：
 
 ```text
 instance_index_enabled =
@@ -1151,9 +1038,7 @@ instance_index_enabled =
   AND cardinality_eligible
 ```
 
-向量库最终必须保证实例值记录不重复。业务服务 比如软件的 DataSync 可以在源侧先做去重，OAG 在写入 `t_oag_instance_{ontology_id}` 前仍必须按 `objectTypeId + propertyid + normalized(value)` 再次去重并使用幂等 UPSERT。例：5000 万 Subscriber 行中 `subLevel` 只有 VIP/GOLD/SILVER/NORMAL，最终向量库只保留 4 条唯一实例值记录。
-
-默认不向量化：
+默认不建议向量化：
 
 ```text
 UUID
@@ -1174,205 +1059,37 @@ UUID
 区域名称
 业务状态
 自然语言标签
-人可理解业务分类
+人可理解的业务分类
 ```
 
-高基数自由文本进入单独 Document/RAG Index，不进入本体对象 Resolver 的 Instance Value Index。
+高基数自由文本进入单独 Document / RAG Index，不进入 Instance Value Resolver。
 
+DataSync / 业务服务可以源侧预去重，但 OAG 写入前仍必须按 `object_type_id + property_id + normalized(value)` 再次去重并执行幂等 UPSERT。
 
-### 2.12 Instance Value 向量化内容
+---
 
-实例列值 Dense 内容使用：
+## 2.6 三类索引统一存储与治理
 
-```text
-{value}
-{synonyms}
-```
+### 2.6.1 幂等 UPSERT / DELETE 与 Generation
 
-`value` 必须放在首行并作为主语义；`synonyms` 仅增强别名、黑话和业务俗称召回。Property/ObjectType 归属直接由记录中的 `propertyid + objectTypeId` 提供，禁止额外拼接 Property/ObjectType 名称或描述。
-
-可以只用组合的Struct 结构的value。
-
-### 2.13 Enum / Instance OpenSearch Index
-
-#### `t_oag_enum_{ontology_id}`
-
-核心字段与 GaussVector 一致：
-
-```text
-type
-propertyId
-objectTypeId
-value
-display_zh
-display_en
-display_lang_1
-display_lang_2
-description_zh
-description_en
-description_lang_1
-description_lang_2
-synonyms
-```
-
-Exact 优先：
-
-```text
-propertyId
-objectTypeId
-value.keyword
-display_*.keyword
-synonyms（synonym_line_analyzer，一行一个完整 synonym token）
-```
-
-BM25：
-
-```text
-display_*
-description_*
-synonyms.bm25
-```
-
-枚举元素的 `synonyms` 映射与 2.7 完全一致，不再使用按语言展开的 keyword 子字段或语言 dynamic object。
-
-#### `t_oag_instance_{ontology_id}`
-
-核心字段：
-
-```text
-type          integer
-propertyid    keyword
-objectTypeId  keyword
-value         keyword + text
-synonyms      text multi-field
-```
-
-Exact 主要搜索 `propertyid/objectTypeId/value.keyword` 和 `synonyms` 的整行 synonym token；BM25 搜索 `value` 与 `synonyms.bm25`。命中 synonym 时返回 `matched_field=synonyms`、`matched_value=实际命中同义词`，真实过滤值仍返回 `value`.
-
-### 2.14 规范化规则
-
-规范化属于索引构建/查询处理逻辑，不增加额外持久化字段：
-
-```text
-trim
-Unicode normalize
-casefold（适用语言）
-连续空白归一
-全半角归一
-```
-
-`name/value/display/description` 保留原始业务文本。OMS 中原始 SynonymType 多语言结构继续由 OMS 维护；OAG 的 `synonyms` 保存规范化展开后的 canonical LF String。
-
-SynonymFlattener 处理规则：
-
-```text
-CRLF / CR → LF
-按 LF 切分
-trim
-去空行
-按基础规范化值去重，保留首次出现原文
-重新 LF join
-```
-
-OpenSearch 使用 2.7 的 line analyzer / BM25 multi-field；GaussVector 在 Embedding 前直接使用同一 canonical `synonyms`，避免不同存储各自做一套解析。
-
-### 2.15 language_hint 与语言槽位
-
-查询理解阶段仍可以输出：
-
-```text
-language_hint = BCP 47 language tag / mixed / und
-```
-
-物理存储分三种情况：
-
-```text
-本体对象 / Enum Value display、description
-  → zh/en 固定 + lang_1/lang_2 两个 ontology 级语言槽位
-
-SynonymType 源资产
-  → OMS 中保留 language Map，最多 3 个 language key
-
-OAG synonyms 热索引
-  → 单个 LF 分隔 String，不保留 language key
-
-Instance Value
-  → value + LF 平铺 synonyms；不配置 display/description 多语言列，language 仅作为可选观测/Analyzer Hint
-```
-
-检索规则：
-
-```text
-display/description 可根据 language_hint 选择 Analyzer 或 Boost
-synonyms 不按 language_hint 硬过滤，也不做 synonyms.<language> Boost
-Dense 不按 language_hint 过滤
-LLM 精排继续看到原始问题和所有候选
-```
-
-因此 `matched_field` 对 synonym 统一为 `synonyms`；如果需要知道该同义词在 OMS 中原本属于哪种语言，只能通过源 SynonymType 或离线标注补充，不能从热索引字段名反推。
-
-### 2.16 数据质量治理
-
-OAG 元数据同步阶段必须先校验 OMS 源结构，再校验平铺后的热索引值。
-
-#### OMS SynonymType 源结构校验
-
-```text
-ObjectType / Property id 重复或缺失
-name/display/description 格式非法
-additionalLanguages 槽位配置不一致
-SynonymType.synonyms language key 数 > 3
-language key 非法或不符合约定的 BCP 47 风格
-同一 language 内 synonym 重复
-synonym 与 canonical name/display 完全重复
-同一业务范围内 synonym 映射冲突
-Enum Ref 不存在
-Enum values[].id/value 源数据重复
-Enum Value.refSynonymTypeId 不存在
-Property.referenceEnumId 不存在
-Parent ObjectType 缺失
-```
-
-#### OAG 平铺 synonyms 校验
-
-```text
-统一 CRLF/CR 为 LF
-禁止空 synonym 行进入索引
-去除首尾空白
-规范化后重复 synonym 只保留第一次出现的原文
-禁止 JSON Object / JSON Array 形式写入 synonyms 热字段
-字段总长度和 synonym 数量受服务配置保护
-```
-
-动态 REST/CSV 已经不携带 language key，因此只能执行平铺值质量校验，不能在 OAG API 层声称“校验动态 synonyms 最多 3 种语言”。该限制属于 OMS SynonymType 源建模约束。
-
-冲突处理原则：不能静默覆盖，必须可观测；严重结构错误阻断当前记录或当前批次入库。
-
-DataSync 实例值额外检查：
-
-```text
-空 value
-超长 value
-unique_value_count
-同一 objectTypeId + propertyid 下重复 value
-高基数
-无意义随机串
-非法 UTF-8
-```
-
-### 2.17 增量索引与幂等
-
-三类表按各自稳定业务键做幂等 UPSERT / DELETE：
+三类索引的稳定键：
 
 ```text
 本体对象：id
-Enum Value：objectTypeId + propertyId + normalized(value)
-Instance Value：objectTypeId + propertyid + normalized(value)
+Enum Value：object_type_id + property_id + normalized(value)
+Instance Value：object_type_id + property_id + normalized(value)
 ```
 
-同一业务键重复 UPSERT 必须覆盖当前记录而不是新增重复向量；`synonyms` 以 canonical LF String 整字段覆盖，不执行 Map merge。DELETE 必须同时删除 GaussVector 与 OpenSearch 中对应记录。
+统一规则：
 
-不在记录中保留：
+1. GaussVector 和 OpenSearch 使用同一稳定业务键；
+2. 重复 UPSERT 必须覆盖原记录，不能追加重复向量或全文文档；
+3. `synonyms` 以 canonical LF String 整字段覆盖，不做语言 Map merge；
+4. DELETE 必须同时删除 GaussVector 与 OpenSearch 中对应记录；
+5. OpenSearch 使用稳定业务键生成确定性 `_id`；
+6. 双写一致性、Chunk 重放和 Publish 由第 3 章统一保证。
+
+每条索引记录不额外保存：
 
 ```text
 content_hash
@@ -1381,56 +1098,120 @@ source_version
 updated_at
 ```
 
-版本和构建信息统一放到 OAG 的 Import Job / Generation 元数据，不进入每条向量记录。
-
-Embedding 模型升级时：
+版本、模型和构建信息统一由 Import Job / Generation 管理。Embedding 模型升级时：
 
 ```text
-创建新的 Generation
+创建新 Generation
 → 全量重新 Embedding
 → Verify
-→ 原子发布
+→ 原子 Publish
 ```
 
-如果未来需要“内容未变化则跳过 Embedding”，可以作为 OAG 内部缓存优化实现，但不扩展业务表 Schema。
+### 2.6.2 数据质量治理
 
-### 2.18 GaussVector 索引算法
-
-本体对象 / 枚举元素：
+OMS / OAG 建索引前至少校验：
 
 ```text
-GsIVFFLAT
-COSINE
+ObjectType / Property id 重复或缺失
+name / display / description 格式非法
+additionalLanguages 槽位配置不一致
+SynonymType.synonyms language key 数 > 3
+language key 非法或不符合 BCP 47 约定
+同一 language 内 synonym 重复
+synonym 与 canonical name/display 完全重复
+同一业务范围内 synonym 映射冲突
+Enum Ref 不存在
+Enum values[].id / value 源数据重复
+Enum Value.refSynonymTypeId 不存在
+Property.referenceEnumId 不存在
+Parent ObjectType 缺失
 ```
 
-适用规模：
+OAG `synonyms` 热字段额外校验：
 
 ```text
-约 1*10^4 ～ 2*10^6
+CRLF / CR 统一为 LF
+禁止空 synonym 行
+去除首尾空白
+规范化后重复 synonym 只保留第一次出现的原文
+禁止 JSON Object / JSON Array 写入 synonyms
+字段总长度和 synonym 数量受服务配置保护
 ```
 
-推荐：
+动态 REST / CSV 已经不携带 language key，因此只能校验平铺值，不能在 OAG API 层声明“动态 synonyms 最多 3 种语言”；该约束属于 OMS SynonymType 源模型。
+
+Instance 额外检查：
 
 ```text
-IVF_NLIST = 4 * sqrt(N)
+空 value
+超长 value
+unique_value_count
+同一 object_type_id + property_id 下重复 value
+高基数
+无意义随机串
+非法 UTF-8
 ```
 
-其中：
+严重结构错误必须阻断当前记录或批次，不能静默覆盖；冲突必须可观测。
+
+### 2.6.3 本体归属、检索结果与拓扑投影
 
 ```text
-N = 当前物理表实际记录数
+ObjectType
+  → id 直接定位
+
+Property
+  → parent_id
+  → GraphTopologyCache / has_property 双重校验
+
+Enum Value / Instance Value
+  → property_id + object_type_id 直接记录归属
 ```
 
-实例元素：
+SearchHit 在进入 RRF 前必须保留：
 
 ```text
-中小规模 → GsIVFFLAT
-千万 / 亿级 → GsDiskANN
+recordType
+id / propertyId / objectTypeId / value
+matched_field
+matched_value
+channel
+rank / rawScore
 ```
 
-枚举元素与实例元素分表的一个核心原因就是允许 ANN 算法独立演进。
+其中 `recordType` 是检索归一化字段，不要求所有物理表都持久化 `type`。
 
----
+SeedNodeProjector 规则：
+
+```text
+ObjectType      → ObjectType
+Property        → Property + 所属 ObjectType
+Enum Value      → Property + 所属 ObjectType
+Instance Value  → Property + 所属 ObjectType
+```
+
+Enum / Instance 作为最终语义证据和 ValueMapping 来源保留，但不直接成为最短路径、K-hop、Connected Component 的拓扑顶点。
+
+### 2.6.4 存储选型汇总
+
+| 类型 | Dense 主内容 | Lexical 主内容 | GaussVector ANN | 主要过滤字段 |
+|---|---|---|---|---|
+| 本体对象 | name + display + description + synonyms | id/name/display/description/synonyms | `GsIVFFLAT + COSINE` | `type / parent_id` |
+| Enum Value | value + display + description + synonyms | value/display/description/synonyms | `GsIVFFLAT + COSINE` | `object_type_id / property_id` |
+| Instance Value | value + synonyms | value/synonyms | 中小规模 `GsIVFFLAT`；千万/亿级 `GsDiskANN` | `object_type_id / property_id` |
+
+### 2.6.5 关键注意事项
+
+1. **三类稳定实体、三套物理索引**，不要把 Enum/Instance 混入本体对象表；
+2. **Dense 与 Lexical 共用同一业务数据模型**，不能维护两套字段语义；
+3. **多语言字段按列展开**：固定 zh/en + lang_1/lang_2；Instance 不配置 display/description 多语言列；
+4. **Synonym 内嵌而不独立建记录**，OAG 中统一为 LF String；
+5. **Enum/Instance 的真实过滤值始终是 `value`**，synonym/display 只能用于召回和解释；
+6. **Instance 向量只使用 value + synonyms**，不拼 Property/ObjectType 文本；
+7. **业务唯一键不包含 synonyms**，同义词变化只能覆盖现有业务记录；
+8. **ANN 参数按表规模独立配置**，实例表不能机械复用本体对象表的 ANN 参数；
+9. **Property 作用域必须由 parent_id / object_type_id 约束**，避免跨对象错误链接；
+10. **版本信息放 Generation / Import Job**，不向每条向量记录扩散运维字段。
 
 ---
 
@@ -3802,7 +3583,7 @@ Input → SchemaValidator → OntologyMappingValidator → Normalizer → Dedupl
 
 #### INSTANCE_VALUE
 
-唯一业务范围：`objectTypeId + propertyid + normalized(value)`。Embedding 复用第 2.12 节：`{value}` + `{synonyms}`；`synonyms` 不参与业务唯一键。
+唯一业务范围：`objectTypeId + propertyid + normalized(value)`。Embedding 复用第 2.5.2 节：`{value}` + `{synonyms}`；`synonyms` 不参与业务唯一键。
 
 > **所有导入路径都必须保证同一个业务唯一键最终在 GaussVector 和 OpenSearch 中各只有一条有效记录；GaussVector 由组合唯一索引 + `INSERT ... ON DUPLICATE KEY UPDATE` 提供数据库级兜底。**
 
@@ -4029,7 +3810,7 @@ sequenceDiagram
 5. **`SEED_NODE` 从 OMS 读取；`METADATA_ENUM`、`INSTANCE_VALUE` 在有 OAC 时从 OAC 抽取或由受信任生产者通过 MinIO 交付。**
 6. **首次创建或重建使用 `FULL_REPLACE`；非首次变化数据使用 `INCREMENTAL`。**
 7. **OAC、DataSync 和业务服务不生成 vector；所有 Embedding 均由 OAG 使用当前生效模型统一完成。**
-8. **CSV 核心定位字段与第 2.8/2.10 节一致，不接受外部 vector/type；动态 Enum 导入不再接收 name，synonyms 使用换行分隔平铺字符串。**
+8. **CSV 核心定位字段与第 2.4.1 / 2.5.1 节一致，不接受外部 vector/type；动态 Enum 导入不再接收 name，synonyms 使用换行分隔平铺字符串。**
 9. **MinIO 数据文件统一使用 UTF-8 CSV；同一个 Task 的 `files[]` 必须位于同一 Bucket。**
 10. **生产者与 OAG 约定专用 MinIO Bucket，并使用 S3 API 和 Path-style 访问。**
 11. **索引任务必须先持久化到 GaussDB `T_OAG_INDEX_TASK`，再异步执行。**
