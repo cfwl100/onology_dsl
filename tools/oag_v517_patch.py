@@ -1,0 +1,746 @@
+from pathlib import Path
+
+PATH = Path('docs/OAG本体锚点语义检索与向量索引设计方案.md')
+s = PATH.read_text(encoding='utf-8')
+
+
+def rep(old: str, new: str, label: str):
+    global s
+    n = s.count(old)
+    if n != 1:
+        raise RuntimeError(f'{label}: expected exactly 1 occurrence, got {n}')
+    s = s.replace(old, new, 1)
+
+
+def between(start: str, end: str, new: str, label: str):
+    global s
+    a = s.find(start)
+    if a < 0:
+        raise RuntimeError(f'{label}: start marker not found')
+    b = s.find(end, a + len(start))
+    if b < 0:
+        raise RuntimeError(f'{label}: end marker not found')
+    s = s[:a] + new.rstrip() + '\n' + s[b:]
+
+
+# -----------------------------------------------------------------------------
+# 0. 文档版本：V5.16 附录覆盖 -> V5.17 正文唯一规范
+# -----------------------------------------------------------------------------
+rep('> 版本：V5.16  ', '> 版本：V5.17  ', 'version')
+rep(
+    '> V5.16 检视收敛：**PR #42 检视意见优化方案已完整并入本文附录 A，本文成为唯一权威设计文档。对于 OAC/业务服务数据接入、MinIO 交付、Software/SEC 容量规格、文件摘要算法、Chunk/Checkpoint 恢复等内容，如正文历史段落与附录 A 存在差异，以附录 A 的 V5.16 规范为准；实体提取、Entity Linking、RRF、LLM 精排、PathProbePlan、nGQL 与结果生成设计保持正文定义。**',
+    '> V5.17 收敛：**PR #42 检视意见已按职责完整吸收到正文对应章节，不再通过附录覆盖正文：第 3 章统一 OAC/BUSINESS_NOTICE 数据读取责任、MinIO 唯一动态数据交付协议、Software/SEC 容量、SHA-256 和 Checkpoint 恢复；第 6 章补齐最终 GraphSearchResponse 与 `semanticExtensions.valueMappings`；第 7 章统一配置、观测与验收。本文各章节即为唯一权威规范。**',
+    'header note',
+)
+
+# -----------------------------------------------------------------------------
+# 1. 第 3 章：一种 MinIO 交付协议、两种数据读取责任模式
+# -----------------------------------------------------------------------------
+rep(
+    'OAC 小批/分页结果、MinIO CSV 以及无 OAC 部署保留的兼容 REST Batch 最终都进入同一套 OAG Import Pipeline，不允许分别维护多套 Embedding、去重、GaussVector/OpenSearch 写入和任务状态逻辑。',
+    'OMS 本体资产与动态数据 MinIO CSV 最终都进入同一套 OAG Import Pipeline。动态 Enum/Instance 无论数据规模大小，统一由数据生产方生成不可变 CSV 并通过 MinIO + `index-data/notice` 交付 OAG；OAG 不再维护 OAC 小数据量直接返回记录的运行路径。历史 REST Batch 仅作为存量兼容读取，不作为新任务推荐入口。',
+    'chapter 3 intro',
+)
+
+between(
+    '### 数据源访问模式、容量规格与 DataSeek 对齐结论',
+    '\n\n与 DataSeek/NL2SQL 的对齐采用统一语义值逻辑模型',
+    '''### 数据源访问模式、容量规格与 DataSeek 对齐结论
+
+索引构建对动态 Enum Value / Instance Value 只保留一种数据交付协议：**MinIO CSV + `index-data/notice`**。服务端配置只决定“谁负责访问业务数据源”，不再根据数据量选择是否使用 MinIO：
+
+```yaml
+indexBuild:
+  instanceDataSourceMode: OAC   # OAC | BUSINESS_NOTICE
+```
+
+| 模式 | 谁访问业务数据源 | 固定数据流 | 适用场景 |
+|---|---|---|---|
+| `OAC` | OAC | OAG build → OAC 抽取 → MinIO → notice(triggerTaskId) → OAG | OAC 已具备目标业务数据访问能力 |
+| `BUSINESS_NOTICE` | DataSync / 业务服务 | 业务服务抽取 → MinIO → notice → OAG | OAC 无法访问数据源，或同步责任属于业务域服务 |
+
+不再设计 `OAC_QUERY / MINIO_NOTICE / AUTO / directQueryMaxRows`。数据源责任属于部署/业务架构决策，不应在运行时按单次任务规模动态切换，否则会使权限、故障边界和 SLA 不可预测。**无论 100 条、1 万条还是百万级数据，只要是动态 Enum/Instance，数据生产方均先写 MinIO；小数据量仅意味着文件更小、Chunk/Embedding Batch 更少。**
+
+当前正式产品容量按“源侧业务用户规模”定义，而不是按去重后 Value 数定义：
+
+| 业务档位 | 正式源侧用户规模 | 数据交付 | OAG 内部执行 Profile |
+|---|---:|---|---|
+| Software | ≤ 10,000 用户（1W） | MinIO CSV | `LIGHTWEIGHT_BULK` |
+| SEC | ≤ 1,000,000 用户（100W） | MinIO CSV | `RECOVERABLE_BULK` |
+| 超出 SEC | > 1,000,000 用户 | MinIO CSV | 专项容量/性能评估后开放 |
+
+容量验收必须同时记录：
+
+```text
+sourceUsers
+sourceRows
+semanticProperties
+uniqueValues
+finalIndexRows
+```
+
+`sourceUsers` 用于产品规格约束，`uniqueValues/finalIndexRows` 用于 Embedding、存储和在线检索容量控制。Software/SEC 对外协议完全一致，仅 OAG 内部 Worker、Chunk、Backpressure、Checkpoint 等执行 Profile 不同。''',
+    'section 3.2 data source/capacity',
+)
+
+rep(
+    '三种数据交付方式只在进入 OAG 前不同：OMS 提供种子资产，OAC 可以交付小批/分页记录，OAC/DataSync/业务服务可以通过 MinIO 交付大文件。从 `Schema Validator` 开始统一使用 Normalize/Dedup/Embedding/双写/Verify/Publish 流水线。',
+    '进入 OAG 前只存在两类责任模式：OMS 提供静态本体资产；动态 Enum/Instance 则由 OAC 或 DataSync/业务服务负责访问业务源并统一写入 MinIO。从 `index-data/notice` 开始，两种责任模式完全复用同一套 SchemaValidator → Normalize/Dedup → Embedding → 双写 → Verify/Publish 流水线。',
+    '3.2 diagram conclusion',
+)
+
+between(
+    '### 3.4.2 场景选择矩阵',
+    '\n### 3.4.3 组合一：手动构建/更新索引，经 OAC 抽取',
+    '''### 3.4.2 场景选择矩阵
+
+| 场景 | `instanceDataSourceMode` | 外部调用组合 | `importMode` | 数据交付 |
+|---|---|---|---|---|
+| App 安装触发本体对象索引 | - | OMS 内部事件 → OAG | `FULL_REPLACE` | OMS 本体资产 |
+| 首次全量，有 OAC | `OAC` | build → OAG 触发 OAC → OAC 上传 MinIO + notice(triggerTaskId) → query | `FULL_REPLACE` | MinIO CSV |
+| 人工触发增量，有 OAC | `OAC` | build → OAG 触发 OAC → OAC 上传 MinIO + notice(triggerTaskId) → query | `INCREMENTAL` | MinIO CSV |
+| 定时/事件同步，无 OAC 接入 | `BUSINESS_NOTICE` | 业务服务上传 MinIO → notice → query | `INCREMENTAL` | MinIO CSV |
+| 已有全量文件的首次导入/重建 | `BUSINESS_NOTICE` | 生产者上传 MinIO → notice → query | `FULL_REPLACE` | MinIO CSV |
+| 索引完成后的业务查询 | - | semantic-search | - | 已发布索引 |
+
+`FULL_REPLACE` 用于首次创建或明确重建，`INCREMENTAL` 只提交变化数据。**动态数据大小不再决定外部交付协议**；Software/SEC 均使用 MinIO，仅内部 Bulk Profile 不同。
+''',
+    'section 3.4.2',
+)
+
+s = s.replace('### 3.4.3 组合一：手动构建/更新索引，经 OAC 抽取', '### 3.4.3 组合一：手动构建/更新索引，经 OAC 抽取并统一 MinIO 交付', 1)
+s = s.replace('#### 3.4.3.4 大数据量时序', '#### 3.4.3.4 OAC 模式统一时序（不区分大小数据量）', 1)
+s = s.replace('OAC 关联手动任务的大文件通知示例：', 'OAC 关联手动任务的文件通知示例：', 1)
+
+rep(
+    '对于百万/千万级实例值及大规模枚举数据，默认使用 MinIO 文件通道：',
+    '对于动态 Enum Value / Instance Value，正式协议统一使用 MinIO 文件通道；百万/千万级必须 Streaming，小数据量也不切换为 OAC 记录直返：',
+    'section 3.5 intro',
+)
+
+# SHA-256 vs MD5 / ETag
+sha_anchor = '同一个任务恢复时必须再次确认 `objectKey + size + sha256` 未变化。'
+rep(
+    sha_anchor,
+    sha_anchor + '''
+
+##### SHA-256、MD5 与 MinIO ETag 选型
+
+这里的文件摘要不仅用于发现随机传输错误，还参与文件不可变身份、任务幂等、Chunk ID、重启恢复以及 objectKey 被覆盖检测，因此必须按“可信内容身份”而不是普通 checksum 选择算法：
+
+| 对比项 | MD5 | SHA-256 |
+|---|---|---|
+| 输出长度 | 128 bit / 32 hex | 256 bit / 64 hex |
+| 随机传输错误检测 | 支持 | 支持 |
+| 碰撞安全性 | 已存在实际可构造碰撞，不适合作为权威内容身份 | 当前工程场景安全裕量高 |
+| 流式计算 | 支持 | 支持 |
+| CPU 成本 | 较低 | 略高，但通常远低于 MinIO IO、Embedding 和双写成本 |
+| OAG 恢复协议 | 不推荐 | **正式选择** |
+
+正式协议统一使用 **SHA-256**。MD5 如业务已有，只可作为生产者本地辅助诊断，不进入 OAG 必选 Schema、不参与 task 幂等、不参与 Chunk ID，也不能替代 `sha256`。
+
+同时禁止假设 `MinIO/S3 ETag == 文件 MD5`。Multipart Upload 等场景下 ETag 不保证等于完整对象 MD5，因此 ETag 既不是 OAG 的权威 MD5，也不能替代 SHA-256。''',
+    'sha selection',
+)
+
+# Task persistence / source type / checkpoint
+s = s.replace('| `SOURCE_TYPE`          | VARCHAR(32)   | NOT NULL | `OMS` /  `MINIO`', '| `SOURCE_TYPE`          | VARCHAR(32)   | NOT NULL | 新任务正式值 `OMS` / `OAC` / `MINIO`；`REST` 仅历史兼容读取', 1)
+s = s.replace('| `CHECKPOINT`           | VARCHAR(1024) |          | CSV 文件/行号或内部 Chunk Checkpoint', '| `CHECKPOINT`           | TEXT          |          | 版本化 JSON；保存最后一个 GaussVector + OpenSearch 双端成功的连续安全恢复点', 1)
+s = s.replace('    CHECKPOINT            VARCHAR(1024),', '    CHECKPOINT            TEXT,', 1)
+
+migration_anchor = '如果现网已经存在精简版 `T_OAG_INDEX_TASK`，通过数据库升级脚本增加 `FILE_LIST / ERR_FILE_LIST / FILE_RETENTION_UNTIL / ERROR_CODE_LIST` 等字段并调整幂等索引，不新建第二张任务主表。'
+rep(
+    migration_anchor,
+    migration_anchor + '\n\n`CHECKPOINT` 同样通过升级脚本从 `VARCHAR(1024)` 扩展为 `TEXT`，用于保存版本化 JSON；**不新增 `T_OAG_INDEX_CHUNK` 表**。每个 Chunk 的单端执行状态只进入日志/指标，任务表只持久化最后一个双端成功连续安全点。',
+    'checkpoint migration',
+)
+
+# API/model sourceType new formal values
+s = s.replace('| `sourceType` | String | `OMS / REST / MINIO` |', '| `sourceType` | String | 新任务正式值 `OMS / OAC / MINIO`；历史 `REST` 只兼容读取 |')
+s = s.replace('sourceType: { type: string, enum: [OMS, OAC, REST, MINIO] }', 'sourceType: { type: string, enum: [OMS, OAC, MINIO, REST], description: REST 仅历史兼容读取 }')
+
+# First-import performance
+between(
+    '### 首次入库性能基线',
+    '\n## 3.11 FULL_REPLACE 与 INCREMENTAL',
+    '''### 首次入库性能与容量基线
+
+Software 与 SEC **对外都走 MinIO CSV + notice**，不再用数据规模选择 OAC Query / MinIO 两条外部路径；差异只发生在 OAG 内部执行 Profile：
+
+| 档位 | 正式源侧用户规模 | 外部协议 | OAG Profile | 关键要求 |
+|---|---:|---|---|---|
+| Software | ≤ 10,000 用户 | MinIO CSV | `LIGHTWEIGHT_BULK` | Streaming 支持、较少 Chunk、Checkpoint 启用、双写幂等 |
+| SEC | ≤ 1,000,000 用户 | MinIO CSV | `RECOVERABLE_BULK` | Streaming/Chunk/Worker Pool/Backpressure/Checkpoint/故障恢复专项验证 |
+| > SEC | > 1,000,000 用户 | MinIO CSV | 专项评估 | 容量与性能压测后开放 |
+
+容量单位是**源侧用户数**，不能把“1W/100W”解释成去重后的向量行数。性能和容量必须同时记录 `sourceUsers/sourceRows/semanticProperties/uniqueValues/finalIndexRows`。
+
+建议初始调优范围均配置化：Embedding batch `32~128`、Storage Bulk `500~2000` 行、Chunk `10,000~50,000` 行；Writer 队列达到高水位时必须反压读取和 Embedding，禁止无界缓存。端到端分钟级 SLA 不在接口协议写死，由 Embedding CPU/GPU 实例数、网络和存储规格压测确定。
+''',
+    'section 3.10',
+)
+
+# Checkpoint design: no chunk table, safe-point replay
+between(
+    '## 3.12 CSV Streaming、Chunk 与 Checkpoint',
+    '\n## 3.13 GaussVector / OpenSearch 双写一致性',
+    '''## 3.12 CSV Streaming、Chunk 与 Checkpoint
+
+百万/千万级 CSV 必须流式处理；Software 小文件也复用同一实现，只是 Chunk 数量更少：
+
+```text
+MinIO InputStream → CSV Streaming Parser → Chunk → Normalize/Dedup → Embedding Batch → Storage Bulk Batch
+```
+
+### 3.12.1 持久化原则
+
+**不新增 `T_OAG_INDEX_CHUNK`。** 复用 `T_OAG_INDEX_TASK.CHECKPOINT`（TEXT）保存版本化 JSON，只持久化“最后一个 GaussVector + OpenSearch 都成功的连续安全恢复点”，不持久化所有 Chunk 的 `gauss_status/opensearch_status` 历史。
+
+```json
+{
+  "version": 1,
+  "fileIndex": 0,
+  "objectKey": "onto-retrieval/t1/ontology/INSTANCE_VALUE/task/part-00000.csv",
+  "fileSha256": "7c222fb2927d828af22f592134e8932480637c0d4d7b31a7d7e6c80b7f5506ab",
+  "fileSize": 183421234,
+  "committedRowEnd": 49999,
+  "lastChunkId": "c4b2...",
+  "updatedAt": "2026-08-23T15:00:00+08:00"
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `version` | Checkpoint Schema 版本 |
+| `fileIndex` | 当前处理的有序 `FILE_LIST` 下标 |
+| `objectKey` | 当前 MinIO 对象 |
+| `fileSha256` | 当前对象权威 SHA-256 |
+| `fileSize` | 文件字节数，恢复时与 HEAD 对比 |
+| `committedRowEnd` | 最后一个双端成功 Chunk 的最后一行 |
+| `lastChunkId` | 最后一个成功 Chunk 的确定性 ID |
+| `updatedAt` | 最近一次安全点推进时间 |
+
+`FILE_LIST` 本身是有序、不可变的任务输入快照，不在 Checkpoint 中重复保存全部文件。
+
+### 3.12.2 稳定 Chunk ID
+
+```text
+chunkSource = objectKey + "\\n" + fileSha256 + "\\n" + rowStart + ":" + rowEnd
+chunkId     = SHA-256(UTF-8(chunkSource))
+```
+
+只要 objectKey、文件 SHA-256 和行区间不变，重试生成的 Chunk ID 就稳定。Chunk 大小属于性能配置，不写死在协议常量中。
+
+### 3.12.3 Checkpoint 推进与单端成功崩溃
+
+```text
+Chunk N
+  ↓
+GaussVector 幂等 UPSERT/DELETE 成功
+  ↓
+OpenSearch 确定性 _id UPSERT/DELETE 成功
+  ↓
+必要 Verify 成功
+  ↓
+原子 UPDATE T_OAG_INDEX_TASK.CHECKPOINT = Chunk N
+```
+
+只有双端都成功才推进 Checkpoint。假设 Chunk 10 的 GaussVector 已成功、OpenSearch 尚未执行时 OAG Crash，Checkpoint 仍停在 Chunk 9；重启后整 Chunk 10 重放：GaussVector 依赖组合业务键 UPSERT 覆盖已有记录，OpenSearch 依赖确定性 `_id` 补齐。因此无需持久化“Chunk 10 的 GaussVector 曾经成功”。
+
+幂等业务键：
+
+```text
+Enum     = objectTypeId + propertyId + normalized(value)
+Instance = objectTypeId + propertyid + normalized(value)
+```
+
+### 3.12.4 恢复流程
+
+```text
+1. 读取 T_OAG_INDEX_TASK.FILE_LIST + CHECKPOINT
+2. 用 fileIndex 定位当前 objectKey
+3. HEAD MinIO 校验 fileSize
+4. 流式重新计算 SHA-256
+5. objectKey / size / sha256 任一变化 → FILE_CHANGED / CHECKSUM_MISMATCH，禁止续跑
+6. nextRow = committedRowEnd + 1
+7. 按固定 chunkRows 重建 row range + chunkId
+8. 当前未完成 Chunk 对 GaussVector/OpenSearch 整体幂等重放
+9. 两端成功并 Verify → 单次数据库 UPDATE 原子推进 Checkpoint
+10. 当前文件完成 → fileIndex++
+11. 全部文件完成 → VERIFYING → PUBLISHING → FINISHED
+```
+
+多文件任务依赖 `fileIndex + committedRowEnd` 即可恢复，不需要逐文件或逐 Chunk 新建持久化表。FULL_REPLACE 在 Staging Generation 内恢复，发布前不影响旧 Active Generation；INCREMENTAL 依赖幂等 UPSERT/DELETE，允许同一 Chunk 安全重放。
+''',
+    'section 3.12',
+)
+
+between(
+    '## 3.14 接口与文件通道选型',
+    '\n---\n\n## 3.15 资源隔离与限流',
+    '''## 3.14 数据读取责任模式与唯一文件通道
+
+| 场景 | `instanceDataSourceMode` | 谁读业务源 | OAG 接收方式 |
+|---|---|---|---|
+| OAC 可对接 | `OAC` | OAC | MinIO CSV + `index-data/notice(triggerTaskId)` |
+| OAC 不可对接 / 业务已有同步服务 | `BUSINESS_NOTICE` | DataSync / 业务服务 | MinIO CSV + `index-data/notice` |
+
+> **动态 Enum/Instance 一律通过 MinIO CSV 交付 OAG；配置项只决定数据读取责任方，不决定是否使用 MinIO。**
+
+Software/SEC、全量/增量都遵循同一对外协议；规模差异只映射到 OAG 内部 `LIGHTWEIGHT_BULK / RECOVERABLE_BULK`。
+''',
+    'section 3.14',
+)
+
+# Errors + metrics
+rep(
+    '| `CHECKSUM_MISMATCH`      | `REUPLOAD_AND_RESUBMIT` | 文件内容已变化/损坏，不能覆盖原 objectKey 后直接 retry |',
+    '| `CHECKSUM_MISMATCH`      | `REUPLOAD_AND_RESUBMIT` | 实际 SHA-256 与 notice 不一致，禁止续跑 |\n| `FILE_CHANGED`           | `REUPLOAD_AND_RESUBMIT` | 恢复时 size/hash 与任务快照变化，禁止在原任务上续跑 |',
+    'FILE_CHANGED error',
+)
+
+metrics_old = '''oag_index_task_total
+oag_index_task_duration
+oag_import_records_total
+oag_import_failed_records
+oag_import_deduplicated_records
+oag_import_retry_requested_total
+oag_import_source_file_expired_total
+oag_minio_read_bytes
+oag_embedding_qps
+oag_vector_write_qps
+oag_opensearch_write_qps'''
+metrics_new = '''oag_index_task_total
+oag_index_task_duration
+oag_import_records_total
+oag_import_failed_records
+oag_import_deduplicated_records
+oag_import_source_users
+oag_import_source_rows
+oag_import_unique_values
+oag_import_final_index_rows
+oag_import_file_bytes
+oag_import_sha256_verify_duration
+oag_import_chunk_total
+oag_import_chunk_duration
+oag_import_checkpoint_advance_total
+oag_import_checkpoint_replay_rows
+oag_import_vector_write_rows
+oag_import_opensearch_write_rows
+oag_import_retry_total
+oag_import_retry_requested_total
+oag_import_source_file_expired_total
+oag_minio_read_bytes
+oag_embedding_qps
+oag_vector_write_qps
+oag_opensearch_write_qps'''
+rep(metrics_old, metrics_new, 'chapter 3 import metrics')
+
+between(
+    '## 3.18 本章最终约束',
+    '\n---\n\n## 3.20 设计结论',
+    '''## 3.18 本章最终约束
+
+1. **动态 Enum/Instance 的唯一正式数据交付协议为 MinIO CSV + `index-data/notice`。**
+2. **`indexBuild.instanceDataSourceMode=OAC|BUSINESS_NOTICE` 只决定谁访问业务源，不决定是否走 MinIO。**
+3. **OAC 模式无论大小数据量都固定为 OAG build → OAC 抽取 → MinIO → notice(triggerTaskId) → OAG。**
+4. **BUSINESS_NOTICE 模式由 DataSync/业务服务读取数据、上传 MinIO 并通知 OAG，OAG 不主动调用 OAC。**
+5. **Software 正式规格 ≤1 万源侧用户，SEC 正式规格 ≤100 万源侧用户；同时观测 sourceRows/semanticProperties/uniqueValues/finalIndexRows。**
+6. **Software/SEC 对外协议一致，只在 OAG 内部区分 LIGHTWEIGHT_BULK / RECOVERABLE_BULK。**
+7. **MinIO 文件权威身份使用 SHA-256；MD5 仅可辅助诊断，ETag 不作为文件摘要。**
+8. **索引任务必须先持久化到 GaussDB `T_OAG_INDEX_TASK` 再异步执行；新任务 `SOURCE_TYPE` 正式值为 OMS/OAC/MINIO，REST 仅兼容历史记录读取。**
+9. **`CHECKPOINT` 使用 TEXT JSON，只记录最后双端成功连续安全点；不新增 Chunk 状态表。**
+10. **未完成 Chunk 整体重放，GaussVector 组合键 UPSERT + OpenSearch 确定性 `_id` 保证单端成功窗口可恢复。**
+11. **FULL_REPLACE 使用 Staging Generation；INCREMENTAL 使用幂等 UPSERT/DELETE。**
+12. **任务查询、重试、取消统一使用持久化任务状态；自动化判断依赖稳定 errorCode，不解析 errorMessage。**
+13. **OAC/DataSync/业务服务不生成 vector，Embedding、双写、Verify/Publish 由 OAG 统一负责。**
+14. **生产者拥有源 CSV 生命周期，OAG 只读消费，MinIO Lifecycle 提供硬 TTL。**
+''',
+    'section 3.18',
+)
+
+between(
+    '## 3.20 设计结论',
+    '\n# 4. 实体提取、Entity Linking 与 6 路召回',
+    '''## 3.20 设计结论
+
+索引导入统一抽象为：
+
+```text
+dataType   = SEED_NODE | METADATA_ENUM | INSTANCE_VALUE
+sourceType = OMS | OAC | MINIO       # REST 仅历史兼容读取
+importMode = FULL_REPLACE | INCREMENTAL
+```
+
+动态数据接入收敛为“**一种 MinIO 交付协议、两种数据读取责任模式**”：OAC 能访问业务源时由 OAC 抽取后写 MinIO；不能访问时由业务服务写 MinIO。Software ≤1 万源侧用户、SEC ≤100 万源侧用户；文件身份统一 SHA-256；Chunk 状态不新增表，只在 `T_OAG_INDEX_TASK.CHECKPOINT` 保存最后双端成功安全点，通过幂等重放完成恢复。
+
+''',
+    'section 3.20',
+)
+
+# -----------------------------------------------------------------------------
+# 2. 第 5/6 章：最终子图返回 semanticExtensions.valueMappings
+# -----------------------------------------------------------------------------
+rep(
+    '''semanticExtensions
+  = 为结果补充的 synonyms / enum domain 等语义上下文''',
+    '''semanticExtensions
+  = 对最终 Enum/Instance 命中生成“sourceValue → canonicalValue → Property → ObjectType”的结构化值映射，并可按需补充 synonyms / enum domain 上下文''',
+    '5.7 semanticExtensions',
+)
+
+rep(
+    '    "semanticExtensions": {\n     \n    },',
+    '    "semanticExtensions": {\n      "valueMappings": []\n    },',
+    '5.11 semanticExtensions',
+)
+
+rep(
+    'Enum Value 的 `value` 直接作为真实过滤值，不再需要 `canonical_value` 或 `ENUM_ALIAS` 映射。',
+    'Enum/Instance 的 `retrievalResults[].value` 始终是权威真实过滤值。第 6.23 节 `semanticExtensions.valueMappings[].canonicalValue` 只是把该 `value` 投影为下游更易消费的统一字段，并不新增第二套 canonical 字典，也不恢复 `ENUM_ALIAS → canonical_value` 二次映射。',
+    '5.12 canonical',
+)
+
+sec623 = r'''
+
+## 6.23 子图检索最终返回结构与 semanticExtensions
+
+最终返回结构以现有 `RestResponse<GraphSearchResponse>` 为兼容基线：`seedNodes/nodes/edges/functions/actions` 的语义保持不变，在其上新增 `semanticExtensions`。详细结构同步维护在 [OAG子图检索返回结构设计.md](./OAG子图检索返回结构设计.md)。
+
+### 6.23.1 GraphSearchResponse
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `seedNodes` | `List<SeedNodes>` | 最终图构建种子节点 |
+| `nodes` | `List<GraphObject>` | ObjectType/Property 等本体节点 |
+| `edges` | `List<GraphEdge>` | 本体关系/归属边 |
+| `functions` | `List<Functions>` | Function；受 includeFunctions 控制 |
+| `actions` | `List<Actions>` | Action；受 includeActions 控制 |
+| `semanticExtensions` | `SemanticExtensions` | Enum/Instance 的值语义映射；辅助 Agent/LLM 生成过滤条件和查询语句 |
+
+现有 richer semantic-search 内部还可保留 `retrievalResults/metadata`。其中 `retrievalResults` 是最终语义命中的权威事实，`semanticExtensions.valueMappings` 是面向查询生成的确定性投影视图，两者不维护两份独立真值。
+
+### 6.23.2 SemanticExtensions / ValueMapping
+
+```text
+SemanticExtensions
+└── valueMappings[]
+    ├── semanticUnitId
+    ├── sourceValue
+    ├── canonicalValue
+    ├── valueType
+    ├── objectType { id, name }
+    ├── property   { id, name }
+    ├── matchedField
+    ├── matchedValue
+    ├── matchedBy
+    └── confidence
+```
+
+| 字段 | 类型 | 必选 | 说明 |
+|---|---|---|---|
+| `valueMappings` | Array[ValueMapping] | 是 | 没有 Enum/Instance 最终命中时为空数组 |
+| `semanticUnitId` | String | 否 | 来源 Semantic Unit，便于与 retrievalResults 对齐 |
+| `sourceValue` | String | 是 | 用户问题或 extractedEntities.Values[].Value 中的原始值 |
+| `canonicalValue` | String | 是 | Entity Linking 最终确认的真实标准值；直接等于对应最终 Enum/Instance `retrievalResults[].value` |
+| `valueType` | String | 是 | `ENUM_VALUE` / `INSTANCE_VALUE` |
+| `objectType.id/name` | ObjectRef | 是 | 真实值所属 ObjectType |
+| `property.id/name` | ObjectRef | 是 | 真实值所属 Property |
+| `matchedField` | String | 否 | `value/synonyms/...`，与检索解释字段保持一致 |
+| `matchedValue` | String | 否 | 实际命中的文本；synonym 命中时保留原 synonym |
+| `matchedBy` | String | 否 | `EXACT / SYNONYM / LEXICAL / DENSE` |
+| `confidence` | Number | 否 | 0~1，最终映射置信度 |
+
+核心职责：
+
+```text
+sourceValue
+  → 帮助 LLM 理解用户原始表达
+
+canonicalValue + property + objectType
+  → 帮助 Agent 生成真实过滤条件和查询语句
+```
+
+### 6.23.3 生成规则
+
+1. 只为最终选中的 `ENUM_VALUE / INSTANCE_VALUE` 生成 `ValueMapping`；ObjectType/Property-only 命中不生成值映射。
+2. `sourceValue` 来自原始 query / extracted Value，不能在结果阶段被标准值覆盖。
+3. `canonicalValue` 必须来自真实索引记录的 `value`，不得使用 display、synonym 或 LLM 新造值。
+4. Enum synonym 命中示例：`sourceValue=严重 → canonicalValue=CRITICAL → Alarm.severity`。
+5. Instance 示例：`12JKS0885_IN_RSNM_KALIBATA3_MC → Site.nativeId`；如果标准化前后不同，同时保留 source/canonical 两个值。
+6. 同一 `sourceValue` 存在多个合法 Property/ObjectType 归属时允许返回多个 Mapping，按 confidence 降序，不为保证单值而猜测。
+7. 下游过滤条件使用 `canonicalValue`；`matchedValue` 只用于解释命中，不能替代真实过滤值。
+8. 第一版不在 OAG 额外返回可执行 `filterHints/operator`，避免把查询规划职责混入语义检索；由 Agent/LLM 根据确定性映射和原始问题生成比较/时间/范围条件。
+
+### 6.23.4 完整 JSON 示例
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "seedNodes": [
+      {"id":"ObjectType:Site","name":"Site","score":0.9812,"llmDrawEntityName":"Site"},
+      {"id":"ObjectType:Alarm","name":"Alarm","score":0.9731,"llmDrawEntityName":"Alarm"}
+    ],
+    "nodes": [
+      {"id":"obj:site:Site","label":"ObjectType","properties":{"name":"Site"}},
+      {"id":"prop:site:nativeId","label":"PropertyType","properties":{"name":"nativeId"}},
+      {"id":"obj:alarm:Alarm","label":"ObjectType","properties":{"name":"Alarm"}},
+      {"id":"prop:alarm:severity","label":"PropertyType","properties":{"name":"severity"}}
+    ],
+    "edges": [
+      {"id":"edge_site_alarm","sourceId":"obj:site:Site","targetId":"obj:alarm:Alarm","edgeType":"associate","properties":{}},
+      {"id":"edge_site_native_id","sourceId":"obj:site:Site","targetId":"prop:site:nativeId","edgeType":"compose","properties":{}},
+      {"id":"edge_alarm_severity","sourceId":"obj:alarm:Alarm","targetId":"prop:alarm:severity","edgeType":"compose","properties":{}}
+    ],
+    "functions": [],
+    "actions": [],
+    "semanticExtensions": {
+      "valueMappings": [
+        {
+          "semanticUnitId": "u1",
+          "sourceValue": "12JKS0885_IN_RSNM_KALIBATA3_MC",
+          "canonicalValue": "12JKS0885_IN_RSNM_KALIBATA3_MC",
+          "valueType": "INSTANCE_VALUE",
+          "objectType": {"id":"obj:site:Site","name":"Site"},
+          "property": {"id":"prop:site:nativeId","name":"nativeId"},
+          "matchedField": "value",
+          "matchedValue": "12JKS0885_IN_RSNM_KALIBATA3_MC",
+          "matchedBy": "EXACT",
+          "confidence": 1.0
+        },
+        {
+          "semanticUnitId": "u2",
+          "sourceValue": "严重",
+          "canonicalValue": "CRITICAL",
+          "valueType": "ENUM_VALUE",
+          "objectType": {"id":"obj:alarm:Alarm","name":"Alarm"},
+          "property": {"id":"prop:alarm:severity","name":"severity"},
+          "matchedField": "synonyms",
+          "matchedValue": "严重",
+          "matchedBy": "SYNONYM",
+          "confidence": 0.99
+        }
+      ]
+    }
+  }
+}
+```
+
+下游无需再猜值的归属，可以直接形成：
+
+```text
+Site.nativeId = "12JKS0885_IN_RSNM_KALIBATA3_MC"
+Alarm.severity = "CRITICAL"
+```
+
+再结合原始问题中的比较符、时间范围、聚合语义生成最终 nGQL/Cypher/OQL。
+
+### 6.23.5 与 capabilityExtensions 的兼容
+
+现有 `GraphSearchResponse.functions/actions` 保持兼容；面向新的 richer semantic-search 响应时，可以通过 Adapter 映射为：
+
+```json
+{
+  "capabilityExtensions": {
+    "functions": [],
+    "actions": []
+  }
+}
+```
+
+两种表示是同一能力数据的兼容视图，不要求在同一个 API 响应里重复返回两份。
+'''
+
+section7 = '\n\n# 7. 性能、配置、可观测性、评测与迁移'
+if section7 not in s:
+    raise RuntimeError('section 7 marker missing')
+s = s.replace(section7, sec623 + section7, 1)
+
+# -----------------------------------------------------------------------------
+# 3. 第 7 章：配置、可观测性、验收、最终决策
+# -----------------------------------------------------------------------------
+sec72 = s.find('## 7.2 推荐配置')
+if sec72 < 0:
+    raise RuntimeError('7.2 missing')
+yaml_pos = s.find('```yaml\noag:\n', sec72)
+if yaml_pos < 0:
+    raise RuntimeError('7.2 yaml missing')
+insert_pos = yaml_pos + len('```yaml\noag:\n')
+index_cfg = '''  indexBuild:
+    instanceDataSourceMode: OAC  # OAC | BUSINESS_NOTICE
+    capacity:
+      softwareMaxUsers: 10000
+      secMaxUsers: 1000000
+    fileIntegrity:
+      algorithm: SHA-256
+      trustMinioETagAsChecksum: false
+    importProfile:
+      software: LIGHTWEIGHT_BULK
+      sec: RECOVERABLE_BULK
+    chunk:
+      rows: 20000
+    checkpoint:
+      store: T_OAG_INDEX_TASK.CHECKPOINT
+      format: JSON
+      version: 1
+      persistOnlyAfterBothStoresCommitted: true
+      replayIncompleteChunk: true
+    embedding:
+      batchSize: 64
+    writer:
+      bulkSize: 1000
+      backpressureEnabled: true
+
+'''
+s = s[:insert_pos] + index_cfg + s[insert_pos:]
+
+rep(
+    '## 7.4 可观测性\n\n### Retrieval',
+    '''## 7.4 可观测性
+
+### Index Build / Import
+
+```text
+oag_import_source_users
+oag_import_source_rows
+oag_import_unique_values
+oag_import_final_index_rows
+oag_import_file_bytes
+oag_import_sha256_verify_duration
+oag_import_chunk_total
+oag_import_chunk_duration
+oag_import_checkpoint_advance_total
+oag_import_checkpoint_replay_rows
+oag_import_vector_write_rows
+oag_import_opensearch_write_rows
+oag_import_retry_total
+```
+
+这些指标必须能回答“是否超过 Software/SEC 规格、去重压缩比、瓶颈位于 MinIO/Embedding/Vector/Search 哪一段、发生多少 Chunk 重放、Checkpoint 是否单调前进”。
+
+### Retrieval''',
+    '7.4 observability',
+)
+
+marker76 = '\n\n## 7.6 子图算法专项对比测试'
+if marker76 not in s:
+    raise RuntimeError('7.6 marker missing')
+acceptance = r'''
+
+### 索引容量、数据源一致性与故障恢复专项验收
+
+容量至少覆盖：
+
+```text
+Software 1W 用户 FULL_REPLACE
+Software 1W 用户 INCREMENTAL
+SEC 100W 用户 FULL_REPLACE
+SEC 100W 用户 INCREMENTAL
+```
+
+每组同时记录 `sourceUsers/sourceRows/semanticProperties/uniqueValues/finalIndexRows`。
+
+同一数据集分别使用 `instanceDataSourceMode=OAC` 与 `BUSINESS_NOTICE`，最终必须满足：
+
+```text
+GaussVector 业务键集合一致
+OpenSearch _id 集合一致
+Embedding 输入一致
+检索结果一致
+```
+
+文件完整性覆盖：正确/错误 SHA-256、同 objectKey 被覆盖、Multipart ETag 不等于文件摘要、file size 变化。
+
+Checkpoint 故障注入至少在以下位置 Kill OAG：
+
+```text
+CSV 已读、Embedding 前
+Embedding 后、Vector 前
+Vector 成功、OpenSearch 前
+Vector + OpenSearch 成功、Checkpoint 前
+Checkpoint 成功后
+Verify 阶段
+Publish 阶段
+```
+
+验收必须证明：无重复业务记录、无漏数据、Checkpoint 单调前进、重启可从安全点恢复、FULL_REPLACE 未发布前不影响旧 Generation、INCREMENTAL 重放幂等。
+'''
+s = s.replace(marker76, acceptance + marker76, 1)
+
+rep(
+    '26. **最终优化目标：检索结果准确 + Synonym 命中可解释 + Enum/Instance Value 准确 + 本体对象上下文准确 + Relation 准确 + Cypher 端到端准确。**',
+    '''26. **动态 Enum/Instance 统一通过 MinIO CSV + `index-data/notice` 交付；`instanceDataSourceMode=OAC|BUSINESS_NOTICE` 只决定业务源读取责任。**
+27. **Software 正式规格 ≤1 万源侧用户，SEC ≤100 万源侧用户；两者外部协议相同、内部 Bulk Profile 不同。**
+28. **MinIO 文件身份统一使用 SHA-256；MD5/ETag 不作为恢复协议权威摘要。**
+29. **不新增 Chunk 持久化表；`T_OAG_INDEX_TASK.CHECKPOINT` 使用 TEXT JSON 记录最后双端成功连续安全点，未完成 Chunk 整体幂等重放。**
+30. **最终 GraphSearchResponse 新增 `semanticExtensions.valueMappings`，稳定表达 `sourceValue → canonicalValue → Property → ObjectType`。**
+31. **`canonicalValue` 直接来自最终 Enum/Instance `retrievalResults.value`，不是第二套 canonical 字典；下游用它生成真实过滤条件。**
+32. **最终优化目标：检索结果准确 + Synonym 命中可解释 + Enum/Instance Value 准确 + 值到 Property/ObjectType 映射准确 + Relation 准确 + Cypher 端到端准确。**''',
+    '7.11 decisions',
+)
+
+rep(
+    '> **OAG 使用三张稳定索引表承载本体对象、Enum Value 和 Instance Value：本体对象使用 `id`，Enum/Instance 使用 `propertyid + objectTypeId + value`；ObjectType/Property 及 Enum Value 的 Synonym 在 OMS 中保留最多三个非固定 language key，进入 OAG 后统一平铺为 LF 分隔的 `synonyms` String；中文/英文之外最多再支持两个 display/description 语言槽位；Seed/Enum 向量直接包含平铺 synonyms，Instance 向量只包含 value。查询阶段对三类数据执行 6 路一次 Weighted RRF，Enum/Instance 按 `propertyid` 归并到 Property 本体对象，保留 `matched_field/matched_value` 后进行 LLM 精排，再构建本体子图。**',
+    '> **OAG 使用三张稳定索引表承载本体对象、Enum Value 和 Instance Value；动态 Enum/Instance 无论 Software/SEC、全量/增量，都由 OAC 或业务服务读取源数据后通过 MinIO CSV 统一交付，OAG 以 SHA-256 + TEXT JSON Checkpoint + 双端幂等重放保证可恢复构建。查询阶段执行 6 路 Weighted RRF 与 LLM 精排，再构建本体子图；最终 `semanticExtensions.valueMappings` 把用户原始值稳定映射为真实 `canonicalValue + Property + ObjectType`，直接支撑下游 Agent/LLM 过滤条件和查询语句生成。**',
+    '7.12 summary',
+)
+
+# -----------------------------------------------------------------------------
+# 4. 删除附录：其内容已分散吸收到正文
+# -----------------------------------------------------------------------------
+appendix = '\n# 附录 A：PR #42 检视意见优化方案（V5.16 规范）'
+pos = s.find(appendix)
+if pos < 0:
+    raise RuntimeError('appendix marker missing')
+prefix = s[:pos].rstrip()
+if prefix.endswith('---'):
+    prefix = prefix[:-3].rstrip()
+s = prefix + '\n'
+
+# -----------------------------------------------------------------------------
+# 5. 一致性收尾与强校验
+# -----------------------------------------------------------------------------
+s = s.replace('OAC、DataSync 和业务数据服务只负责抽取、源侧基础标准化、生成文件与通知', 'OAC、DataSync 和业务数据服务只负责抽取、源侧基础标准化、生成文件、上传 MinIO 与通知')
+s = s.replace('OMS、OAC 小批/分页、REST 可空；同一 Task 只允许一个 Bucket', 'OMS 可空；动态 OAC/MINIO Task 使用 MinIO Bucket；同一 Task 只允许一个 Bucket')
+s = s.replace('OMS、OAC 小批/分页、REST 可空', 'OMS 可空；动态数据任务使用 MinIO')
+
+# 新 API 返回结构契约中明确 semanticExtensions，不再只写 generic object。
+s = s.replace('`retrievalResults / seedNodes / nodes / edges / semanticExtensions / capabilityExtensions / metadata`', '`retrievalResults / seedNodes / nodes / edges / semanticExtensions.valueMappings / capabilityExtensions / metadata`')
+
+for token in [
+    '# 附录 A：',
+    'instanceDataSourceMode: AUTO',
+    'directQueryMaxRows',
+    'OAC_QUERY',
+    'OAC 小批/分页结果',
+    'CHECKPOINT            VARCHAR(1024)',
+]:
+    if token in s:
+        raise RuntimeError(f'forbidden legacy token remains: {token}')
+
+for token in [
+    '> 版本：V5.17',
+    'instanceDataSourceMode: OAC',
+    'BUSINESS_NOTICE',
+    'softwareMaxUsers: 10000',
+    'secMaxUsers: 1000000',
+    'trustMinioETagAsChecksum: false',
+    'T_OAG_INDEX_TASK.CHECKPOINT',
+    '## 6.23 子图检索最终返回结构与 semanticExtensions',
+    '"canonicalValue": "CRITICAL"',
+    '## 7.4 可观测性',
+]:
+    if token not in s:
+        raise RuntimeError(f'required token missing: {token}')
+
+# 防止章节主体被意外压缩。
+if s.count('\n# 1.') != 1 or s.count('\n# 2.') != 1 or s.count('\n# 3.') != 1 or s.count('\n# 4.') != 1 or s.count('\n# 5.') != 1 or s.count('\n# 6.') != 1 or s.count('\n# 7.') != 1:
+    raise RuntimeError('top-level chapter count changed unexpectedly')
+if len(s) < 120_000:
+    raise RuntimeError(f'document unexpectedly short: {len(s)} chars')
+
+PATH.write_text(s, encoding='utf-8')
+print(f'updated: {PATH}')
+print(f'chars={len(s)}, lines={s.count(chr(10)) + 1}')
