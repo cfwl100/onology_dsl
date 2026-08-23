@@ -1,0 +1,56 @@
+name: Restructure OAG chapter 3
+
+on:
+  push:
+    branches:
+      - docs/oag-chapter3-restructure
+
+permissions:
+  contents: write
+
+jobs:
+  restructure:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: docs/oag-chapter3-restructure
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Restructure chapter 3
+        run: python3 tools/restructure_oag_chapter3.py
+
+      - name: Validate formal structure
+        run: |
+          DOC='docs/OAG本体锚点语义检索与向量索引设计方案.md'
+          grep -q '^## 3.1 职责边界与总体架构$' "$DOC"
+          grep -q '^## 3.2 数据来源、接入模式与场景选择$' "$DOC"
+          grep -q '^## 3.3 对外接口与任务操作契约$' "$DOC"
+          grep -q '^## 3.4 CSV 与 MinIO 文件交付协议$' "$DOC"
+          grep -q '^## 3.5 任务持久化与状态机$' "$DOC"
+          grep -q '^## 3.6 Import Pipeline 与导入模式$' "$DOC"
+          grep -q '^## 3.7 Streaming、Chunk、Checkpoint 与故障恢复$' "$DOC"
+          grep -q '^## 3.8 GaussVector / OpenSearch 双写一致性$' "$DOC"
+          grep -q '^## 3.9 重试、取消、错误与源文件恢复$' "$DOC"
+          grep -q '^## 3.10 性能、资源隔离与可观测性$' "$DOC"
+          grep -q '^## 3.11 端到端时序与最终约束$' "$DOC"
+          ! grep -q '^## 3.0 核心设计$' "$DOC"
+          ! grep -q '^## 3.1 详细设计与实现$' "$DOC"
+
+      - name: Remove one-shot helpers
+        run: |
+          rm -f tools/restructure_oag_chapter3.py
+          rm -f .github/workflows/oag-chapter3-restructure.yml
+
+      - name: Commit result
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config core.whitespace -trailing-space
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m 'docs: reorganize OAG semantic index management chapter'
+          git push origin HEAD:docs/oag-chapter3-restructure
