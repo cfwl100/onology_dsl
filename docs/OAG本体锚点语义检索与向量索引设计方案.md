@@ -1305,8 +1305,6 @@ Generation 发布
 
 ### 3.1.2 总体索引构建架构
 
-1、手动创建索引->OAC : 应对首次全量索引创建 和 索引更新 场景  
-2、通知OAG->OAG读取minio文件：应对大数据量首次全量和非首次增量数据索引入库
 #### DataSeek / NL2SQL 语义值模型对齐
 
 与 DataSeek/NL2SQL 的对齐采用统一语义值逻辑模型：`ontology_id / object_type_id / property_id / value / normalized_value / source / version / update_type`。OAG 保持 Exact/BM25 + Dense 的混合检索契约和“值 → Property/ObjectType”归属解析能力；未来 NL2SQL 可以复用同一语义值字典和归属信息，而不要求共享 OAG 的物理向量表。 
@@ -1906,7 +1904,7 @@ POST
 | `taskId` | String | 任务 ID |
 | `requestId` | String | 调用幂等键 |
 | `dataType` | String | `SEED_NODE / METADATA_ENUM / INSTANCE_VALUE` |
-| `sourceType` | String | `OMS / REST / MINIO` |
+| `sourceType` | String | `OMS / OAC / MINIO` |
 | `importMode` | String | `FULL_REPLACE / INCREMENTAL`；OMS 内部任务可为空 |
 | `status` | Integer | 0 构建中；1 成功；2 失败；3 已取消 |
 | `stage` | String | 当前执行阶段 |
@@ -1951,7 +1949,7 @@ status == 2
       "taskId": "idx-task-20260816-000001",
       "requestId": "req-enum-001",
       "dataType": "METADATA_ENUM",
-      "sourceType": "REST",
+      "sourceType": "OMS",
       "importMode": "INCREMENTAL",
       "status": 1,
       "stage": "FINISHED",
@@ -2529,31 +2527,6 @@ components:
         descriptionDetails:
           nullable: true
 
-  examples:
-    MetadataEnumBatchImportExample:
-      value:
-        requestId: req-enum-20260816-000001
-        dataType: METADATA_ENUM
-        importMode: INCREMENTAL
-        records:
-          - propertyId: prop:ont:vehicle:sp:bodyColor
-            objectTypeId: obj:ont:vehicle:Vehicle
-            value: red
-            display_zh: 红色
-            display_en: Red
-            synonyms: "红\n赤色\nRed\nRojo"
-            op: UPSERT
-    InstanceValueBatchImportExample:
-      value:
-        requestId: req-instance-20260816-000001
-        dataType: INSTANCE_VALUE
-        importMode: INCREMENTAL
-        records:
-          - property_id: prop:subscriber:subLevel
-            objectTypeId: obj:subscriber:Subscriber
-            value: VIP
-            synonyms: "重要客户\nVIP客户"
-            op: UPSERT
 
   responses:
     BadRequest:
@@ -2571,11 +2544,7 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/BusinessErrorResponse' }
-    PayloadTooLarge:
-      description: REST Batch 请求体或 records 超过服务限制
-      content:
-        application/json:
-          schema: { $ref: '#/components/schemas/BusinessErrorResponse' }
+
     TooManyRequests:
       description: 请求被限流
       content:
@@ -2882,7 +2851,7 @@ T_OAG_INDEX_TASK (N)
 | `OBJECT_PREFIX`        | VARCHAR(1024) |          | MinIO 公共 Object Prefix；OMS 任务可空            |
 | `FILE_LIST`            | TEXT          |          | JSON String Array；当前 Task 的全部 objectKey，MINIO 任务使用      |
 | `ERR_FILE_LIST`        | TEXT          |          | JSON String Array；本次执行失败或需要重处理的 objectKey               |
-| `FILE_RETENTION_UNTIL` | TIMESTAMP     |          | 源文件硬 TTL 对应的最晚可恢复时间；REST/OMS 可空                         |
+| `FILE_RETENTION_UNTIL` | TIMESTAMP     |          | 源文件硬 TTL 对应的最晚可恢复时间；OMS 可空                         |
 | `CHECKPOINT`           | TEXT          |          | 版本化 JSON Checkpoint；数据库类型统一使用 TEXT |
 | `RETRY_COUNT`          | INT           | NOT NULL | 已执行重试次数，默认 0                                            |
 | `ERROR_CODE`           | VARCHAR(128)  |          | 兼容字段；Task 主错误码/最后一个高优先级错误码                              |
@@ -3218,22 +3187,25 @@ OpenSearch
 
 ## 3.8 GaussVector / OpenSearch 双写一致性
 
-不引入跨 GaussVector 和 OpenSearch 的分布式事务，采用：
+OAG 不引入跨 GaussVector 和 OpenSearch 的分布式事务，统一采用：
 
-> **业务唯一键 + Chunk 幂等 + 任务持久化 + 发布前 Verify + 最终一致性。**
+> **稳定业务键 + 幂等双写 + Checkpoint 安全点 + 发布前 Verify + 最终一致性。**
 
-FULL_REPLACE 使用 Staging Generation，两边全部写入并完成 Count/Sample/Query Verify 后再切换 Active Generation；任一侧失败都不发布新 Generation。
+### 3.8.1 稳定业务键与幂等写入
 
-INCREMENTAL 对同一业务唯一键在 GaussVector 使用 `INSERT ... ON DUPLICATE KEY UPDATE`、在 OpenSearch 使用确定性 `_id` 执行幂等 UPSERT/DELETE；失败记录进入 task error，由任务重试补齐，不能因为一侧成功就把任务标记成功。
+```text
+本体对象
+  key = id
 
----
+Enum Value / Instance Value
+  key = object_type_id + property_id + normalized(value)
+```
 
-
-补充约束：
+两端写入规则：
 
 ```text
 GaussVector
-  → 稳定业务组合唯一键
+  → 组合唯一键
   → INSERT ... ON DUPLICATE KEY UPDATE
 
 OpenSearch
@@ -3241,7 +3213,21 @@ OpenSearch
   → UPSERT / DELETE 幂等
 ```
 
-Checkpoint 只能在双端成功后推进；FULL_REPLACE 只有双端 Verify 全部通过才能 Publish。系统不引入跨 GaussVector/OpenSearch 的分布式事务。
+同一 Chunk 因 Crash、超时或单端成功而重放时，不允许产生重复业务记录。
+
+### 3.8.2 双端提交与发布边界
+
+```text
+Chunk
+  → GaussVector 成功
+  → OpenSearch 成功
+  → Verify 通过
+  → 才允许推进 CHECKPOINT
+```
+
+`FULL_REPLACE` 使用 Staging Generation：两端全量写入并完成 Count / Sample / Query Verify 后，才原子切换 Active Generation；任一侧失败都保留旧 Generation 在线服务。
+
+`INCREMENTAL` 直接对 Active Generation 执行同业务键 UPSERT / DELETE；只有两端写入都成功并通过校验后，该 Chunk 才视为提交完成。任一侧失败都不能把 Task 标记成功，由恢复/重试流程补齐。
 
 ---
 
@@ -3363,21 +3349,17 @@ STATUS=1 / 2
 
 ## 3.10 性能、资源隔离与可观测性
 
-### 3.10.1 Bulk 参数基线
+### 3.10.1 容量 Profile 与 Bulk 参数
 
-首次全量必须按规模分档，避免 1 万和 100 万数据走同一同步链路：
+首次全量按源侧业务规模分档，协议保持一致，只调整 Worker、Batch、Queue 和恢复能力：
 
-| 档位 | 数据量（去重后 Value） | 推荐链路 | 默认执行模型 |
+| 档位 | 源侧用户规模 | OAG Profile | 运行特征 |
 |---|---:|---|---|
-| Software | ≤ 10,000 源侧用户 | MinIO + `LIGHTWEIGHT_BULK` | Streaming/Chunk/Checkpoint 启用，较少 Worker 和较小队列 |
-| SEC / IOH | ≤ 1,000,000 源侧用户 | MinIO + `RECOVERABLE_BULK` | Streaming、Chunk、Embedding Worker 池、双 Writer、Backpressure、Checkpoint 恢复 |
+| Software | ≤ 10,000 用户（1W） | `LIGHTWEIGHT_BULK` | Streaming / Chunk / Checkpoint 开启，较少 Worker、较小队列 |
+| SEC / IOH | ≤ 1,000,000 用户（100W） | `RECOVERABLE_BULK` | Streaming、Embedding Worker 池、双 Writer、Backpressure、Checkpoint 恢复 |
+| 超出 SEC | > 1,000,000 用户 | 专项 Profile | 结合 uniqueValues、文件规模和 Embedding 吞吐专项评估 |
 
-建议初始调优范围（均配置化，最终以环境压测为准）：Embedding batch `32~128`，写入 bulk `500~2000` 行，文件 Chunk `10,000~50,000` 行；Writer 队列达到高水位时必须反压读取和 Embedding，禁止无界缓存。性能验收至少同时记录 `readRows/s、embedRows/s、gaussRows/s、openSearchRows/s、endToEndRows/s、P95 chunk latency、retry rate、heap/direct-memory peak`。
-
-容量验收原则：1 万档验证在线构建体验；100 万档验证可恢复 Bulk 能力。端到端耗时受 Embedding 部署（CPU/GPU、batch、模型实例数）影响，因此不在协议中写死分钟级 SLA，而是在目标环境压测后固化成部署规格。
-
-
-建议初值统一收敛为：
+建议初始参数范围：
 
 ```yaml
 embeddingBatchSize: 32~128
@@ -3385,11 +3367,21 @@ storageBulkSize: 500~2000
 chunkRows: 10000~50000
 ```
 
-所有值必须配置化，并在目标部署环境压测后固化。
+以上均为部署配置初值，必须通过目标环境压测校准。1W/100W 是**源侧用户数**，实际向量与全文索引规模以 `uniqueValues / finalIndexRows` 为准；不在协议中写死分钟级 SLA。
 
-### 3.10.2 资源隔离与反压
+### 3.10.2 资源隔离与 Backpressure
 
-在线检索优先级高于 Bulk Import。建议独立 REST Import Executor、File Import Executor、Embedding Executor、GaussVector Bulk Writer、OpenSearch Bulk Writer，并至少配置：
+在线语义检索优先级高于 Bulk Import。建议至少隔离：
+
+```text
+Index Task Executor
+File Import Executor
+Embedding Executor
+GaussVector Bulk Writer
+OpenSearch Bulk Writer
+```
+
+关键配置：
 
 ```text
 import maxConcurrentTasks
@@ -3398,14 +3390,14 @@ embedding batchSize / QPS
 vector bulkSize
 opensearch bulkSize
 task progress flush interval
+writer queue high-water mark
 ```
 
-后端压力过高时 Import Task 排队/降速，不能挤占语义检索线程池。
+后端压力过高时 Import Task 应排队或降速；Writer Queue 达到高水位后必须向上游反压 Embedding 和 MinIO Streaming Reader，禁止使用无界内存队列换取吞吐，也不能挤占在线检索线程池。
 
+### 3.10.3 性能与任务指标
 
-Writer 队列达到高水位时必须向上游反压 MinIO 读取和 Embedding，禁止通过无界内存队列换吞吐。在线语义检索优先级高于 Bulk Import。
-
-### 3.10.3 关键指标
+至少记录：
 
 ```text
 oag_index_task_total
@@ -3430,13 +3422,13 @@ retry rate
 heap/direct-memory peak
 ```
 
+容量验收：Software 档验证日常构建体验，SEC 档验证百万级可恢复 Bulk、反压和故障恢复能力。
+
 ---
 
 ## 3.11 端到端时序与最终约束
 
 ### 3.11.1 MinIO CSV 数据同步时序
-
-#### MinIO CSV 索引数据同步
 
 ```mermaid
 sequenceDiagram
