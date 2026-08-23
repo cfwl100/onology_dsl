@@ -466,51 +466,51 @@ components:
         - required: [extractedEntities]
       properties:
         query:
-type: string
-minLength: 1
-maxLength: 1024
+          type: string
+          minLength: 1
+          maxLength: 1024
         searchContext:
-type: string
-minLength: 1
-maxLength: 32768
+          type: string
+          minLength: 1
+          maxLength: 32768
         extractedEntities:
-type: array
-minItems: 1
-items:
-  $ref: '#/components/schemas/ExtractedEntity'
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ExtractedEntity'
         adaptiveRetrieval:
-type: integer
-default: 1
-enum: [0, 1]
+          type: integer
+          default: 1
+          enum: [0, 1]
         seedRetrievalMode:
-type: string
-default: vector
-enum: [vector, keyword, hybrid]
+          type: string
+          default: vector
+          enum: [vector, keyword, hybrid]
         similarityThreshold:
-type: number
-minimum: 0
-maximum: 1
-default: 0.6
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.6
         topk:
-type: integer
-minimum: 1
-default: 3
+          type: integer
+          minimum: 1
+          default: 3
         graphExpansionStrategy:
-type: string
-default: minimal
-enum: [minimal, khop, component]
+          type: string
+          default: minimal
+          enum: [minimal, khop, component]
         hopLimit:
-type: integer
-minimum: 1
-default: 3
+          type: integer
+          minimum: 1
+          default: 3
         includeFunctions:
-type: integer
-default: 0
-enum: [0, 1]
+          type: integer
+          default: 0
+          enum: [0, 1]
         includeActions:
-type: integer
-default: 0
-enum: [0, 1]
+          type: integer
+          default: 0
+          enum: [0, 1]
 
     ExtractedEntity:
       type: object
@@ -518,21 +518,24 @@ enum: [0, 1]
       anyOf:
         - required: [ObjectType]
         - required: [Values]
+          properties:
+            Values:
+              minItems: 1
       properties:
         ObjectType:
-type: string
-minLength: 1
+          type: string
+          minLength: 1
         Properties:
-type: array
-default: []
-items:
-  type: string
-  minLength: 1
+          type: array
+          default: []
+          items:
+            type: string
+            minLength: 1
         Values:
-type: array
-default: []
-items:
-  $ref: '#/components/schemas/ValueHint'
+          type: array
+          default: []
+          items:
+            $ref: '#/components/schemas/ValueHint'
       additionalProperties: false
 
     ValueHint:
@@ -540,11 +543,11 @@ items:
       required: [Value]
       properties:
         Property:
-type: string
-minLength: 1
+          type: string
+          minLength: 1
         Value:
-type: string
-minLength: 1
+          type: string
+          minLength: 1
       additionalProperties: false
 ```
 
