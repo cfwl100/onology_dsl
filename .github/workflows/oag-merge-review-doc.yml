@@ -1,0 +1,93 @@
+name: Merge OAG PR42 review design into main doc
+
+on:
+  push:
+    branches:
+      - docs/oag-subgraph-complete-20260823
+    paths:
+      - .github/oag-merge-review-trigger.txt
+
+permissions:
+  contents: write
+
+jobs:
+  merge-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Merge review design into main document
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          main_path = Path('docs/OAG本体锚点语义检索与向量索引设计方案.md')
+          review_path = Path('docs/OAG本体子图检索PR42检视意见优化方案.md')
+
+          if not main_path.exists():
+              raise SystemExit(f'missing main document: {main_path}')
+          if not review_path.exists():
+              raise SystemExit(f'missing review document: {review_path}')
+
+          main = main_path.read_text(encoding='utf-8')
+          review = review_path.read_text(encoding='utf-8')
+
+          if '# OAG 本体子图检索 PR #42 检视意见优化方案' not in review:
+              raise SystemExit('unexpected review document content')
+          if '# 附录 A：PR #42 检视意见优化方案（V5.16 规范）' in main:
+              raise SystemExit('review design already merged into main document')
+
+          # 主文档升级到 V5.16。只改首个版本标识，其他历史版本描述保留。
+          main, count = re.subn(r'> 版本：V5\.15\s{2}', '> 版本：V5.16  ', main, count=1)
+          if count != 1:
+              raise SystemExit('main version marker V5.15 not found exactly once')
+
+          # 在文档头部增加单一权威来源说明，避免读者继续把独立增量文档视为并行规范。
+          decision_marker = '> 核心决策：'
+          pos = main.find(decision_marker)
+          if pos < 0:
+              raise SystemExit('core decision marker not found')
+          line_end = main.find('\n', pos)
+          if line_end < 0:
+              raise SystemExit('core decision line end not found')
+          authority_note = (
+              '\n> V5.16 检视收敛：**PR #42 检视意见优化方案已完整并入本文附录 A，本文成为唯一权威设计文档。'
+              '对于 OAC/业务服务数据接入、MinIO 交付、Software/SEC 容量规格、文件摘要算法、Chunk/Checkpoint 恢复等内容，'
+              '如正文历史段落与附录 A 存在差异，以附录 A 的 V5.16 规范为准；实体提取、Entity Linking、RRF、LLM 精排、PathProbePlan、nGQL 与结果生成设计保持正文定义。**\n'
+          )
+          main = main[:line_end+1] + authority_note + main[line_end+1:]
+
+          # 完整原样并入，不裁剪 review 文档任何正文，保证内容不丢失。
+          appendix_header = (
+              '\n\n---\n\n'
+              '# 附录 A：PR #42 检视意见优化方案（V5.16 规范）\n\n'
+              '> 本附录由原独立文档 `OAG本体子图检索PR42检视意见优化方案.md` **完整原样合并**而来。  \n'
+              '> 合并后独立文档删除，后续统一维护本文，避免双份规范漂移。\n\n'
+          )
+          merged = main.rstrip() + appendix_header + review.rstrip() + '\n'
+          main_path.write_text(merged, encoding='utf-8')
+          review_path.unlink()
+
+          # 内容完整性校验：原独立文档必须逐字包含在主文档中。
+          written = main_path.read_text(encoding='utf-8')
+          if review not in written:
+              raise SystemExit('integrity check failed: review document not fully preserved')
+          if '> 版本：V5.16' not in written:
+              raise SystemExit('integrity check failed: main version not updated')
+          if review_path.exists():
+              raise SystemExit('integrity check failed: standalone review document still exists')
+
+          print(f'main chars before merge: {len(main):,}')
+          print(f'review chars merged: {len(review):,}')
+          print(f'merged main chars: {len(written):,}')
+          print('integrity check: PASS')
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/OAG本体锚点语义检索与向量索引设计方案.md docs/OAG本体子图检索PR42检视意见优化方案.md
+          git commit -m "docs: merge PR42 review design into OAG main spec"
+          git push origin HEAD:docs/oag-subgraph-complete-20260823
