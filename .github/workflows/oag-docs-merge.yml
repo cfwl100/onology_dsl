@@ -1,0 +1,1142 @@
+name: OAG docs merge
+
+on:
+  push:
+    branches:
+      - docs/oag-subgraph-complete-20260823
+
+permissions:
+  contents: write
+
+jobs:
+  patch-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: docs/oag-subgraph-complete-20260823
+          fetch-depth: 0
+
+      - name: Update OAG design docs
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          repo = Path('.')
+          extracted_path = repo / 'docs/OAG语义子图检索接口extractedEntities结构设计方案.md'
+          main_path = repo / 'docs/OAG本体锚点语义检索与向量索引设计方案.md'
+
+          extracted_doc = r'''# OAG 本体子图语义检索接口 extractedEntities / 实体提取设计方案
+
+> 文档版本：V2.4  
+> 更新日期：2026-08-23  
+> 接口版本：v2  
+> 上位方案：[OAG 本体锚点语义检索与向量索引设计方案](./OAG本体锚点语义检索与向量索引设计方案.md)
+
+---
+
+## 1. 文档目的
+
+本文定义本体子图检索第 ① 步“实体提取（Entity Extraction）”的输入、输出和约束，并作为 `/v2/onto-retrieval/{ontologyId}/subgraph/semantic-search` 的 `extractedEntities` 正式结构规范。
+
+本次结构收敛遵循一个核心原则：
+
+> **`ExtractedEntity` 只保留 `ObjectType`、`Properties`、`Values` 三个字段。实体提取只负责识别“对象类型、对象属性和值”，不在本阶段绑定 Relationship，也不要求提前判断 Value 属于 Enum 还是 Instance。**
+
+完整本体子图检索链路为：
+
+```text
+① Entity Extraction
+   query → ObjectType / Properties / Values
+
+② Entity Linking
+   本体对象 / 枚举元素 / 实例元素
+   → Exact/BM25 + Dense
+   → Weighted RRF + 可选 LLM Fine Rank
+
+③ Subgraph Retrieval Strategy
+   minimal / khop / component
+   → 生成 PathProbePlan
+   → Loop 执行，可扩展业务策略
+
+④ nGQL / Graph Algorithm Assembly
+   PathProbePlan
+   → 动态装配 nGQL 模板或图算法参数
+
+⑤ Result Generation
+   → ObjectType / Property / Relationship / RelationshipProperty
+   → Function / Action
+```
+
+---
+
+## 2. 接口角色与能力边界
+
+### 2.1 接口地址
+
+| 项目 | 定义 |
+|---|---|
+| Method | `POST` |
+| Content-Type | `application/json` |
+| URI | `/v2/onto-retrieval/{ontologyId}/subgraph/semantic-search` |
+| 成功 HTTP 状态码 | `200` |
+
+### 2.2 三种调用模式
+
+| 模式 | query | extractedEntities | searchContext | 说明 |
+|---|---:|---:|---:|---|
+| 自然语言模式 | 有 | 无 | 可选 | OAG 从 `query` 自动执行实体提取 |
+| 结构化模式 | 无 | 有 | 可选 | 业务 Skill 已完成实体提取，OAG 直接进入 Entity Linking |
+| 组合模式 | 有 | 有 | 可选 | 结构化结果提供强提示，`query` 和 `searchContext` 用于补充与消歧，推荐模式 |
+
+约束：
+
+```text
+query 和 extractedEntities 至少一个不为空
+searchContext 不能单独满足该约束
+```
+
+### 2.3 实体提取阶段负责什么
+
+实体提取负责：
+
+1. 从用户问题识别 ObjectType 业务表达；
+2. 识别属于该 ObjectType 的 Property，并保持从属关系；
+3. 识别需要通过语义索引定位的业务值，输出到 `Values`；
+4. 在归属未知时允许输出 value-only 实体；
+5. 使用 `searchContext` 中的 few-shot、专家路径、领域术语、黑话和消歧规则辅助提取。
+
+实体提取不负责：
+
+1. 输出本体内部 ObjectType/Property ID；
+2. 提前生成或绑定 Relationship；
+3. 将 Value 强制分类为 Enum Value 或 Instance Value；
+4. 把“超过 200”“本月”“总数”等条件直接翻译为 OQL/SQL/Cypher；
+5. 决定 `minimal/khop/component` 路径算法；
+6. 生成 nGQL。
+
+Relationship 的发现与选择属于第 ③ 步子图检索策略。业务已有专家关系路径时，放入 `searchContext` 作为路径规划约束或优先级提示，不进入 `ExtractedEntity` Schema。
+
+---
+
+## 3. 请求参数
+
+### 3.1 Header 与 Path
+
+| 参数 | 位置 | 必选 | 类型 | 约束 | 说明 |
+|---|---|---:|---|---|---|
+| `tenantId` | Header | 是 | String | 1～256 字符 | 租户 ID |
+| `traceId` | Header | 否 | String | 1～256 字符 | Trace ID；未传可由服务生成 |
+| `ontologyId` | Path | 是 | String | 1～256 字符 | 本体 ID |
+
+### 3.2 Body
+
+| 参数 | 必选 | 类型 | 默认值 | 说明 |
+|---|---:|---|---|---|
+| `query` | 否 | String | 无 | 原始自然语言问题；与 `extractedEntities` 至少一个不为空 |
+| `searchContext` | 否 | String | 无 | 动态搜索上下文；用于实体提取和后续语义消歧 |
+| `extractedEntities` | 否 | `Array<ExtractedEntity>` | 无 | 结构化实体提取结果 |
+| `adaptiveRetrieval` | 否 | Integer | `1` | 是否启用小本体全量返回策略 |
+| `seedRetrievalMode` | 否 | String | `vector` | `vector` / `keyword` / `hybrid`；字段名为兼容历史 API，语义上控制 Entity Linking 检索模式 |
+| `similarityThreshold` | 否 | Double | `0.6` | Dense 召回阈值 |
+| `topk` | 否 | Integer | `3` | 每个语义单元最终保留候选数 |
+| `graphExpansionStrategy` | 否 | String | `minimal` | `minimal` / `khop` / `component` |
+| `hopLimit` | 否 | Integer | `3` | `khop` 最大深度 |
+| `includeFunctions` | 否 | Integer | `0` | 是否扩展 Function |
+| `includeActions` | 否 | Integer | `0` | 是否扩展 Action |
+
+---
+
+## 4. extractedEntities 正式结构
+
+### 4.1 ExtractedEntity
+
+`ExtractedEntity` **只定义三个顶层字段**：
+
+| 字段 | 必选 | 数据类型 | 默认值 | 说明 |
+|---|---:|---|---|---|
+| `ObjectType` | 否 | String | 无 | 对象类型名称、显示名、同义词或业务术语；value-only 场景可以省略 |
+| `Properties` | 否 | `Array<String>` | `[]` | 当前 ObjectType 相关的 Property 名称；非空时必须同时存在 `ObjectType` |
+| `Values` | 否 | `Array<ValueHint>` | `[]` | 需要语义检索的业务值；ObjectType/Property 归属未知时允许单独存在 |
+
+每个 `ExtractedEntity` 至少满足下列之一：
+
+```text
+ObjectType 非空
+或
+Values 非空
+```
+
+不允许只有 `Properties` 而没有 `ObjectType`。
+
+### 4.2 ValueHint
+
+`Values` 统一承载“值语义提示”，不在实体提取阶段区分枚举值或实例值。
+
+| 字段 | 必选 | 类型 | 默认值 | 说明 |
+|---|---:|---|---|---|
+| `Property` | 否 | String | 无 | 已知时填写所属 Property 的业务名称；未知时省略 |
+| `Value` | 是 | String | 无 | 用户问题中需要语义定位的真实业务表达 |
+
+示例：
+
+```json
+{
+  "ObjectType": "Account",
+  "Properties": ["accountStatus", "customerLevel"],
+  "Values": [
+    {"Property": "accountStatus", "Value": "在用"},
+    {"Property": "customerLevel", "Value": "VIP"}
+  ]
+}
+```
+
+Entity Linking 阶段对 `Value` 同时考虑：
+
+```text
+枚举元素索引
+  value / name / display / description / synonyms
+
+实例元素索引
+  真实去重 value
+```
+
+最终由索引记录中的 `property_id + object_type_id` 解析真实归属，而不是由 NER 根据字符串外形猜测。
+
+### 4.3 value-only 结构
+
+当问题只给出一个值而无法判断其对象和属性，例如：
+
+```text
+12JKS0885_IN_RSNM_KALIBATA3_MC
+```
+
+允许输出：
+
+```json
+{
+  "Values": [
+    {"Value": "12JKS0885_IN_RSNM_KALIBATA3_MC"}
+  ]
+}
+```
+
+OAG 在 Entity Linking 阶段跨枚举元素/实例元素检索，并根据命中记录补齐 Property/ObjectType 归属。编码形态本身不能作为 Site、BaseStation、nativeId 等类型推断依据。
+
+---
+
+## 5. 实体提取规则
+
+### 5.1 ObjectType
+
+ObjectType 识别优先使用：
+
+```text
+业务对象名
+显示名
+别名/同义词
+searchContext 中的术语映射
+few-shot 中明确的对象表达
+```
+
+实体提取只输出业务表达，不输出内部 ID。
+
+### 5.2 Property 必须保留 ObjectType 从属关系
+
+正确：
+
+```json
+{
+  "extractedEntities": [
+    {
+      "ObjectType": "WhatsApp应用",
+      "Properties": ["体验质量", "时间"],
+      "Values": []
+    }
+  ]
+}
+```
+
+禁止把不同 ObjectType 的 Property 合并成无归属全局列表。Entity Linking 会优先在 ObjectType 作用域内匹配 Property；只有 ObjectType 无法解析时才按降级策略扩大搜索范围。
+
+### 5.3 Values 的提取边界
+
+适合进入 `Values` 的内容：
+
+```text
+状态名：在用、停用
+等级：VIP、钻石客户
+地域：东京、华东区域
+产品/品牌名称
+业务定义的编码型实例值（需要 Exact/BM25 参与）
+```
+
+默认只保留在原始 `query`、不自动进入 `Values` 的内容：
+
+```text
+连续数值及比较条件：超过 200、10~30
+日期、相对时间、时间戳：7月21日、本月
+手机号、UUID、纯技术主键
+高随机且未声明可检索的编码
+聚合词：总数、平均值、TopN
+```
+
+业务明确声明某 Property 的编码值需要语义索引时，可以进入 `Values`；此时推荐 `keyword` 或 `hybrid`，Exact/BM25 为主、Dense 为补充。
+
+### 5.4 不在 NER 阶段区分 Enum/Instance
+
+NER 很难仅依靠用户表达稳定判断一个值是模型枚举还是实例列值，因此统一输出 `Values`：
+
+```text
+NER
+  → ValueHint
+  → Entity Linking
+       ├─ Enum Index
+       └─ Instance Index
+  → 命中记录决定真实类型与归属
+```
+
+该设计减少实体提取 Prompt 对本体内部实现细节的依赖，也避免业务 Skill 必须理解索引物理分层。
+
+---
+
+## 6. searchContext 使用规则
+
+`searchContext` 同时服务实体提取和后续消歧，可动态包含：
+
+```text
+领域 few-shot
+专家查询路径
+本体子图文本或 JSON
+领域对象/属性术语
+缩写、黑话与同义表达
+实体提取约束
+候选消歧和路径优先级规则
+```
+
+处理原则：
+
+1. 只作为上下文，不覆盖接口 Schema；
+2. 不单独满足 `query/extractedEntities` 非空校验；
+3. 业务专家路径可用于第 ③ 步路径规划，但不改变 `ExtractedEntity` 三字段结构；
+4. 输入必须做长度限制、Unicode Normalize 和基本安全规范化；
+5. 结构化模式下仍可用于 Entity Linking 的候选精排。
+
+---
+
+## 7. Entity Extraction → Semantic Units
+
+实体提取完成后，OAG 将结果转换为 Entity Linking 的语义单元：
+
+```text
+ExtractedEntity
+  ├─ ObjectType != null
+  │    → OBJECT_TYPE semantic unit
+  │
+  ├─ Properties[*]
+  │    → PROPERTY semantic unit
+  │       scope = ObjectType
+  │
+  └─ Values[*]
+       → VALUE semantic unit
+          context = ObjectType? + Property? + query
+```
+
+规则：
+
+1. ObjectType 单元检索本体对象索引中的 ObjectType；
+2. Property 单元在已解析 ObjectType 作用域内优先匹配 Property；
+3. Value 单元同时检索枚举元素和实例元素；
+4. 值命中后通过真实归属投影回 Property/ObjectType；
+5. 所有候选统一进入 6 路融合与精排，不在实体提取阶段决定 TopK。
+
+---
+
+## 8. 请求样例
+
+### 8.1 WhatsApp 应用体验质量
+
+Query：
+
+```text
+WhatsApp应用 7月21日的体验质量
+```
+
+提取结果：
+
+```json
+{
+  "extractedEntities": [
+    {
+      "ObjectType": "WhatsApp应用",
+      "Properties": ["体验质量", "时间"],
+      "Values": []
+    }
+  ]
+}
+```
+
+说明：“7月21日”属于查询时间条件，继续保留在 `query` 中，不进入 `Values`。
+
+### 8.2 告警场景中的未绑定编码值
+
+Query：
+
+```text
+show active service affecting alarm for 12JKS0885_IN_RSNM_KALIBATA3_MC with TICKETID and time occurred
+```
+
+提取结果：
+
+```json
+{
+  "extractedEntities": [
+    {
+      "ObjectType": "ALARM",
+      "Properties": ["告警TICKET ID", "告警发生时间"],
+      "Values": []
+    },
+    {
+      "Values": [
+        {"Value": "12JKS0885_IN_RSNM_KALIBATA3_MC"}
+      ]
+    }
+  ]
+}
+```
+
+说明：问题中没有足够信息证明该编码属于 Site/BaseStation/nativeId，因此保持 value-only，由索引命中后解析真实归属。
+
+### 8.3 同时包含枚举语义和实例语义的值
+
+Query：
+
+```text
+查询在用状态的VIP客户账户
+```
+
+提取结果：
+
+```json
+{
+  "extractedEntities": [
+    {
+      "ObjectType": "Account",
+      "Properties": ["accountStatus", "customerLevel"],
+      "Values": [
+        {"Property": "accountStatus", "Value": "在用"},
+        {"Property": "customerLevel", "Value": "VIP"}
+      ]
+    }
+  ],
+  "seedRetrievalMode": "hybrid"
+}
+```
+
+NER 不需要知道“在用”最终来自枚举索引还是“VIP”最终来自实例索引；Entity Linking 负责查询并根据索引记录判断。
+
+### 8.4 带专家路径的组合模式
+
+专家路径不写入 `ExtractedEntity`，而写入 `searchContext`：
+
+```json
+{
+  "query": "本月个人客户中，信用额度超过200元的账户总数是多少？",
+  "searchContext": "专家路径：IndividualCustomer -> PayRelation -> Account -> CreditLimitInstance。路径只用于后续候选消歧和子图路径规划。",
+  "extractedEntities": [
+    {"ObjectType": "IndividualCustomer", "Properties": ["id"], "Values": []},
+    {"ObjectType": "PayRelation", "Properties": ["objectId", "accountId"], "Values": []},
+    {"ObjectType": "Account", "Properties": ["accountId"], "Values": []},
+    {"ObjectType": "CreditLimitInstance", "Properties": ["accountId", "initialAmount"], "Values": []}
+  ],
+  "graphExpansionStrategy": "minimal"
+}
+```
+
+“本月”“超过 200”“总数”继续由原始 query 保存，后续查询生成阶段解释。
+
+---
+
+## 9. 校验与归一化规则
+
+1. `tenantId`、`ontologyId` 必须存在且满足长度要求；
+2. `query` 与 `extractedEntities` 至少一个不为空；
+3. 每个 `ExtractedEntity` 至少存在非空 `ObjectType` 或非空 `Values`；
+4. `Properties` 非空时必须存在 `ObjectType`；
+5. `ValueHint.Value` 必须为非空字符串；
+6. `ValueHint.Property` 非空且同一实体有 `ObjectType` 时，应同时出现在该实体 `Properties` 中；
+7. 所有文本执行 trim、Unicode Normalize、去空和规范化去重；
+8. 业务名称不能直接当作本体内部 ID；
+9. value-only 不允许根据值的格式猜测 ObjectType/Property；
+10. `similarityThreshold` 范围为 0～1；`topk/hopLimit >= 1`。
+
+推荐归一化：
+
+```text
+Unicode NFKC
+trim
+连续空白折叠
+大小写策略按 Analyzer/语言配置处理
+数组稳定去重并保留首次出现顺序
+```
+
+---
+
+## 10. OpenAPI Schema 核心定义
+
+```yaml
+components:
+  schemas:
+    SemanticSearchRequest:
+      type: object
+      anyOf:
+        - required: [query]
+        - required: [extractedEntities]
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 1024
+        searchContext:
+          type: string
+          minLength: 1
+          maxLength: 32768
+        extractedEntities:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ExtractedEntity'
+        adaptiveRetrieval:
+          type: integer
+          default: 1
+          enum: [0, 1]
+        seedRetrievalMode:
+          type: string
+          default: vector
+          enum: [vector, keyword, hybrid]
+        similarityThreshold:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.6
+        topk:
+          type: integer
+          minimum: 1
+          default: 3
+        graphExpansionStrategy:
+          type: string
+          default: minimal
+          enum: [minimal, khop, component]
+        hopLimit:
+          type: integer
+          minimum: 1
+          default: 3
+        includeFunctions:
+          type: integer
+          default: 0
+          enum: [0, 1]
+        includeActions:
+          type: integer
+          default: 0
+          enum: [0, 1]
+
+    ExtractedEntity:
+      type: object
+      description: 仅允许 ObjectType、Properties、Values 三个顶层业务字段
+      anyOf:
+        - required: [ObjectType]
+        - required: [Values]
+      properties:
+        ObjectType:
+          type: string
+          minLength: 1
+        Properties:
+          type: array
+          default: []
+          items:
+            type: string
+            minLength: 1
+        Values:
+          type: array
+          default: []
+          items:
+            $ref: '#/components/schemas/ValueHint'
+      additionalProperties: false
+
+    ValueHint:
+      type: object
+      required: [Value]
+      properties:
+        Property:
+          type: string
+          minLength: 1
+        Value:
+          type: string
+          minLength: 1
+      additionalProperties: false
+```
+
+`Properties → ObjectType` 和 `ValueHint.Property → Properties` 的交叉字段约束由服务端 Validator 执行。
+
+---
+
+## 11. 兼容迁移策略
+
+旧版结构中“关系路径提示”和“值类型拆分”不再属于正式 `ExtractedEntity` Schema。迁移原则：
+
+1. 所有值提示统一合并到 `Values`；
+2. 已知 Property 的值保留 `Property + Value`；
+3. 未知归属的值转换为 value-only；
+4. 专家关系路径移动到 `searchContext`，由第 ③ 步路径规划使用；
+5. 服务端可设置一个灰度兼容期解析旧请求，但新 SDK/OpenAPI 只生成三字段结构；
+6. 灰度结束后开启 `additionalProperties=false` 强校验，防止结构继续分叉。
+
+---
+
+## 12. 最终设计决策
+
+1. 实体提取是本体子图检索的第 ① 步，输出只描述对象、属性和值；
+2. `ExtractedEntity` 顶层只保留 `ObjectType`、`Properties`、`Values`；
+3. `Properties` 必须保持与 ObjectType 的从属关系；
+4. `Values` 使用统一 `ValueHint`，NER 不区分 Enum/Instance；
+5. Value 的真实类型、Property/ObjectType 归属由 Entity Linking 根据索引命中记录确定；
+6. 归属未知时允许 value-only，禁止按编码形态猜测对象类型；
+7. Relationship 不在实体提取阶段建模，由子图策略从本体拓扑中发现；
+8. 专家关系路径通过 `searchContext` 传给后续路径规划；
+9. 比较、时间、聚合等查询语义保留在原始 `query`；
+10. 该结构直接生成 Entity Linking Semantic Units，与主方案中的本体对象/枚举元素/实例元素 6 路召回衔接。
+'''
+
+          extracted_path.write_text(extracted_doc, encoding='utf-8')
+
+          main = main_path.read_text(encoding='utf-8')
+
+          def sub_once(pattern, replacement, text, label, flags=0):
+              new, n = re.subn(pattern, replacement, text, count=1, flags=flags)
+              if n != 1:
+                  raise RuntimeError(f'{label}: expected 1 replacement, got {n}')
+              return new
+
+          # Version and document structure.
+          main = re.sub(r'^> 版本：V5\.14\s*$', '> 版本：V5.15  ', main, count=1, flags=re.M)
+          main = main.replace('4. Query Understanding 与 6 路召回', '4. 实体提取、Entity Linking 与 6 路召回', 1)
+          main = main.replace('6. 种子节点投影与本体子图构建', '6. 本体对象投影、子图策略、路径探测与 nGQL 生成', 1)
+
+          # TODO 1: logical terminology.
+          main = sub_once(
+              r'OAG 同时承担索引构建、语义检索和本体子图构建三类能力。V5\.7 进一步收敛检索数据模型，只保留三个业务层次：\s*TODO : 种子节点 统一 改为 本体对象，元数据元素当前只有枚举值，统一改为 枚举元素，实例元素继续保留。\s*```text\s*种子节点（Seed Node）\s*= ObjectType / Property\s*元数据元素（Metadata Element）\s*= Enum Value\s*实例元素（Instance Element）\s*= 真实 Instance Value\s*```',
+              '''OAG 同时承担索引构建、语义检索和本体子图构建三类能力。V5.15 将检索数据模型统一为三个业务层次：
+
+```text
+本体对象（Ontology Object）
+  = ObjectType / Property
+
+枚举元素（Enum Element）
+  = Enum Value
+
+实例元素（Instance Element）
+  = 真实 Instance Value
+```
+
+三类名称在索引、Entity Linking、RRF、精排和结果解释中保持一致。历史 API/代码中的 `seed*`、`metadata*` 字段可以在兼容层继续读取，但新设计文档统一使用“本体对象 / 枚举元素 / 实例元素”的逻辑术语。''',
+              main,
+              'terminology TODO',
+              re.S
+          )
+
+          # TODO 2: same instance value can belong to multiple properties/object types.
+          main = main.replace(
+              'TODO：未来可能需要保证value唯一，存在一个相同的value对应多组property_id和object_type_id情况，property_id和object_type_id需要是一个数组，为了应对这种情况需要设计存储方案和上层查询方案，为未来演进预留口子。',
+              '''**实例值多归属演进方案：** 当前版本不要求 `value` 单列全局唯一，同一个规范化值如果属于多组 Property/ObjectType，允许保存多条物理记录，业务唯一键使用 `(normalized_value, property_id, object_type_id)`，从而避免数组字段导致的更新放大和索引过滤复杂化。
+
+未来如果业务明确要求“一个 value 只保存一份向量”，升级为**值表 + 归属映射表**两层模型，而不是直接把 `property_id/object_type_id` 改成数组：
+
+```text
+t_oag_instance_value_{ontology_id}
+  value_id
+  normalized_value UNIQUE
+  value
+  vector
+
+              1 : N
+                ↓
+
+t_oag_instance_binding_{ontology_id}
+  value_id
+  property_id
+  object_type_id
+  UNIQUE(value_id, property_id, object_type_id)
+```
+
+查询链路：先在 Value 表执行 Exact/BM25/Dense 召回得到 `value_id`，再批量查询 Binding 表展开成多组 `(property_id, object_type_id)`，随后按当前 ObjectType/Property 上下文进入 RRF/LLM 消歧。对上层统一预留 `ownerships[]` 逻辑结构；当前“一值多行”实现也在 Normalizer 层聚合成同一逻辑候选，因此未来切换两层存储不改变 Entity Linking 和子图构建接口。''',
+              1
+          )
+
+          # TODO 3: OAC direct / MinIO flows, capacity, DataSeek alignment.
+          main = sub_once(
+              r'评审点和遗留问题：\s*TODO：\s*1、按照OAC直接访问和不能访问的分数据流；是否采用OAC查询和通知的方式，通过配置开关控制\s*2、针对不同的业务，明确语义向量数据量规格约束，软件1W用户，SEC最大100W\s*3、语义索引能力需要与DataSeek对齐，为未来与NL2SQL融合做准备',
+              '''### 数据源访问模式、容量规格与 DataSeek 对齐结论
+
+索引构建统一支持三种服务端配置模式，不把数据源选择暴露成业务侧每次请求都要判断的参数：
+
+```yaml
+indexBuild:
+  instanceDataSourceMode: AUTO   # OAC_QUERY | MINIO_NOTICE | AUTO
+  directQueryMaxRows: 10000
+```
+
+| 模式 | 数据流 | 适用场景 |
+|---|---|---|
+| `OAC_QUERY` | Build API → OAG → OAC 分页/流式查询 → 去重 → Embedding → 双写 | OAG 可访问 OAC；软件等中小规模场景；首次全量和日常更新 |
+| `MINIO_NOTICE` | 业务/DataSync → MinIO → notice → OAG 读取文件 → 去重 → Embedding → 双写 | OAG 不能直连 OAC，或大数据量全量/增量导入 |
+| `AUTO` | 按租户/本体配置和预估规模选择上面两条路径 | 默认模式；不依赖运行时临时探测网络可达性，保证行为可预测 |
+
+容量基线：
+
+| 业务档位 | 去重后语义值规模 | 默认路径 | 设计要求 |
+|---|---:|---|---|
+| Software | ≤ 1 万 | `OAC_QUERY` | 单表即可，支持在线重建/更新 |
+| SEC | ≤ 100 万 | `MINIO_NOTICE` | Bulk、Chunk、Checkpoint、限流、可恢复、双写幂等 |
+| > 100 万 | 超出当前基线 | MinIO + 水平分表 | 必须专项容量评估与压测后开放 |
+
+与 DataSeek/NL2SQL 的对齐采用统一语义值逻辑模型：`ontology_id / object_type_id / property_id / value / normalized_value / source / version / update_type`。OAG 保持 Exact/BM25 + Dense 的混合检索契约和“值 → Property/ObjectType”归属解析能力；未来 NL2SQL 可以复用同一语义值字典和归属信息，而不要求共享 OAG 的物理向量表。''',
+              main,
+              'data flow TODO',
+              re.S
+          )
+
+          # TODO 4: sha256 definition and code.
+          main = main.replace(
+              'TODO：给出`sha256`具体的计算算法和代码样例',
+              '''`sha256` 定义为**MinIO 对象原始字节流**的 SHA-256（FIPS 180-4），按文件从第 0 字节顺序读取，不做换行符转换、字符集转码、CSV 解析或压缩内容重写；输出 64 位小写十六进制字符串。生产者上传完成后计算并发送，OAG 下载时再次流式计算并与 notice 值比较，校验失败立即终止任务，禁止对内容已变化的 objectKey 继续恢复。
+
+Java 参考实现：
+
+```java
+import java.io.InputStream;
+import java.security.MessageDigest;
+import java.util.HexFormat;
+
+public static String sha256(InputStream in) throws Exception {
+    MessageDigest md = MessageDigest.getInstance("SHA-256");
+    byte[] buffer = new byte[8 * 1024 * 1024]; // 8 MiB，避免整文件入内存
+    int n;
+    while ((n = in.read(buffer)) >= 0) {
+        if (n > 0) {
+            md.update(buffer, 0, n);
+        }
+    }
+    return HexFormat.of().formatHex(md.digest());
+}
+```
+
+校验顺序：`HEAD(size) → stream download + SHA-256 → 与 notice.sha256 比较 → 开始 Chunk 导入`。同一个任务恢复时必须再次确认 `objectKey + size + sha256` 未变化。''',
+              1
+          )
+
+          # TODO 5: first import performance/capacity.
+          main = main.replace(
+              'TODO：首次入库，需要考虑性能，当前软件场景 1W，SEC 印尼IOH 场景100W。',
+              '''### 首次入库性能基线
+
+首次全量必须按规模分档，避免 1 万和 100 万数据走同一同步链路：
+
+| 档位 | 数据量（去重后 Value） | 推荐链路 | 默认执行模型 |
+|---|---:|---|---|
+| Software | ≤ 10,000 | OAC Query | 分页读取 + Embedding Batch + 双存储 Bulk，可单任务完成 |
+| SEC / IOH | ≤ 1,000,000 | MinIO Bulk | 文件切 Chunk、Embedding Worker 池、GaussVector/OpenSearch 独立 Bulk Writer、Checkpoint 恢复 |
+
+建议初始调优范围（均配置化，最终以环境压测为准）：Embedding batch `32~128`，写入 bulk `500~2000` 行，文件 Chunk `10,000~50,000` 行；Writer 队列达到高水位时必须反压读取和 Embedding，禁止无界缓存。性能验收至少同时记录 `readRows/s、embedRows/s、gaussRows/s、openSearchRows/s、endToEndRows/s、P95 chunk latency、retry rate、heap/direct-memory peak`。
+
+容量验收原则：1 万档验证在线构建体验；100 万档验证可恢复 Bulk 能力。端到端耗时受 Embedding 部署（CPU/GPU、batch、模型实例数）影响，因此不在协议中写死分钟级 SLA，而是在目标环境压测后固化成部署规格。''',
+              1
+          )
+
+          # TODO 6: stable chunk id and recovery.
+          main = main.replace(
+              'TODO：稳定 Chunk ID 可由 `objectKey + file sha256 + row-range` 计算，但是文中没有提到 这些信息，以及如何恢复，请补充方案。',
+              '''稳定 Chunk 必须显式记录不可变文件身份和行范围：
+
+```text
+chunkSource = objectKey + "\\n" + fileSha256 + "\\n" + rowStart + ":" + rowEnd
+chunkId     = SHA-256(UTF-8(chunkSource))
+```
+
+任务/Checkpoint 至少持久化：
+
+| 字段 | 说明 |
+|---|---|
+| `object_key` | MinIO 对象键 |
+| `file_sha256` | 完整对象 SHA-256 |
+| `file_size` | 文件字节数 |
+| `row_start/row_end` | 当前 Chunk 半闭或闭区间，协议内固定一种口径 |
+| `chunk_id` | 上述稳定哈希 |
+| `committed_row_end` | 最近完成双写并校验通过的行 |
+| `gauss_status` / `opensearch_status` | 两端提交状态 |
+| `retry_count` | 重试次数 |
+| `updated_at` | Checkpoint 更新时间 |
+
+恢复流程：
+
+```text
+1. 读取任务 Checkpoint
+2. HEAD MinIO，校验 objectKey/size；重新计算或读取可信 sha256
+3. 若 fileSha256 变化 → FILE_CHANGED，禁止续跑
+4. 找到最后一个双端 COMMITTED 的 chunk
+5. 从 nextRow = committed_row_end + 1 重新生成确定性 chunk range/chunkId
+6. 对可能“单端成功”的 chunk 再执行幂等 UPSERT
+7. GaussVector + OpenSearch 均完成并通过计数/唯一键校验后推进 Checkpoint
+```
+
+因此 Chunk ID、文件身份、恢复 offset 是同一套协议数据，不允许只保存“最近行号”而丢失文件 SHA。''',
+              1
+          )
+
+          # TODO 7: six-channel naming.
+          main = main.replace(
+              'TODO: 修改数据类型，和前面章节统一，下文中的名称也同步修改',
+              '''本节逻辑数据类型统一使用 **本体对象 / 枚举元素 / 实例元素**。RRF 新配置名推荐 `ontologyObject* / enum* / instance*`；历史实现若仍读取 `seed* / metadata* / instance*`，只在配置兼容层做别名映射，业务语义和文档不再混用。''',
+              1
+          )
+
+          # Normalize the two known RRF key sets and converge to the latest recommended weights.
+          main = main.replace(
+              '''    metadataLexical: 1.0
+    metadataDense: 1.2
+    enumLexical: 1.2
+    enumDense: 1.1
+    instanceLexical: 1.4
+    instanceDense: 0.6''',
+              '''    ontologyObjectLexical: 1.3
+    ontologyObjectDense: 1.0
+    enumLexical: 1.2
+    enumDense: 1.0
+    instanceLexical: 1.0
+    instanceDense: 0.8'''
+          )
+          main = main.replace(
+              '''      seedLexical: 1.3
+      seedDense: 1.0
+      metadataLexical: 1.2
+      metadataDense: 1.0
+      instanceLexical: 1.0
+      instanceDense: 0.8''',
+              '''      ontologyObjectLexical: 1.3
+      ontologyObjectDense: 1.0
+      enumLexical: 1.2
+      enumDense: 1.0
+      instanceLexical: 1.0
+      instanceDense: 0.8'''
+          )
+
+          # TODO 8: worked Weighted RRF example.
+          main = main.replace(
+              '**TODO**：针对加权的RRF，给出一个样例，用于说明RRF的算法执行过程，用于指导开发代码',
+              '''### Weighted RRF 执行样例
+
+对同一个 Semantic Unit，6 条通道先各自形成**有序列表**，RRF 不直接使用 BM25/Cosine 原始分数，只使用通道内 `rank`：
+
+```text
+score(candidate) = Σ channelWeight / (k + rank)
+k = 60
+```
+
+以下使用推荐权重：
+
+```yaml
+ontologyObjectLexical: 1.3
+ontologyObjectDense:   1.0
+enumLexical:           1.2
+enumDense:             1.0
+instanceLexical:       1.0
+instanceDense:         0.8
+```
+
+假设候选已经按真实归属聚合到两个 Property：
+
+| 通道 | A=`Account.customerLevel` | B=`Account.accountStatus` |
+|---|---:|---:|
+| 本体对象 Lexical | rank=2 | rank=1 |
+| 本体对象 Dense | rank=1 | rank=3 |
+| 枚举 Lexical | rank=1 | rank=3 |
+| 枚举 Dense | rank=2 | rank=1 |
+| 实例 Lexical | 未命中 | 未命中 |
+| 实例 Dense | 未命中 | 未命中 |
+
+则：
+
+```text
+A = 1.3/(60+2) + 1.0/(60+1) + 1.2/(60+1) + 1.0/(60+2)
+  = 0.020968 + 0.016393 + 0.019672 + 0.016129
+  = 0.073162
+
+B = 1.3/(60+1) + 1.0/(60+3) + 1.2/(60+3) + 1.0/(60+1)
+  = 0.021311 + 0.015873 + 0.019048 + 0.016393
+  = 0.072626
+```
+
+所以 A 的粗排分数略高于 B。若某通道未命中，该通道贡献为 0；同一 Property 被多个具体 Enum/Instance 值命中时，先按 `semantic_unit + channel + group_id` 做通道内去重并保留最佳 rank，同时把具体 `matchedItems` 留给后续 LLM Fine Rank 解释。
+
+开发伪代码：
+
+```java
+for (RankedList channel : channels) {
+    double w = weights.get(channel.name());
+    for (int i = 0; i < channel.size(); i++) {
+        int rank = i + 1; // rank 从 1 开始
+        Candidate c = normalizeAndProject(channel.get(i));
+        c.rrfScore += w / (k + rank);
+        c.addEvidence(channel.name(), rank, channel.get(i));
+    }
+}
+return candidates.values().stream()
+    .sorted(comparingDouble(Candidate::getRrfScore).reversed())
+    .limit(maxGlobalCandidates)
+    .toList();
+```
+
+注意：`similarityThreshold` 在进入 RRF 前过滤 Dense；Exact/BM25 是否进入列表由各自通道规则决定，RRF 本身不再比较原始异构分数。''',
+              1
+          )
+
+          # Add full five-stage pipeline before 1.3, preserving existing chapter order.
+          if '### 1.2.1 本体子图检索五阶段主流程' not in main:
+              insert = r'''
+### 1.2.1 本体子图检索五阶段主流程
+
+对外统一把运行链路抽象为五个阶段，现有更细的“召回/RRF/精排/投影”仍作为阶段 ② 内部实现，不改变已有章节顺序：
+
+```mermaid
+flowchart TD
+    Q[用户 Query] --> EE[① 实体提取 Entity Extraction<br/>ObjectType / Properties / Values]
+    EE --> EL[② 实体链接 Entity Linking<br/>本体对象/枚举元素/实例元素<br/>Lexical + Dense + Weighted RRF]
+    EL --> GS[③ 子图检索策略<br/>minimal / khop / component]
+    GS --> PLAN[PathProbePlan<br/>统一策略抽象 + Loop 执行]
+    PLAN --> NQ[④ nGQL / 图算法参数生成]
+    NQ --> GE[图查询 / 图算法执行]
+    GE --> RG[⑤ 结果生成]
+    RG --> OUT[ObjectType / Property / Relationship<br/>RelationshipProperty / Function / Action]
+```
+
+阶段边界：
+
+1. **实体提取**只回答“用户提到了哪些对象、属性和值”，正式结构见 [extractedEntities / 实体提取设计方案](./OAG语义子图检索接口extractedEntities结构设计方案.md)；
+2. **实体链接**把业务表达链接到真实本体对象，并用枚举/实例命中作为语义证据；
+3. **子图策略**只消费已解析的 ObjectType/Property terminal，生成可执行 `PathProbePlan`；
+4. **nGQL 生成**只负责把 Plan 翻译成参数化图查询或图算法入参，不承载语义判断；
+5. **结果生成**把执行结果还原为稳定 API 结构，并按开关扩展 Function/Action。
+
+业务扩展原则：新增业务图策略时实现统一 Strategy SPI 生成 `PathProbePlan`，而不是在 Entity Linking 或 nGQL Assembler 中硬编码业务分支。
+
+'''
+              main = main.replace('## 1.3 与现有 OAG 代码的兼容基线', insert + '## 1.3 与现有 OAG 代码的兼容基线', 1)
+
+          # Add Entity Extraction into existing chapter 4 without moving old sections.
+          if '## 4.0 实体提取（Entity Extraction）' not in main:
+              entity_section = r'''
+## 4.0 实体提取（Entity Extraction）
+
+实体提取是子图检索的第 ① 步，输入为 `query + searchContext`，或者直接接收业务侧提供的 `extractedEntities`。正式 `ExtractedEntity` 只包含：
+
+```text
+ObjectType
+Properties[]
+Values[]
+```
+
+其中 `Values` 统一承载需要语义定位的值，不在 NER 阶段区分 Enum/Instance：
+
+```json
+{
+  "extractedEntities": [
+    {
+      "ObjectType": "Account",
+      "Properties": ["accountStatus", "customerLevel"],
+      "Values": [
+        {"Property": "accountStatus", "Value": "在用"},
+        {"Property": "customerLevel", "Value": "VIP"}
+      ]
+    }
+  ]
+}
+```
+
+核心规则：
+
+1. Property 必须保持 ObjectType 作用域，Entity Linking 优先在该作用域匹配；
+2. ObjectType/Property 都未知的值允许 value-only，跨枚举/实例索引召回后再解析归属；
+3. 不根据编码形态猜测 Site/BaseStation/nativeId 等类型；
+4. Relationship 不由实体提取直接输出，专家路径放入 `searchContext`，在阶段 ③ 作为 PathPlan 约束；
+5. 连续数值、时间、比较和聚合语义默认留在原始 `query`，不强行塞入 Values；
+6. 实体提取结果转换为 OBJECT_TYPE / PROPERTY / VALUE 三种 Semantic Unit，再进入下文 6 路召回。
+
+完整 Schema、样例和兼容规则见 [OAG语义子图检索接口extractedEntities结构设计方案](./OAG语义子图检索接口extractedEntities结构设计方案.md)。
+
+'''
+              main = main.replace('## 4.1 Query Understanding：Semantic Phrase Extraction', entity_section + '## 4.1 Query Understanding：Semantic Phrase Extraction', 1)
+
+          # Add strategy abstraction, PathProbePlan, nGQL assembly, and result generation before existing 6.4.
+          if '### 6.3.1 统一策略抽象与 PathProbePlan' not in main:
+              plan_section = r'''
+### 6.3.1 统一策略抽象与 PathProbePlan
+
+`minimal / khop / component` 不直接在 Controller 中拼 nGQL，而统一实现策略接口：
+
+```java
+public interface SubgraphRetrievalStrategy {
+    String name();
+    PathProbePlan plan(SubgraphPlanningContext context);
+}
+```
+
+建议 Plan 结构：
+
+```text
+PathProbePlan
+  strategy
+  terminals[]                 # 已解析的 ObjectType / Property
+  probes[]
+    probeId
+    probeType                 # SHORTEST_PATH / MULTI_SOURCE_BFS / COMPONENT
+    sources[]
+    targets[]
+    hopLimit
+    direction
+    edgeConstraints[]
+    required                  # 是否必须成功
+  limits
+    maxPaths
+    maxNodes
+    maxEdges
+    timeoutMs
+  fallbackPolicy
+```
+
+规划映射：
+
+| 策略 | Plan 重点 |
+|---|---|
+| `minimal` | terminal 两两/按启发式生成最短路径 probe，结果用于 MST/Steiner 近似连接 |
+| `khop` | 所有 terminal 作为多源起点，生成 Multi-Source BFS probe，受 `hopLimit` 限制 |
+| `component` | 以 terminal 为入口生成连通分量 probe，可优先走 GraphTopologyCache |
+| 业务扩展 | 注册新的 `SubgraphRetrievalStrategy`，只产出标准 Plan，不修改执行器 |
+
+执行器统一 Loop：
+
+```text
+for probe in plan.probes:
+    check limits/deadline
+    compile probe
+    execute
+    merge partial graph
+    update probe state
+    if fallback required -> generate next probe
+```
+
+这样 Strategy 只决定“探测什么”，Executor 只决定“如何执行”，便于后续增加业务定制策略而不侵入 Entity Linking。
+
+### 6.3.2 根据 PathProbePlan 动态装配 nGQL / 图算法入参
+
+新增 `GraphProbeAssembler`：
+
+```java
+CompiledProbe compile(PathProbe probe, GraphCapability capability);
+```
+
+推荐映射：
+
+```text
+SHORTEST_PATH
+  → 参数化 FIND SHORTEST PATH / 现有 shortest-path API
+
+MULTI_SOURCE_BFS
+  → 图算法服务支持时组装 BFS 入参
+  → 否则使用 GET SUBGRAPH / 分层 frontier 查询模板
+
+COMPONENT
+  → GraphTopologyCache 内存算法优先
+  → 缓存不可用时由图查询迭代扩展
+```
+
+装配原则：
+
+1. 所有 ID、hop、方向和过滤条件通过参数绑定/受控模板生成，禁止直接拼接用户 query；
+2. nGQL 模板只消费已完成 Entity Linking 的内部 ID；
+3. `hopLimit/maxPaths/maxNodes/maxEdges/timeout` 在编译和执行两层都校验；
+4. 图能力差异由 `GraphCapability` 决定使用 nGQL 还是内存/图算法实现；
+5. 每个 `probeId` 记录生成模板、参数摘要、耗时和返回规模，支持 Explain 与故障定位。
+
+### 6.3.3 结果生成
+
+所有 Probe 合并成统一 `OntologySubgraph` 后执行结果装配：
+
+```text
+OntologySubgraph
+  ├─ ObjectType
+  ├─ Property
+  ├─ Relationship
+  └─ RelationshipProperty
+
++ retrievalResults
+  └─ matched enum/instance evidence
+
++ includeFunctions/includeActions
+  ├─ Function
+  └─ Action
+```
+
+返回原则：
+
+1. ObjectType/Property 来自核心节点；
+2. Relationship 来自路径边，RelationshipProperty 作为边属性元数据返回；
+3. Enum/Instance 作为 `retrievalResults/semanticExtensions` 的语义证据，不作为图拓扑 terminal；
+4. `includeFunctions=1`、`includeActions=1` 时在核心子图完成后扩展能力元素；
+5. metadata 至少给出 `strategy/probeCount/connected/truncated/unresolvedSemanticUnits/unconnectedTerminals`，便于上层判断结果完整性。
+
+'''
+              main = main.replace('## 6.4 minimal：当前实现分析', plan_section + '## 6.4 minimal：当前实现分析', 1)
+
+          # Logical terminology convergence in prose. Keep legacy Java/API identifiers untouched.
+          replacements = [
+              ('种子节点（Seed Node）', '本体对象（Ontology Object）'),
+              ('元数据语义元素', '枚举语义元素'),
+              ('元数据元素', '枚举元素'),
+              ('实例语义元素', '实例元素'),
+              ('种子节点', '本体对象'),
+              ('Metadata Evidence', 'Enum Evidence'),
+              ('Seed Evidence', 'Ontology Object Evidence'),
+          ]
+          for old, new in replacements:
+              main = main.replace(old, new)
+
+          # Rename the chapter heading if the earlier structural replacement was affected by source wording.
+          main = main.replace('# 4. Query Understanding 与 6 路召回', '# 4. 实体提取、Entity Linking 与 6 路召回', 1)
+          main = main.replace('# 6. 本体对象投影与本体子图构建', '# 6. 本体对象投影、子图策略、路径探测与 nGQL 生成', 1)
+
+          # Safety checks: all explicit TODOs in target docs must be resolved.
+          if 'TODO' in main:
+              matches = [line for line in main.splitlines() if 'TODO' in line]
+              raise RuntimeError('unresolved TODOs in main doc: ' + ' | '.join(matches[:20]))
+          if 'TODO' in extracted_doc:
+              raise RuntimeError('unresolved TODO in extractedEntities doc')
+          for stale in ('`Relationships`', '`EnumValues`', '`InstanceValues`'):
+              if stale in extracted_doc:
+                  raise RuntimeError(f'stale ExtractedEntity field remains: {stale}')
+          for required in ('① 实体提取', '② 实体链接', '③ 子图检索策略', '④ nGQL', '⑤ 结果生成', 'PathProbePlan'):
+              if required not in main:
+                  raise RuntimeError(f'missing integrated step: {required}')
+
+          main_path.write_text(main, encoding='utf-8')
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/OAG语义子图检索接口extractedEntities结构设计方案.md docs/OAG本体锚点语义检索与向量索引设计方案.md
+          if git diff --cached --quiet; then
+            echo "No documentation changes"
+            exit 0
+          fi
+          git commit -m "docs: complete OAG subgraph retrieval design"
+          git push origin HEAD:docs/oag-subgraph-complete-20260823
