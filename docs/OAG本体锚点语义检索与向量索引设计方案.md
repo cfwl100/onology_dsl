@@ -1418,6 +1418,7 @@ importMode = FULL_REPLACE | INCREMENTAL | CLEAR
 | 人工触发增量更新，有 OAC | build → OAC → MinIO → notice → query | `OAC` | `INCREMENTAL` | MinIO CSV |
 | 定时/事件同步，由业务侧负责 | putObject → notice → query | `BUSINESS_NOTICE` | `INCREMENTAL` | MinIO CSV |
 | 已有全量文件导入/重建 | putObject → notice → query | `BUSINESS_NOTICE` | `FULL_REPLACE` | MinIO CSV |
+| 清理当前本体全量实例索引 | `index-data/notice` → query | - | `CLEAR` | 无需文件；`dataType=INSTANCE_VALUE` |
 
 选择规则：首次创建或明确重建使用 `FULL_REPLACE`；只提交变化数据使用 `INCREMENTAL`；需要清空当前本体全部实例值索引时使用 `INSTANCE_VALUE + CLEAR`。不要用 `INCREMENTAL` 模拟首次全量，也不要把日常增量提交为全量替换。
 
@@ -1811,7 +1812,7 @@ MinIO 的 `endpoint / accessKey / secretKey` 属于部署配置，不属于业�
 /v1/onto-retrieval/{ontologyId}/index-data/notice:
   post:
     operationId: importIndexDataFromMinio
-    summary: 从 MinIO CSV 导入枚举值或实例列值
+    summary: 从 MinIO CSV 导入枚举/实例值，或清理全量实例值索引
     parameters:
       - $ref: '#/components/parameters/OntologyId'
       - $ref: '#/components/parameters/TenantId'
@@ -3534,7 +3535,7 @@ sequenceDiagram
 
 ### 3.11.3 最终约束
 
-1. 动态 Enum / Instance 统一使用 **MinIO CSV + `index-data/notice`**，不再区分小数据直返和大数据文件两套实现；
+1. 除 `dataType=INSTANCE_VALUE, importMode=CLEAR` 外，动态 Enum / Instance 统一使用 **MinIO CSV + `index-data/notice`**；`CLEAR` 复用同一任务接口但不要求 `files`；
 2. `instanceDataSourceMode=OAC|BUSINESS_NOTICE` 只决定谁读取业务源；
 3. OAC 手动构建通过 `triggerTaskId` 将文件绑定到原 Task，不重复创建 Task；
 4. `SEED_NODE` 读取 OMS，本体外部生产者不生成 vector；
@@ -4611,7 +4612,7 @@ Relationship / RelationshipProperty 不由 Entity Extraction 或 Entity Linking 
 
 ## 4.7 本章输出与第 5 章衔接
 
-阶段 4 的输出不是最终语义检索结果，而是可供 LLM Fine Rank 使用的**真实候选集合 + 归属 + 证据**：
+本章粗排阶段的输出不是最终语义检索结果，而是可供 LLM Fine Rank 使用的**真实候选集合 + 归属 + 证据**：
 
 ```text
 ObjectType / Property
