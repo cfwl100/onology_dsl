@@ -1,0 +1,47 @@
+name: OAG schema V6.1 correction
+
+on:
+  push:
+    branches:
+      - docs/oag-subgraph-complete-20260823
+
+permissions:
+  contents: write
+
+jobs:
+  update-oag-schema:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: docs/oag-subgraph-complete-20260823
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply schema corrections
+        run: python3 tools/update_oag_schema_v61.py
+
+      - name: Validate current normative sections
+        run: |
+          DOC='docs/OAG本体锚点语义检索与向量索引设计方案.md'
+          grep -q '版本：V6.1（全量整合版）' "$DOC"
+          grep -q '| `display_zh` | `VARCHAR(512 CHAR)`' "$DOC"
+          grep -q '| `display_lang_2` | `VARCHAR(512 CHAR)`' "$DOC"
+          grep -q '| `description_lang_2` | `VARCHAR(1024 CHAR)`' "$DOC"
+          grep -q '| `synonyms` | `TEXT` |  | 实例值同义词' "$DOC"
+          grep -q 'matchedField = synonyms' "$DOC"
+
+      - name: Remove one-shot helpers
+        run: |
+          rm -f tools/update_oag_schema_v61.py
+          rm -f .github/workflows/oag-schema-v61.yml
+
+      - name: Commit and push
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'docs: restore expanded language fields and instance synonyms'
+          git push origin HEAD:docs/oag-subgraph-complete-20260823
