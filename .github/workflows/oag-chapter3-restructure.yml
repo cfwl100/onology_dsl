@@ -22,7 +22,7 @@ jobs:
 
       - name: Restructure chapter 3
         run: |
-          sed -i "s/'GsIVFFLAT', //" tools/restructure_oag_chapter3.py
+          sed -i "s/'GsIVFFLAT',//g" tools/restructure_oag_chapter3.py
           python3 tools/restructure_oag_chapter3.py
 
       - name: Validate formal structure
