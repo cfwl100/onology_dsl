@@ -44,6 +44,7 @@ jobs:
         run: |
           rm -f tools/restructure_oag_chapter3.py
           rm -f .github/workflows/oag-chapter3-restructure.yml
+          rm -f .github/oag-chapter3-trigger.txt
 
       - name: Commit result
         run: |
