@@ -3577,109 +3577,20 @@ Mobile Number
 
 ### 4.1.3 Query Understanding 推荐结构
 
-兼容现有：
-
-```json
-{
-  "main_object": "Cell",
-  "aggregation": "sum",
-  "objectType": ["Type1"],
-  "property": ["prop1"],
-  "concepts": ["concept1"],
-  "essential_ids": ["id1"],
-  "slot_top_k_overrides": {
-    "slot1": 5
-  }
-}
 ```
-
-目标结构：
-
-```json
 {
-  "main_object_hint": "Cell",
-  "aggregation": {
-    "operator": "sum",
-    "target": null
-  },
-  "semantic_units": [
+  "extractedEntities": [
     {
-      "id": "u1",
-      "text": "影响业务的活跃告警",
-      "role_hint": "unknown",
-      "language_hint": "zh",
-      "importance": "required"
-    },
-    {
-      "id": "u2",
-      "text": "发生时间",
-      "role_hint": "property_or_value",
-      "language_hint": "zh",
-      "importance": "required"
+      "ObjectType": "Account",
+      "Properties": ["accountStatus", "customerLevel"],
+      "Values": [
+        {"Property": "accountStatus", "Value": "在用"},
+        {"Property": "customerLevel", "Value": "VIP"}
+      ]
     }
-  ],
-  "object_type_hints": ["Cell"],
-  "constraints": [],
-  "output_intent": "ontology_subgraph"
+  ]
 }
 ```
-
-`role_hint` 可取：
-
-```text
-object
-property
-value
-object_or_property
-property_or_value
-object_or_property_or_value
-unknown
-```
-
-只用于 Boost，不关闭其他检索通道。
-
-`language_hint` 支持 BCP 47 风格语言码，例如：
-
-```text
-zh / en / es / es-MX / pt-BR / fr / ar / id / mixed / und
-```
-
-西语等小语种与中英文一样进入 6 路召回；Dense 不按语言硬过滤，Lexical 根据语言选择 Analyzer 或 Boost。
-
----
-
-
-### 4.1.4 检索参数职责边界
-
-TopK 属于检索系统策略，应由：
-
-```text
-表规模
-索引类型
-召回评测
-延迟预算
-查询 Profile
-```
-
-控制。
-
-LLM 可以输出：
-
-```text
-importance = required / optional
-```
-
-系统映射：
-
-```text
-required → high_recall profile
-optional → normal profile
-```
-
-避免让 LLM 直接决定底层性能参数。
-
----
-
 
 ---
 
