@@ -1532,7 +1532,7 @@ ontologyId + requestId
 | 批量查询任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/query`           | 查询任务、进度、错误码和文件信息                            |
 | 批量重试任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/retry`           | 对业务选择的失败 Task 执行技术可恢复性校验并重试                 |
 | 批量取消任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/cancel`          | 请求取消非终态 Task                                |
-| 查询记录级错误    | GET    | `/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/errors` | 分页读取记录级错误                                   |
+
 
 异步写入接口统一遵循：
 
@@ -1546,87 +1546,6 @@ ontologyId + requestId
 `202 Accepted` 只表示任务已接受，不表示索引已经可检索。
 
 ### 3.3.2 手动构建/更新索引
-
-##### 外部接口
-
-```http
-POST /v1/onto-retrieval/{ontologyId}/index-tasks/build
-Content-Type: application/json
-x-gde-tenant-id: {tenantId}
-```
-
-`IndexBuildRequest`：
-
-| 参数           | 类型            | 必选  | 默认值 | 约束与说明                                                  |
-| ------------ | ------------- | --- | --- | ------------------------------------------------------ |
-| `requestId`  | String        | 是   | -   | 调用方幂等键，1～256 字符                                        |
-| `dataTypes`  | Array[String] | 是   | -   | 非空且不重复；可选 `SEED_NODE`、`METADATA_ENUM`、`INSTANCE_VALUE` |
-| `importMode` | String        | 是   | -   | `FULL_REPLACE` 或 `INCREMENTAL`                         |
-| `reason`     | String        | 否   | -   | 人工操作原因或工单号，最大 512 字符；只用于审计                             |
-
-请求示例：
-
-```json
-{
-  "requestId": "manual-build-20260820-000001",
-  "dataTypes": ["SEED_NODE", "METADATA_ENUM", "INSTANCE_VALUE"],
-  "importMode": "FULL_REPLACE",
-  "reason": "首次创建本体检索索引"
-}
-```
-
-路由规则：
-
-- `SEED_NODE`：OAG 读取 OMS 本体资产构建，不访问业务库。
-- `METADATA_ENUM`、`INSTANCE_VALUE`：有 OAC 时由 OAG 调用 OAC；调用方不能改为直接访问业务库。
-- OAG 为每个 `dataType` 创建一个可独立查询、重试和取消的持久化任务。相同 `requestId` 和相同请求语义返回同一组任务。
-
-HTTP `202 Accepted` 响应示例：
-
-```json
-{
-  "ontologyId": "dtmi.ontology.xxx.1",
-  "requestId": "manual-build-20260820-000001",
-  "status": "ACCEPTED",
-  "tasks": [
-    {"taskId": "task-seed-001", "dataType": "SEED_NODE", "sourceType": "OMS", "stage": "CREATED"},
-    {"taskId": "task-enum-001", "dataType": "METADATA_ENUM", "sourceType": "OAC", "stage": "WAITING_SOURCE"},
-    {"taskId": "task-instance-001", "dataType": "INSTANCE_VALUE", "sourceType": "OAC", "stage": "WAITING_SOURCE"}
-  ]
-}
-```
-
-OpenAPI 3.0.3 Path 定义：
-
-```yaml
-/v1/onto-retrieval/{ontologyId}/index-tasks/build:
-  post:
-    operationId: buildOrUpdateIndexFromOac
-    summary: 手动触发本体索引全量构建或增量更新
-    parameters:
-      - $ref: '#/components/parameters/OntologyId'
-      - $ref: '#/components/parameters/TenantId'
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/IndexBuildRequest'
-    responses:
-      '202':
-        description: 构建任务已接受
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/IndexBuildAcceptedResponse'
-      '400': { $ref: '#/components/responses/BadRequest' }
-      '404': { $ref: '#/components/responses/NotFound' }
-      '409': { $ref: '#/components/responses/Conflict' }
-      '429': { $ref: '#/components/responses/TooManyRequests' }
-      '500': { $ref: '#/components/responses/InternalError' }
-      '503': { $ref: '#/components/responses/ServiceUnavailable' }
-```
-
 
 ##### 大数据量时序
 
@@ -4243,20 +4162,20 @@ seedNodes[]
 
 字段定义：
 
-| 字段 | 类型 | 必选 | 说明 |
-|---|---|---|---|
-| `seedNodes` | Array | 是 | 按实体提取结果中的 ObjectType 分组的实体链接候选 |
-| `sourceObjectType` | String | 是 | 实体提取阶段得到的原始 ObjectType 文本 |
-| `targetObjectTypes` | Array | 是 | RRF 粗排后的 Nebula ObjectType 候选，按 `score` 降序排列；允许为空 |
-| `targetObjectTypes[].name` | String | 是 | 本体中的 ObjectType 名称 |
-| `targetObjectTypes[].id` | String | 是 | 本体中的 ObjectType ID |
-| `targetObjectTypes[].score` | Number | 是 | 归一化后的实体链接粗排分数，范围 `[0,1]`；不是单路向量 cosine，也不是 OpenSearch `_score` |
-| `propertyLinks` | Array | 是 | 在当前 `targetObjectType.id` 范围内生成的 Property 链接结果；没有源 Property 时返回空数组 |
-| `sourceProperty` | String | 是 | 从属于 `sourceObjectType` 的原始 Property 文本 |
-| `targetProperties` | Array | 是 | 只包含归属于当前候选 ObjectType 的 Property，按 `score` 降序排列；允许为空 |
-| `targetProperties[].name` | String | 是 | 本体中的 Property 名称 |
-| `targetProperties[].id` | String | 是 | 本体中的 Property ID |
-| `targetProperties[].score` | Number | 是 | 当前 ObjectType 作用域内归一化后的 Property 粗排分数，范围 `[0,1]` |
+| 字段                          | 类型     | 必选  | 说明                                                                 |
+| --------------------------- | ------ | --- | ------------------------------------------------------------------ |
+| `seedNodes`                 | Array  | 是   | 按实体提取结果中的 ObjectType 分组的实体链接候选                                     |
+| `sourceObjectType`          | String | 是   | 实体提取阶段得到的原始 ObjectType 文本                                          |
+| `targetObjectTypes`         | Array  | 是   | RRF 粗排后的 Nebula ObjectType 候选，按 `score` 降序排列；允许为空                  |
+| `targetObjectTypes[].name`  | String | 是   | 本体中的 ObjectType 名称                                                 |
+| `targetObjectTypes[].id`    | String | 是   | 本体中的 ObjectType ID                                                 |
+| `targetObjectTypes[].score` | Number | 是   | 归一化后的实体链接粗排分数，范围 `[0,1]`；不是单路向量 cosine，也不是 OpenSearch `_score`     |
+| `propertyLinks`             | Array  | 是   | 在当前 `targetObjectType.id` 范围内生成的 Property 链接结果；没有源 Property 时返回空数组 |
+| `sourceProperty`            | String | 是   | 从属于 `sourceObjectType` 的原始 Property 文本                             |
+| `targetProperties`          | Array  | 是   | 只包含归属于当前候选 ObjectType 的 Property，按 `score` 降序排列；允许为空               |
+| `targetProperties[].name`   | String | 是   | 本体中的 Property 名称                                                   |
+| `targetProperties[].id`     | String | 是   | 本体中的 Property ID                                                   |
+| `targetProperties[].score`  | Number | 是   | 当前 ObjectType 作用域内归一化后的 Property 粗排分数，范围 `[0,1]`                   |
 
 `score` 是对 RRF 粗排结果进行单调归一化后的对外比较分数。同一候选的原始 `rrfScore / channelHits / supportingHits / matchedField / matchedValue` 仍在 OAG 内部 Rerank Context 中保留，供第 5 章 LLM 精排、解释和问题定位使用，但默认不展开到本阶段业务输出中。
 
