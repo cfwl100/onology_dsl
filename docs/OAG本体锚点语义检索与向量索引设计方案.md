@@ -1032,7 +1032,7 @@ Instance Value 进入语义索引的基础准入条件：
 
 ```text
 instance_index_enabled =
-  property.capability == "DIMENSION"
+  Property.retrieval.enabled = true
   AND datatype_eligible
   AND value_shape_eligible
   AND cardinality_eligible
@@ -1264,7 +1264,7 @@ OAC 不负责 Embedding、GaussVector/OpenSearch 写入、Generation 发布或�
 DataSync 或业务数据服务负责定时/事件驱动的大规模实例数据准备与文件交付：
 
 ```text
-读取 capability=DIMENSION 的 Property
+读取 Property.retrieval.enabled = true 的 Property
 访问实际数据源
 提取真实 Instance Value
 源侧去重 / 基础标准化
@@ -1918,32 +1918,32 @@ POST
 
 `IndexTaskResponse`：
 
-| 参数名称 | 类型 | 说明 |
-|:--|:--|:--|
-| `tenantId` | String | 租户 ID |
-| `ontologyId` | String | 本体 ID |
-| `taskId` | String | 任务 ID |
-| `requestId` | String | 调用幂等键 |
-| `dataType` | String | `SEED_NODE / METADATA_ENUM / INSTANCE_VALUE` |
-| `sourceType` | String | `OMS / OAC / MINIO` |
-| `importMode` | String | `FULL_REPLACE / INCREMENTAL / CLEAR`；OMS 内部任务可为空；`CLEAR` 仅用于 `INSTANCE_VALUE` 全量清理 |
-| `status` | Integer | 0 构建中；1 成功；2 失败；3 已取消 |
-| `stage` | String | 当前执行阶段 |
-| `totalCount` | Integer(int64) | 总记录数；未知时可为空 |
-| `successCount` | Integer(int64) | 成功处理数 |
-| `failedCount` | Integer(int64) | 失败记录数 |
-| `skippedCount` | Integer(int64) | 去重/过滤记录数 |
-| `retryCount` | Integer | 已执行重试次数 |
-| `errorCode` | String | 兼容主错误码；无错误时为空 |
-| `errorCodes` | Array[String] | 本次执行出现的去重稳定错误码集合；业务重试判断优先使用 |
-| `errorMessage` | String | 错误摘要，仅用于展示/定位 |
-| `fileList` | Array[String] | 有 MinIO 文件输入 Task 的全部 objectKey；无文件输入时返回空数组 |
-| `errFileList` | Array[String] | 本次执行失败/需要重处理的 objectKey；其他来源或无失败返回空数组 |
-| `fileRetentionUntil` | String(date-time) | MinIO 源文件硬 TTL 对应的最晚恢复时间；无文件输入时为空 |
-| `createTime` | String(date-time) | 创建时间 |
-| `startTime` | String(date-time) | 实际开始时间 |
-| `updateTime` | String(date-time) | 最近更新时间 |
-| `completionTime` | String(date-time) | 完成时间；未结束可为空 |
+| 参数名称                 | 类型                | 说明                                                                                 |
+| :------------------- | :---------------- | :--------------------------------------------------------------------------------- |
+| `tenantId`           | String            | 租户 ID                                                                              |
+| `ontologyId`         | String            | 本体 ID                                                                              |
+| `taskId`             | String            | 任务 ID                                                                              |
+| `requestId`          | String            | 调用幂等键                                                                              |
+| `dataType`           | String            | `SEED_NODE / METADATA_ENUM / INSTANCE_VALUE`                                       |
+| `sourceType`         | String            | `OMS / OAC / MINIO`                                                                |
+| `importMode`         | String            | `FULL_REPLACE / INCREMENTAL / CLEAR`；OMS 内部任务可为空；`CLEAR` 仅用于 `INSTANCE_VALUE` 全量清理 |
+| `status`             | Integer           | 0 构建中；1 成功；2 失败；3 已取消                                                              |
+| `stage`              | String            | 当前执行阶段                                                                             |
+| `totalCount`         | Integer(int64)    | 总记录数；未知时可为空                                                                        |
+| `successCount`       | Integer(int64)    | 成功处理数                                                                              |
+| `failedCount`        | Integer(int64)    | 失败记录数                                                                              |
+| `skippedCount`       | Integer(int64)    | 去重/过滤记录数                                                                           |
+| `retryCount`         | Integer           | 已执行重试次数                                                                            |
+| `errorCode`          | String            | 兼容主错误码；无错误时为空                                                                      |
+| `errorCodes`         | Array[String]     | 本次执行出现的去重稳定错误码集合；业务重试判断优先使用                                                        |
+| `errorMessage`       | String            | 错误摘要，仅用于展示/定位                                                                      |
+| `fileList`           | Array[String]     | 有 MinIO 文件输入 Task 的全部 objectKey；无文件输入时返回空数组                                        |
+| `errFileList`        | Array[String]     | 本次执行失败/需要重处理的 objectKey；其他来源或无失败返回空数组                                              |
+| `fileRetentionUntil` | String(date-time) | MinIO 源文件硬 TTL 对应的最晚恢复时间；无文件输入时为空                                                  |
+| `createTime`         | String(date-time) | 创建时间                                                                               |
+| `startTime`          | String(date-time) | 实际开始时间                                                                             |
+| `updateTime`         | String(date-time) | 最近更新时间                                                                             |
+| `completionTime`     | String(date-time) | 完成时间；未结束可为空                                                                        |
 
 业务侧重试判断推荐只使用稳定结构化信息：
 
