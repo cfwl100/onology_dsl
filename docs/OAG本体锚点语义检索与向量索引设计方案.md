@@ -1303,6 +1303,11 @@ Generation 发布
 ---
 
 
+![[Pasted image 20260824205207.png]]
+
+1、手动创建索引->OAC : 应对首次全量索引创建 和 索引更新 场景  
+2、通知OAG->OAG读取minio文件：应对大数据量首次全量和非首次增量数据索引入库
+
 ### 3.1.2 总体索引构建架构
 
 ```mermaid
@@ -1521,14 +1526,13 @@ ontologyId + requestId
 
 当前索引管理接口清单：
 
-| 场景 | Method | URI | 说明 |
-|---|---|---|---|
-| 手动构建/更新 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/build` | OAG 创建 Task；动态数据由 OAG 编排 OAC |
-| MinIO 数据通知 | POST | `/v1/onto-retrieval/{ontologyId}/index-data/notice` | 注册不可变 CSV；可使用 `triggerTaskId` 绑定已有 OAC Task |
-| 批量查询任务 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/query` | 查询任务、进度、错误码和文件信息 |
-| 批量重试任务 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/retry` | 对业务选择的失败 Task 执行技术可恢复性校验并重试 |
-| 批量取消任务 | POST | `/v1/onto-retrieval/{ontologyId}/index-tasks/cancel` | 请求取消非终态 Task |
-| 查询记录级错误 | GET | `/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/errors` | 分页读取记录级错误 |
+| 场景         | Method | URI                                                           | 说明                                          |
+| ---------- | ------ | ------------------------------------------------------------- | ------------------------------------------- |
+| MinIO 数据通知 | POST   | `/v1/onto-retrieval/{ontologyId}/index-data/notice`           | 注册不可变 CSV；可使用 `triggerTaskId` 绑定已有 OAC Task |
+| 批量查询任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/query`           | 查询任务、进度、错误码和文件信息                            |
+| 批量重试任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/retry`           | 对业务选择的失败 Task 执行技术可恢复性校验并重试                 |
+| 批量取消任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/cancel`          | 请求取消非终态 Task                                |
+| 查询记录级错误    | GET    | `/v1/onto-retrieval/{ontologyId}/index-tasks/{taskId}/errors` | 分页读取记录级错误                                   |
 
 异步写入接口统一遵循：
 
@@ -1697,13 +1701,13 @@ POST
 
 **IndexFileImportRequest 参数列表**
 
-| 参数名称         | 类型                  | 是否必选 | 默认值 | OpenAPI 约束                                 | 说明                                                             |
-| :----------- | :------------------ | :--- | :-- | :----------------------------------------- | :------------------------------------------------------------- |
-| `requestId`  | String              | 是    | -   | `minLength: 1`，`maxLength: 256`            | 调用方幂等键；文件直接导入时用于创建任务，关联任务时用于通知幂等                               |
-| `triggerTaskId` | String | 否 | - | `maxLength: 256` | OAC 交付文件时关联手动构建产生的原任务；直接文件导入不传 |
-| `dataType`   | String              | 是    | -   | `enum: [METADATA_ENUM, INSTANCE_VALUE]`    | 当前文件批次的数据类型                                                    |
-| `importMode` | String              | 是    | -   | `enum: [FULL_REPLACE, INCREMENTAL, CLEAR]` | 全量替换、增量导入或全量清理索引；`CLEAR` 仅允许 `dataType=INSTANCE_VALUE` |
-| `files`      | Array[MinioCsvFile] | 条件必选 | -   | `minItems: 1`                              | `FULL_REPLACE/INCREMENTAL` 时必选；`CLEAR` 时选填，同时必须指定 `INSTANCE_VALUE` |
+| 参数名称            | 类型                  | 是否必选 | 默认值 | OpenAPI 约束                                 | 说明                                                                 |
+| :-------------- | :------------------ | :--- | :-- | :----------------------------------------- | :----------------------------------------------------------------- |
+| `requestId`     | String              | 是    | -   | `minLength: 1`，`maxLength: 256`            | 调用方幂等键；文件直接导入时用于创建任务，关联任务时用于通知幂等                                   |
+| `triggerTaskId` | String              | 否    | -   | `maxLength: 256`                           | OAC 交付文件时关联手动构建产生的原任务；直接文件导入不传                                     |
+| `dataType`      | String              | 是    | -   | `enum: [METADATA_ENUM, INSTANCE_VALUE]`    | 当前文件批次的数据类型                                                        |
+| `importMode`    | String              | 是    | -   | `enum: [FULL_REPLACE, INCREMENTAL, CLEAR]` | 全量替换、增量导入或全量清理索引；`CLEAR` 仅允许 `dataType=INSTANCE_VALUE`             |
+| `files`         | Array[MinioCsvFile] | 条件必选 | -   | `minItems: 1`                              | `FULL_REPLACE/INCREMENTAL` 时必选；`CLEAR` 时选填，同时必须指定 `INSTANCE_VALUE` |
 
 **MinioCsvFile 参数列表**
 
