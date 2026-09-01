@@ -5155,31 +5155,22 @@ Alarm.severity = "CRITICAL"
 ```text
 SemanticExtensions
 └── valueMappings[]
-    ├── semanticUnitId
     ├── sourceValue
     ├── canonicalValue
     ├── valueType
     ├── objectType { id, name }
     ├── property   { id, name }
-    ├── matchedField
-    ├── matchedValue
-    ├── matchedBy
-    └── confidence
 ```
 
-| 字段 | 类型 | 必选 | 说明 |
-|---|---|---:|---|
-| `valueMappings` | Array | ✔ | 无最终 Enum/Instance 命中时为空数组 |
-| `semanticUnitId` | String |  | 来源 Semantic Unit |
-| `sourceValue` | String | ✔ | 用户问题/ExtractedEntity 中的原始值 |
-| `canonicalValue` | String | ✔ | Entity Linking 确认的真实标准值；直接来自最终 `retrievalResults[].value` |
-| `valueType` | String | ✔ | ENUM_VALUE / INSTANCE_VALUE |
-| `objectType` | ObjectRef | ✔ | `{id,name}`，值所属 ObjectType |
-| `property` | ObjectRef | ✔ | `{id,name}`，值所属 Property |
-| `matchedField` | String |  | value/synonyms/... |
-| `matchedValue` | String |  | 实际命中文本 |
-| `matchedBy` | String |  | EXACT / SYNONYM / LEXICAL / DENSE |
-| `confidence` | Number |  | 0~1 |
+| 字段               | 类型        |  必选 | 说明                                                        |
+| ---------------- | --------- | --: | --------------------------------------------------------- |
+| `valueMappings`  | Array     |   ✔ | 无最终 Enum/Instance 命中时为空数组                                 |
+| `sourceValue`    | String    |   ✔ | 用户问题/ExtractedEntity 中的原始值                                |
+| `canonicalValue` | String    |   ✔ | Entity Linking 确认的真实标准值；直接来自最终 `retrievalResults[].value` |
+| `valueType`      | String    |   ✔ | ENUM_VALUE / INSTANCE_VALUE                               |
+| `objectType`     | ObjectRef |   ✔ | `{id,name}`，值所属 ObjectType                                |
+| `property`       | ObjectRef |   ✔ | `{id,name}`，值所属 Property                                  |
+
 
 核心职责：
 
