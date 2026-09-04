@@ -1,7 +1,7 @@
 # OAG 本体子图语义检索接口 extractedEntities / 实体提取设计方案
 
-> 文档版本：V2.5  
-> 更新日期：2026-08-25  
+> 文档版本：V2.6  
+> 更新日期：2026-09-04  
 > 接口版本：v2  
 > 上位方案：[OAG 本体锚点语义检索与向量索引设计方案](./OAG本体锚点语义检索与向量索引设计方案.md)
 
@@ -78,7 +78,7 @@ searchContext 不能单独满足该约束
 2. 识别属于该 ObjectType 的 Property，并保持从属关系；
 3. 识别需要通过语义索引定位的业务值，输出到 `Values`；
 4. 在归属未知时允许输出 value-only 实体；
-5. 使用 `searchContext` 中的 few-shot、专家路径、领域术语、黑话和消歧规则辅助提取。
+5. 使用 `searchContext.target_entity`、`searchContext.search_path` 和 `searchContext.extensions` 中的业务上下文辅助提取与消歧。
 
 实体提取不负责：
 
@@ -89,7 +89,7 @@ searchContext 不能单独满足该约束
 5. 决定 `minimal/khop/component` 路径算法；
 6. 生成 nGQL。
 
-Relationship 的发现与选择属于第 ③ 步子图检索策略。业务已有专家关系路径时，放入 `searchContext` 作为路径规划约束或优先级提示，不进入 `ExtractedEntity` Schema。
+Relationship 的发现与选择属于第 ③ 步子图检索策略。业务已有专家关系路径时，放入 `searchContext.search_path` 作为路径规划约束或优先级提示，不进入 `ExtractedEntity` Schema。
 
 ---
 
@@ -108,7 +108,7 @@ Relationship 的发现与选择属于第 ③ 步子图检索策略。业务已�
 | 参数 | 必选 | 类型 | 默认值 | 说明 |
 |---|---:|---|---|---|
 | `query` | 否 | String | 无 | 原始自然语言问题；与 `extractedEntities` 至少一个不为空 |
-| `searchContext` | 否 | String | 无 | 动态搜索上下文；用于实体提取和后续语义消歧 |
+| `searchContext` | 否 | `SearchContext` | 无 | 结构化搜索上下文；包含目标实体、专家搜索路径和预留扩展信息，用于实体提取、Entity Linking 消歧和后续子图路径规划 |
 | `extractedEntities` | 否 | `Array<ExtractedEntity>` | 无 | 结构化实体提取结果 |
 | `adaptiveRetrieval` | 否 | Integer | `1` | 是否启用小本体全量返回策略 |
 | `seedRetrievalMode` | 否 | String | `vector` | `vector` / `keyword` / `hybrid`；字段名为兼容历史 API，语义上控制 Entity Linking 检索模式 |
@@ -118,6 +118,39 @@ Relationship 的发现与选择属于第 ③ 步子图检索策略。业务已�
 | `hopLimit` | 否 | Integer | `3` | `khop` 最大深度 |
 | `includeFunctions` | 否 | Integer | `0` | 是否扩展 Function |
 | `includeActions` | 否 | Integer | `0` | 是否扩展 Action |
+
+### 3.3 SearchContext
+
+`searchContext` 从自由文本升级为结构化对象，用于显式传递业务目标实体、专家搜索路径和后续扩展信息。
+
+| 字段 | 必选 | 类型 | 默认值 | 约束 | 说明 |
+|---|---:|---|---|---|---|
+| `target_entity` | 否 | String | 无 | 1～4096 字符 | 业务侧期望重点检索/返回的目标实体表达，可用英文逗号分隔多个目标；作为 ObjectType 提取、Entity Linking 和候选排序的强提示，但仍需通过真实本体完成 Linking |
+| `search_path` | 否 | String | 无 | 1～8192 字符 | 业务专家提供的搜索路径/拓扑路径模板，可包含 ObjectType、Relationship、Property 占位符等；用于实体理解、候选消歧和第 ③ 步路径规划，不直接作为可执行 nGQL/Cypher |
+| `extensions` | 否 | Object | `{}` | 建议最多 32 个一级 Key；整体大小由服务配置限制 | 预留扩展字段，类型为 `Map<String, Object>`；当前核心协议不约束内部 Key，可用于业务侧携带 few-shot、领域术语、黑话、约束或后续新增上下文 |
+
+至少有一个字段包含有效内容时才建议传入 `searchContext`。
+
+标准示例：
+
+```json
+{
+  "searchContext": {
+    "target_entity": "ID(xxx),BillingAccount,Invoice,BillDetail",
+    "search_path": "Subscriber(id:{msisdn}) -[:HAS_SUBSCRIPTION]-> SubscribeRelation -[:SUBSCRIBE_TO]-> Offering",
+    "extensions": {}
+  }
+}
+```
+
+字段语义：
+
+1. `target_entity` 是**显式目标提示**。业务侧已知目标对象时，即使 Query 没有完整说出全部对象，也允许该字段补充 ObjectType 候选；但不能绕过 Entity Linking 直接生成本体内部 ID。
+2. `target_entity` 中的每一项按业务表达处理，例如 `ID(xxx)` 不因为形态类似 ID 就自动解释成本体内部 ID；最终仍由本体对象索引完成匹配。
+3. `search_path` 是**专家路径提示**。允许使用 `Subscriber(id:{msisdn}) -[:HAS_SUBSCRIPTION]-> SubscribeRelation -[:SUBSCRIBE_TO]-> Offering` 这类表达，并保留 `{msisdn}` 等占位符。
+4. `search_path` 中的 ObjectType / Relationship 必须在 Entity Linking 与 GraphTopologyCache 阶段校验；路径不存在、方向不合法或关系无法解析时不能直接执行，应降级到正常子图规划。
+5. `extensions` 是预留扩展容器，未知 Key 不得改变核心 `ExtractedEntity` Schema；只有已注册的业务扩展处理器才能赋予特定 Key 业务语义。
+6. `searchContext` 不能单独满足请求合法性，`query` 与 `extractedEntities` 仍至少一个不为空。
 
 ---
 
@@ -276,25 +309,108 @@ NER
 
 ## 6. searchContext 使用规则
 
-`searchContext` 同时服务实体提取和后续消歧，可动态包含：
+`searchContext` 是业务侧向 OAG 注入“目标 + 路径 + 扩展上下文”的结构化输入，贯穿 Entity Extraction、Entity Linking 和 Subgraph Retrieval Strategy。
 
 ```text
-领域 few-shot
-专家查询路径
-本体子图文本或 JSON
-领域对象/属性术语
-缩写、黑话与同义表达
-实体提取约束
-候选消歧和路径优先级规则
+SearchContext
+  ├─ target_entity
+  │    → 目标 ObjectType 强提示
+  │    → Entity Extraction / Entity Linking / Candidate Boost
+  │
+  ├─ search_path
+  │    → 专家拓扑路径提示
+  │    → Entity Extraction 辅助理解
+  │    → Entity Linking 消歧
+  │    → Subgraph Retrieval Strategy 路径优先级
+  │
+  └─ extensions
+       → 预留业务扩展上下文
+       → 注册扩展处理器按需消费
 ```
 
-处理原则：
+### 6.1 `target_entity`
 
-1. 只作为上下文，不覆盖接口 Schema；
-2. 不单独满足 `query/extractedEntities` 非空校验；
-3. 业务专家路径可用于第 ③ 步路径规划，但不改变 `ExtractedEntity` 三字段结构；
-4. 输入必须做长度限制、Unicode Normalize 和基本安全规范化；
-5. 结构化模式下仍可用于 Entity Linking 的候选精排。
+示例：
+
+```json
+{
+  "target_entity": "ID(xxx),BillingAccount,Invoice,BillDetail"
+}
+```
+
+处理规则：
+
+1. 使用英文逗号分隔多个目标表达，服务端执行 trim、去空和稳定去重；
+2. 作为调用方显式提供的目标实体强提示，可用于补充 Query 中未完整表达但业务侧已经明确的 ObjectType；
+3. 每个目标仍必须进入本体对象 Entity Linking，不允许把字符串直接视为 ObjectType 内部 ID；
+4. Linking 成功的目标实体进入后续 Semantic Units / RRF / LLM Fine Rank；无法匹配的目标必须可观测，不应静默伪造本体节点；
+5. `target_entity` 只约束“目标对象”，不直接定义 Relationship。
+
+### 6.2 `search_path`
+
+示例：
+
+```json
+{
+  "search_path": "Subscriber(id:{msisdn}) -[:HAS_SUBSCRIPTION]-> SubscribeRelation -[:SUBSCRIBE_TO]-> Offering"
+}
+```
+
+处理规则：
+
+1. 作为专家搜索路径模板，可描述 ObjectType、Relationship 和 Property/Value 占位符；
+2. `{msisdn}` 等占位符在本阶段保持原样，待后续结合 Entity Linking / Query Understanding 结果解析；
+3. 路径中的对象表达可辅助 Entity Extraction 和 Entity Linking，但 Relationship 不写入 `ExtractedEntity`；
+4. 第 ③ 步路径规划优先尝试使用该路径；使用前必须校验 ObjectType、Relationship、方向和拓扑连通性；
+5. `search_path` 不是 nGQL/Cypher，不允许直接拼接执行；校验失败时按 `minimal/khop/component` 正常策略降级；
+6. `search_path` 与 Query 冲突时，保留两者证据并在候选消歧阶段处理，不能直接覆盖用户 Query。
+
+### 6.3 `extensions`
+
+`extensions` 是预留扩展 Map：
+
+```json
+{
+  "extensions": {
+    "domain_terms": ["账期", "出账"],
+    "few_shot": "...",
+    "business_constraints": {
+      "region": "APAC"
+    }
+  }
+}
+```
+
+当前核心协议不固定上述示例 Key。处理原则：
+
+1. `extensions` 不改变 `ExtractedEntity` 三字段 Schema；
+2. 未注册的扩展 Key 不参与核心检索决策，可忽略或透传；
+3. 业务扩展需通过显式注册的处理器消费，避免 Key 名碰撞和隐式语义；
+4. 输入必须做总长度/对象深度/Key 数量限制、Unicode Normalize 和基本安全规范化；
+5. 不允许通过 `extensions` 注入可直接执行的 SQL/OQL/Cypher/nGQL。
+
+### 6.4 总体优先级与边界
+
+```text
+用户 query
+  = 原始意图与条件事实
+
+target_entity
+  = 业务侧显式目标对象提示
+
+search_path
+  = 业务侧显式路径提示
+
+extensions
+  = 可选业务扩展上下文
+```
+
+冲突处理原则：
+
+- 不删除或改写原始 `query`；
+- `target_entity/search_path` 可以补充候选和提高优先级，但必须经过真实本体校验；
+- `searchContext` 不单独满足 `query/extractedEntities` 非空校验；
+- 结构化模式下 `searchContext` 仍可用于 Entity Linking、候选精排和路径规划。
 
 ---
 
@@ -416,7 +532,13 @@ NER 不需要知道“在用”最终来自枚举索引还是“VIP”最终来�
 ```json
 {
   "query": "本月个人客户中，信用额度超过200元的账户总数是多少？",
-  "searchContext": "专家路径：IndividualCustomer -> PayRelation -> Account -> CreditLimitInstance。路径只用于后续候选消歧和子图路径规划。",
+  "searchContext": {
+    "target_entity": "IndividualCustomer,PayRelation,Account,CreditLimitInstance",
+    "search_path": "IndividualCustomer -[:PAY_RELATION]-> PayRelation -[:TO_ACCOUNT]-> Account -> CreditLimitInstance",
+    "extensions": {
+      "note": "路径只用于候选消歧和子图路径规划"
+    }
+  },
   "extractedEntities": [
     {"ObjectType": "IndividualCustomer", "Properties": ["id"], "Values": []},
     {"ObjectType": "PayRelation", "Properties": ["objectId", "accountId"], "Values": []},
@@ -429,20 +551,44 @@ NER 不需要知道“在用”最终来自枚举索引还是“VIP”最终来�
 
 “本月”“超过 200”“总数”继续由原始 query 保存，后续查询生成阶段解释。
 
+### 8.5 `target_entity + search_path` 标准示例
+
+```json
+{
+  "query": "查询指定用户订购的产品及相关账务实体",
+  "searchContext": {
+    "target_entity": "ID(xxx),BillingAccount,Invoice,BillDetail",
+    "search_path": "Subscriber(id:{msisdn}) -[:HAS_SUBSCRIPTION]-> SubscribeRelation -[:SUBSCRIBE_TO]-> Offering",
+    "extensions": {}
+  }
+}
+```
+
+说明：
+
+- `target_entity` 指明业务希望重点召回/保留的目标实体；
+- `search_path` 提供专家已知的查询路径；
+- 两者均为检索提示，不绕过 Entity Linking、本体拓扑校验和最终候选选择；
+- `{msisdn}` 保持为业务占位符，由后续查询理解/参数绑定阶段解析。
+
 ---
 
 ## 9. 校验与归一化规则
 
 1. `tenantId`、`ontologyId` 必须存在且满足长度要求；
-2. `query` 与 `extractedEntities` 至少一个不为空；
-3. 每个 `ExtractedEntity` 至少存在非空 `ObjectType` 或非空 `Values`；
-4. `Properties` 非空时必须存在 `ObjectType`；
-5. `ValueHint.Value` 必须为非空字符串；
-6. `ValueHint.Property` 非空且同一实体有 `ObjectType` 时，应同时出现在该实体 `Properties` 中；
-7. 所有文本执行 trim、Unicode Normalize、去空和规范化去重；
-8. 业务名称不能直接当作本体内部 ID；
-9. value-only 不允许根据值的格式猜测 ObjectType/Property；
-10. `similarityThreshold` 范围为 0～1；`topk/hopLimit >= 1`。
+2. `query` 与 `extractedEntities` 至少一个不为空；`searchContext` 不能单独满足该条件；
+3. `searchContext` 非空时必须是 `SearchContext` 对象，建议至少包含一个有效字段；
+4. `target_entity` 按英文逗号切分后执行 trim、去空和稳定去重，不得直接当作本体内部 ID；
+5. `search_path` 必须满足长度限制；其中的 ObjectType / Relationship / 方向需在路径规划前通过本体拓扑校验；
+6. `extensions` 必须是 Object，限制总大小、嵌套深度和一级 Key 数量；未知扩展不得改变核心 Schema；
+7. 每个 `ExtractedEntity` 至少存在非空 `ObjectType` 或非空 `Values`；
+8. `Properties` 非空时必须存在 `ObjectType`；
+9. `ValueHint.Value` 必须为非空字符串；
+10. `ValueHint.Property` 非空且同一实体有 `ObjectType` 时，应同时出现在该实体 `Properties` 中；
+11. 所有文本执行 trim、Unicode Normalize、去空和规范化去重；
+12. 业务名称不能直接当作本体内部 ID；
+13. value-only 不允许根据值的格式猜测 ObjectType/Property；
+14. `similarityThreshold` 范围为 0～1；`topk/hopLimit >= 1`。
 
 推荐归一化：
 
@@ -472,9 +618,7 @@ components:
           minLength: 1
           maxLength: 1024
         searchContext:
-          type: string
-          minLength: 1
-          maxLength: 32768
+          $ref: '#/components/schemas/SearchContext' 
         extractedEntities:
           type: array
           minItems: 1
@@ -513,6 +657,30 @@ components:
           type: integer
           default: 0
           enum: [0, 1]
+
+    SearchContext:
+      type: object
+      description: 结构化搜索上下文；target_entity/search_path 为标准字段，extensions 为预留扩展 Map
+      minProperties: 1
+      properties:
+        target_entity:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: 目标实体业务表达，多个目标使用英文逗号分隔
+          example: "ID(xxx),BillingAccount,Invoice,BillDetail"
+        search_path:
+          type: string
+          minLength: 1
+          maxLength: 8192
+          description: 专家搜索路径模板，仅作为检索和路径规划提示，不直接执行
+          example: "Subscriber(id:{msisdn}) -[:HAS_SUBSCRIPTION]-> SubscribeRelation -[:SUBSCRIBE_TO]-> Offering"
+        extensions:
+          type: object
+          maxProperties: 32
+          description: 预留扩展 Map；内部 Key 由业务扩展处理器定义
+          additionalProperties: true
+      additionalProperties: false
 
     ExtractedEntity:
       type: object
@@ -564,9 +732,11 @@ components:
 1. 所有值提示统一合并到 `Values`；
 2. 已知 Property 的值保留 `Property + Value`；
 3. 未知归属的值转换为 value-only；
-4. 专家关系路径移动到 `searchContext`，由第 ③ 步路径规划使用；
-5. 服务端可设置一个灰度兼容期解析旧请求，但新 SDK/OpenAPI 只生成三字段结构；
-6. 灰度结束后开启 `additionalProperties=false` 强校验，防止结构继续分叉。
+4. 专家关系路径移动到 `searchContext.search_path`，目标实体提示移动到 `searchContext.target_entity`；
+5. 原 String 类型 `searchContext` 可在灰度兼容期接收，并在服务端映射为 `extensions.legacy_context`；新 SDK/OpenAPI 只生成结构化 `SearchContext`；
+6. 业务自定义上下文统一收敛到 `searchContext.extensions`，避免继续扩散顶层字段；
+7. 灰度结束后对 `SearchContext` 开启 `additionalProperties=false`，仅 `extensions` 允许扩展 Key；
+8. `ExtractedEntity` 继续保持 `ObjectType / Properties / Values` 三字段强校验，防止结构继续分叉。
 
 ---
 
@@ -576,9 +746,9 @@ components:
 
 ### 12.1 Prompt 使用约束
 
-1. Prompt 版本：`Step1 Entity Extraction Prompt v0.14`；
+1. Prompt 版本：`Step1 Entity Extraction Prompt v0.15`；
 2. 中文 Query 优先使用中文版 Prompt，英文 Query 优先使用英文版 Prompt；混合语言 Query 可根据主语言选择版本，但输出 Schema 不变；
-3. `SearchContext` 作为动态上下文注入 Prompt 中预留位置，只用于领域术语、同义词、黑话、few-shot 和明确映射的辅助理解；
+3. `SearchContext` 以结构化对象注入 Prompt：`target_entity` 提供目标实体强提示，`search_path` 提供专家路径提示，`extensions` 承载预留业务上下文；三者均不得改变 `extractedEntities` 输出 Schema；
 4. LLM 必须只输出可直接解析的 JSON，顶层仅允许 `extractedEntities`；
 5. Prompt 不负责 Entity Linking、Enum/Instance 分类、Relationship 生成、比较条件解析或 SQL/OQL/Cypher 生成；
 6. Prompt 与 OpenAPI Schema 必须版本联动。若 `ExtractedEntity` / `ValueHint` Schema 发生变化，必须同步更新本节 Prompt、样例和自动化评测；
@@ -598,7 +768,13 @@ components:
 
 实体提取只负责识别用户表达中的“对象类型、属性和值”，不负责生成本体内部 ID，不负责 Relationship 提取，不负责判断 Value 最终属于 Enum Value 还是 Instance Value，也不负责生成 SQL/OQL/Cypher。
 
-如果提供 `SearchContext`，可以使用其中的领域术语、同义词、黑话、few-shot 和明确的对象/属性映射辅助理解；但不能改变本文规定的 JSON Schema，也不能凭空生成用户问题中不存在的业务值。
+如果提供 `SearchContext`，它是一个结构化对象：
+
+- `target_entity`：调用方显式给出的目标实体表达，可补充 Query 中未完整说出的 ObjectType 候选；仍必须经过 Entity Linking，不能直接当作本体内部 ID；
+- `search_path`：调用方显式给出的专家搜索路径，可辅助实体理解、归属消歧和后续路径规划；Relationship 不写入 `ExtractedEntity`，路径也不能直接当作 nGQL/Cypher 执行；
+- `extensions`：预留业务扩展上下文，可携带领域术语、同义词、黑话、few-shot 或其他已注册扩展信息。
+
+`SearchContext` 可以补充调用方明确提供的目标/路径事实，但不能改变本文规定的 JSON Schema，也不能基于模型自身知识凭空生成调用方和用户都未提供的业务值。
 
 # Output Format
 严格仅输出纯 JSON 字符串，禁止包含 Markdown 标记（如 ```json）、解释说明、前后缀文本或 JSON 注释。
@@ -769,7 +945,7 @@ components:
 3. Values 按“Property（若有）+ Value 原文”去重；
 4. 不同 ObjectType 下同名 Property 不得合并；
 5. 同一个 Value 如果存在多个合理归属但当前无法消歧，不要复制到多个猜测 ObjectType 下，优先保留为 value-only，交给 Entity Linking 消歧；
-6. 不补全用户未表达的对象、属性和值；`SearchContext` 只用于识别/消歧，不用于凭空扩写查询内容。
+6. 不基于模型自身知识补全调用方和用户都未提供的对象、属性和值；`SearchContext.target_entity/search_path` 属于调用方显式提示，可以补充候选，但仍需 Entity Linking / 拓扑校验。
 
 ## 7. 输出前强制自检
 
@@ -967,6 +1143,11 @@ Output:
 
 # Task
 SearchContext:
+{
+  "target_entity": "",
+  "search_path": "",
+  "extensions": {}
+}
 
 Input:
 
@@ -989,7 +1170,13 @@ Establish only ownership relationships that can be determined reliably from the 
 
 Entity Extraction identifies business expressions for objects, properties, and values only. It MUST NOT generate internal ontology IDs, extract Relationships, classify a Value as Enum or Instance, or generate SQL/OQL/Cypher.
 
-If `SearchContext` is provided, use its domain terminology, synonyms, jargon, few-shot examples, and explicit mappings only as interpretation/disambiguation context. It must not change the JSON schema or invent values that are absent from the user's query.
+If `SearchContext` is provided, it is a structured object:
+
+- `target_entity`: explicit target-entity expressions supplied by the caller. It may supplement ObjectType candidates that are not fully stated in the query, but every target still requires Entity Linking and must not be treated as an internal ontology ID directly;
+- `search_path`: an expert search-path hint for entity understanding, disambiguation, and downstream graph planning. Relationships must not be emitted in `ExtractedEntity`, and the path must never be executed directly as nGQL/Cypher;
+- `extensions`: a reserved business-extension map for registered domain context such as terminology, synonyms, jargon, or few-shot examples.
+
+`SearchContext` may add facts explicitly supplied by the caller, but it must not change the JSON schema or invent business values that are provided by neither the user nor the caller.
 
 # Output Format
 Output a pure JSON string only. Do NOT include Markdown fences, explanations, prefixes/suffixes, or JSON comments.
@@ -1132,7 +1319,7 @@ A Value is a business/property/instance value, not every adjective, location, or
 3. Deduplicate Values by `Property(if present) + original Value`.
 4. Same-named Properties under different ObjectTypes must remain separate.
 5. If one Value has multiple plausible owners and cannot be disambiguated now, prefer one value-only hint rather than duplicating it under guessed ObjectTypes.
-6. Do not add objects, properties, or values not expressed by the user. `SearchContext` assists interpretation only.
+6. Do not invent objects, properties, or values from model knowledge when neither the user nor caller supplied them. Explicit `SearchContext.target_entity/search_path` hints may supplement candidates but still require Entity Linking/topology validation.
 
 ## 7. Mandatory Pre-output Validation
 
@@ -1250,6 +1437,11 @@ Output:
 
 # Task
 SearchContext:
+{
+  "target_entity": "",
+  "search_path": "",
+  "extensions": {}
+}
 
 Input:
 
@@ -1266,7 +1458,10 @@ Output:
 | Value 所属属性 | `ValueHint.Property` | 只有归属明确时才填写，不允许猜测 |
 | value-only | `ExtractedEntity{Values:[...]}` | ObjectType/Property 不确定时允许独立存在 |
 | Enum / Instance | Entity Linking | Prompt 阶段禁止分类，由真实索引命中决定 |
-| Relationship | 子图检索策略 | Prompt 阶段不输出，专家路径通过 `searchContext` 传递 |
+| `target_entity` | `SearchContext.target_entity` | 调用方目标实体强提示，可补充 ObjectType 候选，但必须继续 Entity Linking |
+| `search_path` | `SearchContext.search_path` | 专家路径提示；辅助消歧与图规划，不直接执行，不写入 ExtractedEntity Relationship |
+| 扩展上下文 | `SearchContext.extensions` | 预留 Map；只有注册扩展处理器赋予具体业务语义 |
+| Relationship | 子图检索策略 | Prompt 阶段不输出，专家路径通过 `searchContext.search_path` 传递 |
 | 时间/连续数值/聚合 | 原始 `query` | 默认不进入 `Values`，由后续查询理解处理 |
 
 运行时链路：
@@ -1296,6 +1491,8 @@ Entity Linking：本体对象 / Enum / Instance 6 路召回
 5. Value 的真实类型、Property/ObjectType 归属由 Entity Linking 根据索引命中记录确定；
 6. 归属未知时允许 value-only，禁止按编码形态猜测对象类型；
 7. Relationship 不在实体提取阶段建模，由子图策略从本体拓扑中发现；
-8. 专家关系路径通过 `searchContext` 传给后续路径规划；
-9. 比较、时间、聚合等查询语义保留在原始 `query`；
-10. 该结构直接生成 Entity Linking Semantic Units，与主方案中的本体对象/枚举元素/实例元素 6 路召回衔接。
+8. `searchContext.target_entity` 承载调用方显式目标实体提示，目标仍必须经过本体 Entity Linking；
+9. 专家关系路径通过 `searchContext.search_path` 传给后续路径规划，并在执行前完成本体拓扑校验；
+10. `searchContext.extensions` 作为唯一预留扩展容器，未知 Key 不改变核心协议；
+11. 比较、时间、聚合等查询语义保留在原始 `query`；
+12. 该结构直接生成 Entity Linking Semantic Units，与主方案中的本体对象/枚举元素/实例元素 6 路召回衔接。
