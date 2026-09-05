@@ -2,8 +2,8 @@
 
 ---
 
-> 版本：V6.1  
-> 日期：2026-08-23  
+> 版本：V6.2  
+> 日期：2026-09-05  
 > 文档定位：OAG 本体语义索引管理、混合语义检索、本体对象投影与子图构建的正式设计规范。  
 > 设计范围：覆盖索引模型与构建、OAC/MinIO 数据接入、Entity Extraction / Entity Linking、Lexical + Dense 混合召回、Weighted RRF、LLM 精排、PathProbePlan、nGQL/图算法执行以及最终结果返回。
 
@@ -41,7 +41,7 @@ OAG 同时承担两类核心能力：
 设计目标：
 
 - 支持 ObjectType / Property / Enum Value / Instance Value 四类语义证据；
-- 支持 BM25/Exact + Dense 混合召回；
+- 支持 OpenSearch 关键词模糊 + GaussVector Dense 混合召回；
 - 使用一次 Weighted RRF 融合 6 路检索结果；
 - 使用 LLM 只做候选消歧与精排，不让 LLM 发明本体 ID；
 - 使用 GraphTopologyCache + JGraphT/NebulaGraph 完成子图路径规划；
@@ -156,11 +156,11 @@ flowchart TD
     Q[用户原始问题] --> QU[Query Understanding<br/>Semantic Units]
 
     subgraph RET[每个 Semantic Unit 的 6 路召回]
-      QU --> SL[本体对象节点 OpenSearch<br/>Exact/BM25]
+      QU --> SL[本体对象节点 OpenSearch<br/>Keyword Fuzzy]
       QU --> SD[本体对象节点 Dense<br/>GaussVector]
-      QU --> ML[枚举元素 OpenSearch<br/>Exact/BM25]
+      QU --> ML[枚举元素 OpenSearch<br/>Keyword Fuzzy]
       QU --> MD[枚举元素 Dense<br/>GaussVector]
-      QU --> IL[实例元素 OpenSearch<br/>Exact/BM25]
+      QU --> IL[实例元素 OpenSearch<br/>Keyword Fuzzy]
       QU --> ID[实例元素 Dense<br/>GaussVector]
     end
 
@@ -3416,17 +3416,37 @@ sequenceDiagram
 
 # 4. 实体提取、Entity Linking 与 6 路混合召回
 
-本章定义从自然语言实体到真实本体对象/属性/值归属的**粗召回与 Entity Linking**。执行主线统一为：
+本章定义从 `extractedEntities` 结构化实体结果到真实本体 ObjectType / Property / Enum Value / Instance Value 的候选召回、归属解析与粗排。在线检索统一采用：
+
+> **OpenSearch 关键词模糊检索（Keyword Fuzzy） + GaussVector 向量检索（Dense） + Weighted RRF。**
+
+“6 路”表示系统总共有 6 条检索通道，但**不是每个 Semantic Unit 都执行 6 路**。基于 `ExtractedEntity` 的结构化语义直接路由：
+
+```text
+ObjectType / Properties
+  → 本体定义索引
+  → 2 路：ontologyObjectLexical + ontologyObjectDense
+  → 2 路 Weighted RRF
+
+Values
+  → 枚举元素索引 + 实例元素索引
+  → 4 路：enumLexical + enumDense + instanceLexical + instanceDense
+  → 4 路 Weighted RRF
+```
+
+执行主线统一为：
 
 ```text
 query + searchContext / extractedEntities
 → Entity Extraction
-→ Semantic Phrase Extraction
+→ ExtractedEntity Normalize
 → OBJECT_TYPE / PROPERTY / VALUE Semantic Units
-→ 6 路 Lexical + Dense Recall
+→ 按 Semantic Unit 类型路由
+   ├─ OBJECT_TYPE / PROPERTY → 本体定义 2 路混合召回
+   └─ VALUE                 → 值 4 路混合召回
 → SearchHit 标准化
 → 通道内按真实本体归属去重
-→ 一次 Weighted RRF
+→ 分类型 Weighted RRF
 → ObjectType 作用域内 Property Linking
 → Enum / Instance Value Linking
 → Entity Linking 粗排结果 + supporting_hits
@@ -3437,21 +3457,24 @@ query + searchContext / extractedEntities
 
 ---
 
-## 4.1 实体提取与 Query Understanding
+## 4.1 实体提取结构化输入与 Semantic Unit 路由
 
 ### 4.1.1 ExtractedEntity 数据模型
 
-实体提取是子图检索的第 ① 步，输入为 `query + searchContext`，或者直接接收业务侧提供的 `extractedEntities`。正式 `ExtractedEntity` 只包含：
+实体提取是子图检索的第 ① 步，输入为 `query + searchContext`，或者直接接收业务侧提供的 `extractedEntities`。正式结构只包含：
 
 ```text
-ObjectType
-Properties[]
-Values[]
+ExtractedEntity
+  ├─ ObjectType?
+  ├─ Properties[]
+  └─ Values[]
+       ├─ Property?
+       └─ Value
 ```
 
-其中 `Values` 统一承载需要语义定位的值，不在 NER 阶段区分 Enum/Instance：
-采用使用如下格式：
-```
+标准结构：
+
+```json
 {
   "extractedEntities": [
     {
@@ -3478,160 +3501,225 @@ Values[]
 }
 ```
 
-```json
-{
-  "extractedEntities": [
-    {
-      "ObjectType": "Account",
-      "Properties": ["accountStatus", "customerLevel"],
-      "Values": [
-        {"Property": "accountStatus", "Value": "在用"},
-        {"Property": "customerLevel", "Value": "VIP"}
-      ]
-    }
-  ]
-}
-```
-
 核心规则：
 
-1. Property 必须保持 ObjectType 作用域，Entity Linking 优先在该作用域匹配；
-2. ObjectType/Property 都未知的值允许 value-only，跨枚举/实例索引召回后再解析归属；
-3. 不根据编码形态猜测 Site/BaseStation/nativeId 等类型；
-4. Relationship 不由实体提取直接输出，专家路径放入 `searchContext`，在阶段 ③ 作为 PathPlan 约束；
-5. 连续数值、时间、比较和聚合语义默认留在原始 `query`，不强行塞入 Values；
-6. 实体提取结果转换为 OBJECT_TYPE / PROPERTY / VALUE 三种 Semantic Unit，再进入下文 6 路召回。
+1. `ObjectType` 生成 OBJECT_TYPE Semantic Unit；
+2. `Properties[]` 中每个 Property 生成 PROPERTY Semantic Unit，并继承所属 `ObjectType` 作用域；
+3. `Values[]` 中每个 Value 生成 VALUE Semantic Unit；
+4. Value 携带 `Property` 时，将该 Property 作为强归属 Hint；
+5. Value 未携带 `Property`、但位于带 `ObjectType` 的实体内时，保留 ObjectType 作用域，Property 由值索引命中后解析；
+6. ObjectType/Property 都未知的 value-only 允许跨 Enum / Instance 索引检索后再确定真实归属；
+7. Entity Extraction 不区分 Enum Value / Instance Value，不根据编码形态猜 Site/BaseStation/nativeId 等类型；
+8. Relationship 不由实体提取直接输出，专家路径通过 `searchContext.search_path` 进入后续图规划；
+9. 连续数值、时间、比较、聚合语义默认保留在原始 `query`，不强行塞入 `Values`。
 
-完整 Schema、样例和兼容规则见 [OAG语义子图检索接口extractedEntities结构设计方案](./OAG语义子图检索接口extractedEntities结构设计方案.md)。
+完整 Schema、Prompt、SearchContext 和兼容规则见 [OAG语义子图检索接口extractedEntities结构设计方案](./OAG语义子图检索接口extractedEntities结构设计方案.md)。
 
+### 4.1.2 结构化结果到 Semantic Unit
 
-### 4.1.2 Semantic Phrase Extraction
-
-LLM 应执行：
-
-> **Semantic Phrase Extraction**
-
-而不是按词法逐词拆分。
-
-错误：
+Entity Extraction 已经完成语义短语识别，检索阶段**不再二次按词法逐词拆分**。例如：
 
 ```text
-FORMAL
-用户
-Mobile
-Number
+ObjectType = "FORMAL用户"
+Property   = "Mobile Number"
 ```
 
-推荐主单元：
+默认分别作为完整 Semantic Unit 检索，不拆成：
 
 ```text
-FORMAL用户
-Mobile Number
+FORMAL / 用户 / Mobile / Number
 ```
 
-必要时可同时保留辅助短语：
+只有 Query Understanding 明确产出辅助短语时，才允许作为额外 evidence；主检索单元始终优先使用完整业务表达。
+
+结构化转换：
 
 ```text
-FORMAL用户
-FORMAL
-用户
-Mobile Number
+ExtractedEntity(ObjectType="Account")
+→ OT:Account
+
+Properties=["accountStatus", "customerLevel"]
+→ PROP:Account:accountStatus
+→ PROP:Account:customerLevel
+
+Values=[
+  {Property="accountStatus", Value="在用"},
+  {Property="customerLevel", Value="VIP"}
+]
+→ VALUE:Account:accountStatus:在用
+→ VALUE:Account:customerLevel:VIP
 ```
 
-但完整业务短语优先。
+### 4.1.3 Semantic Unit 检索路由
 
----
+| Semantic Unit | 输入来源 | 检索对象 | 通道数 | 融合方式 |
+|---|---|---|---:|---|
+| `OBJECT_TYPE` | `ExtractedEntity.ObjectType` | 本体对象索引中的 ObjectType | 2 | 本体定义 2 路 Weighted RRF |
+| `PROPERTY` | `ExtractedEntity.Properties[]` | 当前候选 ObjectType 作用域内的 Property | 2 | 本体定义 2 路 Weighted RRF |
+| `VALUE` | `ExtractedEntity.Values[]` | Enum Value + Instance Value | 4 | 值 4 路 Weighted RRF |
 
+因此总体 6 个通道的职责边界为：
 
-### 4.1.3 Query Understanding 推荐结构
+```text
+本体定义：2 路
+  ontologyObjectLexical
+  ontologyObjectDense
 
+值：4 路
+  enumLexical
+  enumDense
+  instanceLexical
+  instanceDense
 ```
-{
-  "extractedEntities": [
-    {
-      "ObjectType": "Account",
-      "Properties": ["accountStatus", "customerLevel"],
-      "Values": [
-        {"Property": "accountStatus", "Value": "在用"},
-        {"Property": "customerLevel", "Value": "VIP"}
-      ]
-    }
-  ]
-}
-```
+
+禁止把 OBJECT_TYPE / PROPERTY Semantic Unit 无差别发送到 Enum/Instance 索引；也禁止把 VALUE Semantic Unit 发送到本体对象索引后与本体定义候选混在同一 Ranked List 中。
 
 ---
 
 ## 4.2 6 路混合召回与 Retrieval Profile
 
-基于实体提取的结构化结果，采用向标混合检索。
-本体定义采用2路，值采用4路。
-### 4.2.1 六路检索通道
+### 4.2.1 六个物理检索通道
 
-每个 Semantic Unit 同时进入三类数据、两种检索方式，共 **6 条 Ranked List**：
+| 逻辑域 | 通道 | 存储 | 在线查询方式 | 适用 Semantic Unit |
+|---|---|---|---|---|
+| 本体定义 | `ontologyObjectLexical` | OpenSearch | Keyword Fuzzy | OBJECT_TYPE / PROPERTY |
+| 本体定义 | `ontologyObjectDense` | GaussVector | Dense / COSINE | OBJECT_TYPE / PROPERTY |
+| 枚举值 | `enumLexical` | OpenSearch | Keyword Fuzzy | VALUE |
+| 枚举值 | `enumDense` | GaussVector | Dense / COSINE | VALUE |
+| 实例值 | `instanceLexical` | OpenSearch | Keyword Fuzzy | VALUE |
+| 实例值 | `instanceDense` | GaussVector | Dense / COSINE | VALUE |
 
-本节逻辑数据类型统一使用 **本体对象 / 枚举元素 / 实例元素**。RRF 新配置名推荐 `ontologyObject* / enum* / instance*`；历史实现若仍读取 `seed* / metadata* / instance*`，只在配置兼容层做别名映射，业务语义和文档不再混用。
+历史实现若仍读取 `seed* / metadata* / instance*`，只允许在配置兼容层做别名映射；新代码、新配置和日志统一使用上述 6 个正式通道名。
 
-| 数据类型 | OpenSearch | GaussVector |
-| ---- | ---------- | ----------- |
-| 本体对象 | Exact/BM25 | Dense       |
-| 枚举元素 | Exact/BM25 | Dense       |
-| 实例元素 | Exact/BM25 | Dense       |
+### 4.2.2 OpenSearch 关键词模糊检索
 
-即：
+OpenSearch 的 lexical 通道统一采用**关键词模糊查询**，使用 Analyzer + BM25 排序 + `fuzziness` 扩展召回，不再维护独立的精确字符串召回通道。
 
-```text
-1. ontology_object_lexical
-2. ontology_object_dense
-3. enum_lexical
-4. enum_dense
-5. instance_lexical
-6. instance_dense
+在线评分查询推荐：
+
+```json
+{
+  "query": {
+    "bool": {
+      "filter": [
+        {"term": {"type": "OBJECT_TYPE"}}
+      ],
+      "must": [
+        {
+          "multi_match": {
+            "query": "无线小区",
+            "type": "best_fields",
+            "fields": [
+              "name^4",
+              "display_zh^3",
+              "display_en^3",
+              "display_lang_1^2.5",
+              "display_lang_2^2.5",
+              "synonyms^3",
+              "description_zh^1.5",
+              "description_en^1.5",
+              "description_lang_1^1.2",
+              "description_lang_2^1.2"
+            ],
+            "fuzziness": "AUTO",
+            "prefix_length": 1,
+            "max_expansions": 50,
+            "minimum_should_match": "70%"
+          }
+        }
+      ]
+    }
+  }
+}
 ```
 
-其中 OpenSearch 的 Exact 与 BM25 默认在同一查询中通过字段 Boost / `should` 子句形成一条 lexical 排名列表，例如：
+三类索引建议字段：
 
 ```text
-keyword exact（最高 boost）
-+ name/display phrase
-+ name/display/description BM25
-→ 1 条 lexical ranked list
+本体对象：
+  name / display_* / synonyms / description_*
+
+Enum Value：
+  value / display_* / synonyms / description_*
+
+Instance Value：
+  value / synonyms
 ```
 
-这样 Exact 是 lexical 内的强证据，而不是额外引入一层融合。
-
-如果后续工程上将 Exact 和 BM25 拆成两条独立 Ranked List，则总通道数变成：
+初始 Boost 建议：
 
 ```text
-3 类数据 × Exact/BM25/Dense = 9 路
+name/value        4.0
+synonyms          3.0
+display_*         2.5~3.0
+description_*     1.0~1.5
 ```
 
-此时仍建议一次性进入 Weighted RRF，而不是先做类内 RRF。
+说明：
 
+1. OpenSearch 的 `_score` 只用于 lexical 通道内部排序，进入 RRF 后只消费 rank；
+2. `fuzziness=AUTO`、`prefix_length`、`max_expansions`、`minimum_should_match` 必须通过离线评测和目标语言调优；
+3. 中文、英文和小语种继续使用第 2 章定义的 Analyzer/多语言字段；
+4. `synonyms` 仍是记录字段，不拆成独立召回通道；
+5. `type / parent_id / property_id / object_type_id` 等结构约束可以使用 keyword filter，但 filter 只用于限定候选域，不构成新的 lexical Ranked List；
+6. 在线语义召回不再设置单独的字符串精确匹配分支，不再形成额外 Ranked List。
 
-### 4.2.2 Exact/BM25 与 Dense 阈值边界
+#### Property 作用域查询
 
-Exact/BM25 与 Dense 的分数空间不同：
+Property lexical 检索必须使用候选 ObjectType 归属 filter：
+
+```json
+{
+  "query": {
+    "bool": {
+      "filter": [
+        {"term": {"type": "PROPERTY"}},
+        {"term": {"parent_id": "<targetObjectTypeId>"}}
+      ],
+      "must": [
+        {
+          "multi_match": {
+            "query": "客户等级",
+            "fields": ["name^4", "display_*^3", "synonyms^3", "description_*^1.5"],
+            "fuzziness": "AUTO"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+这里 `term` 仅作为结构过滤器，不参与关键词召回评分。
+
+### 4.2.3 GaussVector Dense 检索
+
+Dense 通道使用第 2 章定义的 BGE-M3 1024 维向量和 COSINE 相似度。每类索引独立执行 ANN TopK：
 
 ```text
-Exact：确定性字符串命中
-BM25：全文相关度
-Dense：向量相似度
+ontologyObjectDense
+  → t_oag_{ontology_id}
+
+enumDense
+  → t_oag_enum_{ontology_id}
+
+instanceDense
+  → t_oag_instance_{ontology_id}
 ```
 
-因此：
+Dense 规则：
 
 ```text
-Dense：ANN TopK → similarityThreshold
-Exact/BM25：不使用 Dense similarityThreshold 过滤
+query text
+→ Embedding
+→ ANN TopK
+→ similarityThreshold
+→ Ranked List
 ```
 
-Exact 命中仍不是绝对最终结果，因为 `name/status/active/1` 等值可能跨对象重复；它应获得较高 RRF 权重并进入 LLM 精排。
+`similarityThreshold` 只作用于 Dense 通道；OpenSearch Keyword Fuzzy 不使用 Dense 阈值过滤。
 
-
-### 4.2.3 topK / similarityThreshold 分表配置
-
-三类物理索引独立配置召回参数：
+### 4.2.4 topK / similarityThreshold 分域配置
 
 ```yaml
 semanticRetrieval:
@@ -3640,68 +3728,42 @@ semanticRetrieval:
     similarityThreshold: 0.6
 
   ontologyObject:
-    topK: 10
+    lexicalTopK: 10
+    denseTopK: 10
     similarityThreshold: 0.6
 
   enum:
-    topK: 10
+    lexicalTopK: 10
+    denseTopK: 10
     similarityThreshold: 0.6
 
   instance:
-    topK: 5
+    lexicalTopK: 5
+    denseTopK: 5
     similarityThreshold: 0.6
 ```
 
 说明：
 
-- `3 / 0.6` 只作为兼容默认值；
-- 本体对象优先 Recall；
-- Metadata Enum Value 允许多个值或 synonyms 命中同一本体对象；
-- 实例数据量最大，TopK 初始更保守；
-- 三类 Dense 分数分布不同，阈值必须可独立校准。
+- 本体定义优先保证 Recall；
+- Enum 允许多个 value/display/synonym 命中同一 Property；
+- Instance 数据量最大，TopK 初始更保守；
+- 三类 Dense 分数分布不同，阈值必须独立校准；
+- lexicalTopK 与 denseTopK 独立配置，避免一个统一 TopK 提前裁掉有价值候选。
 
 配置优先级：
 
 ```text
 Request Retrieval Profile
 >
-Table-level Config
+Domain/Table Config
 >
 System Defaults
 ```
 
-
-### 4.2.4 legacy GraphSearchRequest.topK 兼容
-
-现有 `GraphSearchRequest.topK=3` 不应被复用于所有内部通道。
-
-建议兼容语义：
-
-```text
-legacy topK
-→ 最终每个 Semantic Unit 输出数量上限
-```
-
-内部召回仍使用：
-
-```text
-ontologyObject.topK
-enum.topK
-instance.topK
-```
-
-避免所有通道只取 3 条，导致正确候选在 RRF 之前被裁掉。
-
-
 ### 4.2.5 seedRetrievalMode 兼容
 
-现有：
-
-```text
-vector
-```
-
-目标支持：
+接口兼容：
 
 ```text
 vector
@@ -3709,73 +3771,65 @@ keyword
 hybrid
 ```
 
-推荐目标模式：
+语义统一为：
 
 ```text
-hybrid
+vector:
+  OBJECT_TYPE / PROPERTY → ontologyObjectDense
+  VALUE                  → enumDense + instanceDense
+
+keyword:
+  OBJECT_TYPE / PROPERTY → ontologyObjectLexical
+  VALUE                  → enumLexical + instanceLexical
+
+hybrid:
+  OBJECT_TYPE / PROPERTY → ontologyObjectLexical + ontologyObjectDense
+  VALUE                  → enumLexical + enumDense + instanceLexical + instanceDense
 ```
 
-但为了兼容，接口默认值可暂时维持现有行为，通过配置灰度切换。
-
-语义：
-
-```text
-vector → Dense only
-keyword → Exact/BM25
-hybrid → Exact/BM25/Dense + 语义元素 + RRF
-```
+推荐在线模式为 `hybrid`。历史默认值如果仍为 `vector`，可通过配置灰度切换，但不改变上述通道职责。
 
 ---
 
+## 4.3 SearchHit 标准化与证据保留
 
----
+### 4.3.1 统一 SearchHit
 
-## 4.3 SearchHit 标准化与通道证据保留
+RRF 前，OAG 将 GaussVector 与 OpenSearch 结果统一成 SearchHit，不向上层透出底层存储原生结构。
 
-### 4.3.1 GaussVector / OpenSearch SearchHit 标准化
-
-RRF 前，OAG 将三张表的查询结果统一成 SearchHit，不向上层直接透出 GaussVector SQL 行格式或 OpenSearch 原生 `_source/_score` 包装。
-
-#### 对象属性节点 Dense SearchHit
+#### 本体对象 Keyword Fuzzy SearchHit
 
 ```json
 {
   "id": "dtmi:com:huawei:ict:Cell:1.0",
   "type": "OBJECT_TYPE",
   "name": "Cell",
-  "display_zh": "无线小区",
-  "display_en": "Cell",
-  "display_lang_1": "Celda inalámbrica",
-  "display_lang_2": null,
-  "description_zh": "通信网络中的小区实体",
-  "description_en": "Cell in communication network",
-  "description_lang_1": "Entidad de celda en una red de comunicaciones",
-  "description_lang_2": null,
-  "synonyms": "小区\nCell\nRadio Cell\nCelda",
+  "parent_id": null,
+  "matched_field": "synonyms",
+  "matched_value": "小区",
+  "score": 12.37,
+  "retrieval_mode": "KEYWORD_FUZZY",
+  "channel": "ontologyObjectLexical"
+}
+```
+
+#### 本体对象 Dense SearchHit
+
+```json
+{
+  "id": "dtmi:com:huawei:ict:Cell:1.0",
+  "type": "OBJECT_TYPE",
+  "name": "Cell",
   "matched_field": "DENSE_VECTOR",
   "matched_value": null,
   "distance": 0.18,
   "score": 0.82,
-  "source": "SEED_DENSE"
+  "retrieval_mode": "DENSE",
+  "channel": "ontologyObjectDense"
 }
 ```
 
-#### 本体对象 OpenSearch SearchHit
-
-```json
-{
-  "id": "dtmi:com:huawei:ict:Cell:1.0",
-  "type": "OBJECT_TYPE",
-  "name": "Cell",
-  "matched_field": "synonyms",
-  "matched_value": "小区",
-  "score": 12.37,
-  "match_mode": "EXACT_BM25",
-  "source": "SEED_LEXICAL"
-}
-```
-
-#### Metadata Enum Value Dense SearchHit
+#### Enum Keyword Fuzzy SearchHit
 
 ```json
 {
@@ -3783,73 +3837,59 @@ RRF 前，OAG 将三张表的查询结果统一成 SearchHit，不向上层直�
   "objectTypeId": "vehicle-object-id",
   "type": "ENUM_VALUE",
   "value": "red",
-  "name": "red",
-  "display_zh": "红色",
-  "display_en": "Red",
-  "synonyms": "红\n红色\nRed\nRojo",
-  "matched_field": "DENSE_VECTOR",
-  "matched_value": null,
-  "distance": 0.09,
-  "score": 0.91,
-  "source": "METADATA_DENSE"
-}
-```
-
-#### Metadata Enum Value OpenSearch SearchHit
-
-```json
-{
-  "propertyId": "prop:ont:vehicle:sp:bodyColor",
-  "objectTypeId": "vehicle-object-id",
-  "type": "ENUM_VALUE",
-  "value": "red",
-  "name": "red",
   "matched_field": "synonyms",
   "matched_value": "Rojo",
   "score": 18.42,
-  "match_mode": "EXACT_BM25",
-  "source": "METADATA_LEXICAL"
+  "retrieval_mode": "KEYWORD_FUZZY",
+  "channel": "enumLexical"
 }
 ```
 
-#### Instance Value SearchHit
+#### Instance Keyword Fuzzy SearchHit
 
 ```json
 {
-  "propertyid": "subClass-property-id",
+  "propertyId": "subClass-property-id",
   "objectTypeId": "subscriber-object-id",
   "type": "INSTANCE_VALUE",
   "value": "VIP",
   "matched_field": "value",
   "matched_value": "VIP",
-  "score": 0.88,
-  "source": "INSTANCE_DENSE"
+  "score": 9.31,
+  "retrieval_mode": "KEYWORD_FUZZY",
+  "channel": "instanceLexical"
 }
 ```
 
-统一分组规则：
+Dense 的 Enum/Instance SearchHit 使用相同业务身份字段，只将 `retrieval_mode/channel/score/distance` 切换到对应 Dense 通道。
+
+`matched_field / matched_value` 用于解释用户文本具体命中了 `name/display/description/synonyms/value` 中哪一项。对于 fuzziness 命中，`matched_value` 保存命中字段中最能解释本次匹配的真实源文本，不保存查询扩展词本身。
+
+### 4.3.2 group_id 与通道内去重
+
+统一分组：
 
 ```text
-ObjectType hit：group_id = "OT:" + hit.id
-Property hit：group_id = "PROP:" + hit.parent_id + ":" + hit.id
-Enum Value hit：group_id = "PROP:" + hit.objectTypeId + ":" + hit.propertyid
-Instance Value hit：group_id = "PROP:" + hit.objectTypeId + ":" + hit.propertyid
+ObjectType hit：
+  group_id = "OT:" + hit.id
+
+Property hit：
+  group_id = "PROP:" + hit.parent_id + ":" + hit.id
+
+Enum Value hit：
+  group_id = "PROP:" + hit.objectTypeId + ":" + hit.propertyId
+
+Instance Value hit：
+  group_id = "PROP:" + hit.objectTypeId + ":" + hit.propertyId
 ```
 
-`matched_field/matched_value` 是最终解释“用户到底命中了 name/display/description/synonyms/value 哪一项”的关键字段，不能在 RRF 前丢失。
-
-
-### 4.3.2 通道内去重与 supporting_hits
-
-同一 Property 可能通过多个 Enum Value、Instance Value 或 `synonyms` 字段命中。RRF 前按：
+同一 Property 可能通过多个 Enum/Instance value 或 synonyms 命中。RRF 前按：
 
 ```text
-semantic_unit_id + target_object_type_id + channel + group_id
+semantic_unit_id + channel + group_id
 ```
 
-去重，使同一本体对象在单通道只占一个排名位置。
-
-组内保留：
+通道内去重，使同一候选归属在同一通道只占一个 rank；同时保留：
 
 ```text
 primary_hit
@@ -3857,178 +3897,195 @@ top 3~5 supporting_hits
 hit_count
 ```
 
-每个 supporting hit 都保留实际身份字段：Seed 保留 `id/type/name`；Enum/Instance 保留 `propertyid/objectTypeId/type/value`，Enum 可继续携带 `name`；所有命中统一保留 `matched_field/matched_value`。
-
+所有 supporting hit 必须保留 `recordType / objectTypeId / propertyId / value / matched_field / matched_value / channel / rank` 等真实证据字段。
 
 ---
 
-## 4.4 Weighted RRF 粗排融合
+## 4.4 分类型 Weighted RRF：本体定义 2 路、值 4 路
 
-### 4.4.1 一次 Weighted RRF
+### 4.4.1 融合原则
 
-默认仍采用一次 Weighted RRF，不做“类内 RRF → 总 RRF”两级融合。
+本设计不再让每个 Semantic Unit 无差别进入 6 路，也不对 6 条通道做一个跨语义类型的统一 RRF。
 
-```text
-Semantic Unit
-  ↓
-Ontology Object Lexical
-Ontology Object Dense
-Enum Lexical
-Enum Dense
-Instance Lexical
-Instance Dense
-  ↓
-每通道按 group_id 去重
-  ↓
-一次 Weighted RRF
-  ↓
-本体对象分组粗排 + supporting_hits
-```
-
-原因保持不变：两级 RRF 会提前压缩 6 路 rank 信息、增加 TopK 截断风险、让权重解释和排障更复杂。只有离线评测证明一次 Weighted RRF 无法通过权重校准解决数据源噪声差异时，才作为实验 Profile。
-
-公式：
+采用两种 Fusion Profile：
 
 ```text
-RRF(candidate) = Σ weight(channel) / (rrf_k + rank_channel(candidate))
+OntologyDefinitionFusion（2 路）
+  ontologyObjectLexical
+  ontologyObjectDense
+
+ValueFusion（4 路）
+  enumLexical
+  enumDense
+  instanceLexical
+  instanceDense
 ```
 
-初始权重：
+每个 Semantic Unit 只在自己的 Fusion Profile 内执行一次 Weighted RRF：
+
+```text
+RRF(candidate) = Σ weight(channel) / (k + rank_channel(candidate))
+```
+
+RRF 不直接比较 OpenSearch `_score` 与 Dense cosine 分数，只消费通道内 rank。
+
+### 4.4.2 推荐权重
 
 ```yaml
 rrf:
   k: 60
   coarseTopKPerSemanticUnit: 20
   maxGlobalCandidates: 50
-  channelWeights:
-    ontologyObjectLexical: 1.3
-    ontologyObjectDense: 1.0
-    enumLexical: 1.2
-    enumDense: 1.0
-    instanceLexical: 1.0
-    instanceDense: 0.8
+
+  ontologyDefinition:
+    channelWeights:
+      ontologyObjectLexical: 1.3
+      ontologyObjectDense: 1.0
+
+  value:
+    channelWeights:
+      enumLexical: 1.2
+      enumDense: 1.0
+      instanceLexical: 1.0
+      instanceDense: 0.8
 ```
 
-若 Exact 与 BM25 后续拆成独立 Ranked List，则直接扩为 9 路一次融合。
+权重含义：
 
-#### Weighted RRF 执行样例
+- 本体定义名称/显示名/同义词通常具有较高词面辨识度，初始给予 lexical 较高权重；
+- Enum 的业务语义通常比自由实例值更稳定，因此 Enum lexical/dense 权重略高；
+- Instance 规模最大、噪声更高，初始权重更保守；
+- 所有权重必须通过真实 Query 集离线评测校准，不写死为协议常量。
 
-对同一个 Semantic Unit，6 条通道先各自形成**有序列表**，RRF 不直接使用 BM25/Cosine 原始分数，只使用通道内 `rank`：
+### 4.4.3 本体定义 2 路融合样例
+
+查询 Semantic Unit：
 
 ```text
-score(candidate) = Σ channelWeight / (k + rank)
-k = 60
+OBJECT_TYPE = "无线小区"
 ```
 
-以下使用推荐权重：
+候选：
 
-```yaml
-ontologyObjectLexical: 1.3
-ontologyObjectDense:   1.0
-enumLexical:           1.2
-enumDense:             1.0
-instanceLexical:       1.0
-instanceDense:         0.8
-```
-
-假设候选已经按真实归属聚合到两个 Property：
-
-| 通道 | A=`Account.customerLevel` | B=`Account.accountStatus` |
+| 通道 | A=`Cell` | B=`RadioCell` |
 |---|---:|---:|
-| 本体对象 Lexical | rank=2 | rank=1 |
-| 本体对象 Dense | rank=1 | rank=3 |
-| 枚举 Lexical | rank=1 | rank=3 |
-| 枚举 Dense | rank=2 | rank=1 |
-| 实例 Lexical | 未命中 | 未命中 |
-| 实例 Dense | 未命中 | 未命中 |
+| ontologyObjectLexical | rank=1 | rank=2 |
+| ontologyObjectDense | rank=2 | rank=1 |
 
 则：
 
 ```text
-A = 1.3/(60+2) + 1.0/(60+1) + 1.2/(60+1) + 1.0/(60+2)
-  = 0.020968 + 0.016393 + 0.019672 + 0.016129
-  = 0.073162
-
-B = 1.3/(60+1) + 1.0/(60+3) + 1.2/(60+3) + 1.0/(60+1)
-  = 0.021311 + 0.015873 + 0.019048 + 0.016393
-  = 0.072626
+A = 1.3/(60+1) + 1.0/(60+2)
+B = 1.3/(60+2) + 1.0/(60+1)
 ```
 
-所以 A 的粗排分数略高于 B。若某通道未命中，该通道贡献为 0；同一 Property 被多个具体 Enum/Instance 值命中时，先按 `semantic_unit + channel + group_id` 做通道内去重并保留最佳 rank，同时把具体 `matchedItems` 留给后续 LLM Fine Rank 解释。
+RRF 只使用 rank，OpenSearch `_score` 与 cosine 不需要归一到同一数值空间。
 
-开发伪代码：
+### 4.4.4 Value 4 路融合样例
+
+查询：
+
+```text
+VALUE = "VIP"
+```
+
+候选先根据真实索引记录投影到 Property 归属，例如：
+
+```text
+A = Account.customerLevel
+B = Subscriber.subscriberLevel
+```
+
+四路 rank：
+
+| 通道 | A | B |
+|---|---:|---:|
+| enumLexical | rank=1 | 未命中 |
+| enumDense | rank=2 | 未命中 |
+| instanceLexical | rank=3 | rank=1 |
+| instanceDense | rank=2 | rank=1 |
+
+计算：
+
+```text
+A = 1.2/(60+1) + 1.0/(60+2) + 1.0/(60+3) + 0.8/(60+2)
+B = 1.0/(60+1) + 0.8/(60+1)
+```
+
+候选组内继续保留 Enum/Instance 的具体 `value + matched_field + matched_value + supporting_hits`，避免只留下 Property 而丢失用户值证据。
+
+### 4.4.5 开发伪代码
 
 ```java
-for (RankedList channel : channels) {
-    double w = weights.get(channel.name());
+FusionProfile profile = switch (unit.type()) {
+    case OBJECT_TYPE, PROPERTY -> ontologyDefinitionProfile; // 2 channels
+    case VALUE -> valueProfile;                              // 4 channels
+};
+
+for (RankedList channel : profile.channels()) {
+    double w = profile.weight(channel.name());
     for (int i = 0; i < channel.size(); i++) {
-        int rank = i + 1; // rank 从 1 开始
-        Candidate c = normalizeAndProject(channel.get(i));
-        c.rrfScore += w / (k + rank);
+        int rank = i + 1;
+        Candidate c = normalizeAndProject(channel.get(i), unit);
+        c.rrfScore += w / (rrfK + rank);
         c.addEvidence(channel.name(), rank, channel.get(i));
     }
 }
-return candidates.values().stream()
-    .sorted(comparingDouble(Candidate::getRrfScore).reversed())
-    .limit(maxGlobalCandidates)
-    .toList();
 ```
 
-注意：`similarityThreshold` 在进入 RRF 前过滤 Dense；Exact/BM25 是否进入列表由各自通道规则决定，RRF 本身不再比较原始异构分数。
-
-
-### 4.4.2 Exact 是强证据但不是绝对锁定
-
-Exact 是强证据，但 `name/status/active/1/A` 或某个 synonym 仍可能在多个记录中重复。推荐：
-
-```text
-Exact/BM25 → 高权重 RRF → LLM 结合原始问题消歧
-```
-
-只有本体对象全局唯一 `id` 的直接查询才可以绕过语义消歧；Enum/Instance 仍按 `objectTypeId + propertyid + value` 判断具体记录。
-
+Dense 在进入 RRF 前执行 `similarityThreshold`；Keyword Fuzzy 由 OpenSearch 查询自身的 `minimum_should_match / fuzziness / TopK` 控制召回边界。
 
 ---
 
-## 4.5 ObjectType / Property Entity Linking
+## 4.5 ObjectType / Property Entity Linking：本体定义 2 路
 
-### 4.5.1 ObjectType 作用域内 Property Linking 与粗排输出
+### 4.5.1 ObjectType Linking
 
-阶段 2 的目标是完成实体映射与消歧（Entity Linking）：使用 Exact/BM25、Embedding 召回和 Weighted RRF，将实体提取阶段得到的 `ObjectType / Property` 文本对齐到 NebulaGraph 中真实存在的 ObjectType、Property 节点。
-
-> ObjectType/Property 使用本节的作用域化链接流程；`Values[]` 使用第 4.6 节的 Enum/Instance Value Linking。Relationship、RelationshipProperty 不作为 Entity Linking 的直接检索目标。
-
-#### Property 必须在候选 ObjectType 范围内检索
-
-实体提取结果中的 ObjectType 与 Property 具有明确从属关系。因此链接顺序固定为：
+对于每个 `ExtractedEntity.ObjectType`：
 
 ```text
 sourceObjectType
-  → 召回并粗排 targetObjectTypes[]
-  → 对每一个 targetObjectType.id 分别检索其所属 Property
-  → 生成该 targetObjectType 自己的 propertyLinks[]
+→ ontologyObjectLexical（OpenSearch Keyword Fuzzy）
+→ ontologyObjectDense（GaussVector Dense）
+→ 按 OT:{objectTypeId} 通道内去重
+→ 本体定义 2 路 Weighted RRF
+→ targetObjectTypes[]
 ```
 
-Property 检索必须同时施加 ObjectType 归属过滤：
+ObjectType 默认保留 Top 3 粗排候选，具体数量由 Retrieval Profile 控制。
+
+### 4.5.2 Property 必须在候选 ObjectType 作用域内检索
+
+对于 `Properties[]`，链接顺序固定为：
+
+```text
+sourceObjectType
+  → targetObjectTypes[]
+  → 对每一个 targetObjectType.id 分别处理 sourceProperty
+     ├─ ontologyObjectLexical + parent_id filter
+     └─ ontologyObjectDense   + parent_id filter
+  → 每个 Property 单独执行本体定义 2 路 RRF
+  → propertyLinks[]
+```
+
+结构约束：
 
 ```text
 GaussVector:
   type = PROPERTY
   AND parent_id = targetObjectType.id
 
-OpenSearch:
-  type.keyword = PROPERTY
-  AND parent_id.keyword = targetObjectType.id
+OpenSearch filter:
+  type = PROPERTY
+  AND parent_id = targetObjectType.id
 
-Nebula / GraphTopologyCache:
-  Property 必须存在属于该 ObjectType 的 has_property 映射
+GraphTopologyCache:
+  Property 必须属于该 ObjectType
 ```
 
-禁止先在全本体范围检索 Property，再把结果无条件挂到所有 ObjectType 候选下。相同的 `sourceProperty` 在不同 `targetObjectType` 下允许产生不同的 `targetProperties` 候选集合和分数。
+禁止先在全本体范围检索 Property，再把同一候选列表挂到所有 ObjectType 下。
 
-如果一个 `sourceObjectType` 有多个 ObjectType 候选，`propertyLinks` 必须放在每个 `targetObjectTypes[]` 元素内部，不能放在 `sourceObjectType` 层级。否则无法表达 Property 是在哪个候选 ObjectType 范围内完成匹配的。
-
-#### 输出结构
+### 4.5.3 粗排输出结构
 
 ```text
 seedNodes[]
@@ -4043,41 +4100,16 @@ seedNodes[]
 
 字段定义：
 
-| 字段                          | 类型     | 必选  | 说明                                                                 |
-| --------------------------- | ------ | --- | ------------------------------------------------------------------ |
-| `seedNodes`                 | Array  | 是   | 按实体提取结果中的 ObjectType 分组的实体链接候选                                     |
-| `sourceObjectType`          | String | 是   | 实体提取阶段得到的原始 ObjectType 文本                                          |
-| `targetObjectTypes`         | Array  | 是   | RRF 粗排后的 Nebula ObjectType 候选，按 `score` 降序排列；允许为空                  |
-| `targetObjectTypes[].name`  | String | 是   | 本体中的 ObjectType 名称                                                 |
-| `targetObjectTypes[].id`    | String | 是   | 本体中的 ObjectType ID                                                 |
-| `targetObjectTypes[].score` | Number | 是   | 归一化后的实体链接粗排分数，范围 `[0,1]`；不是单路向量 cosine，也不是 OpenSearch `_score`     |
-| `propertyLinks`             | Array  | 是   | 在当前 `targetObjectType.id` 范围内生成的 Property 链接结果；没有源 Property 时返回空数组 |
-| `sourceProperty`            | String | 是   | 从属于 `sourceObjectType` 的原始 Property 文本                             |
-| `targetProperties`          | Array  | 是   | 只包含归属于当前候选 ObjectType 的 Property，按 `score` 降序排列；允许为空               |
-| `targetProperties[].name`   | String | 是   | 本体中的 Property 名称                                                   |
-| `targetProperties[].id`     | String | 是   | 本体中的 Property ID                                                   |
-| `targetProperties[].score`  | Number | 是   | 当前 ObjectType 作用域内归一化后的 Property 粗排分数，范围 `[0,1]`                   |
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `sourceObjectType` | String | Entity Extraction 输出的原始 ObjectType |
+| `targetObjectTypes[]` | Array | 2 路 RRF 后的真实 ObjectType 候选 |
+| `targetObjectTypes[].score` | Number | 由 RRF 分数单调归一后的粗排分数，不等同 OpenSearch `_score` 或 cosine |
+| `propertyLinks[]` | Array | 当前 targetObjectType 作用域内的 Property 链接 |
+| `sourceProperty` | String | Entity Extraction 输出的原始 Property |
+| `targetProperties[]` | Array | 当前 ObjectType 下经 2 路 RRF 后的 Property 候选 |
 
-`score` 是对 RRF 粗排结果进行单调归一化后的对外比较分数。同一候选的原始 `rrfScore / channelHits / supportingHits / matchedField / matchedValue` 仍在 OAG 内部 Rerank Context 中保留，供第 5 章 LLM 精排、解释和问题定位使用，但默认不展开到本阶段业务输出中。
-
-本阶段的 `seedNodes` 表示“实体链接候选集合”；第 5、6 章最终响应中的 `seedNodes` 是经过 LLM 精排和 SeedNodeProjector 投影后的图构建种子，两者处于不同生命周期，不能直接等同。
-
-#### 示例1：单个 ObjectType
-
-实体提取输入：
-
-```json
-{
-  "extractedEntities": [
-    {
-      "objectType": "WhatsApp应用",
-      "properties": ["体验质量", "时间"]
-    }
-  ]
-}
-```
-
-RRF 粗排输出：
+示例：
 
 ```json
 {
@@ -4087,37 +4119,20 @@ RRF 粗排输出：
       "targetObjectTypes": [
         {
           "name": "WhatsAPP应用",
-          "id": "xx",
+          "id": "obj-whatsapp",
           "score": 0.996,
           "propertyLinks": [
             {
               "sourceProperty": "体验质量",
               "targetProperties": [
-                {
-                  "name": "call_reconnect",
-                  "id": "xx",
-                  "score": 0.931
-                },
-                {
-                  "name": "poor_cnt",
-                  "id": "xx",
-                  "score": 0.921
-                },
-                {
-                  "name": "call_drop",
-                  "id": "xx",
-                  "score": 0.9111
-                }
+                {"name": "poor_cnt", "id": "prop-poor-cnt", "score": 0.931},
+                {"name": "call_drop", "id": "prop-call-drop", "score": 0.911}
               ]
             },
             {
               "sourceProperty": "时间",
               "targetProperties": [
-                {
-                  "name": "occurrenceTime",
-                  "id": "xx",
-                  "score": 0.655
-                }
+                {"name": "occurrenceTime", "id": "prop-time", "score": 0.655}
               ]
             }
           ]
@@ -4128,247 +4143,56 @@ RRF 粗排输出：
 }
 ```
 
-这里 `体验质量` 和 `时间` 的 Property 候选只从 `WhatsAPP应用(id=xx)` 所属 Property 中产生。
+内部仍保留每个候选的 `rrfScore / channelHits / supporting_hits / matched_field / matched_value`，供第 5 章 LLM Fine Rank 使用。
 
-#### 示例2：多个 ObjectType，且一个源对象存在多个候选
+### 4.5.4 排序与异常规则
 
-```json
-{
-  "seedNodes": [
-    {
-      "sourceObjectType": "WhatsApp应用",
-      "targetObjectTypes": [
-        {
-          "name": "WhatsAPP应用",
-          "id": "xx",
-          "score": 0.996,
-          "propertyLinks": [
-            {
-              "sourceProperty": "数据包下行丢包率",
-              "targetProperties": [
-                {
-                  "name": "packet_loss_rate_downlink",
-                  "id": "xx",
-                  "score": 0.912
-                },
-                {
-                  "name": "dl_packet_loss_rate",
-                  "id": "xx",
-                  "score": 0.887
-                }
-              ]
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "sourceObjectType": "4G小区",
-      "targetObjectTypes": [
-        {
-          "name": "4G小区",
-          "id": "xx",
-          "score": 0.995,
-          "propertyLinks": [
-            {
-              "sourceProperty": "上行PRB平均利用率",
-              "targetProperties": [
-                {
-                  "name": "avg_ul_prb_utilization",
-                  "id": "xx",
-                  "score": 0.934
-                },
-                {
-                  "name": "uplink_prb_avg_usage",
-                  "id": "xx",
-                  "score": 0.901
-                }
-              ]
-            },
-            {
-              "sourceProperty": "下行PRB平均利用率",
-              "targetProperties": [
-                {
-                  "name": "avg_dl_prb_utilization",
-                  "id": "xx",
-                  "score": 0.936
-                },
-                {
-                  "name": "downlink_prb_avg_usage",
-                  "id": "xx",
-                  "score": 0.903
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "name": "无线小区",
-          "id": "xx",
-          "score": 0.963,
-          "propertyLinks": [
-            {
-              "sourceProperty": "上行PRB平均利用率",
-              "targetProperties": [
-                {
-                  "name": "ul_prb_utilization",
-                  "id": "xx",
-                  "score": 0.921
-                },
-                {
-                  "name": "uplink_prb_avg_usage",
-                  "id": "xx",
-                  "score": 0.895
-                }
-              ]
-            },
-            {
-              "sourceProperty": "下行PRB平均利用率",
-              "targetProperties": [
-                {
-                  "name": "dl_prb_utilization",
-                  "id": "xx",
-                  "score": 0.925
-                },
-                {
-                  "name": "downlink_prb_avg_usage",
-                  "id": "xx",
-                  "score": 0.898
-                }
-              ]
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "sourceObjectType": "栅格",
-      "targetObjectTypes": [
-        {
-          "name": "栅格",
-          "id": "xx",
-          "score": 0.997,
-          "propertyLinks": [
-            {
-              "sourceProperty": "栅格中心经纬度",
-              "targetProperties": [
-                {
-                  "name": "centerLongitudeLatitude",
-                  "id": "xx",
-                  "score": 0.936
-                },
-                {
-                  "name": "grid_center_location",
-                  "id": "xx",
-                  "score": 0.882
-                }
-              ]
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "sourceObjectType": "用户",
-      "targetObjectTypes": [
-        {
-          "name": "用户",
-          "id": "xx",
-          "score": 0.998,
-          "propertyLinks": [
-            {
-              "sourceProperty": "msisdn",
-              "targetProperties": [
-                {
-                  "name": "msisdn",
-                  "id": "xx",
-                  "score": 0.999
-                }
-              ]
-            }
-          ]
-        }
-      ]
-    }
-  ]
-}
-```
-
-`4G小区` 同时链接到 `4G小区` 和 `无线小区` 两个候选时，两者的 `propertyLinks` 分别在各自 ObjectType 归属范围内检索和排序，不能复用同一个全局 Property 候选列表。
-
-#### 排序、裁剪与异常规则
-
-1. `targetObjectTypes` 按 ObjectType 的归一化 RRF 粗排分数降序排列。
-2. 每个 `targetProperties` 只在对应 `targetObjectType.id` 范围内排序和裁剪。
-3. ObjectType 默认保留 Top 3；每个 `sourceProperty` 默认保留 Top 3 Property，具体值由检索 Profile 配置。
-4. ObjectType 低于阈值时可以返回空 `targetObjectTypes`，不得为保证非空而制造链接结果。
-5. ObjectType 有候选但某个 Property 没有合格候选时，该 `sourceProperty` 仍保留，`targetProperties` 返回空数组，供 LLM 或上层识别未解析项。
-6. 同一 `targetObjectType.id` 或 Property `id` 在同一层级内必须去重，只保留分数最高且证据最完整的候选。
-7. `id/name` 必须来自本体或检索候选，LLM 不得生成新的 ObjectType、Property ID。
-
-LLM 面对的是“源实体 → ObjectType 候选 → 该候选范围内的 Property 候选 + 内部 RRF 证据”，而不是只看到脱离 ObjectType 归属的全局 Property 列表。
-
-
-### 4.5.2 ObjectType / Property 分组与 LLM 衔接
-
-ObjectType 与 Property 仍以 Semantic Unit 为召回和 RRF 计算单元，但 Property 必须在 ObjectType 候选确定后按候选作用域执行：
-
-```text
-ObjectType Semantic Unit
-  → 6 路 Raw Hits
-  → 按 OT:{objectTypeId} 去重并执行 Weighted RRF
-  → targetObjectTypes[]
-
-每个 targetObjectType.id + 其 sourceProperty
-  → 带 parent_id/objectTypeId Filter 的 Property 召回
-  → 按 PROP:{objectTypeId}:{propertyId} 去重并执行 Weighted RRF
-  → 当前 ObjectType 下的 targetProperties[]
-
-两级候选组装
-  → seedNodes[].targetObjectTypes[].propertyLinks[]
-  → RerankContextBuilder 携带 supporting_hits 进入 LLM
-```
-
-这里的“两级候选组装”不是两级 RRF 融合：ObjectType 和 Property 分别在自己的语义单元及作用域内执行一次 Weighted RRF，不会再对两者的 RRF 排名做第二次融合。
-
-不要直接按 synonyms 数量计分；Synonym 是记录字段，不形成额外 RRF 行。
-
-推荐裁剪：每个源 ObjectType 保留 Top 3 ObjectType 候选；每个候选 ObjectType 下，每个源 Property 保留 Top 3 Property 候选；内部每组保留 3~5 个 supporting hits，全局候选数量继续受 `maxGlobalCandidates` 控制，LLM 每个 Unit 允许选择 0~5 个最终结果。
+1. `targetObjectTypes` 按 ObjectType 的 2 路 RRF 分数降序；
+2. 每个 `targetProperties` 只在当前 `targetObjectType.id` 范围内执行 2 路 RRF 和裁剪；
+3. ObjectType 默认 Top 3，每个 sourceProperty 默认 Top 3 Property；
+4. 无合格 ObjectType 候选时允许 `targetObjectTypes=[]`，不能制造结果；
+5. 某 Property 无合格候选时保留 `sourceProperty`，返回 `targetProperties=[]`；
+6. 同一 ID 在同一层只保留证据最完整、RRF 分数最高的候选；
+7. LLM 只能选择检索返回的真实候选，不得生成新的 ObjectType/Property ID。
 
 ---
 
+## 4.6 Enum / Instance Value Entity Linking：值 4 路
 
----
-
-## 4.6 Enum / Instance Value Entity Linking
-
-对于 `ExtractedEntity.Values[]`，OAG 不在 NER 阶段预判 Enum/Instance，而是同时查询枚举索引和实例索引：
+`ExtractedEntity.Values[]` 不在 NER 阶段预判 Enum/Instance，每个 VALUE Semantic Unit 固定进入 4 路值检索：
 
 ```text
 sourceValue
-→ enumLexical / enumDense
-→ instanceLexical / instanceDense
-→ 按真实 Property/ObjectType 归属聚合
-→ Weighted RRF + 上下文消歧
-→ actual value + property_id + object_type_id
+├─ enumLexical     → OpenSearch Keyword Fuzzy
+├─ enumDense       → GaussVector Dense
+├─ instanceLexical → OpenSearch Keyword Fuzzy
+└─ instanceDense   → GaussVector Dense
+        ↓
+按真实 property_id + object_type_id 聚合
+        ↓
+值 4 路 Weighted RRF
+        ↓
+Value Linking Candidates
 ```
 
-最终补齐：
+最终候选补齐：
 
 ```text
 valueType = ENUM_VALUE | INSTANCE_VALUE
-canonical/actual value
-Property
-ObjectType
-matched_field / matched_value
+actual value
+property_id
+object_type_id
+matched_field
+matched_value
 supporting_hits
+rrfScore
 ```
 
-其中 `canonical` 只是对真实索引 `value` 的下游投影名称，不维护第二套 canonical 字典。
+其中 `actual value` 来自真实索引 `value`，不在 OAG 内维护第二套 canonical 字典。
 
-### 4.6.1 Property Hint 与 Value-only
+### 4.6.1 Value 携带 Property Hint
 
-两种输入都合法：
+输入：
 
 ```json
 {
@@ -4380,62 +4204,196 @@ supporting_hits
 }
 ```
 
-以及完全不知道归属时的 value-only：
+处理：
+
+```text
+Account
+→ 先完成 ObjectType 2 路 Linking
+
+accountStatus
+→ 在每个 Account 候选作用域内完成 Property 2 路 Linking
+
+在用
+→ 对已链接的 Property/ObjectType 候选施加归属 filter
+→ 执行 Value 4 路召回
+→ 4 路 RRF
+```
+
+Property Hint 是强作用域提示，但必须经过真实本体 Property Linking 后才能转换为 `property_id` filter，不能把用户文本直接当内部 ID。
+
+### 4.6.2 Value 未携带 Property、但 ObjectType 已知
+
+输入：
+
+```json
+{
+  "ObjectType": "Account",
+  "Properties": [],
+  "Values": [
+    {"Value": "VIP"}
+  ]
+}
+```
+
+处理：
+
+```text
+Account → 2 路 Linking → targetObjectTypes[]
+VIP     → Enum/Instance 4 路召回
+        → 使用 targetObjectTypes[] 作为 object_type_id 候选作用域
+        → 根据命中记录反解 Property
+```
+
+### 4.6.3 Value-only
+
+完全不知道 ObjectType/Property 时：
+
+```json
+{
+  "Values": [
+    {"Value": "12JKS0885_IN_RSNM_KALIBATA3_MC"}
+  ]
+}
+```
+
+执行：
+
+```text
+Value-only
+→ 全本体 Enum 2 路 + Instance 2 路
+→ 共 4 路召回
+→ 根据命中记录中的 property_id + object_type_id 聚合
+→ 4 路 RRF
+→ 解析真实 Property/ObjectType 归属
+```
+
+规则：
+
+1. 不根据编码形态猜 Site/BaseStation/nativeId；
+2. Enum/Instance 不是 Core Graph 顶点，图规划时投影到真实 Property/ObjectType；
+3. `value / matched_field / matched_value / supporting_hits` 必须一直保留到第 5 章 LLM Fine Rank；
+4. 同一个业务 Value 可在不同 Property 下存在，不能仅按 value 文本全局去重；
+5. value-only 的候选域更大，应使用更严格的 TopK、候选上限和超时保护。
+
+### 4.6.4 Enum 与 Instance 的冲突处理
+
+同一 VALUE Semantic Unit 可能同时命中 Enum 与 Instance。粗排阶段不提前强行二选一：
+
+```text
+Enum evidence
++ Instance evidence
+→ 按真实 Property/ObjectType 归属聚合
+→ 4 路 RRF
+→ 保留 recordType 和 supporting_hits
+→ 第 5 章 LLM 结合 Query / Property Hint / Graph Hint 选择最终 0/1/N
+```
+
+如果 Enum 与 Instance 命中同一 Property，两个 recordType 的具体命中仍保留在 supporting_hits 中；如果命中不同 Property，则形成不同候选组分别进入 RRF 排序。
+
+---
+
+## 4.7 基于 ExtractedEntity 的端到端路由示例
+
+输入：
 
 ```json
 {
   "extractedEntities": [
     {
-      "ObjectType": "ALARM",
-      "Properties": ["告警TICKET ID", "告警发生时间"],
-      "Values": []
+      "ObjectType": "字符串",
+      "Properties": ["属性1", "属性2"],
+      "Values": [
+        {
+          "Property": "属性1",
+          "Value": "用户原始业务值"
+        },
+        {
+          "Value": "归属暂不确定的业务值"
+        }
+      ]
     },
     {
       "Values": [
-        {"Value": "12JKS0885_IN_RSNM_KALIBATA3_MC"}
+        {
+          "Value": "完全无法确定 ObjectType/Property 归属的业务值"
+        }
       ]
     }
   ]
 }
 ```
 
-规则：
+执行拆解：
 
-1. Value 携带 `Property` Hint 时优先在该 Property / ObjectType 作用域内召回；
-2. Value-only 时允许跨 Enum/Instance 索引召回后再确定归属；
-3. 不根据编码形态猜 Site/BaseStation/nativeId 等 ObjectType/Property；
-4. Enum/Instance 自身不是本体图顶点，图规划时投影到其真实 Property/ObjectType；
-5. 具体 `value/matched_field/matched_value/supporting_hits` 必须继续传给第 5 章 LLM Fine Rank，不能只留下 Property 节点。
+```text
+Entity #1
+│
+├─ ObjectType = "字符串"
+│    ├─ ontologyObjectLexical
+│    ├─ ontologyObjectDense
+│    └─ 2 路 RRF → targetObjectTypes[]
+│
+├─ Property = "属性1"
+│    └─ 对每个 targetObjectType
+│         ├─ ontologyObjectLexical + parent_id filter
+│         ├─ ontologyObjectDense + parent_id filter
+│         └─ 2 路 RRF → targetProperties[]
+│
+├─ Property = "属性2"
+│    └─ 同上，独立执行 2 路 RRF
+│
+├─ Value = "用户原始业务值", PropertyHint = "属性1"
+│    ├─ enumLexical
+│    ├─ enumDense
+│    ├─ instanceLexical
+│    ├─ instanceDense
+│    └─ 在属性1真实候选作用域内执行 4 路 RRF
+│
+└─ Value = "归属暂不确定的业务值"
+     ├─ enumLexical / enumDense
+     ├─ instanceLexical / instanceDense
+     └─ 在已链接 ObjectType 作用域内执行 4 路 RRF并反解 Property
 
-### 4.6.2 Relationship 边界
+Entity #2（value-only）
+└─ Value = "完全无法确定 ObjectType/Property 归属的业务值"
+     ├─ enumLexical / enumDense
+     ├─ instanceLexical / instanceDense
+     └─ 全局 4 路 RRF → 由真实命中反解 ObjectType/Property
+```
 
-Relationship / RelationshipProperty 不由 Entity Extraction 或 Entity Linking 直接输出。业务提供的专家路径、关系和方向提示进入 `searchContext`，在后续图规划阶段作为 PathPlan/Graph Hint 约束使用。
+核心原则：
 
+> **实体提取结果决定检索路由，检索结果反向补齐真实本体归属。ObjectType/Property 与 Value 不再混用同一组召回通道。**
 
 ---
 
-## 4.7 本章输出与第 5 章衔接
+## 4.8 本章输出与第 5 章衔接
 
-本章粗排阶段的输出不是最终语义检索结果，而是可供 LLM Fine Rank 使用的**真实候选集合 + 归属 + 证据**：
+本章输出是可供 LLM Fine Rank 使用的**真实候选集合 + 归属 + 多通道证据**，不是最终检索结果。
 
 ```text
 ObjectType / Property
+  → 本体定义 2 路 RRF
   → seedNodes[].targetObjectTypes[].propertyLinks[]
-  → 每个候选携带 rrfScore/channelHits/supporting_hits
+  → rrfScore + channelHits + supporting_hits
 
 Enum / Instance Value
+  → 值 4 路 RRF
   → valueType + actual value + property_id + object_type_id
-  → matched_field / matched_value + supporting_hits
+  → rrfScore + matched_field + matched_value + supporting_hits
 ```
 
 核心约束：
 
-1. ObjectType 候选先粗排，Property 必须在每个候选 ObjectType 作用域内独立召回和排序；
-2. Enum/Instance 按真实 `Property + ObjectType` 归属聚合，具体 value 证据不能在投影时丢失；
-3. `matched_field/matched_value` 必须一直保留到 LLM Fine Rank，用于解释 name/display/description/synonyms/value 的真实命中来源；
-4. RRF 只融合各通道 rank，不直接比较 BM25、Exact 与 cosine 原始分数；
-5. LLM 只能从这些真实候选中选择，不能生成新的 ObjectType/Property/Value ID；
-6. Relationship 不在本章直接 Entity Linking，由后续图规划结合 `searchContext` 和 Graph Hint 处理。
+1. OpenSearch lexical 统一采用关键词模糊查询，不维护额外字符串精确召回 Ranked List；
+2. OBJECT_TYPE / PROPERTY 只使用本体定义 2 路融合；
+3. VALUE 只使用 Enum/Instance 4 路融合；
+4. Property 必须在每个候选 ObjectType 作用域内独立召回和排序；
+5. Enum/Instance 按真实 `Property + ObjectType` 归属聚合，具体 value 证据不能在投影时丢失；
+6. `matched_field / matched_value` 必须保留到 LLM Fine Rank；
+7. RRF 只融合各通道 rank，不直接比较 OpenSearch `_score` 与 cosine 原始分数；
+8. LLM 只能从真实候选中选择，不能生成新的 ObjectType/Property/Value ID；
+9. Relationship 不在本章直接 Entity Linking，由后续图规划结合 `searchContext.search_path` 和 Graph Hint 处理。
 
 ---
 
