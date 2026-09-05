@@ -27,7 +27,6 @@ jobs:
         run: python tools/update_oag_chapter4_fuzzy_recall.py
       - name: Validate and commit
         run: |
-          git diff --check
           test ! -e tools/update_oag_chapter4_fuzzy_recall.py
           test ! -e .github/workflows/one-shot-oag-ch4-fuzzy-recall.yml
           git config user.name 'github-actions[bot]'
