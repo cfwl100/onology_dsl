@@ -42,7 +42,7 @@ OAG 同时承担两类核心能力：
 
 - 支持 ObjectType / Property / Enum Value / Instance Value 四类语义证据；
 - 支持 OpenSearch 关键词模糊 + GaussVector Dense 混合召回；
-- 使用一次 Weighted RRF 融合 6 路检索结果；
+- 按 Semantic Unit 类型分别执行 Weighted RRF：ObjectType/Property 使用本体定义 2 路融合，Value 使用 Enum/Instance 4 路融合；
 - 使用 LLM 只做候选消歧与精排，不让 LLM 发明本体 ID；
 - 使用 GraphTopologyCache + JGraphT/NebulaGraph 完成子图路径规划；
 - `minimal / khop / component` 统一转换为 `PathProbePlan`，通过 Loop 执行；
@@ -98,12 +98,18 @@ flowchart LR
     IDX --> GV[GaussVector]
     IDX --> OS[OpenSearch]
 
-    Q[Query] --> QU[Query Understanding]
-    QU --> R[6 路 Recall]
-    GV --> R
-    OS --> R
-    R --> RRF[Weighted RRF]
-    RRF --> LR[LLM Rerank]
+    Q[Query] --> QU[Query Understanding / extractedEntities]
+    QU --> ROUTE{Semantic Unit 类型}
+    ROUTE --> OD[ObjectType / Property<br/>本体定义 2 路]
+    ROUTE --> VAL[Value<br/>Enum + Instance 4 路]
+    GV --> OD
+    OS --> OD
+    GV --> VAL
+    OS --> VAL
+    OD --> ORRF[OntologyDefinition<br/>2 路 Weighted RRF]
+    VAL --> VRRF[Value<br/>4 路 Weighted RRF]
+    ORRF --> LR[LLM Rerank]
+    VRRF --> LR
     LR --> P[SeedNodeProjector]
     P --> G[GraphTopologyCache / NebulaGraph]
     G --> S[minimal / khop / component]
@@ -153,30 +159,41 @@ OAG 同时承担索引构建、语义检索和本体子图构建三类能力。�
 
 ```mermaid
 flowchart TD
-    Q[用户原始问题] --> QU[Query Understanding<br/>Semantic Units]
+    Q[用户原始问题] --> EE[Entity Extraction<br/>extractedEntities]
+    EE --> SU[OBJECT_TYPE / PROPERTY / VALUE<br/>Semantic Units]
+    SU --> ROUTE{按 Semantic Unit 类型路由}
 
-    subgraph RET[每个 Semantic Unit 的 6 路召回]
-      QU --> SL[本体对象节点 OpenSearch<br/>Keyword Fuzzy]
-      QU --> SD[本体对象节点 Dense<br/>GaussVector]
-      QU --> ML[枚举元素 OpenSearch<br/>Keyword Fuzzy]
-      QU --> MD[枚举元素 Dense<br/>GaussVector]
-      QU --> IL[实例元素 OpenSearch<br/>Keyword Fuzzy]
-      QU --> ID[实例元素 Dense<br/>GaussVector]
+    subgraph OD[本体定义 2 路]
+      OL[OpenSearch<br/>Keyword Fuzzy]
+      ODV[GaussVector<br/>Dense]
     end
 
-    SL --> N[SeedCandidateNormalizer]
-    SD --> N
-    ML --> N
-    MD --> N
-    IL --> N
-    ID --> N
+    subgraph VV[值 4 路]
+      EL[Enum OpenSearch<br/>Keyword Fuzzy]
+      ED[Enum GaussVector<br/>Dense]
+      IL[Instance OpenSearch<br/>Keyword Fuzzy]
+      ID[Instance GaussVector<br/>Dense]
+    end
 
-    N --> RRF[Weighted RRF<br/>一次融合 6 条 Ranked List]
-    RRF --> COARSE[本体对象分组粗排<br/>保留具体语义元素]
+    ROUTE -->|OBJECT_TYPE / PROPERTY| OL
+    ROUTE -->|OBJECT_TYPE / PROPERTY| ODV
+    ROUTE -->|VALUE| EL
+    ROUTE -->|VALUE| ED
+    ROUTE -->|VALUE| IL
+    ROUTE -->|VALUE| ID
 
+    OL --> ORRF[OntologyDefinitionFusion<br/>2 路 Weighted RRF]
+    ODV --> ORRF
+    EL --> VRRF[ValueFusion<br/>4 路 Weighted RRF]
+    ED --> VRRF
+    IL --> VRRF
+    ID --> VRRF
+
+    ORRF --> COARSE[Entity Linking 粗排候选]
+    VRRF --> COARSE
     Q --> RC[RerankContextBuilder]
     COARSE --> RC
-    QU --> RC
+    SU --> RC
     RC --> LLM[LLM Fine Ranker]
     LLM --> RESULT[Final Retrieval Results]
 
@@ -195,8 +212,8 @@ flowchart TD
 ```text
 阶段0：索引构建 / Bulk Import
 阶段1：Query Understanding / Semantic Units
-阶段2：6 路召回
-阶段3：一次 Weighted RRF 粗排
+阶段2：按类型混合召回（ObjectType/Property 2 路，Value 4 路）
+阶段3：分类型 Weighted RRF 粗排（本体定义 2 路 / Value 4 路）
 阶段4：LLM 精排
 阶段5：检索结果 → 本体对象投影
 阶段6：minimal / khop / component 子图构建
