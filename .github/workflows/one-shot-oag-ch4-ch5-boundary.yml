@@ -1,0 +1,36 @@
+name: one-shot-oag-ch4-ch5-boundary
+
+on:
+  push:
+    branches:
+      - docs/oag-ch5-llm-seed-rerank-prompt
+    paths:
+      - tools/align_oag_ch4_ch5_boundary.py
+      - .github/workflows/one-shot-oag-ch4-ch5-boundary.yml
+
+permissions:
+  contents: write
+
+jobs:
+  update-doc:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: docs/oag-ch5-llm-seed-rerank-prompt
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Align chapter boundary
+        run: python tools/align_oag_ch4_ch5_boundary.py
+      - name: Validate and commit
+        run: |
+          test ! -e tools/align_oag_ch4_ch5_boundary.py
+          test ! -e .github/workflows/one-shot-oag-ch4-ch5-boundary.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'docs: align recall and rerank data boundary'
+          git push origin HEAD:docs/oag-ch5-llm-seed-rerank-prompt
