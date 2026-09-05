@@ -89,6 +89,10 @@ flowchart TD
 
 ### 1.4 总体架构
 
+![[Pasted image 20260905171417.png|1263]]
+
+如下流程包括：创建语义索引-->子图检索
+
 ```mermaid
 flowchart LR
     OMS[OMS 本体资产] --> IDX[OAG Index Build]
@@ -341,10 +345,10 @@ t_oag_instance_{ontology_id}
 
 ```text
 图算法：ObjectType / Property / Relation
-检索字段：name / display / description / synonyms / enum value / instance value
+检索字段：enum value / instance value
 ```
 
-Enum/Instance 和 synonym 都可以帮助形成最终语义结果，但不直接成为最短路径、K-hop、Connected Component 的拓扑节点。
+Enum/Instance 都可以帮助形成最终语义结果，但不直接成为最短路径、K-hop、Connected Component 的拓扑节点。
 
 ---
 
@@ -700,15 +704,12 @@ t_oag_enum_{ontology_id}
 | `value`              | `VARCHAR(4096 CHAR)` | `keyword + text`   |     | 真实标准枚举值，是权威过滤值                       |
 | `property_id`        | `VARCHAR(512 CHAR)`  | `keyword`          |   ✔ | 引用该 Enum 的 Property.id               |
 | `object_type_id`     | `VARCHAR(256 CHAR)`  | `keyword`          |     | Property 所属 ObjectType.id            |
-| `display_zh`         | `VARCHAR(512 CHAR)`  | `keyword + text`   |     | 中文 display                           |
-| `display_en`         | `VARCHAR(512 CHAR)`  | `keyword + text`   |     | 英文 display                           |
-| `display_lang_1`     | `VARCHAR(512 CHAR)`  | `keyword + text`   |     | 第 1 个额外语言 display                    |
-| `display_lang_2`     | `VARCHAR(512 CHAR)`  | `keyword + text`   |     | 第 2 个额外语言 display                    |
 | `description_zh`     | `TEXT`               | `text`             |     | 中文 description                       |
 | `description_en`     | `TEXT`               | `text`             |     | 英文 description                       |
 | `description_lang_1` | `TEXT`               | `text`             |     | 第 1 个额外语言 description                |
 | `description_lang_2` | `TEXT`               | `text`             |     | 第 2 个额外语言 description                |
 | `synonyms`           | `TEXT`               | `text multi-field` |     | LF 分隔的 Enum Value 同义词                |
+| `defaultDataValue`   | `TEXT`               | `text`             |     | 枚举值的数据库原始值，用于查询的过滤条件，比如`华为`对应的`0`    |
 
 业务唯一键：
 
@@ -5000,19 +5001,22 @@ Alarm.severity = "CRITICAL"
 ```text
 SemanticExtensions
 └── valueMappings[]
-    ├── sourceValue
-    ├── canonicalValue
-    ├── objectType { id, name }
-    ├── property   { id, name }
+	    ├── sourceValue
+	    ├── canonicalValue
+	    ├── objectType { id, name }
+	    ├── property   { id, name }
+	    ├── defaultDataValue
+	    
 ```
 
-| 字段               | 类型        |  必选 | 说明                                                        |
-| ---------------- | --------- | --: | --------------------------------------------------------- |
-| `valueMappings`  | Array     |   ✔ | 无最终 Enum/Instance 命中时为空数组                                 |
-| `sourceValue`    | String    |   ✔ | 用户问题/ExtractedEntity 中的原始值                                |
-| `canonicalValue` | String    |   ✔ | Entity Linking 确认的真实标准值；直接来自最终 `retrievalResults[].value` |
-| `objectType`     | ObjectRef |   ✔ | `{id,name}`，值所属 ObjectType                                |
-| `property`       | ObjectRef |   ✔ | `{id,name}`，值所属 Property                                  |
+| 字段                 | 类型        |  必选 | 说明                                                        |
+| ------------------ | --------- | --: | --------------------------------------------------------- |
+| `valueMappings`    | Array     |   ✔ | 无最终 Enum/Instance 命中时为空数组                                 |
+| `sourceValue`      | String    |   ✔ | 用户问题/ExtractedEntity 中的原始值                                |
+| `canonicalValue`   | String    |   ✔ | Entity Linking 确认的真实标准值；直接来自最终 `retrievalResults[].value` |
+| `objectType`       | ObjectRef |   ✔ | `{id,name}`，值所属 ObjectType                                |
+| `property`         | ObjectRef |   ✔ | `{id,name}`，值所属 Property                                  |
+| `defaultDataValue` | String    |     | 枚举值的数据库原始值，用于查询的过滤条件，比如`华为`对应的`0`                         |
 
 
 核心职责：
@@ -5101,6 +5105,7 @@ canonicalValue + property + objectType
             "id": "prop:site:nativeId",
             "name": "nativeId"
           },
+          "defaultDataValue": 0
         },
         {
           "sourceValue": "严重",
@@ -5112,7 +5117,8 @@ canonicalValue + property + objectType
           "property": {
             "id": "prop:alarm:severity",
             "name": "severity"
-          }
+          },
+          "defaultDataValue": 1
         }
       ]
     }
