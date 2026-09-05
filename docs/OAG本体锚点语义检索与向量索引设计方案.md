@@ -701,7 +701,7 @@ t_oag_enum_{ontology_id}
 | 字段                   | GaussVector 类型       | OpenSearch 类型      |  非空 | 说明                                   |
 | -------------------- | -------------------- | ------------------ | --: | ------------------------------------ |
 | `vector`             | `DOUBLE[]`           | -                  |   ✔ | Enum Value 1024 维向量，仅 GaussVector 保存 |
-| `value`              | `VARCHAR(4096 CHAR)` | `keyword + text`   |     | 真实标准枚举值，是权威过滤值                       |
+| `value`              | `VARCHAR(4096 CHAR)` | `keyword + text`   |   ✔ | 真实标准枚举值，是权威过滤值                       |
 | `property_id`        | `VARCHAR(512 CHAR)`  | `keyword`          |   ✔ | 引用该 Enum 的 Property.id               |
 | `object_type_id`     | `VARCHAR(256 CHAR)`  | `keyword`          |     | Property 所属 ObjectType.id            |
 | `description_zh`     | `TEXT`               | `text`             |     | 中文 description                       |
@@ -1128,11 +1128,11 @@ Enum / Instance 作为最终语义证据和 ValueMapping 来源保留，但不�
 
 ### 2.6.4 存储选型汇总
 
-| 类型             | Dense 主内容                                | Lexical 主内容                        | GaussVector ANN                    | 主要过滤字段                         |
-| -------------- | ---------------------------------------- | ---------------------------------- | ---------------------------------- | ------------------------------ |
-| 本体对象           | name + display + description + synonyms  | name/display/description/synonyms  | `GsIVFFLAT + COSINE`               | `type /id / parent_id`         |
-| Enum Value     | value + display + description + synonyms | value/display/description/synonyms | `GsIVFFLAT + COSINE`               | `object_type_id / property_id` |
-| Instance Value | value + synonyms                         | value/synonyms                     | 中小规模 `GsIVFFLAT`；千万/亿级 `GsDiskANN` | `object_type_id / property_id` |
+| 类型             | Dense 主内容                               | Lexical 主内容                       | GaussVector ANN                    | 主要过滤字段                         |
+| -------------- | --------------------------------------- | --------------------------------- | ---------------------------------- | ------------------------------ |
+| 本体对象           | name + display + description + synonyms | name/display/description/synonyms | `GsIVFFLAT + COSINE`               | `type /id / parent_id`         |
+| Enum Value     | value  + description + synonyms         | value/description/synonyms        | `GsIVFFLAT + COSINE`               | `object_type_id / property_id` |
+| Instance Value | value + synonyms                        | value/synonyms                    | 中小规模 `GsIVFFLAT`；千万/亿级 `GsDiskANN` | `object_type_id / property_id` |
 
 ### 2.6.5 关键注意事项
 
@@ -1285,7 +1285,7 @@ flowchart TD
 
 #### 与 DataSeek / NL2SQL 的模型边界
 
-与 DataSeek/NL2SQL 的对齐采用统一语义值逻辑模型：`ontology_id / object_type_id / property_id / value / normalized_value / source / version / update_type`。OAG 保持 Exact/BM25 + Dense 的混合检索契约和“值 → Property/ObjectType”归属解析能力；未来 NL2SQL 可以复用同一语义值字典和归属信息，而不要求共享 OAG 的物理向量表。
+与 DataSeek/NL2SQL 的对齐采用统一语义值逻辑模型：`ontology_id / object_type_id / property_id / value / normalized_value / source / version / update_type`。OAG 保持 BM25 + Dense 的混合检索契约和“值 → Property/ObjectType”归属解析能力；未来 NL2SQL 可以复用同一语义值字典和归属信息，而不要求共享 OAG 的物理向量表。
 
 
 ### 3.1.3 统一 Import Pipeline 边界
@@ -1318,10 +1318,10 @@ indexBuild:
   instanceDataSourceMode: OAC   # OAC | BUSINESS_NOTICE
 ```
 
-| 模式 | 谁访问业务数据源 | 固定数据流 | 适用场景 |
-|---|---|---|---|
-| `OAC` | OAC | OAG build → OAC 抽取 → MinIO → `index-data/notice(triggerTaskId)` → OAG | OAC 能访问目标业务数据源，适合人工创建/更新 |
-| `BUSINESS_NOTICE` | DataSync / 业务服务 | 业务服务抽取 → MinIO → `index-data/notice` → OAG | OAC 不对接该源，或同步责任属于业务域 |
+| 模式                | 谁访问业务数据源        | 固定数据流                                                                 | 适用场景                     |
+| ----------------- | --------------- | --------------------------------------------------------------------- | ------------------------ |
+| `OAC`             | OAC             | OAG build → OAC 抽取 → MinIO → `index-data/notice(triggerTaskId)` → OAG | OAC 能访问目标业务数据源，适合人工创建/更新 |
+| `BUSINESS_NOTICE` | DataSync / 业务服务 | 业务服务抽取 → MinIO → `index-data/notice` → OAG                            | OAC 不对接该源，或同步责任属于业务域     |
 
 `instanceDataSourceMode` 是部署/业务架构配置，不允许根据单次任务数据量动态切换。小数据量和大数据量的数据交付协议完全一致，差异只在文件大小、Chunk 数、Worker/Batch 参数。
 
@@ -1350,14 +1350,14 @@ importMode = FULL_REPLACE | INCREMENTAL | CLEAR
 
 ### 3.2.3 场景选择矩阵
 
-| 场景 | 外部调用组合 | `instanceDataSourceMode` | `importMode` | 数据交付 |
-|---|---|---|---|---|
-| App 安装/OMS 事件构建本体对象 | OMS → OAG | - | `FULL_REPLACE` | OMS 本体资产 |
-| 首次全量，有 OAC | build → OAC → MinIO → notice → query | `OAC` | `FULL_REPLACE` | MinIO CSV |
-| 人工触发增量更新，有 OAC | build → OAC → MinIO → notice → query | `OAC` | `INCREMENTAL` | MinIO CSV |
-| 定时/事件同步，由业务侧负责 | putObject → notice → query | `BUSINESS_NOTICE` | `INCREMENTAL` | MinIO CSV |
-| 已有全量文件导入/重建 | putObject → notice → query | `BUSINESS_NOTICE` | `FULL_REPLACE` | MinIO CSV |
-| 清理当前本体全量实例索引 | `index-data/notice` → query | - | `CLEAR` | 无需文件；`dataType=INSTANCE_VALUE` |
+| 场景                  | 外部调用组合                               | `instanceDataSourceMode` | `importMode`   | 数据交付                           |
+| ------------------- | ------------------------------------ | ------------------------ | -------------- | ------------------------------ |
+| App 安装/OMS 事件构建本体对象 | OMS → OAG                            | -                        | `FULL_REPLACE` | OMS 本体资产                       |
+| 首次全量，有 OAC          | build → OAC → MinIO → notice → query | `OAC`                    | `FULL_REPLACE` | MinIO CSV                      |
+| 人工触发增量更新，有 OAC      | build → OAC → MinIO → notice → query | `OAC`                    | `INCREMENTAL`  | MinIO CSV                      |
+| 定时/事件同步，由业务侧负责      | putObject → notice → query           | `BUSINESS_NOTICE`        | `INCREMENTAL`  | MinIO CSV                      |
+| 已有全量文件导入/重建         | putObject → notice → query           | `BUSINESS_NOTICE`        | `FULL_REPLACE` | MinIO CSV                      |
+| 清理当前本体全量实例索引        | `index-data/notice` → query          | -                        | `CLEAR`        | 无需文件；`dataType=INSTANCE_VALUE` |
 
 选择规则：首次创建或明确重建使用 `FULL_REPLACE`；只提交变化数据使用 `INCREMENTAL`；需要清空当前本体全部实例值索引时使用 `INSTANCE_VALUE + CLEAR`。不要用 `INCREMENTAL` 模拟首次全量，也不要把日常增量提交为全量替换。
 
@@ -1389,7 +1389,7 @@ OAG开租时默认创建 MinIO桶`onto-retrieval`, 在开租模板中增加MinIO
 dependency:  
   - middleware:  
       serviceInstances:  
-        - bdiminio:  
+        - oagminio:  
             instanceId:  
             serviceBrokerName: middleware-broker  
             plan:  
@@ -1623,7 +1623,7 @@ public static String sha256(InputStream in) throws Exception {
 ```
 
 校验顺序：`HEAD(size) → stream download + SHA-256 → 与 notice.sha256 比较 → 开始 Chunk 导入`。同一个任务恢复时必须再次确认 `objectKey + size + sha256` 未变化。
-
+性能要求：如果SHA-256性能影响较大，则采用MD5进行文件完整性校验。
 
 MinIO 的 `endpoint / accessKey / secretKey` 属于部署配置，不属于业务 API 参数，禁止通过 `index-data/notice` Body 传输。
 
@@ -1816,7 +1816,6 @@ POST
 | `failedCount`        | Integer(int64)    | 失败记录数                                                                              |
 | `skippedCount`       | Integer(int64)    | 去重/过滤记录数                                                                           |
 | `retryCount`         | Integer           | 已执行重试次数                                                                            |
-| `errorCode`          | String            | 兼容主错误码；无错误时为空                                                                      |
 | `errorCodes`         | Array[String]     | 本次执行出现的去重稳定错误码集合；业务重试判断优先使用                                                        |
 | `errorMessage`       | String            | 错误摘要，仅用于展示/定位                                                                      |
 | `fileList`           | Array[String]     | 有 MinIO 文件输入 Task 的全部 objectKey；无文件输入时返回空数组                                        |
@@ -2740,36 +2739,35 @@ T_OAG_INDEX_TASK (N)
 
 任务表继续作为 Task 级事实来源，同时补齐 **稳定错误码集合 + 全量文件列表 + 失败文件列表 + 源文件保留截止时间**。业务侧据此决定是否调用重试接口，OAG 不再持久化或返回服务端布尔重试标记。
 
-| 字段名                    | 类型            | 约束       | 说明                                                      |
-| ---------------------- | ------------- | -------- | ------------------------------------------------------- |
-| `TENANT_ID`            | VARCHAR(256)  | NOT NULL | 租户 ID                                                   |
-| `ONTOLOGY_ID`          | VARCHAR(256)  | NOT NULL | 本体 ID                                                   |
-| `TASK_ID`              | VARCHAR(256)  | PK       | 索引任务 ID                                                 |
-| `REQUEST_ID`           | VARCHAR(256)  | NOT NULL | 调用幂等键                                                   |
-| `DATA_TYPE`            | VARCHAR(64)   | NOT NULL | `SEED_NODE` / `METADATA_ENUM` / `INSTANCE_VALUE`        |
-| `SOURCE_TYPE`          | VARCHAR(32)   | NOT NULL | `OMS` / `OAC` / `MINIO`                                        |
-| `IMPORT_MODE`          | VARCHAR(32)   |          | `FULL_REPLACE` / `INCREMENTAL` / `CLEAR`                          |
-| `STATUS`               | INT           | NOT NULL | 0 构建中；1 成功；2 失败；3 已取消                                   |
-| `STAGE`                | VARCHAR(64)   |          | 当前执行阶段                                                  |
-| `TOTAL_COUNT`          | BIGINT        |          | 总记录数                                                    |
-| `SUCCESS_COUNT`        | BIGINT        |          | 成功记录数                                                   |
-| `FAILED_COUNT`         | BIGINT        |          | 失败记录数                                                   |
-| `SKIPPED_COUNT`        | BIGINT        |          | 去重/过滤记录数                                                |
+| 字段名                    | 类型            | 约束       | 说明                                                           |
+| ---------------------- | ------------- | -------- | ------------------------------------------------------------ |
+| `TENANT_ID`            | VARCHAR(256)  | NOT NULL | 租户 ID                                                        |
+| `ONTOLOGY_ID`          | VARCHAR(256)  | NOT NULL | 本体 ID                                                        |
+| `TASK_ID`              | VARCHAR(256)  | PK       | 索引任务 ID                                                      |
+| `REQUEST_ID`           | VARCHAR(256)  | NOT NULL | 调用幂等键                                                        |
+| `DATA_TYPE`            | VARCHAR(64)   | NOT NULL | `SEED_NODE` / `METADATA_ENUM` / `INSTANCE_VALUE`             |
+| `SOURCE_TYPE`          | VARCHAR(32)   | NOT NULL | `OMS` / `OAC` / `MINIO`                                      |
+| `IMPORT_MODE`          | VARCHAR(32)   |          | `FULL_REPLACE` / `INCREMENTAL` / `CLEAR`                     |
+| `STATUS`               | INT           | NOT NULL | 0 构建中；1 成功；2 失败；3 已取消                                        |
+| `STAGE`                | VARCHAR(64)   |          | 当前执行阶段                                                       |
+| `TOTAL_COUNT`          | BIGINT        |          | 总记录数                                                         |
+| `SUCCESS_COUNT`        | BIGINT        |          | 成功记录数                                                        |
+| `FAILED_COUNT`         | BIGINT        |          | 失败记录数                                                        |
+| `SKIPPED_COUNT`        | BIGINT        |          | 去重/过滤记录数                                                     |
 | `BUCKET_NAME`          | VARCHAR(256)  |          | MinIO Bucket；OMS 任务可空；动态文件任务记录实际 Bucket；同一 Task 只允许一个 Bucket |
-| `OBJECT_PREFIX`        | VARCHAR(1024) |          | MinIO 公共 Object Prefix；OMS 任务可空            |
-| `FILE_LIST`            | TEXT          |          | JSON String Array；当前 Task 的全部 objectKey；有 MinIO 文件输入的任务使用      |
-| `ERR_FILE_LIST`        | TEXT          |          | JSON String Array；本次执行失败或需要重处理的 objectKey               |
-| `FILE_RETENTION_UNTIL` | TIMESTAMP     |          | 源文件硬 TTL 对应的最晚可恢复时间；OMS 可空                         |
-| `CHECKPOINT`           | TEXT          |          | 版本化 JSON Checkpoint；数据库类型统一使用 TEXT |
-| `RETRY_COUNT`          | INT           | NOT NULL | 已执行重试次数，默认 0                                            |
-| `ERROR_CODE`           | VARCHAR(128)  |          | 兼容字段；Task 主错误码/最后一个高优先级错误码                              |
-| `ERROR_CODE_LIST`      | TEXT          |          | JSON String Array；Task 本次执行出现的去重错误码集合，供业务决策             |
-| `ERROR_MESSAGE`        | TEXT          |          | 错误摘要，仅用于展示/定位，不作为业务重试判断依据                               |
-| `CREATE_USER_ACCOUNT`  | VARCHAR(256)  | NOT NULL | 创建者                                                     |
-| `CREATE_TIME`          | TIMESTAMP     | NOT NULL | 创建时间                                                    |
-| `START_TIME`           | TIMESTAMP     |          | 实际开始时间                                                  |
-| `UPDATE_TIME`          | TIMESTAMP     | NOT NULL | 最近状态更新时间                                                |
-| `COMPLETION_TIME`      | TIMESTAMP     |          | 完成时间                                                    |
+| `OBJECT_PREFIX`        | VARCHAR(1024) |          | MinIO 公共 Object Prefix；OMS 任务可空                              |
+| `FILE_LIST`            | TEXT          |          | JSON String Array；当前 Task 的全部 objectKey；有 MinIO 文件输入的任务使用    |
+| `ERR_FILE_LIST`        | TEXT          |          | JSON String Array；本次执行失败或需要重处理的 objectKey                    |
+| `FILE_RETENTION_UNTIL` | TIMESTAMP     |          | 源文件硬 TTL 对应的最晚可恢复时间；OMS 可空                                   |
+| `CHECKPOINT`           | TEXT          |          | 版本化 JSON Checkpoint；数据库类型统一使用 TEXT                           |
+| `RETRY_COUNT`          | INT           | NOT NULL | 已执行重试次数，默认 0                                                 |
+| `ERROR_CODE_LIST`      | TEXT          |          | JSON String Array；Task 本次执行出现的去重错误码集合，供业务决策                  |
+| `ERROR_MESSAGE`        | TEXT          |          | 错误摘要，仅用于展示/定位，不作为业务重试判断依据                                    |
+| `CREATE_USER_ACCOUNT`  | VARCHAR(256)  | NOT NULL | 创建者                                                          |
+| `CREATE_TIME`          | TIMESTAMP     | NOT NULL | 创建时间                                                         |
+| `START_TIME`           | TIMESTAMP     |          | 实际开始时间                                                       |
+| `UPDATE_TIME`          | TIMESTAMP     | NOT NULL | 最近状态更新时间                                                     |
+| `COMPLETION_TIME`      | TIMESTAMP     |          | 完成时间                                                         |
 
 数据库中的 `FILE_LIST / ERR_FILE_LIST / ERROR_CODE_LIST` 使用 `TEXT` 存储 JSON Array，而不是使用文档伪类型 `Array[String]`。API 层统一反序列化为 `Array[String]` 返回：
 
@@ -2782,9 +2780,6 @@ ERROR_CODE_LIST  = ["VECTOR_WRITE_FAILED", "SEARCH_WRITE_FAILED"]
 字段语义：
 
 ```text
-ERROR_CODE
-  → 兼容已有单错误码调用方
-
 ERROR_CODE_LIST
   → 当前执行发现的去重错误码集合
   → 业务侧重试/修复决策优先使用
@@ -3570,11 +3565,11 @@ Values=[
 
 ### 4.1.3 Semantic Unit 检索路由
 
-| Semantic Unit | 输入来源 | 检索对象 | 通道数 | 融合方式 |
-|---|---|---|---:|---|
-| `OBJECT_TYPE` | `ExtractedEntity.ObjectType` | 本体对象索引中的 ObjectType | 2 | 本体定义 2 路 Weighted RRF |
-| `PROPERTY` | `ExtractedEntity.Properties[]` | 当前候选 ObjectType 作用域内的 Property | 2 | 本体定义 2 路 Weighted RRF |
-| `VALUE` | `ExtractedEntity.Values[]` | Enum Value + Instance Value | 4 | 值 4 路 Weighted RRF |
+| Semantic Unit | 输入来源                           | 检索对象                           | 通道数 | 融合方式                  |
+| ------------- | ------------------------------ | ------------------------------ | --: | --------------------- |
+| `OBJECT_TYPE` | `ExtractedEntity.ObjectType`   | 本体对象索引中的 ObjectType            |   2 | 本体定义 2 路 Weighted RRF |
+| `PROPERTY`    | `ExtractedEntity.Properties[]` | 当前候选 ObjectType 作用域内的 Property |   2 | 本体定义 2 路 Weighted RRF |
+| `VALUE`       | `ExtractedEntity.Values[]`     | Enum Value + Instance Value    |   4 | 值 4 路 Weighted RRF    |
 
 因此总体 6 个通道的职责边界为：
 
@@ -3664,51 +3659,6 @@ Instance Value：
   value / synonyms
 ```
 
-初始 Boost 建议：
-
-```text
-name/value        4.0
-synonyms          3.0
-display_*         2.5~3.0
-description_*     1.0~1.5
-```
-
-说明：
-
-1. OpenSearch 的 `_score` 只用于 lexical 通道内部排序，进入 RRF 后只消费 rank；
-2. `fuzziness=AUTO`、`prefix_length`、`max_expansions`、`minimum_should_match` 必须通过离线评测和目标语言调优；
-3. 中文、英文和小语种继续使用第 2 章定义的 Analyzer/多语言字段；
-4. `synonyms` 仍是记录字段，不拆成独立召回通道；
-5. `type / parent_id / property_id / object_type_id` 等结构约束可以使用 keyword filter，但 filter 只用于限定候选域，不构成新的 lexical Ranked List；
-6. 在线语义召回不再设置单独的字符串精确匹配分支，不再形成额外 Ranked List。
-
-#### Property 作用域查询
-
-Property lexical 检索必须使用候选 ObjectType 归属 filter：
-
-```json
-{
-  "query": {
-    "bool": {
-      "filter": [
-        {"term": {"type": "PROPERTY"}},
-        {"term": {"parent_id": "<targetObjectTypeId>"}}
-      ],
-      "must": [
-        {
-          "multi_match": {
-            "query": "客户等级",
-            "fields": ["name^4", "display_*^3", "synonyms^3", "description_*^1.5"],
-            "fuzziness": "AUTO"
-          }
-        }
-      ]
-    }
-  }
-}
-```
-
-这里 `term` 仅作为结构过滤器，不参与关键词召回评分。
 
 ### 4.2.3 GaussVector Dense 检索
 
@@ -3746,18 +3696,18 @@ semanticRetrieval:
     similarityThreshold: 0.6
 
   ontologyObject:
-    lexicalTopK: 10
-    denseTopK: 10
+    lexicalTopK: 3
+    denseTopK: 3
     similarityThreshold: 0.6
 
   enum:
-    lexicalTopK: 10
-    denseTopK: 10
+    lexicalTopK: 3
+    denseTopK: 3
     similarityThreshold: 0.6
 
   instance:
-    lexicalTopK: 5
-    denseTopK: 5
+    lexicalTopK: 3
+    denseTopK: 3
     similarityThreshold: 0.6
 ```
 
@@ -3957,15 +3907,15 @@ rrf:
 
   ontologyDefinition:
     channelWeights:
-      ontologyObjectLexical: 1.3
-      ontologyObjectDense: 1.0
+      ontologyObjectLexical: 0.5
+      ontologyObjectDense: 0.5
 
   value:
     channelWeights:
-      enumLexical: 1.2
-      enumDense: 1.0
-      instanceLexical: 1.0
-      instanceDense: 0.8
+      enumLexical: 0.5
+      enumDense: 0.5
+      instanceLexical: 0.5
+      instanceDense: 0.5
 ```
 
 权重含义：
