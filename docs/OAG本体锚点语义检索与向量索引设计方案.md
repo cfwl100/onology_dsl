@@ -3564,6 +3564,8 @@ Mobile Number
 
 ## 4.2 6 路混合召回与 Retrieval Profile
 
+基于实体提取的结构化结果，采用向标混合检索。
+本体定义采用2路，值采用4路。
 ### 4.2.1 六路检索通道
 
 每个 Semantic Unit 同时进入三类数据、两种检索方式，共 **6 条 Ranked List**：
