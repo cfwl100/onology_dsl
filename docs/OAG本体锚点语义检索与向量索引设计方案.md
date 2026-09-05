@@ -4111,7 +4111,7 @@ seedNodes[]
 }
 ```
 
-内部仍保留每个候选的 `rrfScore / channelHits / supporting_hits / matched_field / matched_value`，供第 5 章 LLM Fine Rank 使用。
+`rrfScore / channelHits / supporting_hits / matched_field / matched_value` 仅属于召回与粗排阶段内部信息，可用于阶段内排序、调试和可观测性；形成精排输入 `extracted_entities` 后不再向 LLM 传递。
 
 ### 4.5.4 排序与异常规则
 
@@ -4234,7 +4234,7 @@ Value-only
 
 1. 不根据编码形态猜 Site/BaseStation/nativeId；
 2. Enum/Instance 不是 Core Graph 顶点，图规划时投影到真实 Property/ObjectType；
-3. `value / matched_field / matched_value / supporting_hits` 必须一直保留到第 5 章 LLM Fine Rank；
+3. Value Linking 在当前阶段完成真实 `value / property_id / object_type_id` 归属解析；`matched_field / matched_value / supporting_hits` 不向 LLM 精排阶段传递；
 4. 同一个业务 Value 可在不同 Property 下存在，不能仅按 value 文本全局去重；
 5. value-only 的候选域更大，应使用更严格的 TopK、候选上限和超时保护。
 
@@ -4317,18 +4317,18 @@ Entity #2（value-only）
 
 ## 4.8 本章输出与第 5 章衔接
 
-本章输出是可供 LLM Fine Rank 使用的**真实候选集合 + 归属 + 多通道证据**，不是最终检索结果。
+本章输出给 LLM Fine Rank 的是**真实候选集合 + ObjectType / Property 归属结构**，不是最终检索结果。Keyword/Dense/RRF 的多通道证据在本章内部完成消费，不继续传递到精排 Prompt。
 
 ```text
 ObjectType / Property
   → 本体定义 2 路 RRF
-  → seedNodes[].targetObjectTypes[].propertyLinks[]
-  → rrfScore + channelHits + supporting_hits
+  → 形成结构化候选
+  → 精排输入仅保留 sourceObjectType / targetObjectTypes / propertyLinks / targetProperties 及候选 id/name/score
 
 Enum / Instance Value
   → 值 4 路 RRF
-  → valueType + actual value + property_id + object_type_id
-  → rrfScore + matched_field + matched_value + supporting_hits
+  → 完成 actual value + property_id + object_type_id 的确定性归属解析
+  → 不把 lexical/dense supporting evidence 传给精排 LLM
 ```
 
 核心约束：
@@ -4337,9 +4337,9 @@ Enum / Instance Value
 2. OBJECT_TYPE / PROPERTY 只使用本体定义 2 路融合；
 3. VALUE 只使用 Enum/Instance 4 路融合；
 4. Property 必须在每个候选 ObjectType 作用域内独立召回和排序；
-5. Enum/Instance 按真实 `Property + ObjectType` 归属聚合，具体 value 证据不能在投影时丢失；
-6. `matched_field / matched_value` 必须保留到 LLM Fine Rank；
-7. RRF 只融合各通道 rank，不直接比较 OpenSearch `_score` 与 cosine 原始分数；
+5. Enum/Instance 按真实 `Property + ObjectType` 归属聚合，确定性的 `value / property_id / object_type_id` 由程序侧继续用于结果投影；
+6. `rrfScore / channelHits / supporting_hits / matched_field / matched_value` 在召回/粗排阶段结束后停止向下传递，不进入 LLM Fine Rank Prompt；
+7. RRF 只融合各通道 rank，不直接比较 OpenSearch `_score` 与 cosine 原始分数；其融合结果用于产生候选顺序/score，原始通道证据不再向精排传递；
 8. LLM 只能从真实候选中选择，不能生成新的 ObjectType/Property/Value ID；
 9. Relationship 不在本章直接 Entity Linking，由后续图规划结合 `searchContext.search_path` 和 Graph Hint 处理。
 
