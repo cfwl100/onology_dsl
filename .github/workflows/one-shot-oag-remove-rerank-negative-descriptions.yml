@@ -1,0 +1,66 @@
+name: one-shot-oag-remove-rerank-negative-descriptions
+on:
+  push:
+    branches:
+      - docs/oag-ch5-llm-seed-rerank-prompt
+    paths:
+      - .github/workflows/one-shot-oag-remove-rerank-negative-descriptions.yml
+permissions:
+  contents: write
+jobs:
+  update-doc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: docs/oag-ch5-llm-seed-rerank-prompt
+      - name: Remove redundant negative descriptions
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('docs/OAG本体锚点语义检索与向量索引设计方案.md')
+          text = p.read_text(encoding='utf-8')
+
+          block1 = '''精排 Prompt **不接收**以下上下文：
+
+```text
+skill_context
+Graph Hint
+Value Supporting Evidence
+rrfScore
+channelHits
+supporting_hits
+matched_field
+matched_value
+```
+
+这些内容不属于当前精排模型输入协议，LLM 不应依赖未传递的信息进行判断。
+
+'''
+          block2 = '''LLM 不负责：
+
+```text
+创造新 ID
+重新打分
+重新做 RRF
+重新做 OpenSearch / GaussVector 检索
+调用图算法
+生成 nGQL / Cypher / OQL
+```
+
+'''
+
+          assert text.count(block1) == 1, f'block1 count={text.count(block1)}'
+          assert text.count(block2) == 1, f'block2 count={text.count(block2)}'
+          text = text.replace(block1, '')
+          text = text.replace(block2, '')
+          p.write_text(text, encoding='utf-8')
+          PY
+          rm -f .github/workflows/one-shot-oag-remove-rerank-negative-descriptions.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/OAG本体锚点语义检索与向量索引设计方案.md .github/workflows/one-shot-oag-remove-rerank-negative-descriptions.yml
+          git diff --cached --quiet && exit 0
+          git commit -m "docs: simplify rerank design descriptions"
+          git push
