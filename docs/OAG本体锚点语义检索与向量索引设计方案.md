@@ -4195,14 +4195,9 @@ Value Linking Candidates
 最终候选补齐：
 
 ```text
-valueType = ENUM_VALUE | INSTANCE_VALUE
 actual value
 property_id
 object_type_id
-matched_field
-matched_value
-supporting_hits
-rrfScore
 ```
 
 其中 `actual value` 来自真实索引 `value`，不在 OAG 内维护第二套 canonical 字典。
@@ -4291,21 +4286,6 @@ Value-only
 3. `value / matched_field / matched_value / supporting_hits` 必须一直保留到第 5 章 LLM Fine Rank；
 4. 同一个业务 Value 可在不同 Property 下存在，不能仅按 value 文本全局去重；
 5. value-only 的候选域更大，应使用更严格的 TopK、候选上限和超时保护。
-
-### 4.6.4 Enum 与 Instance 的冲突处理
-
-同一 VALUE Semantic Unit 可能同时命中 Enum 与 Instance。粗排阶段不提前强行二选一：
-
-```text
-Enum evidence
-+ Instance evidence
-→ 按真实 Property/ObjectType 归属聚合
-→ 4 路 RRF
-→ 保留 recordType 和 supporting_hits
-→ 第 5 章 LLM 结合 Query / Property Hint / Graph Hint 选择最终 0/1/N
-```
-
-如果 Enum 与 Instance 命中同一 Property，两个 recordType 的具体命中仍保留在 supporting_hits 中；如果命中不同 Property，则形成不同候选组分别进入 RRF 排序。
 
 ---
 
@@ -4470,13 +4450,9 @@ semanticExtensions
 {
   "retrievalResults": [
     {
-      "semanticUnitId": "u2",
-      "recordType": "ENUM_VALUE",
       "objectTypeId": "obj:alarm:Alarm",
       "propertyId": "prop:alarm:severity",
       "value": "CRITICAL",
-      "matchedField": "synonyms",
-      "matchedValue": "严重"
     }
   ],
   "semanticExtensions": {
@@ -4494,11 +4470,8 @@ LLM 精排后形成：
 ```text
 SelectedCandidate
   objectTypeId
-  propertyId?
-  recordType
-  value?
-  supportingHits[]
-  confidence
+  propertyId
+  value
 ```
 
 随后由 SeedNodeProjector 进行图顶点投影。
@@ -4536,16 +4509,6 @@ ENUM_VALUE
 INSTANCE_VALUE
 ```
 
-Synonym 不再是独立 `type`。当用户命中 synonym 时，结果仍返回所属记录，同时：
-
-```text
-matched_field = synonyms
-matched_value = 实际同义词
-```
-
-LLM 不创造新的 `id/value/synonyms`，只能从候选中选择。
-
-
 ### 5.2 为什么精排必须使用原始问题
 
 例如 Semantic Unit=`发生时间` 可能命中多个 Property；只有结合“查询站点上影响业务的活跃告警首次发生时间”才能判断应选择 `firstoccurrence`。因此不能只使用拆词或局部向量相似度。
@@ -4553,7 +4516,7 @@ LLM 不创造新的 `id/value/synonyms`，只能从候选中选择。
 
 ### 5.3 Rerank Context
 
-`RerankContextBuilder` 将 4.5 的嵌套 Entity Linking 结果与内部保留的 `rrfScore/channelHits/supportingHits` 合并为 LLM 输入。每个 Property Group 必须携带已经确定的 `objectType`，不得在此阶段丢失 ObjectType 作用域。以下 `groups` 是内部精排视图，不替代 4.5 对外输出的 `seedNodes[].targetObjectTypes[].propertyLinks[]`。
+`RerankContextBuilder` 将 4.5 的嵌套 Entity Linking 结果为 LLM 输入。每个 Property Group 必须携带已经确定的 `objectType`，不得在此阶段丢失 ObjectType 作用域。以下 `groups` 是内部精排视图，不替代 4.5 对外输出的 `seedNodes[].targetObjectTypes[].propertyLinks[]`。
 
 ```json
 {
@@ -4569,22 +4532,6 @@ LLM 不创造新的 `id/value/synonyms`，只能从候选中选择。
       "objectType": {
         "id": "vehicle-object-id",
         "name": "Vehicle"
-      },
-      "rrf_score": 0.071,
-      "supporting_hits": [
-        {
-          "propertyId": "prop:ont:vehicle:sp:bodyColor",
-          "objectTypeId": "vehicle-object-id",
-          "type": "ENUM_VALUE",
-          "value": "red",
-          "name": "red",
-          "matched_field": "synonyms",
-          "matched_value": "红色"
-        }
-      ],
-      "graph_hint": {
-        "neighbor_object_types": [],
-        "relation_names": []
       }
     }
   ]
@@ -4604,14 +4551,12 @@ Rules:
 1. 只能选择输入候选中真实存在的记录；本体对象按 `id` 识别，Enum/Instance 按 `objectTypeId + propertyid + value` 识别。
 2. 必须结合原始问题，而不是只看相似度。
 3. Enum Value / Instance Value 必须结合 `propertyid + objectTypeId` 判断本体归属。
-4. synonym 命中时保留 matched_field/matched_value，不创建 synonym 独立记录。
-5. Exact/BM25/Dense/RRF 分数只是证据。
-6. 必须考虑不同 Semantic Unit 的上下文一致性。
-7. 每个 Unit 可以返回 0/1/N。
-8. 无匹配允许 no_match=true。
-9. 不创造不存在的本体对象 id、propertyid、objectTypeId 或 value。
-10. 仅输出简短 reason，不输出详细思维过程。
-11. 严格输出 JSON Schema。
+4. 必须考虑不同 Semantic Unit 的上下文一致性。
+5. 每个 Unit 可以返回 0/1/N。
+6. 无匹配允许 no_match=true。
+7. 不创造不存在的本体对象 id、propertyid、objectTypeId 或 value。
+8. 仅输出简短 reason，不输出详细思维过程。
+9. 严格输出 JSON Schema。
 ```
 
 
@@ -4626,19 +4571,11 @@ Rules:
         {
           "propertyId": "prop:ont:vehicle:sp:bodyColor",
           "objectTypeId": "vehicle-object-id",
-          "type": "ENUM_VALUE",
           "value": "red",
-          "name": "red",
-          "matched_field": "synonyms",
-          "matched_value": "红色",
-          "rerank_score": 0.97,
-          "reason": "与用户的红色车辆条件一致"
         }
-      ],
-      "no_match": false
+      ]
     }
-  ],
-  "unresolved_units": []
+  ]
 }
 ```
 
@@ -4683,23 +4620,14 @@ Synonym 本身可以成为 `matched_value`，但不作为独立物理记录或�
 如果最终选中 Enum Value，必须返回：
 
 ```text
-id
 value
-name
-display/description（按需）
-synonyms（按需）
-matched_field
-matched_value
 Property + ObjectType
 ```
 
 例如用户输入“红色”，可以得到：
 
 ```text
-id = ei...red8.1
 value = red
-matched_field = synonyms
-matched_value = 红色
 Property = Vehicle.bodyColor
 ```
 
@@ -4733,22 +4661,7 @@ extension:
     {
       "propertyId": "prop:ont:vehicle:sp:bodyColor",
       "objectTypeId": "vehicle-object-id",
-      "type": "ENUM_VALUE",
-      "value": "red",
-      "name": "red",
-      "matched_field": "synonyms",
-      "matched_value": "红色",
-      "objectType": {
-        "id": "vehicle-object-id",
-        "name": "Vehicle"
-      },
-      "property": {
-        "id": "prop:ont:vehicle:sp:bodyColor",
-        "name": "bodyColor"
-      },
-      "source": "METADATA",
-      "rrf_score": 0.071,
-      "rerank_score": 0.97
+      "value": "red"
     }
   ]
 }
@@ -4765,27 +4678,14 @@ extension:
 {
   "message_type": "message_ontology_subgraph",
   "content": {
-    "retrievalResults": [],
     "seedNodes": [],
     "nodes": [],
     "edges": [],
     "semanticExtensions": {
      
     },
-    "capabilityExtensions": {
-      "functions": [],
-      "actions": []
-    },
-    "metadata": {
-      "retrievalMode": "hybrid",
-      "rerankStatus": "SUCCESS",
-      "graphStrategy": "minimal",
-      "graphAlgorithm": "metric_closure_mst",
-      "connected": true,
-      "truncated": false,
-      "unresolvedSemanticUnits": [],
-      "unconnectedSeedNodeIds": []
-    }
+    "functions": [],
+    "actions": []
   }
 }
 ```
@@ -5102,7 +5002,6 @@ SemanticExtensions
 └── valueMappings[]
     ├── sourceValue
     ├── canonicalValue
-    ├── valueType
     ├── objectType { id, name }
     ├── property   { id, name }
 ```
@@ -5112,7 +5011,6 @@ SemanticExtensions
 | `valueMappings`  | Array     |   ✔ | 无最终 Enum/Instance 命中时为空数组                                 |
 | `sourceValue`    | String    |   ✔ | 用户问题/ExtractedEntity 中的原始值                                |
 | `canonicalValue` | String    |   ✔ | Entity Linking 确认的真实标准值；直接来自最终 `retrievalResults[].value` |
-| `valueType`      | String    |   ✔ | ENUM_VALUE / INSTANCE_VALUE                               |
 | `objectType`     | ObjectRef |   ✔ | `{id,name}`，值所属 ObjectType                                |
 | `property`       | ObjectRef |   ✔ | `{id,name}`，值所属 Property                                  |
 
@@ -5193,10 +5091,8 @@ canonicalValue + property + objectType
     "semanticExtensions": {
       "valueMappings": [
         {
-          "semanticUnitId": "u1",
           "sourceValue": "12JKS0885_IN_RSNM_KALIBATA3_MC",
           "canonicalValue": "12JKS0885_IN_RSNM_KALIBATA3_MC",
-          "valueType": "INSTANCE_VALUE",
           "objectType": {
             "id": "obj:site:Site",
             "name": "Site"
@@ -5205,16 +5101,10 @@ canonicalValue + property + objectType
             "id": "prop:site:nativeId",
             "name": "nativeId"
           },
-          "matchedField": "value",
-          "matchedValue": "12JKS0885_IN_RSNM_KALIBATA3_MC",
-          "matchedBy": "EXACT",
-          "confidence": 1.0
         },
         {
-          "semanticUnitId": "u2",
           "sourceValue": "严重",
           "canonicalValue": "CRITICAL",
-          "valueType": "ENUM_VALUE",
           "objectType": {
             "id": "obj:alarm:Alarm",
             "name": "Alarm"
@@ -5222,11 +5112,7 @@ canonicalValue + property + objectType
           "property": {
             "id": "prop:alarm:severity",
             "name": "severity"
-          },
-          "matchedField": "synonyms",
-          "matchedValue": "严重",
-          "matchedBy": "SYNONYM",
-          "confidence": 0.99
+          }
         }
       ]
     }
@@ -5262,8 +5148,6 @@ capabilityExtensions
 
 ---
 
----
-
 ## 6.1 详细设计与实现
 
 ---
@@ -5272,11 +5156,11 @@ capabilityExtensions
 
 `SeedNodeProjector` 只处理四类最终记录：
 
-| 最终结果类型 | 投影出的本体对象 |
-|---|---|
-| ObjectType | 当前 `id` |
-| Property | 当前 `id` |
-| Enum Value | `propertyid` 对应 Property；`objectTypeId` 为父 ObjectType |
+| 最终结果类型         | 投影出的本体对象                                              |
+| -------------- | ----------------------------------------------------- |
+| ObjectType     | 当前 `id`                                               |
+| Property       | 当前 `id`                                               |
+| Enum Value     | `propertyid` 对应 Property；`objectTypeId` 为父 ObjectType |
 | Instance Value | `propertyid` 对应 Property；`objectTypeId` 为父 ObjectType |
 
 Synonym 不是独立结果类型：如果用户命中 `synonyms`，记录仍按所属 ObjectType/Property/Enum Value 的规则投影。
@@ -7005,7 +6889,5 @@ SeedNodeProjector
 ### 7.12 一句话总结
 
 > **OAG 使用三张稳定索引表承载本体对象、Enum Value 和 Instance Value：本体对象使用 `id`，Enum/Instance 使用 `propertyid + objectTypeId + value`；ObjectType/Property 及 Enum Value 的 Synonym 在 OMS 中保留最多三个非固定 language key，进入 OAG 后统一平铺为 LF 分隔的 `synonyms` String；中文/英文之外最多再支持两个 display/description 语言槽位；Seed/Enum/Instance 向量均可包含平铺 synonyms，其中 Instance 以 value 为首行主语义且不拼接 Property/ObjectType/description。查询阶段对三类数据执行 6 路一次 Weighted RRF，Enum/Instance 按 `propertyid` 归并到 Property 本体对象，保留 `matched_field/matched_value` 后进行 LLM 精排，再构建本体子图。**
-
----
 
 ---
