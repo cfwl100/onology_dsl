@@ -379,7 +379,7 @@ Normalize + Synonym Flatten + Dedup
         ↓
 ┌──────────────────────────┬──────────────────────────┐
 │ EmbeddingInputBuilder    │ LexicalDocumentBuilder   │
-│ BGE-M3 / 1024 dim        │ Exact / BM25             │
+│ BGE-M3 / 1024 dim        │ BM25                     │
 └────────────┬─────────────┴─────────────┬────────────┘
              ↓                           ↓
         GaussVector                 OpenSearch
@@ -535,86 +535,6 @@ trim
 重新 LF join
 ```
 
-### 2.2.4 OpenSearch `synonyms` 公共 Analyzer
-
-ObjectType / Property / Enum / Instance 的 `synonyms` 统一使用“整行 Exact + 普通 BM25”双模式：
-
-```yaml
-analysis:
-  tokenizer:
-    synonym_line_tokenizer:
-      type: pattern
-      pattern: '\\n+'
-  analyzer:
-    synonym_line_analyzer:
-      type: custom
-      tokenizer: synonym_line_tokenizer
-      filter: [lowercase, asciifolding]
-```
-
-字段映射：
-
-```yaml
-synonyms:
-  type: text
-  analyzer: synonym_line_analyzer
-  search_analyzer: synonym_line_analyzer
-  fields:
-    bm25:
-      type: text
-      analyzer: standard
-```
-
-语义：
-
-```text
-synonyms 主字段
-  → 一个 LF 行作为一个完整 synonym token
-  → 用于 synonym line-exact
-
-synonyms.bm25
-  → 普通全文 Analyzer
-  → 用于 synonym BM25
-```
-
-Synonym 命中统一保留：
-
-```text
-matched_field = synonyms
-matched_value = 实际命中的 synonym 行
-```
-
-Exact 可直接定位命中行；BM25 命中由 `SynonymMatchResolver` 对原始 `synonyms` 做 LF split，再使用与检索一致的 normalizer 选择最匹配的 `matched_value`，不执行 JSON 反序列化。
-
-### 2.2.5 `language_hint` 与语言检索规则
-
-Query Understanding 可以输出：
-
-```text
-language_hint = BCP 47 language tag / mixed / und
-```
-
-使用规则：
-
-```text
-display / description
-  → 可根据 language_hint 选择 Analyzer 或 Boost
-
-synonyms
-  → 不按 language_hint 硬过滤
-  → 不做 synonyms.<language> Boost
-
-Dense
-  → 不按 language_hint 硬过滤
-
-LLM Rerank
-  → 始终看到原始 Query 与全部候选
-```
-
-由于 OAG `synonyms` 已经平铺，线上不能从字段名反推出 synonym 的源语言；需要语言级统计时，应使用 OMS SynonymType 或离线标注数据。
-
----
-
 ## 2.3 本体对象索引：ObjectType / Property
 
 本体对象使用同一张物理表，通过 `type` 区分 ObjectType 和 Property。
@@ -625,22 +545,22 @@ LLM Rerank
 t_oag_{ontology_id}
 ```
 
-| 字段 | GaussVector 类型 | OpenSearch 类型 | 非空 | 说明 |
-|---|---|---|---:|---|
-| `vector` | `DOUBLE[]` | - | ✔ | BGE-M3 1024 维向量，仅 GaussVector 保存 |
-| `type` | `INT` | `integer` |  | 0 ObjectType；1 Property |
-| `id` | `VARCHAR(256 CHAR)` | `keyword` | ✔ | ObjectType / Property 全局唯一 ID，也是业务键 |
-| `parent_id` | `VARCHAR(256 CHAR)` | `keyword` |  | Property 所属 ObjectType.id；ObjectType 可空 |
-| `name` | `VARCHAR(256 CHAR)` | `keyword + text` |  | 本体真实名称，支持 Exact / BM25 |
-| `display_zh` | `VARCHAR(512 CHAR)` | `keyword + text` |  | 中文显示名 |
-| `display_en` | `VARCHAR(512 CHAR)` | `keyword + text` |  | 英文显示名 |
-| `display_lang_1` | `VARCHAR(512 CHAR)` | `keyword + text` |  | 第 1 个额外语言显示名 |
-| `display_lang_2` | `VARCHAR(512 CHAR)` | `keyword + text` |  | 第 2 个额外语言显示名 |
-| `description_zh` | `VARCHAR(1024 CHAR)` | `text` |  | 中文描述 |
-| `description_en` | `VARCHAR(1024 CHAR)` | `text` |  | 英文描述 |
-| `description_lang_1` | `VARCHAR(1024 CHAR)` | `text` |  | 第 1 个额外语言描述 |
-| `description_lang_2` | `VARCHAR(1024 CHAR)` | `text` |  | 第 2 个额外语言描述 |
-| `synonyms` | `TEXT` | `text multi-field` |  | LF 分隔同义词；主字段 Exact，`.bm25` 全文检索 |
+| 字段                   | GaussVector 类型       | OpenSearch 类型      |  非空 | 说明                                      |
+| -------------------- | -------------------- | ------------------ | --: | --------------------------------------- |
+| `vector`             | `DOUBLE[]`           | -                  |   ✔ | BGE-M3 1024 维向量，仅 GaussVector 保存        |
+| `type`               | `INT`                | `integer`          |     | 0 ObjectType；1 Property                 |
+| `id`                 | `VARCHAR(256 CHAR)`  | `keyword`          |   ✔ | ObjectType / Property 全局唯一 ID，也是业务键     |
+| `parent_id`          | `VARCHAR(256 CHAR)`  | `keyword`          |     | Property 所属 ObjectType.id；ObjectType 可空 |
+| `name`               | `VARCHAR(256 CHAR)`  | `keyword + text`   |     | 本体真实名称，支持 Exact / BM25                  |
+| `display_zh`         | `VARCHAR(512 CHAR)`  | `keyword + text`   |     | 中文显示名                                   |
+| `display_en`         | `VARCHAR(512 CHAR)`  | `keyword + text`   |     | 英文显示名                                   |
+| `display_lang_1`     | `VARCHAR(512 CHAR)`  | `keyword + text`   |     | 第 1 个额外语言显示名                            |
+| `display_lang_2`     | `VARCHAR(512 CHAR)`  | `keyword + text`   |     | 第 2 个额外语言显示名                            |
+| `description_zh`     | `VARCHAR(1024 CHAR)` | `text`             |     | 中文描述                                    |
+| `description_en`     | `VARCHAR(1024 CHAR)` | `text`             |     | 英文描述                                    |
+| `description_lang_1` | `VARCHAR(1024 CHAR)` | `text`             |     | 第 1 个额外语言描述                             |
+| `description_lang_2` | `VARCHAR(1024 CHAR)` | `text`             |     | 第 2 个额外语言描述                             |
+| `synonyms`           | `TEXT`               | `text multi-field` |     | LF 分隔同义词；主字段 Exact，`.bm25` 全文检索         |
 
 Schema 必须逐语言列展开，不使用 `display_zh/en/lang_1/lang_2` 或 `description_zh/en/lang_1/lang_2` 这种合并字段定义。
 
@@ -757,21 +677,21 @@ Property.referenceEnumId
 t_oag_enum_{ontology_id}
 ```
 
-| 字段 | GaussVector 类型 | OpenSearch 类型 | 非空 | 说明 |
-|---|---|---|---:|---|
-| `vector` | `DOUBLE[]` | - | ✔ | Enum Value 1024 维向量，仅 GaussVector 保存 |
-| `value` | `VARCHAR(4096 CHAR)` | `keyword + text` |  | 真实标准枚举值，是权威过滤值 |
-| `property_id` | `VARCHAR(512 CHAR)` | `keyword` | ✔ | 引用该 Enum 的 Property.id |
-| `object_type_id` | `VARCHAR(256 CHAR)` | `keyword` |  | Property 所属 ObjectType.id |
-| `display_zh` | `VARCHAR(512 CHAR)` | `keyword + text` |  | 中文 display |
-| `display_en` | `VARCHAR(512 CHAR)` | `keyword + text` |  | 英文 display |
-| `display_lang_1` | `VARCHAR(512 CHAR)` | `keyword + text` |  | 第 1 个额外语言 display |
-| `display_lang_2` | `VARCHAR(512 CHAR)` | `keyword + text` |  | 第 2 个额外语言 display |
-| `description_zh` | `TEXT` | `text` |  | 中文 description |
-| `description_en` | `TEXT` | `text` |  | 英文 description |
-| `description_lang_1` | `TEXT` | `text` |  | 第 1 个额外语言 description |
-| `description_lang_2` | `TEXT` | `text` |  | 第 2 个额外语言 description |
-| `synonyms` | `TEXT` | `text multi-field` |  | LF 分隔的 Enum Value 同义词 |
+| 字段                   | GaussVector 类型       | OpenSearch 类型      |  非空 | 说明                                   |
+| -------------------- | -------------------- | ------------------ | --: | ------------------------------------ |
+| `vector`             | `DOUBLE[]`           | -                  |   ✔ | Enum Value 1024 维向量，仅 GaussVector 保存 |
+| `value`              | `VARCHAR(4096 CHAR)` | `keyword + text`   |     | 真实标准枚举值，是权威过滤值                       |
+| `property_id`        | `VARCHAR(512 CHAR)`  | `keyword`          |   ✔ | 引用该 Enum 的 Property.id               |
+| `object_type_id`     | `VARCHAR(256 CHAR)`  | `keyword`          |     | Property 所属 ObjectType.id            |
+| `display_zh`         | `VARCHAR(512 CHAR)`  | `keyword + text`   |     | 中文 display                           |
+| `display_en`         | `VARCHAR(512 CHAR)`  | `keyword + text`   |     | 英文 display                           |
+| `display_lang_1`     | `VARCHAR(512 CHAR)`  | `keyword + text`   |     | 第 1 个额外语言 display                    |
+| `display_lang_2`     | `VARCHAR(512 CHAR)`  | `keyword + text`   |     | 第 2 个额外语言 display                    |
+| `description_zh`     | `TEXT`               | `text`             |     | 中文 description                       |
+| `description_en`     | `TEXT`               | `text`             |     | 英文 description                       |
+| `description_lang_1` | `TEXT`               | `text`             |     | 第 1 个额外语言 description                |
+| `description_lang_2` | `TEXT`               | `text`             |     | 第 2 个额外语言 description                |
+| `synonyms`           | `TEXT`               | `text multi-field` |     | LF 分隔的 Enum Value 同义词                |
 
 业务唯一键：
 
@@ -889,13 +809,13 @@ Instance 索引保存去重后的真实业务列值及其内嵌同义词，不�
 t_oag_instance_{ontology_id}
 ```
 
-| 字段 | GaussVector 类型 | OpenSearch 类型 | 非空 | 说明 |
-|---|---|---|---:|---|
-| `vector` | `DOUBLE[]` | - | ✔ | Instance Value 1024 维向量，仅 GaussVector 保存 |
-| `value` | `VARCHAR(4096 CHAR)` | `keyword + text` | ✔ | 去重后的真实标准列值，是权威过滤值 |
-| `synonyms` | `TEXT` | `text multi-field` |  | 实例值同义词，LF 分隔；用于召回与解释 |
-| `property_id` | `VARCHAR(512 CHAR)` | `keyword` | ✔ | 所属 Property.id |
-| `object_type_id` | `VARCHAR(256 CHAR)` | `keyword` |  | Property 所属 ObjectType.id |
+| 字段               | GaussVector 类型       | OpenSearch 类型      |  非空 | 说明                                       |
+| ---------------- | -------------------- | ------------------ | --: | ---------------------------------------- |
+| `vector`         | `DOUBLE[]`           | -                  |   ✔ | Instance Value 1024 维向量，仅 GaussVector 保存 |
+| `value`          | `VARCHAR(4096 CHAR)` | `keyword + text`   |   ✔ | 去重后的真实标准列值，是权威过滤值                        |
+| `synonyms`       | `TEXT`               | `text multi-field` |     | 实例值同义词，LF 分隔；用于召回与解释                     |
+| `property_id`    | `VARCHAR(512 CHAR)`  | `keyword`          |   ✔ | 所属 Property.id                           |
+| `object_type_id` | `VARCHAR(256 CHAR)`  | `keyword`          |     | Property 所属 ObjectType.id                |
 
 业务唯一键：
 
@@ -924,14 +844,12 @@ Instance Dense 只使用真实值及其同义词：
 
 ### 2.5.3 全文索引内容和规则
 
-OpenSearch 检索字段：
+检索基于向标检索策略，OpenSearch 检索字段：
 
 ```text
 Exact / Filter:
   property_id
   object_type_id
-  value.keyword
-  synonyms
 
 BM25:
   value
@@ -950,12 +868,10 @@ value exact
 命中 synonym 时统一返回：
 
 ```text
-matched_field = synonyms
-matched_value = 实际命中的实例同义词
 value         = 真实标准实例值
+property_id
+object_type_id
 ```
-
-下游过滤条件和 `semanticExtensions.valueMappings[].canonicalValue` 始终使用 `value`，不能使用 synonym 作为真实过滤值。
 
 ### 2.5.4 索引存储具体实现
 
@@ -1194,11 +1110,11 @@ Enum / Instance 作为最终语义证据和 ValueMapping 来源保留，但不�
 
 ### 2.6.4 存储选型汇总
 
-| 类型 | Dense 主内容 | Lexical 主内容 | GaussVector ANN | 主要过滤字段 |
-|---|---|---|---|---|
-| 本体对象 | name + display + description + synonyms | id/name/display/description/synonyms | `GsIVFFLAT + COSINE` | `type / parent_id` |
-| Enum Value | value + display + description + synonyms | value/display/description/synonyms | `GsIVFFLAT + COSINE` | `object_type_id / property_id` |
-| Instance Value | value + synonyms | value/synonyms | 中小规模 `GsIVFFLAT`；千万/亿级 `GsDiskANN` | `object_type_id / property_id` |
+| 类型             | Dense 主内容                                | Lexical 主内容                        | GaussVector ANN                    | 主要过滤字段                         |
+| -------------- | ---------------------------------------- | ---------------------------------- | ---------------------------------- | ------------------------------ |
+| 本体对象           | name + display + description + synonyms  | name/display/description/synonyms  | `GsIVFFLAT + COSINE`               | `type /id / parent_id`         |
+| Enum Value     | value + display + description + synonyms | value/display/description/synonyms | `GsIVFFLAT + COSINE`               | `object_type_id / property_id` |
+| Instance Value | value + synonyms                         | value/synonyms                     | 中小规模 `GsIVFFLAT`；千万/亿级 `GsDiskANN` | `object_type_id / property_id` |
 
 ### 2.6.5 关键注意事项
 
@@ -1447,6 +1363,32 @@ finalIndexRows
 
 实际 Embedding 和存储规模以 `uniqueValues / finalIndexRows` 为准。
 
+### 3.2.5 OAG开租和MinIO桶创建
+
+OAG开租时默认创建 MinIO桶`onto-retrieval`, 在开租模板中增加MinIO开租的broker声明，样例如下：
+
+```
+dependency:  
+  - middleware:  
+      serviceInstances:  
+        - bdiminio:  
+            instanceId:  
+            serviceBrokerName: middleware-broker  
+            plan:  
+              serviceId: minio  
+              planId: all  
+              description:  
+              labels:  
+                oag: oag  
+              parameters:  
+                labels:  
+                  instanceName: {minio_name}  
+                bucket: onto-retrieval
+                storage: 10gb
+```
+
+ DataSync 将索引原始数据文件csv传到上述的桶中。DataSync访问minio走LB，LB使用浮动地址访问。
+ 
 ---
 
 ## 3.3 对外接口与任务操作契约
@@ -1522,7 +1464,6 @@ ontologyId + requestId
 ```
 
 ---
-
 
 当前索引管理接口清单：
 
@@ -2684,11 +2625,11 @@ index-data/notice.files[]
 
 职责如下：
 
-| 角色 | 职责 |
-|---|---|
-| OAC / DataSync / 业务系统 | 上传源 CSV；任务终态后根据业务重试、审计和留存要求决定是否提前删除源文件 |
-| OAG | 只读消费源 CSV；记录 `FILE_LIST / ERR_FILE_LIST / FILE_RETENTION_UNTIL`；不主动删除生产者源文件 |
-| MinIO / 平台 | 对 OAG 导入 Bucket/Prefix 配置 Lifecycle，作为最大保留期限的硬兜底 |
+| 角色                    | 职责                                                                          |
+| --------------------- | --------------------------------------------------------------------------- |
+| OAC / DataSync / 业务系统 | 上传源 CSV；任务终态后根据业务重试、审计和留存要求决定是否提前删除源文件                                      |
+| OAG                   | 只读消费源 CSV；记录 `FILE_LIST / ERR_FILE_LIST / FILE_RETENTION_UNTIL`；不主动删除生产者源文件 |
+| MinIO / 平台            | 对 OAG 导入 Bucket/Prefix 配置 Lifecycle，作为最大保留期限的硬兜底                            |
 
 推荐策略：
 
@@ -3509,6 +3450,33 @@ Values[]
 ```
 
 其中 `Values` 统一承载需要语义定位的值，不在 NER 阶段区分 Enum/Instance：
+采用使用如下格式：
+```
+{
+  "extractedEntities": [
+    {
+      "ObjectType": "字符串",
+      "Properties": ["属性1", "属性2"],
+      "Values": [
+        {
+          "Property": "属性1",
+          "Value": "用户原始业务值"
+        },
+        {
+          "Value": "归属暂不确定的业务值"
+        }
+      ]
+    },
+    {
+      "Values": [
+        {
+          "Value": "完全无法确定 ObjectType/Property 归属的业务值"
+        }
+      ]
+    }
+  ]
+}
+```
 
 ```json
 {
@@ -3603,10 +3571,10 @@ Mobile Number
 本节逻辑数据类型统一使用 **本体对象 / 枚举元素 / 实例元素**。RRF 新配置名推荐 `ontologyObject* / enum* / instance*`；历史实现若仍读取 `seed* / metadata* / instance*`，只在配置兼容层做别名映射，业务语义和文档不再混用。
 
 | 数据类型 | OpenSearch | GaussVector |
-|---|---|---|
-| 本体对象 | Exact/BM25 | Dense |
-| 枚举元素 | Exact/BM25 | Dense |
-| 实例元素 | Exact/BM25 | Dense |
+| ---- | ---------- | ----------- |
+| 本体对象 | Exact/BM25 | Dense       |
+| 枚举元素 | Exact/BM25 | Dense       |
+| 实例元素 | Exact/BM25 | Dense       |
 
 即：
 

@@ -184,6 +184,35 @@ Values 非空
 |---|---:|---|---|---|
 | `Property` | 否 | String | 无 | 已知时填写所属 Property 的业务名称；未知时省略 |
 | `Value` | 是 | String | 无 | 用户问题中需要语义定位的真实业务表达 |
+采用使用如下格式：
+```
+{
+  "extractedEntities": [
+    {
+      "ObjectType": "字符串",
+      "Properties": ["属性1", "属性2"],
+      "Values": [
+        {
+          "Property": "属性1",
+          "Value": "用户原始业务值"
+        },
+        {
+          "Value": "归属暂不确定的业务值"
+        }
+      ]
+    },
+    {
+      "Values": [
+        {
+          "Value": "完全无法确定 ObjectType/Property 归属的业务值"
+        }
+      ]
+    }
+  ]
+}
+```
+
+
 
 示例：
 
