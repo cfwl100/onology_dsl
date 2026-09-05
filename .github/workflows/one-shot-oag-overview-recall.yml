@@ -1,0 +1,36 @@
+name: one-shot-oag-overview-recall
+
+on:
+  push:
+    branches:
+      - docs/oag-ch4-fuzzy-hybrid-recall
+    paths:
+      - tools/align_oag_overview_recall.py
+      - .github/workflows/one-shot-oag-overview-recall.yml
+
+permissions:
+  contents: write
+
+jobs:
+  align-doc:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: docs/oag-ch4-fuzzy-hybrid-recall
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Align overview
+        run: python tools/align_oag_overview_recall.py
+      - name: Commit
+        run: |
+          test ! -e tools/align_oag_overview_recall.py
+          test ! -e .github/workflows/one-shot-oag-overview-recall.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'docs: align overview with typed hybrid recall'
+          git push origin HEAD:docs/oag-ch4-fuzzy-hybrid-recall
