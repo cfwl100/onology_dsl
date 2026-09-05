@@ -1526,12 +1526,12 @@ ontologyId + requestId
 
 当前索引管理接口清单：
 
-| 场景         | Method | URI                                                           | 说明                                          |
-| ---------- | ------ | ------------------------------------------------------------- | ------------------------------------------- |
-| MinIO 数据通知 | POST   | `/v1/onto-retrieval/{ontologyId}/index-data/notice`           | 注册不可变 CSV；可使用 `triggerTaskId` 绑定已有 OAC Task |
-| 批量查询任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/query`           | 查询任务、进度、错误码和文件信息                            |
-| 批量重试任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/retry`           | 对业务选择的失败 Task 执行技术可恢复性校验并重试                 |
-| 批量取消任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/cancel`          | 请求取消非终态 Task                                |
+| 场景         | Method | URI                                                  | 说明                                          |
+| ---------- | ------ | ---------------------------------------------------- | ------------------------------------------- |
+| MinIO 数据通知 | POST   | `/v1/onto-retrieval/{ontologyId}/index-data/notice`  | 注册不可变 CSV；可使用 `triggerTaskId` 绑定已有 OAC Task |
+| 批量查询任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/query`  | 查询任务、进度、错误码和文件信息                            |
+| 批量重试任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/retry`  | 对业务选择的失败 Task 执行技术可恢复性校验并重试                 |
+| 批量取消任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/cancel` | 请求取消非终态 Task                                |
 
 
 异步写入接口统一遵循：

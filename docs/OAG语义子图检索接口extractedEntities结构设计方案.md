@@ -57,11 +57,11 @@
 
 ### 2.2 三种调用模式
 
-| 模式 | query | extractedEntities | searchContext | 说明 |
-|---|---:|---:|---:|---|
-| 自然语言模式 | 有 | 无 | 可选 | OAG 从 `query` 自动执行实体提取 |
-| 结构化模式 | 无 | 有 | 可选 | 业务 Skill 已完成实体提取，OAG 直接进入 Entity Linking |
-| 组合模式 | 有 | 有 | 可选 | 结构化结果提供强提示，`query` 和 `searchContext` 用于补充与消歧，推荐模式 |
+| 模式     | query | extractedEntities | searchContext | 说明                                                |
+| ------ | ----: | ----------------: | ------------: | ------------------------------------------------- |
+| 自然语言模式 |     有 |                 无 |            可选 | OAG 从 `query` 自动执行实体提取                            |
+| 结构化模式  |     无 |                 有 |            可选 | 业务 Skill 已完成实体提取，OAG 直接进入 Entity Linking          |
+| 组合模式   |     有 |                 有 |            可选 | 结构化结果提供强提示，`query` 和 `searchContext` 用于补充与消歧，推荐模式 |
 
 约束：
 
@@ -123,11 +123,11 @@ Relationship 的发现与选择属于第 ③ 步子图检索策略。业务已�
 
 `searchContext` 从自由文本升级为结构化对象，用于显式传递业务目标实体、专家搜索路径和后续扩展信息。
 
-| 字段 | 必选 | 类型 | 默认值 | 约束 | 说明 |
-|---|---:|---|---|---|---|
-| `target_entity` | 否 | String | 无 | 1～4096 字符 | 业务侧期望重点检索/返回的目标实体表达，可用英文逗号分隔多个目标；作为 ObjectType 提取、Entity Linking 和候选排序的强提示，但仍需通过真实本体完成 Linking |
-| `search_path` | 否 | String | 无 | 1～8192 字符 | 业务专家提供的搜索路径/拓扑路径模板，可包含 ObjectType、Relationship、Property 占位符等；用于实体理解、候选消歧和第 ③ 步路径规划，不直接作为可执行 nGQL/Cypher |
-| `extensions` | 否 | Object | `{}` | 建议最多 32 个一级 Key；整体大小由服务配置限制 | 预留扩展字段，类型为 `Map<String, Object>`；当前核心协议不约束内部 Key，可用于业务侧携带 few-shot、领域术语、黑话、约束或后续新增上下文 |
+| 字段              |  必选 | 类型     | 默认值  | 约束                          | 说明                                                                                                      |
+| --------------- | --: | ------ | ---- | --------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `target_entity` |   否 | String | 无    | 1～4096 字符                   | 业务侧期望重点检索/返回的目标实体表达，可用英文逗号分隔多个目标；作为 ObjectType 提取、Entity Linking 和候选排序的强提示，但仍需通过真实本体完成 Linking          |
+| `search_path`   |   否 | String | 无    | 1～8192 字符                   | 业务专家提供的搜索路径/拓扑路径模板，可包含 ObjectType、Relationship、Property 占位符等；用于实体理解、候选消歧和第 ③ 步路径规划，不直接作为可执行 nGQL/Cypher |
+| `extensions`    |   否 | Object | `{}` | 建议最多 32 个一级 Key；整体大小由服务配置限制 | 预留扩展字段，类型为 `Map<String, Object>`；当前核心协议不约束内部 Key，可用于业务侧携带 few-shot、领域术语、黑话、约束或后续新增上下文                   |
 
 至少有一个字段包含有效内容时才建议传入 `searchContext`。
 
@@ -137,7 +137,7 @@ Relationship 的发现与选择属于第 ③ 步子图检索策略。业务已�
 {
   "searchContext": {
     "target_entity": "ID(xxx),BillingAccount,Invoice,BillDetail",
-    "search_path": "Subscriber(id:{msisdn}) -[:HAS_SUBSCRIPTION]-> SubscribeRelation -[:SUBSCRIBE_TO]-> Offering",
+    "search_path": "Subscriber(id:{msisdn}) --> SubscribeRelation --> Offering",
     "extensions": {}
   }
 }
@@ -147,7 +147,7 @@ Relationship 的发现与选择属于第 ③ 步子图检索策略。业务已�
 
 1. `target_entity` 是**显式目标提示**。业务侧已知目标对象时，即使 Query 没有完整说出全部对象，也允许该字段补充 ObjectType 候选；但不能绕过 Entity Linking 直接生成本体内部 ID。
 2. `target_entity` 中的每一项按业务表达处理，例如 `ID(xxx)` 不因为形态类似 ID 就自动解释成本体内部 ID；最终仍由本体对象索引完成匹配。
-3. `search_path` 是**专家路径提示**。允许使用 `Subscriber(id:{msisdn}) -[:HAS_SUBSCRIPTION]-> SubscribeRelation -[:SUBSCRIBE_TO]-> Offering` 这类表达，并保留 `{msisdn}` 等占位符。
+3. `search_path` 是**专家路径提示**。允许使用 `Subscriber(id:{msisdn}) --> SubscribeRelation --> Offering` 这类表达，并保留 `{msisdn}` 等占位符。
 4. `search_path` 中的 ObjectType / Relationship 必须在 Entity Linking 与 GraphTopologyCache 阶段校验；路径不存在、方向不合法或关系无法解析时不能直接执行，应降级到正常子图规划。
 5. `extensions` 是预留扩展容器，未知 Key 不得改变核心 `ExtractedEntity` Schema；只有已注册的业务扩展处理器才能赋予特定 Key 业务语义。
 6. `searchContext` 不能单独满足请求合法性，`query` 与 `extractedEntities` 仍至少一个不为空。
@@ -160,11 +160,11 @@ Relationship 的发现与选择属于第 ③ 步子图检索策略。业务已�
 
 `ExtractedEntity` **只定义三个顶层字段**：
 
-| 字段 | 必选 | 数据类型 | 默认值 | 说明 |
-|---|---:|---|---|---|
-| `ObjectType` | 否 | String | 无 | 对象类型名称、显示名、同义词或业务术语；value-only 场景可以省略 |
-| `Properties` | 否 | `Array<String>` | `[]` | 当前 ObjectType 相关的 Property 名称；非空时必须同时存在 `ObjectType` |
-| `Values` | 否 | `Array<ValueHint>` | `[]` | 需要语义检索的业务值；ObjectType/Property 归属未知时允许单独存在 |
+| 字段           |  必选 | 数据类型               | 默认值  | 说明                                                   |
+| ------------ | --: | ------------------ | ---- | ---------------------------------------------------- |
+| `ObjectType` |   否 | String             | 无    | 对象类型名称、显示名、同义词或业务术语；value-only 场景可以省略                |
+| `Properties` |   否 | `Array<String>`    | `[]` | 当前 ObjectType 相关的 Property 名称；非空时必须同时存在 `ObjectType` |
+| `Values`     |   否 | `Array<ValueHint>` | `[]` | 需要语义检索的业务值；ObjectType/Property 归属未知时允许单独存在           |
 
 每个 `ExtractedEntity` 至少满足下列之一：
 
@@ -352,7 +352,7 @@ SearchContext
 
 ```json
 {
-  "search_path": "Subscriber(id:{msisdn}) -[:HAS_SUBSCRIPTION]-> SubscribeRelation -[:SUBSCRIBE_TO]-> Offering"
+  "search_path": "Subscriber(id:{msisdn}) --> SubscribeRelation --> Offering"
 }
 ```
 
