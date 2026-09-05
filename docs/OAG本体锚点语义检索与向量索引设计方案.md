@@ -4387,21 +4387,6 @@ SeedNodeProjector / 后续子图构建
 | `search_context` | 业务侧注入的 SearchContext | 使用 `target_entity / search_path / extensions` 辅助目标实体判断和业务消歧 |
 | `extracted_entities` | 上一步 Entity Linking / 粗排后的结构化候选输出 | 提供 LLM 唯一允许裁剪和选择的 ObjectType / Property 候选集合 |
 
-精排 Prompt **不接收**以下上下文：
-
-```text
-skill_context
-Graph Hint
-Value Supporting Evidence
-rrfScore
-channelHits
-supporting_hits
-matched_field
-matched_value
-```
-
-这些内容不属于当前精排模型输入协议，LLM 不应依赖未传递的信息进行判断。
-
 ### 5.1.2 `extracted_entities` 在精排阶段的语义
 
 精排阶段的 `extracted_entities` 表示**上一步已经完成 Entity Linking 与粗排后的结构化候选结果**。其中本体定义候选保持 ObjectType → Property 的归属关系，例如：
@@ -4445,17 +4430,6 @@ LLM Fine Rank 负责：
 6. 保留用户问题中用于查询目标、过滤、返回、聚合、排序或后续查询生成所必需的种子；
 7. 删除仅名称相似、但与当前业务问题无关的候选；
 8. 无法可靠消歧时允许保留多个候选；没有可信候选时允许输出 unresolved。
-
-LLM 不负责：
-
-```text
-创造新 ID
-重新打分
-重新做 RRF
-重新做 OpenSearch / GaussVector 检索
-调用图算法
-生成 nGQL / Cypher / OQL
-```
 
 ---
 
