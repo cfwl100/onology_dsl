@@ -765,19 +765,6 @@ BM25 / Phrase:
   synonyms.bm25
 ```
 
-推荐优先级：
-
-```text
-value exact
-> display exact
-> synonyms line-exact
-> value / display phrase/BM25
-> synonyms.bm25
-> description BM25
-```
-
-命中 display / synonym 时，最终结果仍必须返回真实 `value`；`matched_field / matched_value` 只用于说明用户实际命中了哪一种表达。
-
 ### 2.4.4 索引存储具体实现
 
 GaussVector：
@@ -874,14 +861,6 @@ BM25:
   synonyms.bm25
 ```
 
-推荐优先级：
-
-```text
-value exact
-> synonyms line-exact
-> value BM25
-> synonyms.bm25
-```
 
 命中 synonym 时统一返回：
 
@@ -1023,23 +1002,6 @@ Instance Value：object_type_id + property_id + normalized(value)
 5. OpenSearch 使用稳定业务键生成确定性 `_id`；
 6. 双写一致性、Chunk 重放和 Publish 由第 3 章统一保证。
 
-每条索引记录不额外保存：
-
-```text
-content_hash
-model_version
-source_version
-updated_at
-```
-
-版本、模型和构建信息统一由 Import Job / Generation 管理。Embedding 模型升级时：
-
-```text
-创建新 Generation
-→ 全量重新 Embedding
-→ Verify
-→ 原子 Publish
-```
 
 ### 2.6.2 数据质量治理
 
@@ -1101,19 +1063,6 @@ Property
 Enum Value / Instance Value
   → property_id + object_type_id 直接记录归属
 ```
-
-SearchHit 在进入 RRF 前必须保留：
-
-```text
-recordType
-id / propertyId / objectTypeId / value
-matched_field
-matched_value
-channel
-rank / rawScore
-```
-
-其中 `recordType` 是检索归一化字段，不要求所有物理表都持久化 `type`。
 
 SeedNodeProjector 规则：
 
@@ -1208,7 +1157,7 @@ DataSync 或业务数据服务负责定时/事件驱动的大规模实例数据�
 调用 OAG index-data/notice 注册导入任务
 ```
 
-当生产者能够产生动态 Enum Value 时，也可以使用相同 CSV 通知接口提交 `METADATA_ENUM` 数据。
+当生产者能够产生动态 Enum Value 时，也可以使用相同 CSV 通知接口生成索引。
 
 DataSync/业务数据服务不负责 Embedding、GaussVector/OpenSearch Client、ANN/全文索引构建、OAG 物理表创建、Generation 发布以及最终去重和双存储一致性。
 
@@ -1328,25 +1277,15 @@ indexBuild:
 ### 3.2.2 数据类型与来源
 
 ```text
-SEED_NODE
+本体定义
   → OMS 本体资产
 
-METADATA_ENUM
+ENUM_VALUE
   → OMS 静态 Enum；或 OAC / 业务生产者交付动态 Enum CSV
 
 INSTANCE_VALUE
   → OAC / DataSync / 业务服务交付 Instance CSV
 ```
-
-统一任务抽象：
-
-```text
-dataType   = SEED_NODE | METADATA_ENUM | INSTANCE_VALUE
-sourceType = OMS | OAC | MINIO
-importMode = FULL_REPLACE | INCREMENTAL | CLEAR
-```
-
-其中 `BUSINESS_NOTICE` 是数据读取责任模式；直接文件通知创建的 Task 使用 `sourceType=MINIO`。OAC 手动构建 Task 使用 `sourceType=OAC`，OAC 后续通过 `triggerTaskId` 绑定文件时仍保持原 Task 和原 sourceType。
 
 ### 3.2.3 场景选择矩阵
 
@@ -1491,18 +1430,6 @@ ontologyId + requestId
 | 批量查询任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/query`  | 查询任务、进度、错误码和文件信息                            |
 | 批量重试任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/retry`  | 对业务选择的失败 Task 执行技术可恢复性校验并重试                 |
 | 批量取消任务     | POST   | `/v1/onto-retrieval/{ontologyId}/index-tasks/cancel` | 请求取消非终态 Task                                |
-
-
-异步写入接口统一遵循：
-
-```text
-同步参数/幂等校验
-→ Task 持久化成功
-→ HTTP 202 + taskId
-→ 后台执行
-```
-
-`202 Accepted` 只表示任务已接受，不表示索引已经可检索。
 
 ### 3.3.2 手动构建/更新索引
 
@@ -1769,9 +1696,9 @@ POST
 
 **BatchTaskIdsRequest 参数列表**
 
-| 参数名称 | 类型 | 是否必选 | 默认值 | OpenAPI 约束 | 说明 |
-|:--|:--|:--|:--|:--|:--|
-| `taskIds` | Array[String] | 是 | - | `minItems: 1`，`uniqueItems: true`；最大数量由 `maxTaskIdsPerRequest` 配置 | 待查询的索引任务 ID 列表 |
+| 参数名称      | 类型            | 是否必选 | 默认值 | OpenAPI 约束                                                        | 说明             |
+| :-------- | :------------ | :--- | :-- | :---------------------------------------------------------------- | :------------- |
+| `taskIds` | Array[String] | 是    | -   | `minItems: 1`，`uniqueItems: true`；最大数量由 `maxTaskIdsPerRequest` 配置 | 待查询的索引任务 ID 列表 |
 
 服务端对重复 `taskId` 去重并保持首次出现顺序。建议 `maxTaskIdsPerRequest` 默认从 100 起步，通过接口压测调整。
 
@@ -2539,7 +2466,7 @@ CSV 不包含 `vector`，因为向量必须由 OAG 使用当前配置的 Embeddi
 Header：
 
 ```csv
-property_id,object_type_id,value,display_zh,display_en,display_lang_1,display_lang_2,description_zh,description_en,description_lang_1,description_lang_2,synonyms,op
+property_id,object_type_id,value,display_zh,display_en,display_lang_1,display_lang_2,description_zh,description_en,description_lang_1,description_lang_2,synonyms,defaultDataValue,op
 ```
 
 | CSV 字段               | 目标字段                 | 说明                             |
@@ -2556,6 +2483,7 @@ property_id,object_type_id,value,display_zh,display_en,display_lang_1,display_la
 | `description_lang_1` | `description_lang_1` | 额外语言 1 描述                      |
 | `description_lang_2` | `description_lang_2` | 额外语言 2 描述                      |
 | `synonyms`           | `synonyms`           | 换行分隔的平铺同义词字符串；CSV 使用 `\n` 转义分隔 |
+| `defaultDataValue`   | `defaultDataValue`   | 枚举值对应的数据库值                     |
 | `op`                 | 导入操作                 | `UPSERT` / `DELETE`            |
 
 示例：
@@ -4446,11 +4374,11 @@ search_context
 
 字段作用：
 
-| 字段 | 精排作用 | 约束 |
-|---|---|---|
-| `target_entity` | 业务明确指定的目标实体提示，用于优先保留与目标语义一致的 ObjectType 候选 | 只能影响候选裁剪，不能创造不存在的 ObjectType |
-| `search_path` | 专家路径提示，用于判断多个候选中哪些实体更符合预期业务链路 | Prompt 只把它作为文本业务约束理解，不要求 LLM 校验或生成真实 Relationship ID |
-| `extensions` | 业务侧扩展信息，如已注册的术语、黑话、few-shot 或约束 | 未定义语义的字段不得被模型自行扩展解释成新的本体事实 |
+| 字段              | 精排作用                                       | 约束                                                   |
+| --------------- | ------------------------------------------ | ---------------------------------------------------- |
+| `target_entity` | 业务明确指定的目标实体提示，用于优先保留与目标语义一致的 ObjectType 候选 | 只能影响候选裁剪，不能创造不存在的 ObjectType                         |
+| `search_path`   | 专家路径提示，用于判断多个候选中哪些实体更符合预期业务链路              | Prompt 只把它作为文本业务约束理解，不要求 LLM 校验或生成真实 Relationship ID |
+| `extensions`    | 业务侧扩展信息，如已注册的术语、黑话、few-shot 或约束            | 未定义语义的字段不得被模型自行扩展解释成新的本体事实                           |
 
 上下文判断优先级：
 
@@ -4544,7 +4472,7 @@ targetProperties[]
 
 ## 5.4 Rerank Prompt 输入结构
 
-推荐 Prompt Builder 组装为：
+ Prompt Builder 组装为：
 
 ```json
 {
@@ -5323,7 +5251,7 @@ SemanticExtensions
 sourceValue
   → 帮助 LLM 理解用户原始表达
 
-canonicalValue + property + objectType
+canonicalValue + defaultDataValue + property + objectType
   → 帮助 Agent 生成真实过滤条件和查询语句
 ```
 
@@ -5432,25 +5360,6 @@ Alarm.severity = "CRITICAL"
 ```
 
 再结合原始问题中的比较符、时间范围、排序、聚合语义生成最终 nGQL/Cypher/OQL。
-
-#### 6.13.5 与 richer semantic-search 的兼容
-
-如果新接口内部保留：
-
-```text
-retrievalResults
-metadata
-capabilityExtensions
-```
-
-则：
-
-- `retrievalResults` 是权威语义事实；
-- `semanticExtensions.valueMappings` 是查询生成投影视图；
-- 旧 `functions/actions` 可通过 Adapter 映射为 `capabilityExtensions.functions/actions`；
-- 同一个 API 响应不要求重复返回两份完全相同能力数据。
-
----
 
 ## 6.1 详细设计与实现
 
