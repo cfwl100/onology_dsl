@@ -3,101 +3,246 @@
 | 版本 | 日期 | 修订人 | 修订说明 |
 | --- | --- | --- | --- |
 | V0.10 | 2026-08-12 | CodeAgent | 基于《本体维值建模与检索》原始需求完成需求分析初稿 |
+| V0.11 | 2026-09-06 | CodeAgent | 对齐《OAG本体锚点语义检索与向量索引设计方案》V6.5：统一术语、检索职责、三类索引、MinIO/Task 构建链路、2/4 路 Weighted RRF、LLM 精排及 semanticExtensions.valueMappings |
 
 ---
 
 # 需求 IR-ONT-DIM-001 描述
 
-> **需求名称**：本体维值建模与检索
-> **关联系统需求**：SR202607XXXXX（待定）
+> **需求名称**：本体维值建模与检索  
+> **关联系统需求**：SR202607XXXXX（待定）  
+> **上位设计**：[OAG 本体锚点语义检索与向量索引设计方案](./OAG本体锚点语义检索与向量索引设计方案.md)  
+> **接口结构规范**：[OAG 本体子图语义检索接口 extractedEntities / 实体提取设计方案](./OAG语义子图检索接口extractedEntities结构设计方案.md)  
 > **说明**：本文中以 `.01`、`.02` 等后缀表示需求分析阶段的 SR 子需求追踪编号，正式编号以需求管理系统落号为准。
 
-## 价值
+## 1. 需求定位
 
-基于本体解决复杂问题时，用户问题通常同时包含业务对象、属性及地区、设备类型、厂家等维值信息。用户输入的维值可能采用简称、别名、口语或模糊描述，无法直接匹配本体属性及底层数据中的标准值。
+本需求中的“维值”是业务需求层术语，在 OAG 正式语义模型中统一落为两类 Value 语义实体：
 
-若维值识别不准确，将影响后续 OAG 本体检索的上下文范围，以及 OAC 本体数据访问的查询条件。当前本体属性缺少维值语义标识，系统难以判断哪些属性需要进行维值识别、标准化和检索。
+```text
+枚举元素（Enum Element）
+  = Enum Value
 
-本需求通过"**维值语义标识—意图提取—模糊检索—标准化映射—OAG/OAC 联动**"的端到端能力，实现以下业务价值：
+实例元素（Instance Element）
+  = 真实 Instance Value
+```
 
-1. **统一维值语义标识**：在本体属性上标识是否具有维值语义，明确维值来源和管理方式
-2. **意图识别与维值提取**：支持意图识别同时提取本体对象、属性和用户问题中的候选维值
-3. **模糊检索与标准化**：支持根据模糊输入检索标准维值，并识别该维值对应的本体对象和属性
-4. **OAG 语义检索增强**：支持将标准化后的对象、属性和维值作为 OAG 本体检索的输入条件
-5. **OAC 数据访问精确过滤**：支持将精确维值及其属性映射作为 OAC 本体数据访问的过滤条件
-6. **多表达统一匹配**：支持维值别名、简称、同义词和多种业务表达的统一匹配
-7. **检索结果可信评估**：支持对维值检索结果进行置信度评估、排序和歧义处理
+维值检索不是一套独立于 OAG 子图检索的旁路能力，而是 OAG Entity Extraction / Entity Linking 主链路中 `VALUE` Semantic Unit 的组成部分。
 
-## 术语与缩写
+OAG 的完整语义检索对象包括：
 
-| 术语/缩写 | 定义 |
-| --- | --- |
-| OAC | Ontology Access Service，本体访问服务，负责 OQL 校验、Binding 解析、维值数据查询和结果装配 |
-| OAG | Ontology Analytics and Graph，本体分析与图服务，负责语义检索、向量化索引和本体子图构建 |
-| OMS | Ontology Model Service，本体模型服务，负责本体属性维值语义标识、枚举值定义和模型发布 |
-| 维值 | 具有维值语义的属性值，包括有限枚举值（enum）和实例值两类 |
-| 有限枚举值 | 在本体属性上定义的有限取值集合，通过 enum 字段承载 |
-| 实例值 | 属性对应数据库中的实际取值，映射物理模型、多维模型、三方接口等数据源 |
-| 维值语义标识 | 属性上的 `is_semantic` 字段，标识该属性是否需要进行维值识别、标准化和检索 |
-| 维值来源 | 枚举值在本体模型中定义；实例值来自物理模型、多维模型、三方接口 |
-| 模糊匹配 | 支持简称、别名、口语、同义词等多种业务表达的维值匹配 |
-| 置信度 | 维值检索结果的可靠程度，用于排序和歧义处理 |
+```text
+本体对象（Ontology Object）
+  = ObjectType / Property
+
+枚举元素（Enum Element）
+  = Enum Value
+
+实例元素（Instance Element）
+  = Instance Value
+```
+
+其中：
+
+- ObjectType / Property 负责形成 Core Graph 的真实本体对象；
+- Enum Value / Instance Value 负责把用户原始业务值链接到真实标准值及其 Property/ObjectType 归属；
+- Enum/Instance 命中后通过 `property_id + object_type_id` 投影回真实本体对象，不直接成为图路径算法顶点；
+- 最终值语义通过 `semanticExtensions.valueMappings` 返回给 Agent/下游查询生成逻辑；
+- OAC 在 OAG 完成语义检索后，使用确定的 Property/ObjectType 与标准值执行 Binding/OQL 数据访问。
+
+## 2. 价值
+
+用户问题通常同时包含业务对象、属性以及地区、设备类型、厂家、产品名称、客户等级、状态等业务值。用户输入可能采用别名、黑话、简称、多语言或近义表达，无法直接匹配本体定义和底层数据中的真实标准值。
+
+本需求通过“**本体建模 → 语义索引构建 → Entity Extraction → Entity Linking → 混合召回与精排 → 值语义映射 → OAC 数据访问**”的端到端能力，实现以下价值：
+
+1. **统一语义模型**：ObjectType、Property、Enum Value、Instance Value 使用同一套 OAG Entity Linking 主链路。
+2. **多表达统一匹配**：支持名称、显示名、描述、同义词、黑话和多语言业务表达的检索。
+3. **标准值确定性映射**：将用户原始值稳定映射到真实索引中的 `value`，并确定所属 Property/ObjectType。
+4. **混合检索增强准确率**：通过 OpenSearch Keyword Fuzzy + GaussVector Dense 的混合召回和 Weighted RRF 提升召回与排序质量。
+5. **LLM 受控消歧**：LLM 只从真实候选中做 0/1/N 裁剪，不生成不存在的本体 ID 或标准值。
+6. **子图检索与值语义联动**：值命中可反向补齐 Property/ObjectType，并参与后续本体对象投影与子图构建。
+7. **OAC 精确过滤**：通过 `semanticExtensions.valueMappings` 向 Agent/OAC 提供查询所需的标准值及属性归属。
+8. **可恢复索引构建**：动态 Enum/Instance 统一使用 MinIO CSV + 持久化 Task，支持 FULL_REPLACE / INCREMENTAL / CLEAR、校验、恢复和观测。
 
 ---
 
-## 系统上下文
+# 术语与缩写
 
-### 目标系统
+| 术语/缩写 | 定义 |
+| --- | --- |
+| OAC | Ontology Access Service，本体访问服务；负责根据本体 Binding/OQL 访问真实业务数据，并在 OAG 手动索引构建模式下承担业务数据抽取与 MinIO 文件交付 |
+| OAG | 本体语义检索与图服务；负责语义索引构建、Entity Extraction、Entity Linking、混合召回、Weighted RRF、LLM 精排、本体对象投影和子图构建 |
+| OMS | Ontology Model Service，本体模型服务；负责 ObjectType、Property、EnumType、SynonymType、多语言显示/描述等本体资产建模与发布 |
+| 本体对象 | ObjectType / Property |
+| 枚举元素 | 本体模型中真实定义的 Enum Value |
+| 实例元素 | 属性对应真实数据源中去重后的 Instance Value |
+| 维值 | 本需求的业务术语，正式实现中对应 Enum Value / Instance Value |
+| Semantic Unit | Query Understanding 后的一个检索语义单元；主要包括 OBJECT_TYPE / PROPERTY / VALUE |
+| Seed | 经 Entity Linking 和 LLM 精排后参与图构建的本体对象 |
+| Supporting Hit | 支撑候选归属的 Enum/Instance/同义词等具体命中证据，仅用于召回、粗排、调试与可观测性 |
+| Core Graph | 只由 ObjectType / Property / Relationship 等本体拓扑元素组成的路径计算图 |
+| Keyword Fuzzy | OpenSearch 基于 Analyzer + BM25 + fuzziness 的关键词模糊召回；Exact/Phrase 可作为同一 lexical 查询中的 boost，但不单独形成独立召回通道 |
+| Dense | GaussVector 基于 BGE-M3 1024 维向量和 COSINE 的向量召回 |
+| Weighted RRF | 对不同检索通道的 rank 进行加权 Reciprocal Rank Fusion，不直接比较 OpenSearch `_score` 与 cosine 原始分数 |
+| semanticExtensions | OAG 最终响应中的确定性语义扩展 |
+| valueMappings | `semanticExtensions` 中表达 `sourceValue → canonicalValue → Property → ObjectType` 的值语义映射 |
+
+历史字段 `is_semantic`、`seed*`、`metadata*`、`instance*` 可以在兼容层读取，但不作为本文新需求和新接口的正式术语。
+
+---
+
+# 系统上下文
+
+## 1. 系统边界
 
 | 字段 | 内容 |
 | --- | --- |
 | 系统名称 | GTS Data Cube / Agentic Operation Center 27.1.0 本体知识平台 |
-| 系统边界说明（内部/外部判定依据） | **系统内部**：OMS（维值语义标识建模）、OAC（维值数据查询与索引供给）、OAG（向量化索引创建与语义检索）、Binding 存储、缓存及监控能力。<br>**系统外部**：Agent/上层应用、物理数据库、图数据库、多维模型、三方接口。<br>内部与外部以"是否由本体知识平台团队负责发布、升级和运行"为判定依据。 |
+| 系统内部 | OMS、OAG、OAC、Binding、GaussVector、OpenSearch、GaussDB Task、MinIO 接入与观测能力 |
+| 系统外部 | Agent/业务 Skill/上层应用、物理数据库、图数据库、多维模型、三方接口、DataSync/业务数据服务 |
 
-### 周边交互方清单
+## 2. 周边交互方清单
 
-| 编号 | 外部系统名称 | 类型（人/系统/服务/设备/协议栈） | 交互接口类型（API/协议/UI/SDK/Kit/设备接口/文件/其他） | 交互接口主要功能 |
+| 编号 | 交互方 | 类型 | 交互方式 | 主要职责 |
 | --- | --- | --- | --- | --- |
-| ES-01 | 业务 Agent / 上层应用 | 系统/服务 | REST API / OQL JSON | 向 OAC 提交对象查询请求，接收包含维值标准化结果的对象结果 |
-| ES-02 | 业务研发/SA/建模人员 | 人 | OMS Web UI | 在本体属性上标识维值语义、定义有限枚举值、发布本体模型 |
-| ES-03 | 物理数据源（OpenGauss/NebulaGraph） | 系统/服务 | JDBC/GQL | 存储并查询实际业务数据，包含维值实例值 |
-| ES-04 | 多维模型（MDX/ROLAP） | 系统/服务 | REST API / MDX | 提供多维模型中的维值数据 |
-| ES-05 | 三方业务接口 | 系统/服务 | REST API | 提供三方业务系统中的维值数据 |
-| ES-06 | 运维与监控平台 | 系统/服务 | Prometheus / 日志 / 告警 API | 采集维值检索调用、索引构建、错误率、时延和熔断状态 |
+| ES-01 | Agent / 业务 Skill / 上层应用 | 系统/服务 | REST API | 调用 OAG 子图语义检索；消费子图和 `semanticExtensions.valueMappings`；按业务需要调用 OAC |
+| ES-02 | 建模人员 | 人 | OMS Web UI | 维护 ObjectType、Property、EnumType、SynonymType、多语言资产及 Property 检索准入配置 |
+| ES-03 | OMS | 系统/服务 | 内部 API / 事件 | 向 OAG 提供本体对象、静态 Enum、SynonymType 和归属关系资产 |
+| ES-04 | OAC | 系统/服务 | REST API / MinIO | 手动构建模式下抽取业务 Enum/Instance，上传 MinIO 并 notice；运行时执行 Binding/OQL 数据访问 |
+| ES-05 | DataSync / 业务数据服务 | 系统/服务 | MinIO + REST API | 定时/事件同步大规模 Enum/Instance 数据，上传 CSV 后通知 OAG |
+| ES-06 | 业务数据源 | 系统/服务 | JDBC/GQL/REST/MDX | 提供真实实例值和最终业务查询数据 |
+| ES-07 | 运维监控平台 | 系统/服务 | Metrics/日志/告警 | 观测索引任务、检索时延、错误码、依赖状态和容量指标 |
 
 ---
 
-## 需求描述
+# 需求描述
 
-| **设计资产** | **描述** |
+| 设计资产 | 描述 |
 | --- | --- |
-| IR标识 | IR-ONT-DIM-001 |
+| IR 标识 | IR-ONT-DIM-001 |
 | 名称 | 本体维值建模与检索 |
-| 描述 | 本体知识平台应支持在本体属性上标识维值语义，支持有限枚举值和实例值两种维值类型；支持意图识别提取候选维值；支持模糊输入检索标准维值并识别对应的本体对象和属性；支持将标准化维值作为 OAG 检索条件和 OAC 查询过滤条件；支持多表达统一匹配和置信度评估。 |
-| Who | 业务 Agent、上层应用开发者、业务研发、SA、建模人员、平台开发和运维人员 |
-| Where | CNAI2.0 底座上的本体知识平台；业务数据源可部署在同一集群或经 API 接入 |
-| When | 本体建模时定义维值语义标识、枚举值定义；运行时进行维值意图识别、模糊检索、标准化映射和查询过滤 |
-| Why | 解决用户维值输入的简称、别名、口语和模糊描述无法匹配本体标准值的问题，提升复杂问题理解和数据访问准确性 |
-| What | 维值语义标识、有限枚举值定义、维值实例值映射、意图识别与候选维值提取、模糊检索与标准化、OAG 索引构建、OAC 维值数据查询、置信度评估与排序 |
-| How | OMS 提供维值语义标识和枚举值建模接口；OAC 根据 is_semantic 字段查询实例数据并调用 OAG 创建索引；OAG 提供模糊检索和混合召回能力；OAC 将标准化维值作为查询过滤条件 |
+| 描述 | 平台应支持 Enum Value / Instance Value 的语义建模与索引，支持从用户问题中抽取 ObjectType / Property / Value，基于本体对象 2 路和值 4 路混合召回完成 Entity Linking，并通过 LLM 精排、本体对象投影和 `semanticExtensions.valueMappings` 将用户原始业务值映射到真实标准值及 Property/ObjectType，供后续子图构建和 OAC 查询过滤使用。 |
+| Who | 建模人员、业务 Agent/Skill、平台开发者、OAG/OAC/DataSync 开发者、运维人员 |
+| Where | 本体知识平台及其连接的业务数据源 |
+| When | 设计态完成本体对象/枚举/同义词/检索准入建模；索引构建阶段完成数据准备与导入；运行时完成 Entity Extraction、Entity Linking、子图构建和值语义映射 |
+| Why | 解决用户自然语言值表达与真实本体/数据值不一致导致的检索和查询条件错误问题 |
+| What | 本体对象/Enum/Instance 索引、同义词、多语言、动态数据接入、混合召回、Weighted RRF、LLM 精排、ValueMapping、OAC 过滤 |
+| How | OMS 提供资产；OAC/DataSync 通过 MinIO CSV 提供动态数据；OAG 统一完成 Normalize/Dedup/Embedding/双写、语义检索与子图构建；Agent/OAC 消费 OAG 输出进行数据查询 |
 | 类别 | 设计类 |
 
 ---
 
-## 假设和约束
+# 假设和约束
 
 | 序号 | 约束类别 | 约束描述 | 对验收的影响 |
 | --- | --- | --- | --- |
-| 1 | 维值类型 | 维值只包含有限枚举值（enum）和实例值两类，不包含其他类型 | 测试必须覆盖两种维值类型 |
-| 2 | 有限枚举定义位置 | 有限枚举值在本体属性上定义，由 OMS 负责建模和存储 | 枚举定义测试需验证 OMS 建模功能 |
-| 3 | 实例值数据源 | 实例值来自物理模型、多维模型、三方接口等外部数据源 | OAC 需支持多数据源的实例值查询 |
-| 4 | 索引构建职责 | 有限枚举值的索引由 OAG 负责解析入库；实例值索引由 OAC 根据 is_semantic 字段定义查询实例数据后调用 OAG 接口创建 | 索引构建测试需覆盖两种维值来源 |
-| 5 | is_semantic 字段 | 属性中的 is_semantic 字段标识该属性是否需要进行维值识别、标准化和检索 | 缺少 is_semantic 定义时不做维值处理 |
-| 6 | 模糊匹配范围 | 模糊匹配支持简称、别名、口语、同义词等多种业务表达 | 匹配算法测试需覆盖多种表达形式 |
-| 7 | 置信度要求 | 维值检索结果必须支持置信度评估和排序 | 检索结果缺少置信度时使用默认低置信度 |
-| 8 | 歧义处理 | 当存在多个可能的维值匹配时，需要进行歧义处理 | 歧义场景返回候选列表而非单一结果 |
-| 9 | OAG/OAC 职责边界 | OAG 负责向量化索引创建和语义检索；OAC 负责维度数据查询和供给 | 两服务接口契约需明确定义 |
-| 10 | 性能基线 | 维值检索 P95 建议小于 200 ms；索引构建吞吐量需支持批量处理 | 性能指标为设计建议值，正式性能门限需在项目计划中确认 |
+| 1 | 正式数据分类 | OAG 语义索引分为本体对象、枚举元素、实例元素三类稳定实体 | 必须分别验证三类索引，不再使用“枚举/实例混表” |
+| 2 | Property 检索准入 | Instance Value 索引准入以 `Property.retrieval.enabled=true` 为正式开关，并结合 `datatype_eligible / value_shape_eligible / cardinality_eligible`；历史 `is_semantic` 仅作为兼容来源 | 验收不得以 `is_semantic` 作为唯一正式协议字段 |
+| 3 | 静态枚举来源 | 静态 Enum Value 来自 OMS 的 EnumType/values[] 与 Property 引用关系，由 OAG 读取/解析本体资产构建 | 验证 EnumType 被多个 Property 引用时按实际 Property 展开 |
+| 4 | 动态数据交付 | 动态 Enum/Instance 无论数据量大小，统一通过 UTF-8 MinIO CSV + `/index-data/notice` 交付 | 不验收直接把大批 JSON value 列表写入 OAG 的旧接口 |
+| 5 | 数据读取责任 | `instanceDataSourceMode` 只决定谁访问业务数据源：`OAC` 或 `BUSINESS_NOTICE`；不允许按单次数据量动态切换模式 | OAC 与 DataSync 场景分别覆盖 |
+| 6 | OAG Owner | OAG 统一负责 Schema/Ontology Mapping、Normalize、Dedup、Embedding、GaussVector/OpenSearch 双写、Verify、Publish 和 Task 终态 | 生产者不得直接写 GaussVector/OpenSearch |
+| 7 | 三类物理索引 | `t_oag_{ontology_id}`、`t_oag_enum_{ontology_id}`、`t_oag_instance_{ontology_id}` 分别承载本体对象、Enum Value、Instance Value | 验收物理结构与稳定业务键 |
+| 8 | Stable Key | 本体对象键为 `id`；Enum/Instance 键为 `object_type_id + property_id + normalized(value)` | 重复导入必须幂等覆盖 |
+| 9 | Synonym | SynonymType 在 OMS 保留结构化多语言；进入 OAG 后平铺为 LF 分隔 `synonyms` String，不建立独立向量/全文记录 | 不再验收 `synonyms_zh/synonyms_en` 独立 JSON 数组列 |
+| 10 | 多语言 | 本体对象和 Enum 支持 zh/en/lang_1/lang_2 固定槽位；Instance 不配置 display/description 多语言字段 | Instance 索引只保留 value/synonyms/归属字段 |
+| 11 | Embedding | Dense 使用 BGE-M3 1024 维向量，COSINE 距离；Instance Dense 输入只拼 `{value}\n{synonyms}` | 验收 Embedding 输入与 Schema 一致 |
+| 12 | 混合召回 | 系统共有 6 个物理通道，但不是所有 Semantic Unit 都走 6 路：OBJECT_TYPE/PROPERTY 走本体定义 2 路，VALUE 走 Enum/Instance 4 路 | 测试必须验证路由隔离 |
+| 13 | Lexical | OpenSearch lexical 采用 Keyword Fuzzy（Analyzer + BM25 + fuzziness）；Exact/Phrase 仅作为 boost，不形成额外独立 Ranked List | 禁止把“BM25 精确匹配”描述为独立通道 |
+| 14 | Weighted RRF | RRF 只融合各通道 rank；权重、TopK、阈值通过配置和评测校准，不在需求中写死业务置信度公式 | 验收排序稳定性和候选真实性，不验收手工 +0.2/+0.1 公式 |
+| 15 | Dense Threshold | `similarityThreshold` 只作用于 Dense 通道，lexical 不使用 Dense 阈值过滤 | 覆盖边界测试 |
+| 16 | LLM 边界 | LLM Fine Rank 只能裁剪 Entity Linking 已召回的真实候选，允许 0/1/N，不得生成新的 ObjectType/Property/Value ID | 验收 Candidate Membership 和 Ownership 校验 |
+| 17 | Core Graph | Enum/Instance 不直接作为 minimal/khop/component 图算法顶点；命中后投影为 Property/ObjectType | 覆盖值命中后子图构建场景 |
+| 18 | ValueMapping | 最终标准值必须来自真实索引 `value`；下游过滤使用 `canonicalValue`/必要时 `defaultDataValue`，不得使用 synonym/display 作为权威值 | 验收 `semanticExtensions.valueMappings` |
+| 19 | 高基数控制 | UUID、手机号、时间戳、连续数值、高随机编码等默认不建议进入 Instance Dense；高基数自由文本进入独立 Document/RAG Index | 验收准入策略和容量指标 |
+| 20 | 性能指标 | 检索时延和索引吞吐量以项目性能规格/压测结果为准，本文不写死未验证的 P95 200ms 等门限 | 通过性能基线文档单独验收 |
+
+---
+
+# 总体流程
+
+## 1. 索引构建总体流程
+
+```mermaid
+flowchart TD
+    subgraph Trigger[触发方]
+      APP[App安装/OMS事件]
+      MANUAL[人工构建/更新]
+      SYNC[定时/事件同步]
+    end
+
+    subgraph Source[数据准备]
+      OMS[OMS本体资产]
+      OAC[OAC抽取]
+      BUS[DataSync/业务数据服务]
+      MINIO[(MinIO CSV)]
+    end
+
+    subgraph OAG[OAG Index Engine]
+      TASK[持久化Index Task]
+      VALIDATE[Schema/Ontology Mapping]
+      PIPE[Normalize/Dedup/Embedding]
+      GV[(GaussVector)]
+      OS[(OpenSearch)]
+      PUB[Verify/Publish]
+    end
+
+    APP --> OMS --> TASK
+    MANUAL --> TASK --> OAC
+    OAC --> MINIO
+    SYNC --> BUS --> MINIO
+    MINIO -->|index-data/notice| TASK
+    TASK --> VALIDATE --> PIPE
+    PIPE --> GV
+    PIPE --> OS
+    GV --> PUB
+    OS --> PUB
+```
+
+### 场景选择
+
+| 场景 | 数据流 | instanceDataSourceMode | importMode |
+| --- | --- | --- | --- |
+| App 安装/OMS 事件构建本体对象和静态 Enum | OMS → OAG | - | FULL_REPLACE/内部资产同步 |
+| 首次全量，有 OAC | OAG build → OAC 抽取 → MinIO → notice(triggerTaskId) → OAG | OAC | FULL_REPLACE |
+| 人工触发增量，有 OAC | OAG build → OAC 抽取 → MinIO → notice(triggerTaskId) → OAG | OAC | INCREMENTAL |
+| 定时/事件同步 | DataSync/业务服务 → MinIO → notice → OAG | BUSINESS_NOTICE | INCREMENTAL |
+| 已有全量文件重建 | MinIO → notice → OAG | BUSINESS_NOTICE | FULL_REPLACE |
+| 清理当前本体实例索引 | notice | - | INSTANCE_VALUE + CLEAR |
+
+## 2. 运行态端到端流程
+
+```mermaid
+flowchart TD
+    Q[Agent/用户 Query] --> EE[① Entity Extraction\nObjectType/Properties/Values]
+    EE --> ROUTE{Semantic Unit}
+
+    ROUTE -->|OBJECT_TYPE/PROPERTY| OD[本体对象 2 路\nOpenSearch Keyword Fuzzy + Dense]
+    ROUTE -->|VALUE| VV[Value 4 路\nEnum Lexical/Dense + Instance Lexical/Dense]
+
+    OD --> ORRF[OntologyDefinitionFusion\nWeighted RRF]
+    VV --> VRRF[ValueFusion\nWeighted RRF]
+    ORRF --> RERANK[LLM Fine Rank\n仅裁剪真实候选]
+    VRRF --> RERANK
+    RERANK --> PROJ[SeedNodeProjector]
+    PROJ --> SG[③ minimal/khop/component\nPathProbePlan]
+    SG --> GRAPH[④ nGQL/图算法执行]
+    GRAPH --> RESULT[⑤ 结果生成]
+    RESULT --> EXT[semanticExtensions.valueMappings]
+    EXT --> AGENT[Agent/业务Skill]
+    AGENT --> OAC[OAC Binding/OQL 数据访问]
+```
+
+运行边界：
+
+1. Entity Extraction 只识别业务表达，不生成内部本体 ID，也不预判 Value 是 Enum 还是 Instance；
+2. Entity Linking 负责把文本和值链接到真实索引记录；
+3. VALUE 命中根据真实 `property_id + object_type_id` 解析归属；
+4. LLM 只做候选裁剪，不重新检索、不生成新 ID；
+5. 图策略只消费真实 ObjectType/Property；
+6. OAG 最终把值语义装配到 `semanticExtensions.valueMappings`；
+7. Agent/OAC 使用确定性映射生成查询条件，OAG 不在第一版返回可执行 filterHints/operator。
 
 ---
 
@@ -105,1021 +250,311 @@
 
 ## 场景清单
 
-| 变更类型 | 场景编号 | 场景名称 | 场景要素覆盖 | 优先级 | 备注 |
-| --- | --- | --- | --- | --- | --- |
-| ADD | SC-001 | 本体属性维值语义标识与建模 | OMS UI、OMS 后端、属性建模、is_semantic 标识 | 高 | 对应设计态建模 |
-| ADD | SC-002 | 有限枚举值定义与索引构建 | OMS、OAG、枚举值解析、索引创建 | 高 | 对应设计态枚举 |
-| ADD | SC-003 | 维值实例值数据查询与索引供给 | OAC、物理数据源、实例值查询、OAG 索引接口 | 高 | 对应运行态数据供给 |
-| ADD | SC-004 | 用户问题维值意图识别与提取 | OAC、意图识别、候选维值提取 | 高 | 对应运行态意图提取 |
-| ADD | SC-005 | 模糊维值检索与标准化 | OAG、模糊匹配、同义词匹配、标准化输出 | 高 | 对应运行态检索 |
-| ADD | SC-006 | 维值置信度评估与歧义处理 | OAG、置信度计算、排序、歧义处理 | 中 | 对应运行态评估 |
-| ADD | SC-007 | OAG 本体检索输入条件组装 | OAC/OAG 联动、标准化维值、检索条件 | 高 | 对应 OAG 检索增强 |
-| ADD | SC-008 | OAC 本体数据访问过滤 | OAC、精确维值、过滤条件、查询执行 | 高 | 对应 OAC 查询增强 |
+| 变更类型 | 场景编号 | 场景名称 | 主要覆盖 | 优先级 |
+| --- | --- | --- | --- | --- |
+| MODIFY | SC-001 | Property 检索准入、Enum/Synonym 建模 | OMS、retrieval.enabled、EnumType、SynonymType、多语言 | 高 |
+| MODIFY | SC-002 | 本体对象与静态 Enum 索引构建 | OMS → OAG、三类索引、Embedding、OpenSearch | 高 |
+| MODIFY | SC-003 | 动态 Enum/Instance 数据准备与导入 | OAC/DataSync、MinIO、Task、FULL_REPLACE/INCREMENTAL/CLEAR | 高 |
+| MODIFY | SC-004 | Entity Extraction / Value 提取 | OAG、query/extractedEntities、ValueHint | 高 |
+| MODIFY | SC-005 | Entity Linking 与混合召回 | 2 路/4 路、Keyword Fuzzy、Dense、Weighted RRF | 高 |
+| MODIFY | SC-006 | LLM 精排与 unresolved | Candidate Membership、0/1/N、最小充分种子 | 高 |
+| MODIFY | SC-007 | 本体对象投影、子图与 ValueMapping | SeedNodeProjector、minimal/khop/component、semanticExtensions | 高 |
+| MODIFY | SC-008 | OAC 本体数据访问过滤 | Agent/OAC、Binding/OQL、canonicalValue/defaultDataValue | 高 |
 
-## 设计态模块交互流程
+---
 
-### 1. 有限枚举值索引构建流程
+## SC-001：Property 检索准入、Enum/Synonym 建模
 
-```mermaid
-flowchart TD
-    subgraph 设计态-有限枚举值索引构建
-        A[建模人员] --> B[OMS本体建模页面]
-        B --> C[配置属性is_semantic=true]
-        C --> D[定义枚举值<br/>value/display/synonyms]
-        D --> E[发布本体模型]
-        E --> F[OMS解析枚举值元数据]
-        F --> G[OMS调用OAG接口<br/>POST /api/v1/index/enum-values]
-        G --> H[OAG生成向量]
-        H --> I[OAG创建BM25索引]
-        I --> J[OAG写入<br/>t_metadata_evidence表]
-        J --> K[索引构建完成]
-    end
+### 场景描述
 
-    style A fill:#f9f,stroke:#333,stroke-width:2px
-    style K fill:#9f9,stroke:#333,stroke-width:2px
-```
+建模人员通过 OMS 维护 ObjectType、Property、EnumType、SynonymType 及多语言显示/描述。对需要建立 Instance Value 语义索引的 Property，通过 `Property.retrieval.enabled=true` 开启检索准入；是否最终建立 Instance 索引还需通过数据类型、值形态和基数准入。
 
-### 2. 实例值索引供给流程
+### 成功保证
 
-```mermaid
-flowchart TD
-    subgraph 设计态-实例值索引供给
-        A[定时任务/变更触发] --> B[OAC查询is_semantic=true属性列表]
-        B --> C{遍历每个属性}
-        C --> D[读取Binding信息]
-        D --> E[构建SELECT DISTINCT查询]
-        E --> F[执行查询<br/>获取唯一实例值]
-        F --> G[OAC批量调用OAG接口<br/>POST /api/v1/index/instance-values]
-        G --> H[OAG生成向量]
-        H --> I[OAG创建索引]
-        I --> J[写入<br/>t_instance_evidence表]
-        J --> C
-        C --> K[所有属性处理完成]
-    end
+1. Property 的正式检索配置可发布并被 OAG/DataSync/OAC 读取；
+2. Enum Value 通过 Property → EnumType 引用关系确定归属；
+3. SynonymType 在 OMS 保留语言 Map，进入 OAG 时由 `SynonymFlattener` 平铺为 LF String；
+4. 本体对象/Enum 支持 zh/en/lang_1/lang_2；Instance 不增加 display/description 多语言列；
+5. 同义词不建立独立索引记录。
 
-    style A fill:#ff9,stroke:#333,stroke-width:2px
-    style K fill:#9f9,stroke:#333,stroke-width:2px
-```
-
-### 3. 设计态端到端交互时序图
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant M as 建模人员
-    participant OMS as OMS后端
-    participant OAG as OAG服务
-    participant DB as 索引存储
-    participant OAC as OAC服务
-    participant DS as 物理数据源
-
-    M->>OMS: 创建属性，勾选is_semantic
-    OMS->>OMS: 保存维值语义标识
-    M->>OMS: 定义枚举值（value/display/synonyms）
-    OMS->>OMS: 保存枚举值定义
-    M->>OMS: 发布本体模型
-    OMS->>OAG: 调用枚举值入库接口
-    OAG->>OAG: 生成向量，创建BM25索引
-    OAG->>DB: 写入t_metadata_evidence表
-    DB-->>OAG: 索引创建成功
-    OAG-->>OMS: 返回索引构建结果
-
-    Note over OAC,DS: 实例值索引供给（异步）
-    OAC->>DS: 查询实例值数据
-    DS-->>OAC: 返回唯一实例值列表
-    OAC->>OAG: 调用实例值入库接口
-    OAG->>OAG: 生成向量，创建索引
-    OAG->>DB: 写入t_instance_evidence表
-```
-
-## 设计态场景
-
-### ADD 场景 SC-001：本体属性维值语义标识与建模
-
-#### 场景描述
-
-建模人员在 OMS 页面编辑本体对象属性时，可以标识该属性是否具有维值语义。当属性需要支持模糊维值检索时，建模人员开启 `is_semantic` 开关，并指定维值来源（枚举值定义/实例值映射）。
-
-#### 场景要素分析
-
-| 场景要素 | 取值 |
-| --- | --- |
-| **T** 生命周期阶段 | 本体设计、修改、评审和发布 |
-| **G** 场景目标 | 建立可标识维值语义的本体属性定义 |
-| **E** 环境 | OMS 本体建模页面和后端服务 |
-| **A** 参与者 | 建模人员、OMS 后端、OAC |
-| **S** 系统状态 | 目标本体处于草稿状态，建模人员具备编辑权限 |
-
-#### 用例清单
-
-| 变更类型 | 用例编号 | 用例名称 | 用例目的 | 用例描述 | 是否基础用例 |
-| --- | --- | --- | --- | --- | --- |
-| ADD | SC001-UC001 | 在本体属性上标识维值语义 | 建立维值语义标识能力 | 建模人员为属性开启 is_semantic，指定维值来源 | 是 |
-| ADD | SC001-UC002 | 维护维值语义标识并发布 | 使维值语义标识生效 | 保存并发布维值语义标识，使其在运行态可用 | 是 |
-
-#### ADD 用例 SC001-UC001：在本体属性上标识维值语义
-
-##### 简要说明
-
-建模人员在 OMS 页面选择本体对象属性，勾选"具有维值语义"选项，并配置维值来源（枚举值或实例值）。
-
-##### Actor
-
-| 角色 | 类型（主/次，人/系统） | 与系统的关系 |
-| --- | --- | --- |
-| 建模人员 | 主/人 | 定义属性的维值语义标识 |
-| OMS 本体建模页面 | 主/系统 | 提供属性编辑和维值配置 UI |
-| OMS 后端 | 主/系统 | 保存维值语义标识配置 |
-
-##### 前置条件
-
-| 场景要素 | 本用例采用的取值 | 对用例的影响点 |
-| --- | --- | --- |
-| **T** 生命周期阶段 | 草稿建模 | 维值标识可修改 |
-| **G** 场景目标 | 形成可发布的维值语义标识 | DoD 包含标识配置完整 |
-| **E** 环境 | OMS 页面/服务正常 | 页面和后端均需可用 |
-| **A** 参与者 | 建模人员、OMS | 权限和职责分离 |
-| **S** 系统状态 | 目标属性存在 | 属性不存在则不能配置 |
-
-##### 成功保证（后置条件）
-
-1. 属性的 `is_semantic` 字段被设置为 `true`。
-2. 维值来源类型（enum/instance）被正确记录。
-3. 对于 enum 类型，关联到对应的枚举值定义。
-4. 对于 instance 类型，关联到对应的数据源配置。
-5. 维值标识配置已保存到草稿版本。
-
-##### 触发事件
-
-建模人员在 OMS 页面选择本体属性，勾选"具有维值语义"并配置维值来源。
-
-##### 主成功路径
-
-```
-1. 建模人员选择目标本体对象和属性
-2. 勾选"具有维值语义"开关
-3. 选择维值来源类型（有限枚举值 / 实例值）
-4. 如果选择"有限枚举值"，关联或创建枚举值定义
-5. 如果选择"实例值"，配置数据源映射信息
-6. 保存维值语义标识配置
-7. OMS 持久化配置到草稿版本
-```
-
-##### 扩展路径
-
-```
-3a. 维值来源类型未选择
-    OMS 返回 SEMANTIC_SOURCE_REQUIRED
-
-4a. 枚举值定义为空或无效
-    OMS 返回 ENUM_DEFINITION_INVALID
-
-5a. 数据源映射信息不完整
-    OMS 返回 DATASOURCE_MAPPING_INCOMPLETE
-```
-
-##### 验证达成标准
+### 验收示例
 
 ```gherkin
-Given OMS 中存在草稿状态的本体对象 NetworkElement
-And   属性 deviceType 存在
-When  建模人员为 deviceType 勾选"具有维值语义"
-And   选择维值来源为"实例值"并配置数据源映射
-Then  属性 deviceType 的 is_semantic = true
-And   维值来源类型为 instance
-And   数据源映射信息已保存
+Given Property customerLevel 已发布
+And   customerLevel.retrieval.enabled = true
+And   customerLevel 引用 EnumType CustomerLevelEnum
+And   枚举 VIP 的 SynonymType 含 zh:["贵宾","VIP客户"], en:["VIP customer"]
+When  OAG 构建语义索引
+Then  VIP 作为独立 Enum Value 记录入 t_oag_enum_{ontology_id}
+And   synonyms 以 LF String 保存
+And   不创建独立 synonym 向量记录
 ```
 
 ---
 
-### ADD 场景 SC-002：有限枚举值定义与索引构建
+## SC-002：本体对象与静态 Enum 索引构建
 
-#### 场景描述
+### 场景描述
 
-建模人员在 OMS 中定义属性的有限枚举值，OAG 解析枚举值定义并创建向量化索引，支持枚举值的语义检索。
+App 安装或 OMS 资产变更触发 OAG 构建本体对象和静态 Enum 索引。OAG 读取 OMS 资产，完成归属校验、规范化、去重、Embedding 及 GaussVector/OpenSearch 双写。
 
-#### 场景要素分析
+### 索引粒度
 
-| 场景要素 | 取值 |
-| --- | --- |
-| **T** 生命周期阶段 | 本体设计、枚举值定义、索引构建 |
-| **G** 场景目标 | 建立可检索的有限枚举值索引 |
-| **E** 环境 | OMS、OAG、本体索引存储 |
-| **A** 参与者 | 建模人员、OMS、OAG |
-| **S** 系统状态 | 枚举值定义完成，本体处于已发布状态 |
+```text
+t_oag_{ontology_id}
+  → 1 个 ObjectType / Property 1 条记录
 
-#### 用例清单
-
-| 变更类型 | 用例编号 | 用例名称 | 用例目的 | 用例描述 | 是否基础用例 |
-| --- | --- | --- | --- | --- | --- |
-| ADD | SC002-UC001 | 定义属性有限枚举值 | 建立有限枚举值定义 | 为属性定义 enum 字段，包含所有可选值 | 是 |
-| ADD | SC002-UC002 | OAG 解析枚举值并创建索引 | 建立枚举值检索能力 | OAG 接收枚举值元数据，创建向量化索引 | 是 |
-
-#### ADD 用例 SC002-UC002：OAG 解析枚举值并创建索引
-
-##### 简要说明
-
-当本体发布时，OAG 接收 OMS 的枚举值元数据，解析枚举值的 value、display、description、synonyms 等字段，创建向量化索引记录到 `t_metadata_evidence_{ontology_id}` 表。
-
-##### Actor
-
-| 角色 | 类型（主/次，人/系统） | 与系统的关系 |
-| --- | --- | --- |
-| OMS | 主/系统 | 发布枚举值元数据到 OAG |
-| OAG | 主/系统 | 接收枚举值并创建向量化索引 |
-| OpenSearch/GaussVector | 次/系统 | 存储枚举值索引 |
-
-##### 前置条件
-
-| 场景要素 | 本用例采用的取值 | 对用例的影响点 |
-| --- | --- | --- |
-| **T** 生命周期阶段 | 本体发布 | 触发索引构建 |
-| **G** 场景目标 | 形成可检索的枚举值索引 | DoD 包含索引创建成功 |
-| **E** 环境 | OAG 服务正常，索引存储可用 | 服务异常进入扩展路径 |
-| **A** 参与者 | OMS、OAG | 异步触发 |
-| **S** 系统状态 | 枚举值定义已发布 | 未发布不触发索引 |
-
-##### 成功保证（后置条件）
-
-1. OAG 接收到完整的枚举值元数据。
-2. 每个枚举值创建一条索引记录，包含 value、display、description、synonyms。
-3. 枚举值索引的 parent_id 指向所属 Property。
-4. 向量化和 BM25 索引均创建成功。
-5. 索引记录可通过 OAG 检索接口查询。
-
-##### 触发事件
-
-本体模型发布时，OMS 调用 OAG 枚举值入库接口。
-
-##### 主成功路径
-
-```
-1. 本体模型发布触发事件
-2. OMS 收集所有 is_semantic=true 属性的枚举值定义
-3. OMS 调用 OAG 接口 POST /api/v1/index/enum-values
-4. OAG 解析枚举值元数据（value、display、description、synonyms）
-5. OAG 为每个枚举值生成向量
-6. OAG 创建 BM25 索引记录
-7. OAG 批量写入 t_metadata_evidence_{ontology_id} 表
-8. OAG 返回索引构建结果给 OMS
+t_oag_enum_{ontology_id}
+  → 1 个 Property 下的 1 个 Enum Value 1 条记录
 ```
 
-##### 扩展路径
+同一 EnumType 被多个 Property 复用时，按实际引用 Property 展开为多条归属明确的记录。
 
+### 成功保证
+
+1. 本体对象稳定键为 `id`；
+2. Enum 稳定键为 `object_type_id + property_id + normalized(value)`；
+3. BGE-M3 生成 1024 维向量；
+4. OpenSearch 与 GaussVector 使用同一业务语义和稳定键；
+5. 重复构建幂等覆盖，不产生重复向量或重复全文文档；
+6. OAG 完成 Verify/Publish 后任务才进入成功终态。
+
+---
+
+## SC-003：动态 Enum/Instance 数据准备与导入
+
+### 场景描述
+
+动态 Enum/Instance 由 OAC 或 DataSync/业务数据服务访问真实业务数据源、执行源侧基础标准化和必要去重，生成 UTF-8 CSV 上传到约定 MinIO Bucket，再调用 OAG `index-data/notice`。OAG 负责最终映射校验、去重、Embedding、双写、验证和发布。
+
+### OAC 模式
+
+```text
+OAG 手动 build
+→ 创建持久化 Task
+→ OAG 编排 OAC
+→ OAC 抽取业务数据
+→ CSV 上传 MinIO
+→ OAC 调用 index-data/notice(triggerTaskId)
+→ OAG 继续原 Task
+→ Validate/Normalize/Dedup/Embedding/双写/Verify/Publish
 ```
-3a. OAG 接口调用失败
-    OMS 重试 3 次，仍失败则记录错误并继续，不阻塞发布流程
 
-4a. 枚举值数据格式不合法
-    OAG 返回 ENUM_VALUE_FORMAT_INVALID
+### BUSINESS_NOTICE 模式
 
-5a. 向量化服务不可用
-    OAG 使用默认值填充 vector，重试向量化
+```text
+DataSync/业务服务
+→ 定时/事件读取业务数据源
+→ CSV 上传 MinIO
+→ index-data/notice
+→ OAG 创建 Task
+→ Validate/Normalize/Dedup/Embedding/双写/Verify/Publish
 ```
 
-##### 验证达成标准
+### Instance 去重规则
+
+同一个 Property/ObjectType 作用域内按 `normalized(value)` 去重。例如源表 5000 万行，但 `subLevel` 只有 VIP/GOLD/SILVER/NORMAL 四个唯一值，则最终 Instance 语义索引只保存 4 条记录。
+
+### 验收示例
 
 ```gherkin
-Given OMS 中存在已发布的本体属性 priority
-And   priority 的 is_semantic = true
-And   priority 定义了枚举值 HIGH/MEDIUM/LOW
-When  本体模型发布
-Then  OAG 创建 3 条枚举值索引记录
-And   每条记录包含 value、display、description、synonyms
-And   每条记录的 parent_id = priority.id
-And   向量化和 BM25 索引均创建成功
-And   枚举值可通过 OAG 检索接口查询到
+Given Property deviceType.retrieval.enabled = true
+And   OAG 当前 instanceDataSourceMode = OAC
+When  用户发起 FULL_REPLACE 手动构建
+Then  OAG 创建持久化 Task 并通知 OAC 抽取
+And   OAC 上传 UTF-8 CSV 到 MinIO
+And   OAC 使用 triggerTaskId 调用 /v1/onto-retrieval/{ontologyId}/index-data/notice
+And   OAG 按 object_type_id + property_id + normalized(value) 再次去重
+And   GaussVector 与 OpenSearch 双写完成后 Verify/Publish
 ```
 
 ---
 
-## 运行态模块交互流程
+## SC-004：Entity Extraction / Value 提取
 
-### 1. 运行态端到端流程（正确调用顺序）
+### 场景描述
 
-```mermaid
-flowchart TD
-    subgraph 运行态-正确调用顺序
-        A[Agent/用户] -->|提交问题| B[OAG语义检索入口]
-        B --> C[OAG意图识别<br/>提取ObjectType/Property/候选维值]
-        C --> D[OAG维值检索<br/>6路召回+RRF融合]
-        D --> E[OAG置信度评估<br/>与歧义处理]
-        E --> F[OAG本体子图召回<br/>SeedNodeProjector]
-        F --> G[构建本体子图<br/>返回种子节点+标准化维值]
-        G --> H[调用OAC数据查询<br/>传入维值过滤条件]
-        H --> I[OAC Binding解析<br/>映射到物理字段]
-        I --> J[OAC执行查询<br/>带维值过滤]
-        J --> K[OAC结果装配<br/>返回对象结果]
-        K --> L[返回最终结果<br/>给Agent/用户]
-    end
+运行时由 OAG 语义子图检索入口处理自然语言 `query` 或业务 Skill 提供的 `extractedEntities`。Entity Extraction 只识别 ObjectType、Properties 和 Values，不生成内部 ID、不绑定 Relationship、不把 Value 强制分类为 Enum/Instance。
 
-    style A fill:#f9f,stroke:#333,stroke-width:2px
-    style L fill:#9f9,stroke:#333,stroke-width:2px
+### 正式结构
+
+```json
+{
+  "extractedEntities": [
+    {
+      "ObjectType": "Account",
+      "Properties": ["accountStatus", "customerLevel"],
+      "Values": [
+        {"Property": "accountStatus", "Value": "在用"},
+        {"Property": "customerLevel", "Value": "VIP"}
+      ]
+    }
+  ]
+}
 ```
 
-### 2. OAG子图召回内部流程
+允许 value-only：
 
-```mermaid
-flowchart LR
-    subgraph OAG内部处理
-        A[用户问题] --> B[意图识别模块]
-        B --> C[提取候选维值<br/>candidateValues]
-
-        C --> D[6路召回]
-        D --> D1[枚举值向量检索]
-        D --> D2[枚举值BM25]
-        D --> D3[实例值向量检索]
-        D --> D4[实例值BM25]
-        D --> D5[同义词向量]
-        D --> D6[同义词BM25]
-
-        D1 --> E[RRF融合]
-        D2 --> E
-        D3 --> E
-        D4 --> E
-        D5 --> E
-        D6 --> E
-
-        E --> F[置信度评估]
-        F --> G{歧义检测}
-        G -->|高置信度| H[标准化维值输出]
-        G -->|歧义| I[候选列表]
-
-        H --> J[种子节点投影]
-        I --> J
-        J --> K[本体子图构建<br/>minimal/khop/component]
-        K --> L[返回子图+维值]
-    end
+```json
+{
+  "extractedEntities": [
+    {
+      "Values": [
+        {"Value": "12JKS0885_IN_RSNM_KALIBATA3_MC"}
+      ]
+    }
+  ]
+}
 ```
 
-### 3. Agent→OAG→OAC联动时序图（正确顺序）
+### 成功保证
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Agent as Agent/用户
-    participant OAG as OAG服务
-    participant VecDB as GaussVector
-    participant Search as OpenSearch
-    participant OAC as OAC服务
-    participant DB as 物理数据源
+1. `query` 与 `extractedEntities` 至少一个非空；
+2. `Properties` 非空时必须存在 `ObjectType`；
+3. Value 的 Property 未知时允许只传 `Value`；
+4. 不根据编码形态猜测 Site/BaseStation/nativeId 等归属；
+5. 连续数值、范围、时间、聚合等语义默认保留在原始 query 中，不强行作为 Enum/Instance Value。
 
-    Note over Agent,OAG: Step 1: Agent调用OAG进行语义检索和子图召回
-    Agent->>OAG: 提交问题"查询华东地区的路由器"
-    OAG->>OAG: 意图识别：提取ObjectType/Property/候选维值
-    Note over OAG: candidates: ["路由器", "华东"]
+---
 
-    OAG->>VecDB: 枚举值向量检索
-    VecDB-->>OAG: 召回结果A
-    OAG->>Search: 枚举值BM25精确匹配
-    Search-->>OAG: 召回结果B
-    OAG->>VecDB: 实例值向量检索
-    VecDB-->>OAG: 召回结果C
-    OAG->>Search: 实例值BM25精确匹配
-    Search-->>OAG: 召回结果D
+## SC-005：Entity Linking 与混合召回
 
-    OAG->>OAG: Weighted RRF融合
-    OAG->>OAG: 置信度评估+歧义处理
-    OAG->>OAG: 种子节点投影
-    OAG->>OAG: 本体子图构建
-    OAG-->>Agent: 返回本体子图+标准化维值
+### 场景描述
 
-    Note over Agent,OAC: Step 2: Agent携带维值过滤条件调用OAC数据查询
-    Agent->>OAC: 调用OAC数据查询接口<br/>传入标准化维值作为过滤条件
-    OAC->>OAC: Binding解析：将维值映射到物理字段
-    OAC->>DB: 执行带维值过滤的查询<br/>WHERE device_type='router' AND region='EAST_CHINA'
-    DB-->>OAC: 返回对象结果
-    OAC-->>Agent: 返回最终数据结果
-```
+OAG 根据 Semantic Unit 类型路由不同检索域：
 
-### 4. 置信度评估与歧义处理流程
-
-```mermaid
-flowchart TD
-    subgraph 置信度评估
-        A[RRF融合结果] --> B[基础分计算]
-        B --> C[匹配字段加权]
-        C --> D[召回来源加权]
-        D --> E[匹配质量调整]
-        E --> F[归一化到0-1]
-        F --> G[按置信度排序]
-    end
-
-    subgraph 歧义处理
-        G --> H{置信度>=0.8?}
-        H -->|是| I[直接使用]
-        H -->|否| J{多个候选?}
-        J -->|是| K[返回候选列表<br/>待用户确认]
-        J -->|否| L[返回低置信度结果<br/>标记待确认]
-    end
-
-    I --> M[输出标准化结果]
-    K --> M
-    L --> M
-```
-
-## 运行态场景
-
-### ADD 场景 SC-003：维值实例值数据查询与索引供给
-
-#### 场景描述
-
-OAC 根据属性的 `is_semantic=true` 配置，查询属性对应的实例值数据，并调用 OAG 接口创建实例值索引。
-
-#### 场景要素分析
-
-| 场景要素 | 取值 |
-| --- | --- |
-| **T** 生命周期阶段 | 运行态数据查询与索引构建 |
-| **G** 场景目标 | 建立实例值维值数据的索引供给能力 |
-| **E** 环境 | OAC、物理数据源、OAG |
-| **A** 参与者 | OAC、OAG、物理数据源 |
-| **S** 系统状态 | 本体已发布，属性 is_semantic=true，数据源可访问 |
-
-#### 用例清单
-
-| 变更类型 | 用例编号 | 用例名称 | 用例目的 | 用例描述 | 是否基础用例 |
-| --- | --- | --- | --- | --- | --- |
-| ADD | SC003-UC001 | OAC 查询实例值数据 | 获取属性对应的实例值 | OAC 根据 Binding 查询物理数据源获取属性实例值 | 是 |
-| ADD | SC003-UC002 | OAC 调用 OAG 创建实例值索引 | 建立实例值检索能力 | OAC 将实例值数据调用 OAG 接口创建向量化索引 | 是 |
-
-#### ADD 用例 SC003-UC001：OAC 查询实例值数据
-
-##### 简要说明
-
-OAC 扫描所有 is_semantic=true 的属性，根据 Binding 信息查询对应的物理数据源，获取属性的所有实例值。
-
-##### Actor
-
-| 角色 | 类型（主/次，人/系统） | 与系统的关系 |
+| Semantic Unit | 检索通道 | 融合 |
 | --- | --- | --- |
-| OAC | 主/系统 | 查询实例值并调用 OAG 索引接口 |
-| 物理数据源 | 次/系统 | 提供属性实例值数据 |
-| OAG | 次/系统 | 接收实例值并创建索引 |
+| OBJECT_TYPE | `ontologyObjectLexical + ontologyObjectDense` | 本体定义 2 路 Weighted RRF |
+| PROPERTY | 当前 ObjectType 作用域内 `ontologyObjectLexical + ontologyObjectDense` | 本体定义 2 路 Weighted RRF |
+| VALUE | `enumLexical + enumDense + instanceLexical + instanceDense` | Value 4 路 Weighted RRF |
 
-##### 前置条件
+### 核心规则
 
-| 场景要素 | 本用例采用的取值 | 对用例的影响点 |
-| --- | --- | --- |
-| **T** 生命周期阶段 | 运行态定时触发或变更触发 | 可配置触发策略 |
-| **G** 场景目标 | 获取完整的实例值数据 | DoD 包含实例值查询成功 |
-| **E** 环境 | OAC、物理数据源、OAG 均可用 | 服务异常进入扩展路径 |
-| **A** 参与者 | OAC、OAG、数据源 | 异步执行 |
-| **S** 系统状态 | 本体已发布，属性 is_semantic=true，Binding 完整 | Binding 不完整则跳过该属性 |
+1. OBJECT_TYPE/PROPERTY 不发送到 Enum/Instance 索引；
+2. VALUE 不发送到本体对象索引并与本体定义混合成同一 Ranked List；
+3. Property 必须在候选 ObjectType 作用域内检索，使用 `type=PROPERTY + parent_id=<ObjectType.id>`；
+4. Value 有 Property Hint 时，必须先把业务 Property 文本链接成真实 Property 后再作为 filter；
+5. Value-only 在全本体 Enum/Instance 4 路召回后，根据真实命中记录反解 Property/ObjectType；
+6. RRF 前按 `semantic_unit_id + channel + group_id` 去重，避免同一 Property 因多个 synonym/value 重复占 rank；
+7. supporting hit 保留用于内部可观测性，但不继续传递给 LLM Fine Rank Prompt；
+8. RRF 只使用通道 rank；Dense 在 RRF 前使用 `similarityThreshold`，lexical 使用 Keyword Fuzzy 自身的 TopK/fuzziness/minimum_should_match 控制。
 
-##### 成功保证（后置条件）
-
-1. OAC 正确解析所有 is_semantic=true 的属性。
-2. 每个属性根据 Binding 信息构建查询语句。
-3. 查询结果包含属性的所有唯一实例值。
-4. 实例值数据被收集并准备调用 OAG 索引接口。
-5. 错误不影响其他属性的处理。
-
-##### 触发事件
-
-定时任务触发（每日/每周）或本体变更触发。
-
-##### 主成功路径
-
-```
-1. 定时任务或变更事件触发实例值同步
-2. OAC 查询所有 is_semantic=true 的属性列表
-3. 对于每个属性：
-   3.1 读取属性对应的 Binding 信息
-   3.2 根据 Binding 构建 SELECT DISTINCT 查询
-   3.3 执行查询获取所有唯一实例值
-   3.4 收集实例值数据（value、display 可选）
-4. OAC 批量调用 OAG 接口创建实例值索引
-5. OAG 返回索引创建结果
-6. OAC 记录同步结果和统计信息
-```
-
-##### 扩展路径
-
-```
-3a. Binding 信息不完整
-    OAC 跳过该属性，记录警告日志
-
-3b. 数据源查询超时
-    OAC 重试 2 次，仍超时则记录错误并继续
-
-3c. 实例值数据量过大
-    OAC 分批处理，每批最多 10000 条
-
-4a. OAG 接口调用失败
-    OAC 重试 3 次，仍失败则记录错误并告警
-```
-
-##### 验证达成标准
+### 验收示例
 
 ```gherkin
-Given 本体中属性 deviceType 的 is_semantic = true
-And   deviceType 绑定的物理字段为 network_element.device_type
-When  实例值同步任务触发
-Then  OAC 执行 SELECT DISTINCT device_type FROM network_element
-And   获取所有唯一实例值如 ["router", "switch", "firewall"]
-And   OAC 调用 OAG 创建 3 条实例值索引记录
-And   每条记录的 parent_id = deviceType.id
-And   索引记录可通过 OAG 检索接口查询到
+Given query 中 VALUE = "VIP"
+When  执行 Entity Linking
+Then  只进入 enumLexical/enumDense/instanceLexical/instanceDense 四个值通道
+And   结果按真实 object_type_id + property_id 聚合
+And   使用 Weighted RRF 融合通道 rank
+And   返回的实际 value 来自真实索引记录
 ```
 
 ---
 
-### ADD 场景 SC-004：用户问题维值意图识别与提取
+## SC-006：LLM 精排与 unresolved
 
-#### 场景描述
+### 场景描述
 
-当用户输入问题时，OAC 通过意图识别模块同时提取本体对象、属性和用户问题中的候选维值。
+Entity Linking 粗排后，OAG 使用 LLM Fine Rank 结合 `original_query + search_context + extracted_entities` 对真实 ObjectType/Property 候选进行严格裁剪。
 
-#### 场景要素分析
+### 核心规则
 
-| 场景要素 | 取值 |
-| --- | --- |
-| **T** 生命周期阶段 | 运行态用户请求处理 |
-| **G** 场景目标 | 提取用户问题中的候选维值用于后续匹配 |
-| **E** 环境 | OAC、意图识别模块 |
-| **A** 参与者 | OAC、意图识别模块 |
-| **S** 系统状态 | OAC 服务正常，本体索引已构建 |
+1. LLM 只能选择已召回候选，不能新增候选；
+2. id/name/score 必须从输入候选原样复制；
+3. Property 只能保留在所属 ObjectType 下，不允许跨 ObjectType 移动；
+4. 允许每个源实体保留 0/1/N 个候选；
+5. 无可信候选时进入 `unresolved`，不强制 Top1；
+6. 最终种子遵循“最小充分集合”原则；
+7. 程序侧必须执行 Schema、Candidate Membership 和 Ownership 校验。
 
-#### 用例清单
-
-| 变更类型 | 用例编号 | 用例名称 | 用例目的 | 用例描述 | 是否基础用例 |
-| --- | --- | --- | --- | --- | --- |
-| ADD | SC004-UC001 | 意图识别提取候选维值 | 建立维值候选提取能力 | 从用户问题中识别并提取候选维值 | 是 |
-
-#### ADD 用例 SC004-UC001：意图识别提取候选维值
-
-##### 简要说明
-
-OAC 接收用户问题后，通过意图识别模块分析问题内容，识别出用户提到的本体对象、属性和候选维值（可能使用简称、别名、口语等）。
-
-##### Actor
-
-| 角色 | 类型（主/次，人/系统） | 与系统的关系 |
-| --- | --- | --- |
-| OAC | 主/系统 | 接收问题并调用意图识别 |
-| 意图识别模块 | 主/系统 | 分析问题并提取候选维值 |
-| OAG | 次/系统 | 提供语义检索能力 |
-
-##### 前置条件
-
-| 场景要素 | 本用例采用的取值 | 对用例的影响点 |
-| --- | --- | --- |
-| **T** 生命周期阶段 | 运行态用户请求 | 实时处理 |
-| **G** 场景目标 | 提取完整的候选维值列表 | DoD 包含维值提取结果 |
-| **E** 环境 | OAC、意图识别、OAG 均可用 | 服务异常返回错误 |
-| **A** 参与者 | OAC、意图识别 | 实时调用 |
-| **S** 系统状态 | 本体索引已构建 | 索引未构建时返回空结果 |
-
-##### 成功保证（后置条件）
-
-1. 意图识别模块正确解析用户问题文本。
-2. 识别出用户提及的本体对象类型（ObjectType）。
-3. 识别出用户提及的属性名称（Property）。
-4. 识别出用户使用的候选维值（可能是简称、别名、口语）。
-5. 候选维值与对应的 ObjectType 和 Property 关联。
-6. 输出包含 objectType、property、candidateValues 的结构化结果。
-
-##### 触发事件
-
-用户通过 Agent 或 API 提交本体查询问题。
-
-##### 主成功路径
-
-```
-1. 用户提交问题 "查询华东地区的路由器设备"
-2. OAC 接收问题并调用意图识别模块
-3. 意图识别模块分析问题文本
-4. 识别出 ObjectType = NetworkElement
-5. 识别出 Property = deviceType（设备类型）
-6. 识别出 Property = region（地区）
-7. 识别出候选维值：["路由器", "router"] -> deviceType
-8. 识别出候选维值：["华东", "EAST_CHINA"] -> region
-9. 意图识别返回结构化结果
-10. 后续流程使用候选维值进行模糊检索
-```
-
-##### 扩展路径
-
-```
-3a. 问题文本无法解析
-    返回空结果，继续后续流程但不进行维值匹配
-
-7a. 多个可能的 ObjectType 匹配
-    返回候选 ObjectType 列表供后续消歧
-```
-
-##### 验证达成标准
+### 验收示例
 
 ```gherkin
-Given 本体中存在 ObjectType NetworkElement
-And   属性 deviceType 的 is_semantic = true
-And   属性 region 的 is_semantic = true
-When  用户提交问题 "查询华东地区的路由器设备"
-Then  意图识别返回：
-  objectType = NetworkElement
-  property维值列表：
-    - property: deviceType, candidateValues: ["路由器", "router"]
-    - property: region, candidateValues: ["华东", "EAST_CHINA"]
+Given 粗排候选中存在 ObjectType A/B
+And   B 的名称相似但不满足用户业务目标
+When  LLM Fine Rank 执行
+Then  LLM 只能从 A/B 中裁剪
+And   不得生成候选 C
+And   若 A/B 均不可信则返回 unresolved
 ```
 
 ---
 
-### ADD 场景 SC-005：模糊维值检索与标准化
+## SC-007：本体对象投影、子图与 ValueMapping
 
-#### 场景描述
+### 场景描述
 
-基于用户问题中提取的候选维值，OAG 通过模糊检索匹配标准维值，返回标准化结果及对应的本体对象和属性。
+精排完成后，OAG 把最终 ObjectType/Property 投影为图构建种子，执行 `minimal / khop / component` 策略并统一转换为 `PathProbePlan`。Enum/Instance 命中不直接进入 Core Graph，而在最终结果阶段装配为 `semanticExtensions.valueMappings`。
 
-#### 场景要素分析
+### ValueMapping 正式语义
 
-| 场景要素 | 取值 |
-| --- | --- |
-| **T** 生命周期阶段 | 运行态检索处理 |
-| **G** 场景目标 | 通过模糊输入检索到标准维值并建立映射 |
-| **E** 环境 | OAG、OpenSearch/GaussVector |
-| **A** 参与者 | OAG、OAC |
-| **S** 系统状态 | 维值索引已构建，OAG 服务正常 |
-
-#### 用例清单
-
-| 变更类型 | 用例编号 | 用例名称 | 用例目的 | 用例描述 | 是否基础用例 |
-| --- | --- | --- | --- | --- | --- |
-| ADD | SC005-UC001 | 模糊维值检索 | 建立模糊匹配能力 | 支持简称、别名、口语、同义词等多种表达的匹配 | 是 |
-| ADD | SC005-UC002 | 维值标准化输出 | 建立标准化结果输出 | 返回标准维值及其对应的 ObjectType 和 Property | 是 |
-
-#### ADD 用例 SC005-UC001：模糊维值检索
-
-##### 简要说明
-
-OAG 接收候选维值，通过多路召回（向量检索 + BM25 精确匹配）找到匹配的标准维值，支持简称、别名、口语、同义词等多种业务表达。
-
-##### Actor
-
-| 角色 | 类型（主/次，人/系统） | 与系统的关系 |
-| --- | --- | --- |
-| OAG | 主/系统 | 执行模糊检索和混合召回 |
-| OpenSearch | 次/系统 | 提供 BM25 精确匹配 |
-| GaussVector | 次/系统 | 提供向量相似度检索 |
-
-##### 前置条件
-
-| 场景要素 | 本用例采用的取值 | 对用例的影响点 |
-| --- | --- | --- |
-| **T** 生命周期阶段 | 运行态用户请求 | 实时处理 |
-| **G** 场景目标 | 召回匹配的标准维值 | DoD 包含检索结果 |
-| **E** 环境 | OAG、OpenSearch、GaussVector 均可用 | 服务异常返回错误 |
-| **A** 参与者 | OAG、OAC | 实时调用 |
-| **S** 系统状态 | 维值索引已构建（枚举值+实例值） | 索引未构建时返回空 |
-
-##### 成功保证（后置条件）
-
-1. 对每个候选维值执行多路召回（向量 + BM25）。
-2. 召回结果按 RRF（Reciprocal Rank Fusion）融合排序。
-3. 返回匹配的标准维值及其原始值。
-4. 匹配的标准维值包含 value、display、synonyms。
-5. 匹配结果包含 matched_field 和 matched_value（命中来源）。
-6. 每个匹配结果关联到对应的 Property 和 ObjectType。
-7. 结果包含置信度分数用于后续排序。
-
-##### 触发事件
-
-OAC 调用 OAG 维值检索接口，传入候选维值列表。
-
-##### 主成功路径
-
-```
-1. OAC 调用 OAG 接口 POST /api/v1/retrieve/dim-values
-2. 传入候选维值列表：
-   [{
-     "property": "deviceType",
-     "candidateValues": ["路由器", "router"]
-   }, {
-     "property": "region",
-     "candidateValues": ["华东", "EAST_CHINA"]
-   }]
-3. OAG 对每个候选维值执行 6 路召回：
-   - 枚举值向量检索
-   - 枚举值 BM25 精确匹配
-   - 实例值向量检索
-   - 实例值 BM25 精确匹配
-4. OAG 执行 Weighted RRF 融合
-5. OAG 按 Property 分组返回匹配结果
-6. 每个匹配结果包含：
-   - standardValue: 标准维值
-   - matchedValue: 原始匹配值
-   - matchedField: 命中的字段（name/display/synonyms/value）
-   - confidence: 置信度分数
-   - propertyId: 关联的属性 ID
-   - objectTypeId: 关联的对象类型 ID
+```text
+SemanticExtensions
+└── valueMappings[]
+     ├── sourceValue
+     ├── canonicalValue
+     ├── objectType { id, name }
+     ├── property   { id, name }
+     └── defaultDataValue（Enum 可选）
 ```
 
-##### 扩展路径
+| 字段 | 必选 | 说明 |
+| --- | ---: | --- |
+| `sourceValue` | 是 | 用户问题/ExtractedEntity 中的原始值 |
+| `canonicalValue` | 是 | Entity Linking 确认的真实标准值，必须来自真实索引 `value` |
+| `objectType` | 是 | 值所属 ObjectType `{id,name}` |
+| `property` | 是 | 值所属 Property `{id,name}` |
+| `defaultDataValue` | 否 | Enum 的数据库原始值，例如展示值“华为”对应数据库过滤值 `0` |
 
-```
-3a. 候选维值为空
-    返回空结果
+### 生成规则
 
-3b. 某个属性无匹配结果
-    该属性返回空列表，不影响其他属性
+1. 只为最终确认的 Enum/Instance 命中生成 ValueMapping；
+2. `sourceValue` 保留用户原文；
+3. `canonicalValue` 不得使用 display/synonym/LLM 新造值；
+4. 同一 sourceValue 存在多个合法归属时允许生成多个 Mapping；
+5. 第一版不返回可执行 `filterHints/operator`，范围、时间、比较、聚合语义由 Agent/LLM 结合原始问题生成；
+6. 子图结果仍返回 ObjectType、Property、Relationship、RelationshipProperty，并按开关扩展 Function/Action。
 
-4a. 召回结果超过阈值
-    按置信度截断，保留 Top 100
-```
-
-##### 验证达成标准
+### 验收示例
 
 ```gherkin
-Given 维值索引中 deviceType 有枚举值：
-  - value: "router", display: {"zh": "路由器"}, synonyms: {"zh": ["router", "路由设备"]}
-When  候选维值 "路由器" 进行模糊检索
-Then  返回匹配结果：
-  - standardValue: "router"
-  - matchedValue: "路由器"
-  - matchedField: "display.zh"
-  - confidence: 0.95
-  - propertyId: deviceType.id
-
-Given 维值索引中 region 有实例值：
-  - value: "EAST_CHINA", display: {"zh": "华东地区"}
-When  候选维值 "华东" 进行模糊检索
-Then  返回匹配结果：
-  - standardValue: "EAST_CHINA"
-  - matchedValue: "华东"
-  - matchedField: "display.zh"
-  - confidence: 0.88
-  - propertyId: region.id
+Given 用户原始值 = "严重"
+And   Enum 索引真实 value = "CRITICAL"
+And   该值属于 Alarm.severity
+When  OAG 生成最终语义结果
+Then  semanticExtensions.valueMappings 包含 sourceValue="严重"
+And   canonicalValue="CRITICAL"
+And   objectType 指向 Alarm
+And   property 指向 severity
 ```
 
 ---
 
-### ADD 场景 SC-006：维值置信度评估与歧义处理
+## SC-008：OAC 本体数据访问过滤
 
-#### 场景描述
+### 场景描述
 
-对于维值检索结果，进行置信度评估和歧义处理，返回最可能的匹配或候选列表供用户确认。
+Agent/业务 Skill 消费 OAG 的子图与 `semanticExtensions.valueMappings` 后，根据业务任务组装 OAC 查询。OAC 根据 Property Binding 将标准值映射到物理字段并执行 OQL/底层查询。
 
-#### 场景要素分析
+### 核心规则
 
-| 场景要素 | 取值 |
-| --- | --- |
-| **T** 生命周期阶段 | 运行态结果处理 |
-| **G** 场景目标 | 提供可信的维值匹配结果或歧义提示 |
-| **E** 环境 | OAG、置信度评估模块 |
-| **A** 参与者 | OAG、OAC |
-| **S** 系统状态 | 维值检索已完成 |
+1. OAG 在语义检索阶段不直接执行 OAC 数据查询；
+2. Agent/Skill 使用 OAG 返回的真实 ObjectType/Property 和 `canonicalValue` 生成过滤语义；
+3. Enum 存在 `defaultDataValue` 时，底层过滤优先使用设计约定的数据库原始值；
+4. OAC 负责 Binding 解析、查询执行和结果装配；
+5. OAC 不重新做 Enum/Instance Entity Linking。
 
-#### 用例清单
-
-| 变更类型 | 用例编号 | 用例名称 | 用例目的 | 用例描述 | 是否基础用例 |
-| --- | --- | --- | --- | --- | --- |
-| ADD | SC006-UC001 | 置信度评估与排序 | 建立结果可信度评估 | 对检索结果进行置信度评分和排序 | 是 |
-| ADD | SC006-UC002 | 歧义检测与处理 | 建立歧义处理能力 | 当存在多个可能匹配时进行歧义处理 | 是 |
-
-#### ADD 用例 SC006-UC001：置信度评估与排序
-
-##### 简要说明
-
-OAG 对维值检索结果进行置信度评估，综合考虑匹配字段类型（value/display/synonyms）、召回来源（向量/BM25）、匹配质量等因素，计算置信度分数并排序。
-
-##### Actor
-
-| 角色 | 类型（主/次，人/系统） | 与系统的关系 |
-| --- | --- | --- |
-| OAG | 主/系统 | 执行置信度评估和排序 |
-| LLM（可选） | 次/系统 | 提供语义级别的置信度校准 |
-
-##### 前置条件
-
-| 场景要素 | 本用例采用的取值 | 对用例的影响点 |
-| --- | --- | --- |
-| **T** 生命周期阶段 | 运行态检索后处理 | 实时处理 |
-| **G** 场景目标 | 对结果进行可信度排序 | DoD 包含排序结果 |
-| **E** 环境 | OAG 可用 | 服务异常跳过置信度评估 |
-| **A** 参与者 | OAG | 自动处理 |
-| **S** 系统状态 | 维值检索已完成 | 无结果时跳过 |
-
-##### 成功保证（后置条件）
-
-1. 每个检索结果包含置信度分数（0-1）。
-2. 同属性内结果按置信度降序排列。
-3. 高置信度结果（>=0.8）可直接使用。
-4. 中置信度结果（0.5-0.8）标记为待确认。
-5. 低置信度结果（<0.5）标记为低可信。
-6. 置信度计算因素记录在结果中供追溯。
-
-##### 主成功路径
-
-```
-1. 获取维值检索的 RRF 融合结果
-2. 对每个结果计算置信度分数：
-   2.1 基础分 = RRF 排名分数
-   2.2 匹配字段加权：
-       - value 精确匹配：+0.2
-       - display 匹配：+0.15
-       - synonyms 匹配：+0.1
-   2.3 召回来源加权：
-       - 向量+BM25 同时召回：+0.1
-       - 仅向量召回：+0.05
-   2.4 匹配质量调整：
-       - 完全匹配：+0.1
-       - 前缀匹配：+0.05
-       - 子串匹配：+0.02
-3. 归一化置信度分数到 [0, 1] 范围
-4. 按置信度降序排列
-5. 附加置信度因素说明
-```
-
-##### 验证达成标准
+### 验收示例
 
 ```gherkin
-Given 候选维值 "路由器" 检索结果：
-  - 结果A: value精确匹配router, display.zh匹配
-  - 结果B: synonyms.zh匹配路由设备
-When  执行置信度评估
-Then  结果A置信度 > 结果B置信度
-And   结果A置信度 >= 0.8
-And   结果按置信度降序排列
-```
-
----
-
-### ADD 场景 SC-007：OAG 本体检索输入条件组装
-
-#### 场景描述
-
-OAC 将标准化后的维值及其对应的 ObjectType 和 Property 作为 OAG 本体检索的输入条件，增强 OAG 语义检索的上下文。
-
-#### 场景要素分析
-
-| 场景要素 | 取值 |
-| --- | --- |
-| **T** 生命周期阶段 | 运行态检索增强 |
-| **G** 场景目标 | 将维值标准化结果作为 OAG 检索条件 |
-| **E** 环境 | OAC、OAG |
-| **A** 参与者 | OAC、OAG |
-| **S** 系统状态 | 维值检索完成，标准化结果可用 |
-
-#### 用例清单
-
-| 变更类型 | 用例编号 | 用例名称 | 用例目的 | 用例描述 | 是否基础用例 |
-| --- | --- | --- | --- | --- | --- |
-| ADD | SC007-UC001 | 组装 OAG 检索条件 | 建立检索增强能力 | 将维值标准化结果组装为 OAG 检索输入 | 是 |
-
-#### ADD 用例 SC007-UC001：组装 OAG 检索条件
-
-##### 简要说明
-
-OAC 将维值检索得到的标准化结果（ObjectType、Property、standardValue）组装为 OAG 本体检索的输入条件，提供更精确的检索上下文。
-
-##### Actor
-
-| 角色 | 类型（主/次，人/系统） | 与系统的关系 |
-| --- | --- | --- |
-| OAC | 主/系统 | 组装检索条件并调用 OAG |
-| OAG | 次/系统 | 执行增强的本体检索 |
-
-##### 前置条件
-
-| 场景要素 | 本用例采用的取值 | 对用例的影响点 |
-| --- | --- | --- |
-| **T** 生命周期阶段 | 运行态检索增强 | 实时处理 |
-| **G** 场景目标 | 提供增强的检索上下文 | DoD 包含检索条件组装 |
-| **E** 环境 | OAC、OAG 均可用 | 服务异常返回错误 |
-| **A** 参与者 | OAC、OAG | 实时调用 |
-| **S** 系统状态 | 维值检索已完成且有有效结果 | 无结果时跳过维值条件 |
-
-##### 成功保证（后置条件）
-
-1. 维值标准化结果被正确解析。
-2. 每个高置信度结果（>=0.8）转换为检索条件。
-3. 检索条件包含 ObjectType、Property、standardValue。
-4. 多个维值条件之间使用 AND 逻辑组合。
-5. 组合后的检索条件传递给 OAG。
-
-##### 主成功路径
-
-```
-1. 获取维值检索和置信度评估结果
-2. 筛选高置信度结果（>=0.8）作为有效条件
-3. 对每个有效结果：
-   3.1 提取 ObjectType 和 Property
-   3.2 提取 standardValue 作为过滤值
-   3.3 组装为 { objectType, property, value } 结构
-4. 将多个维值条件组合为检索条件数组
-5. 调用 OAG 本体检索接口，传入：
-   - 用户原始问题
-   - 维值检索条件
-6. OAG 执行增强的语义检索
-```
-
-##### 验证达成标准
-
-```gherkin
-Given 维值检索结果：
-  - ObjectType: NetworkElement, Property: deviceType, Value: "router", confidence: 0.95
-  - ObjectType: NetworkElement, Property: region, Value: "EAST_CHINA", confidence: 0.92
-When  组装 OAG 检索条件
-Then  调用 OAG 接口传入条件：
-  [{
-    "objectType": "NetworkElement",
-    "property": "deviceType",
-    "value": "router"
-  }, {
-    "objectType": "NetworkElement",
-    "property": "region",
-    "value": "EAST_CHINA"
-  }]
-And   条件之间使用 AND 逻辑
-```
-
----
-
-### ADD 场景 SC-008：OAC 本体数据访问过滤
-
-#### 场景描述
-
-OAC 将精确维值及其属性映射作为本体数据访问的过滤条件，执行精确查询并返回结果。
-
-#### 场景要素分析
-
-| 场景要素 | 取值 |
-| --- | --- |
-| **T** 生命周期阶段 | 运行态数据查询 |
-| **G** 场景目标 | 使用精确维值过滤条件执行查询 |
-| **E** 环境 | OAC、物理数据源 |
-| **A** 参与者 | OAC、Binding 模块、物理数据源 |
-| **S** 系统状态 | Binding 完整，标准化维值可用 |
-
-#### 用例清单
-
-| 变更类型 | 用例编号 | 用例名称 | 用例目的 | 用例描述 | 是否基础用例 |
-| --- | --- | --- | --- | --- | --- |
-| ADD | SC008-UC001 | 组装 OAC 查询过滤条件 | 建立精确过滤能力 | 将维值标准化结果转换为 OAC 查询条件 | 是 |
-| ADD | SC008-UC002 | 执行带维值过滤的查询 | 建立查询执行能力 | 使用维值过滤条件执行物理查询 | 是 |
-
-#### ADD 用例 SC008-UC002：执行带维值过滤的查询
-
-##### 简要说明
-
-OAC 将标准化后的维值转换为 Binding 对应的物理字段过滤条件，构建精确的查询语句并执行。
-
-##### Actor
-
-| 角色 | 类型（主/次，人/系统） | 与系统的关系 |
-| --- | --- | --- |
-| OAC | 主/系统 | 组装查询条件并执行 |
-| Binding 模块 | 次/系统 | 提供属性到字段的映射 |
-| 物理数据源 | 次/系统 | 执行物理查询 |
-
-##### 前置条件
-
-| 场景要素 | 本用例采用的取值 | 对用例的影响点 |
-| --- | --- | --- |
-| **T** 生命周期阶段 | 运行态数据查询 | 实时处理 |
-| **G** 场景目标 | 使用维值过滤执行精确查询 | DoD 包含查询执行和结果返回 |
-| **E** 环境 | OAC、Binding、物理数据源均可用 | 服务异常返回错误 |
-| **A** 参与者 | OAC、Binding、数据源 | 实时调用 |
-| **S** 系统状态 | Binding 完整，维值标准化结果可用 | Binding 不完整返回错误 |
-
-##### 成功保证（后置条件）
-
-1. 维值标准化结果被正确解析。
-2. 每个维值条件通过 Binding 映射到物理字段。
-3. 构建的 WHERE 条件包含精确的字段=值过滤。
-4. 查询语句被正确执行。
-5. 返回的对象结果包含用户请求的属性。
-6. 查询结果符合 OQL 语义。
-
-##### 主成功路径
-
-```
-1. 获取维值标准化结果
-2. 对每个维值条件：
-   2.1 查找属性对应的 Binding
-   2.2 获取物理字段路径（如 network_element.device_type）
-   2.3 提取 standardValue 作为过滤值
-   2.4 组装为 { field: "network_element.device_type", operator: "=", value: "router" }
-3. 将多个维值条件组合为 AND 过滤数组
-4. OAC 将过滤条件加入查询请求
-5. OAC 执行物理查询
-6. OAC 组装对象结果返回
-```
-
-##### 验证达成标准
-
-```gherkin
-Given 维值标准化结果：
-  - Property: deviceType, Value: "router"
-  - Property: region, Value: "EAST_CHINA"
-And   Binding 映射：
-  - deviceType -> network_element.device_type
-  - region -> network_element.region_code
-When  执行带维值过滤的查询
-Then  构建查询语句：
-  SELECT * FROM network_element
-  WHERE device_type = 'router' AND region_code = 'EAST_CHINA'
-And   返回匹配的对象结果
+Given OAG 返回 Alarm.severity 的 canonicalValue="CRITICAL"
+And   defaultDataValue="0"
+When  Agent 调用 OAC 查询
+Then  OAC 根据 severity Binding 定位真实物理字段
+And   按协议使用 canonicalValue 或 defaultDataValue 形成过滤条件
+And   OAC 不重新通过模糊检索猜测标准值
 ```
 
 ---
@@ -1128,278 +563,317 @@ And   返回匹配的对象结果
 
 ## 设计态功能
 
-| 功能编号 | 功能描述 | 影响类型（新增/修改/删除） | 影响描述（详细变更点） | 影响来源 |
+| 功能编号 | 功能描述 | 影响类型 | 影响描述 | 来源 |
 | --- | --- | --- | --- | --- |
-| F-DIM-001 | 本体属性维值语义标识 | 新增 | 支持 is_semantic 字段标识属性是否具有维值语义 | SC-001 |
-| F-DIM-002 | 维值来源配置 | 新增 | 支持配置维值来源类型（enum/instance）和关联信息 | SC-001 |
-| F-DIM-003 | 有限枚举值定义 | 新增 | 支持在属性上定义有限枚举值（value、display、synonyms） | SC-002 |
-| F-DIM-004 | 枚举值元数据发布 | 新增 | 支持将枚举值元数据发布到 OAG | SC-002 |
+| F-DIM-001 | Property 检索准入配置 | 修改 | 正式使用 `Property.retrieval.enabled`，结合 datatype/value-shape/cardinality 准入；历史 is_semantic 仅兼容 | SC-001 |
+| F-DIM-002 | EnumType / Property 引用 | 修改 | Enum Value 按实际 Property 展开并保留 object_type_id/property_id 归属 | SC-001/SC-002 |
+| F-DIM-003 | SynonymType 建模与平铺 | 修改 | OMS 保留多语言结构；OAG 统一 LF String，不建独立 synonym 记录 | SC-001 |
+| F-DIM-004 | 多语言索引字段 | 修改 | 本体对象/Enum 使用 zh/en/lang_1/lang_2；Instance 不使用 display/description 多语言字段 | SC-001/SC-002 |
+
+## 索引构建功能
+
+| 功能编号 | 功能描述 | 影响类型 | 影响描述 | 来源 |
+| --- | --- | --- | --- | --- |
+| F-DIM-005 | 三类物理索引 | 修改 | 使用 `t_oag_* / t_oag_enum_* / t_oag_instance_*` | SC-002/SC-003 |
+| F-DIM-006 | MinIO CSV 数据接入 | 修改 | 动态 Enum/Instance 统一 MinIO CSV + notice | SC-003 |
+| F-DIM-007 | 持久化索引 Task | 新增/明确 | OAG 负责 Task、状态、Checkpoint、Verify、Publish | SC-003 |
+| F-DIM-008 | 幂等 UPSERT/DELETE | 修改 | 使用稳定业务键保证 GaussVector/OpenSearch 一致 | SC-002/SC-003 |
 
 ## 运行态功能
 
-| 功能编号 | 功能描述 | 影响类型（新增/修改/删除） | 影响描述（详细变更点） | 影响来源 |
+| 功能编号 | 功能描述 | 影响类型 | 影响描述 | 来源 |
 | --- | --- | --- | --- | --- |
-| F-DIM-005 | 实例值数据查询 | 新增 | 支持根据 Binding 查询属性对应的实例值数据 | SC-003 |
-| F-DIM-006 | 实例值索引供给 | 新增 | 支持调用 OAG 接口创建实例值向量化索引 | SC-003 |
-| F-DIM-007 | 维值意图识别 | 新增 | 支持从用户问题中提取候选维值 | SC-004 |
-| F-DIM-008 | 模糊维值检索 | 新增 | 支持简称、别名、口语、同义词等多种表达的模糊匹配 | SC-005 |
-| F-DIM-009 | 维值标准化输出 | 新增 | 支持返回标准维值及对应的 ObjectType 和 Property | SC-005 |
-| F-DIM-010 | 置信度评估与排序 | 新增 | 支持对检索结果进行置信度评分和排序 | SC-006 |
-| F-DIM-011 | 歧义检测与处理 | 新增 | 支持多匹配时的歧义检测和候选列表输出 | SC-006 |
-| F-DIM-012 | OAG 检索条件组装 | 新增 | 支持将标准化维值组装为 OAG 检索输入条件 | SC-007 |
-| F-DIM-013 | OAC 查询过滤组装 | 新增 | 支持将精确维值组装为 OAC 查询过滤条件 | SC-008 |
+| F-DIM-009 | Entity Extraction | 修改 | OAG 识别 ObjectType/Properties/Values；支持业务侧直接传 extractedEntities | SC-004 |
+| F-DIM-010 | 2/4 路混合召回 | 修改 | ObjectType/Property 2 路；Value 4 路 | SC-005 |
+| F-DIM-011 | Weighted RRF | 修改 | 按 Semantic Unit 独立融合通道 rank | SC-005 |
+| F-DIM-012 | LLM Fine Rank | 修改 | 只裁剪真实候选，支持 unresolved | SC-006 |
+| F-DIM-013 | SeedNodeProjector / 子图构建 | 修改 | Enum/Instance 投影到 Property/ObjectType，不直接进 Core Graph | SC-007 |
+| F-DIM-014 | semanticExtensions.valueMappings | 新增/明确 | 返回 sourceValue/canonicalValue/Property/ObjectType/defaultDataValue | SC-007 |
+| F-DIM-015 | OAC 查询过滤 | 修改 | OAC 使用已确认值映射进行 Binding/OQL 数据访问，不重复 Entity Linking | SC-008 |
 
 ---
 
 # 需求分解列表（IR → SR）
 
-| IR 编号 | SR 编号 | SR 名称 | SR 描述 | 关联功能 | 关联功能编号 |
-| --- | --- | --- | --- | --- | --- |
-| IR-ONT-DIM-001 | SR-XXX-01 | 维值语义标识与建模 | OMS 支持在本体属性上标识 is_semantic 并配置维值来源 | 维值语义标识 | F-DIM-001, F-DIM-002 |
-| IR-ONT-DIM-001 | SR-XXX-02 | 有限枚举值定义与索引 | OMS 支持枚举值定义，OAG 支持枚举值索引创建 | 枚举值定义与索引 | F-DIM-003, F-DIM-004 |
-| IR-ONT-DIM-001 | SR-XXX-03 | 实例值查询与索引供给 | OAC 支持查询实例值并调用 OAG 创建索引 | 实例值查询与索引 | F-DIM-005, F-DIM-006 |
-| IR-ONT-DIM-001 | SR-XXX-04 | 维值意图识别与提取 | OAC 支持从用户问题中识别并提取候选维值 | 意图识别与提取 | F-DIM-007 |
-| IR-ONT-DIM-001 | SR-XXX-05 | 模糊维值检索与标准化 | OAG 支持模糊检索和标准化输出 | 模糊检索与标准化 | F-DIM-008, F-DIM-009 |
-| IR-ONT-DIM-001 | SR-XXX-06 | 置信度评估与歧义处理 | OAG 支持置信度评估和歧义处理 | 置信度与歧义处理 | F-DIM-010, F-DIM-011 |
-| IR-ONT-DIM-001 | SR-XXX-07 | OAG/OAC 检索增强集成 | OAC 将标准化维值作为 OAG 检索条件和 OAC 过滤条件 | 检索增强集成 | F-DIM-012, F-DIM-013 |
+| IR 编号 | SR 编号 | SR 名称 | SR 描述 | 关联功能 |
+| --- | --- | --- | --- | --- |
+| IR-ONT-DIM-001 | SR-XXX-01 | Property 检索准入与维值模型 | OMS 支持 Property 检索准入、EnumType、SynonymType、多语言资产建模 | F-DIM-001~004 |
+| IR-ONT-DIM-001 | SR-XXX-02 | 三类语义索引 | OAG 分别构建本体对象、Enum、Instance 的 GaussVector/OpenSearch 索引 | F-DIM-005,008 |
+| IR-ONT-DIM-001 | SR-XXX-03 | 动态值数据接入与任务 | OAC/DataSync 通过 MinIO CSV 供数，OAG 管理 Task/Import/Verify/Publish | F-DIM-006~008 |
+| IR-ONT-DIM-001 | SR-XXX-04 | Entity Extraction | OAG 从 query 或 extractedEntities 获取 ObjectType/Property/Value Semantic Unit | F-DIM-009 |
+| IR-ONT-DIM-001 | SR-XXX-05 | Entity Linking 与混合召回 | OAG 按 2 路/4 路检索、Weighted RRF 完成真实本体和值归属链接 | F-DIM-010,011 |
+| IR-ONT-DIM-001 | SR-XXX-06 | LLM 精排与候选校验 | LLM 只裁剪真实候选，程序执行 Membership/Ownership 校验 | F-DIM-012 |
+| IR-ONT-DIM-001 | SR-XXX-07 | 子图和值语义扩展 | SeedNodeProjector 构建 Core Graph；输出 semanticExtensions.valueMappings | F-DIM-013,014 |
+| IR-ONT-DIM-001 | SR-XXX-08 | OAC 精确数据访问 | Agent/OAC 使用 OAG 确定的 Property/ObjectType/canonicalValue 进行数据查询 | F-DIM-015 |
 
 ---
 
 # 接口设计概要
 
-## OAC → OAG 接口
+## 1. OAG 运行态语义子图检索接口
 
-### 1. 枚举值索引创建接口
+正式接口：
 
-```
-POST /api/v1/index/enum-values
-Content-Type: application/json
-
-Request:
-{
-  "ontologyId": "string",
-  "enumValues": [{
-    "propertyId": "string",
-    "objectTypeId": "string",
-    "value": "string",
-    "display": {"zh": "string", "en": "string"},
-    "description": {"zh": "string", "en": "string"},
-    "synonyms": {"zh": ["string"], "en": ["string"]}
-  }]
-}
-
-Response:
-{
-  "code": "0",
-  "message": "success",
-  "data": {
-    "totalCount": 0,
-    "successCount": 0,
-    "failedCount": 0,
-    "failedItems": []
-  }
-}
+```text
+POST /v2/onto-retrieval/{ontologyId}/subgraph/semantic-search
 ```
 
-### 2. 实例值索引创建接口
+支持三种模式：
 
-```
-POST /api/v1/index/instance-values
-Content-Type: application/json
+| 模式 | query | extractedEntities | searchContext | 说明 |
+| --- | ---: | ---: | ---: | --- |
+| 自然语言模式 | 有 | 无 | 可选 | OAG 自动执行 Entity Extraction |
+| 结构化模式 | 无 | 有 | 可选 | 业务 Skill 已完成提取，OAG 直接 Entity Linking |
+| 组合模式 | 有 | 有 | 可选 | extractedEntities 提供强提示，query/searchContext 用于补充与消歧，推荐 |
 
-Request:
+核心请求字段：
+
+```json
 {
-  "ontologyId": "string",
-  "instanceValues": [{
-    "propertyId": "string",
-    "objectTypeId": "string",
-    "value": "string",
-    "display": {"zh": "string", "en": "string"}
-  }]
-}
-
-Response:
-{
-  "code": "0",
-  "message": "success",
-  "data": {
-    "totalCount": 0,
-    "successCount": 0,
-    "failedCount": 0
-  }
+  "query": "查询VIP客户",
+  "searchContext": {
+    "target_entity": "Account",
+    "search_path": "",
+    "extensions": {}
+  },
+  "extractedEntities": [
+    {
+      "ObjectType": "Account",
+      "Properties": ["customerLevel"],
+      "Values": [
+        {"Property": "customerLevel", "Value": "VIP"}
+      ]
+    }
+  ],
+  "seedRetrievalMode": "hybrid",
+  "similarityThreshold": 0.6,
+  "topk": 3,
+  "graphExpansionStrategy": "minimal",
+  "hopLimit": 3,
+  "includeFunctions": 0,
+  "includeActions": 0
 }
 ```
 
-### 3. 维值模糊检索接口
+约束：`query` 与 `extractedEntities` 至少一个不为空；`similarityThreshold` 只作用于 Dense 通道。
 
+## 2. 动态 Enum/Instance 文件导入通知接口
+
+```text
+POST /v1/onto-retrieval/{ontologyId}/index-data/notice
+Header: x-gde-tenant-id
 ```
-POST /api/v1/retrieve/dim-values
-Content-Type: application/json
 
-Request:
-{
-  "ontologyId": "string",
-  "candidateValues": [{
-    "property": "string",
-    "propertyId": "string",
-    "values": ["string"]
-  }],
-  "topK": 10,
-  "minConfidence": 0.5
-}
+核心请求：
 
-Response:
+```json
 {
-  "code": "0",
-  "message": "success",
-  "data": {
-    "results": [{
-      "propertyId": "string",
-      "objectTypeId": "string",
-      "matches": [{
-        "standardValue": "string",
-        "matchedValue": "string",
-        "matchedField": "string",
-        "confidence": 0.95
-      }]
-    }]
-  }
+  "requestId": "datasync-20260906-000001",
+  "triggerTaskId": "idx-task-optional",
+  "dataType": "INSTANCE_VALUE",
+  "importMode": "INCREMENTAL",
+  "files": [
+    {
+      "bucket": "onto-retrieval",
+      "objectKey": "tenant/ontology/INSTANCE_VALUE/part-00000.csv",
+      "fileFormat": "CSV",
+      "encoding": "UTF-8",
+      "hasHeader": true,
+      "rowCount": 1000,
+      "size": 102400,
+      "sha256": "<64-hex>"
+    }
+  ]
 }
 ```
 
-## OAC 内部接口
+约束：
 
-### 4. 维值意图识别接口
+- `dataType`: `METADATA_ENUM | INSTANCE_VALUE`；
+- `importMode`: `FULL_REPLACE | INCREMENTAL | CLEAR`；
+- `CLEAR` 仅允许 `INSTANCE_VALUE`，且无需依赖文件；
+- `triggerTaskId` 用于 OAC 交付文件时继续人工构建产生的原任务；
+- 动态 Enum/Instance 不再定义 `POST /api/v1/index/enum-values`、`POST /api/v1/index/instance-values` 作为正式数据交付协议。
 
-```
-POST /api/v1/internal/semantic/intent
-Content-Type: application/json
+## 3. 索引任务批量查询
 
-Request:
-{
-  "ontologyId": "string",
-  "queryText": "string"
-}
-
-Response:
-{
-  "code": "0",
-  "message": "success",
-  "data": {
-    "objectTypes": ["string"],
-    "properties": [{
-      "propertyId": "string",
-      "propertyName": "string"
-    }],
-    "candidateValues": [{
-      "propertyId": "string",
-      "values": ["string"]
-    }]
-  }
-}
+```text
+POST /v1/onto-retrieval/{ontologyId}/index-tasks/query
 ```
 
-### 5. 维值标准化接口
-
-```
-POST /api/v1/internal/semantic/normalize
-Content-Type: application/json
-
-Request:
-{
-  "ontologyId": "string",
-  "candidateValues": [{
-    "propertyId": "string",
-    "values": ["string"]
-  }]
-}
-
-Response:
-{
-  "code": "0",
-  "message": "success",
-  "data": {
-    "normalizedValues": [{
-      "propertyId": "string",
-      "objectTypeId": "string",
-      "standardValue": "string",
-      "confidence": 0.95,
-      "isAmbiguous": false
-    }]
-  }
-}
-```
+以 GaussDB `T_OAG_INDEX_TASK` 为事实来源，返回任务状态、stage、计数、稳定错误码、文件列表和恢复窗口。自动化重试不得解析 `errorMessage` 文本决定策略。
 
 ---
 
 # 数据模型设计概要
 
-## OMS 侧数据结构
+## 1. 本体对象索引
 
-### 属性维值语义标识扩展
-
-```json
-{
-  "propertyId": "string",
-  "isSemantic": true,
-  "semanticSource": "enum|instance",
-  "enumDefinition": {
-    "enumTypeId": "string",
-    "values": [{
-      "value": "string",
-      "display": {"zh": "string", "en": "string"},
-      "description": {"zh": "string", "en": "string"},
-      "synonyms": {"zh": ["string"], "en": ["string"]}
-    }]
-  },
-  "instanceMapping": {
-    "bindingId": "string",
-    "dataSourceType": "string"
-  }
-}
+```text
+t_oag_{ontology_id}
 ```
 
-## OAG 侧索引结构
+核心字段：
 
-### 枚举值/实例值索引表 (t_metadata_evidence_{ontology_id})
+| 字段 | 说明 |
+| --- | --- |
+| vector | BGE-M3 1024 维向量 |
+| type | 0 ObjectType；1 Property |
+| id | ObjectType / Property 全局唯一 ID，业务键 |
+| parent_id | Property 所属 ObjectType.id |
+| name | 本体真实名称 |
+| display_zh/en/lang_1/lang_2 | 多语言显示名 |
+| description_zh/en/lang_1/lang_2 | 多语言描述 |
+| synonyms | LF 分隔同义词 String |
 
-| 字段 | 类型 | 非空 | 说明 |
-| --- | --- | --- | --- |
-| id | VARCHAR(256) | ✔ | 枚举值/实例值唯一 ID |
-| parent_id | VARCHAR(256) | ✔ | 关联的 Property ID |
-| type | INT | ✔ | 0=枚举值，1=实例值 |
-| value | VARCHAR(512) | ✔ | 标准值 |
-| display_zh | VARCHAR(512) | | 中文显示名 |
-| display_en | VARCHAR(512) | | 英文显示名 |
-| description_zh | VARCHAR(1024) | | 中文描述 |
-| description_en | VARCHAR(1024) | | 英文描述 |
-| synonyms_zh | VARCHAR(1024) | | 中文同义词，JSON 数组格式 |
-| synonyms_en | VARCHAR(1024) | | 英文同义词，JSON 数组格式 |
-| vector | DOUBLE[] | | 1024 维向量 |
-| confidence | DOUBLE | | 默认置信度 |
+Embedding 顺序：
+
+```text
+{name}
+{display_zh}
+{display_en}
+{display_lang_1}
+{display_lang_2}
+{description_zh}
+{description_en}
+{description_lang_1}
+{description_lang_2}
+{synonyms}
+```
+
+## 2. Enum Value 索引
+
+```text
+t_oag_enum_{ontology_id}
+```
+
+核心字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| vector | Enum Value 1024 维向量 |
+| value | 真实标准枚举值，权威语义值 |
+| property_id | 引用该 Enum 的 Property.id |
+| object_type_id | Property 所属 ObjectType.id |
+| display_zh/en/lang_1/lang_2 | 多语言 display |
+| description_zh/en/lang_1/lang_2 | 多语言 description |
+| synonyms | LF 分隔同义词 |
+| defaultDataValue | 数据库原始值，可用于下游过滤 |
+
+稳定键：
+
+```text
+object_type_id + property_id + normalized(value)
+```
+
+Embedding：
+
+```text
+{value}
+{display_zh}
+{display_en}
+{display_lang_1}
+{display_lang_2}
+{description_zh}
+{description_en}
+{description_lang_1}
+{description_lang_2}
+{synonyms}
+```
+
+## 3. Instance Value 索引
+
+```text
+t_oag_instance_{ontology_id}
+```
+
+核心字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| vector | Instance Value 1024 维向量 |
+| value | 去重后的真实标准列值，权威语义值 |
+| synonyms | LF 分隔实例值同义词 |
+| property_id | 所属 Property.id |
+| object_type_id | 所属 ObjectType.id |
+
+稳定键：
+
+```text
+object_type_id + property_id + normalized(value)
+```
+
+Embedding：
+
+```text
+{value}
+{synonyms}
+```
+
+Instance 不配置 `display_* / description_*`，也不拼接 Property/ObjectType 名称作为 Dense 文本。
 
 ---
 
 # 验收标准概要
 
-## 设计态验收
+## 1. 设计态
 
-1. **SC001-UC001 验收**：属性 is_semantic 标识可正确设置并保存
-2. **SC001-UC002 验收**：维值语义标识发布后生效
-3. **SC002-UC001 验收**：枚举值定义包含 value、display、synonyms
-4. **SC002-UC002 验收**：枚举值索引创建成功，可通过 OAG 检索
+1. Property 可通过 `retrieval.enabled` 配置 Instance Value 检索准入，历史 `is_semantic` 不再作为正式验收字段。
+2. EnumType/Enum Value、Property 引用关系和 SynonymType 可正确发布。
+3. SynonymType 进入 OAG 后转换为 LF String，不生成独立 synonym 索引记录。
+4. 本体对象/Enum 支持 zh/en/lang_1/lang_2；Instance 无 display/description 多语言字段。
 
-## 运行态验收
+## 2. 索引构建
 
-1. **SC003-UC001 验收**：实例值数据查询返回所有唯一值
-2. **SC003-UC002 验收**：实例值索引创建成功
-3. **SC004-UC001 验收**：意图识别正确提取 ObjectType、Property、候选维值
-4. **SC005-UC001 验收**：模糊匹配支持简称、别名、口语、同义词
-5. **SC005-UC002 验收**：标准化输出包含 standardValue、matchedField、confidence
-6. **SC006-UC001 验收**：置信度评估正确反映匹配质量
-7. **SC006-UC002 验收**：歧义检测正确识别多匹配场景
-8. **SC007-UC001 验收**：OAG 检索条件正确组装
-9. **SC008-UC002 验收**：OAC 查询过滤条件正确执行
+1. 本体对象、Enum、Instance 分别写入三类物理索引。
+2. GaussVector/OpenSearch 使用相同稳定业务键且幂等一致。
+3. 动态 Enum/Instance 统一通过 MinIO CSV + notice 进入 OAG。
+4. OAC 模式和 BUSINESS_NOTICE 模式均可正常完成 Task 生命周期。
+5. FULL_REPLACE / INCREMENTAL / INSTANCE_VALUE+CLEAR 行为符合协议。
+6. OAG 完成 Normalize/Dedup/Embedding/双写/Verify/Publish 后任务才成功。
+
+## 3. Entity Extraction / Linking
+
+1. `/v2/onto-retrieval/{ontologyId}/subgraph/semantic-search` 支持自然语言、结构化、组合三种模式。
+2. ExtractedEntity 只包含 ObjectType/Properties/Values；Value 不预判 Enum/Instance。
+3. OBJECT_TYPE/PROPERTY 只走本体定义 2 路；VALUE 只走 Enum/Instance 4 路。
+4. Property 必须在候选 ObjectType 作用域内检索。
+5. Weighted RRF 只融合 rank；Dense threshold 不作用于 lexical。
+6. value-only 能依据真实命中反解 Property/ObjectType，不根据字符串形态猜测。
+
+## 4. LLM 精排与子图
+
+1. LLM 只能裁剪真实候选，不新增/修改 ID、name、score。
+2. 无可信候选时允许 unresolved，不强制 Top1。
+3. Enum/Instance 不直接进入 Core Graph，必须投影到 Property/ObjectType。
+4. minimal/khop/component 的输入为真实本体对象。
+
+## 5. ValueMapping 与 OAC 联动
+
+1. `semanticExtensions.valueMappings` 至少包含 sourceValue、canonicalValue、objectType、property；Enum 可带 defaultDataValue。
+2. canonicalValue 必须来自真实索引 value，不得使用 synonym/display/LLM 新造值。
+3. OAC 使用 OAG 已确认的 Property/ObjectType/value 进行 Binding/OQL 数据访问，不重复执行模糊 Entity Linking。
+4. 下游过滤字段准确率、Value→Property/ObjectType Mapping Accuracy、canonicalValue/defaultDataValue Accuracy 纳入端到端评测。
+
+---
+
+# 与 V0.10 主要不匹配项及修正
+
+| V0.10 描述 | 问题 | V0.11 修正 |
+| --- | --- | --- |
+| `is_semantic` 是正式维值开关 | 与当前 `Property.retrieval.enabled` 和准入规则不一致 | 改为 retrieval.enabled + datatype/value-shape/cardinality；is_semantic 仅兼容 |
+| OAC 负责运行时意图识别 | 与 OAG Entity Extraction/Linking 主链路职责冲突 | 运行时语义识别统一由 OAG 承担；业务 Skill 可直接传 extractedEntities |
+| OMS/OAC 直接调用 `/api/v1/index/enum-values`、`/instance-values` | 与当前统一 MinIO/Task 导入协议不一致 | 动态 Enum/Instance 统一 MinIO CSV + `/v1/onto-retrieval/{ontologyId}/index-data/notice` |
+| Enum/Instance 写 `t_metadata_evidence`/`t_instance_evidence` | 与三类正式索引结构不一致 | 改为 `t_oag_*`、`t_oag_enum_*`、`t_oag_instance_*` |
+| Enum/Instance 混在同一 evidence 表并用 type 区分 | 无法表达当前独立容量、更新、ANN 与生命周期策略 | Enum/Instance 物理隔离 |
+| `parent_id` 表达 Enum/Instance Property 归属 | 当前设计使用 `property_id + object_type_id` | 统一使用 property_id/object_type_id |
+| synonyms_zh/synonyms_en JSON 数组列 | 当前 OAG 热索引使用 LF String | 改为统一 `synonyms` TEXT/String |
+| Instance 带 display 多语言 | 当前 Instance 只存真实 value + synonyms | 删除 Instance display/description 多语言要求 |
+| “所有值走 6 路召回”/独立 synonym 通道 | 当前 6 个物理通道按 Semantic Unit 路由，synonym 是记录内字段 | OBJECT_TYPE/PROPERTY 2 路，VALUE 4 路；无独立 synonym 通道 |
+| BM25 精确匹配是独立通道 | 当前 lexical 是 Keyword Fuzzy + BM25，Exact/Phrase 只是 boost | 统一 lexical 语义 |
+| 手工置信度 +0.2/+0.1，固定 0.8 阈值 | 上位设计未定义该业务公式，易造成协议固化 | 使用 Weighted RRF + LLM Fine Rank + 可配置阈值/评测，不写死公式 |
+| OAC 先标准化维值，再组装条件调用 OAG | 调用顺序反转 | Agent/Skill 先调用 OAG 完成语义检索和值映射，再调用 OAC 数据查询 |
+| OAG 结果只返回 standardValue/confidence | 无法稳定表达值与本体归属及数据库过滤值 | 使用 `semanticExtensions.valueMappings` |
 
 ---
 
@@ -1407,15 +881,20 @@ Response:
 
 ## 参考文档
 
-1. 《需求分析Spec_三方数据模型注册和访问.md》
-2. 《OAG本体锚点语义检索与向量索引设计方案.md》
-3. 《枚举设计文档1.0.md》
+1. [OAG 本体锚点语义检索与向量索引设计方案](./OAG本体锚点语义检索与向量索引设计方案.md)
+2. [OAG 本体子图语义检索接口 extractedEntities / 实体提取设计方案](./OAG语义子图检索接口extractedEntities结构设计方案.md)
+3. 《需求分析Spec_三方数据模型注册和访问.md》
+4. 《枚举设计文档1.0.md》
 
-## 术语表
+## 需求级术语映射
 
-| 术语 | 定义 |
+| 旧术语 | 正式术语/处理方式 |
 | --- | --- |
-| is_semantic | 属性维值语义标识字段，true 表示该属性需要进行维值识别、标准化和检索 |
-| 维值来源 | enum（有限枚举值）或 instance（实例值） |
-| 模糊匹配 | 支持简称、别名、口语、同义词等多种业务表达的匹配 |
-| 置信度 | 维值检索结果的可信程度，0-1 之间 |
+| 维值 | Enum Value / Instance Value |
+| 维值语义标识 is_semantic | Property.retrieval.enabled（正式）；is_semantic 仅兼容 |
+| 枚举值索引 | t_oag_enum_{ontology_id} |
+| 实例值索引 | t_oag_instance_{ontology_id} |
+| 维值意图识别 | Entity Extraction 中 Values / ValueHint |
+| 维值模糊检索 | VALUE Semantic Unit 的 Enum/Instance 4 路 Entity Linking |
+| 维值标准化 | valueMappings 中 sourceValue → canonicalValue + Property/ObjectType |
+| 置信度人工公式 | Weighted RRF 粗排 + LLM Fine Rank + unresolved |
