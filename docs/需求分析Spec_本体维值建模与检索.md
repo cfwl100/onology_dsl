@@ -1,18 +1,11 @@
 # 需求分析说明书：本体维值建模与检索
 
-| 版本 | 日期 | 修订人 | 修订说明 |
-| --- | --- | --- | --- |
-| V0.10 | 2026-08-12 | CodeAgent | 基于《本体维值建模与检索》原始需求完成需求分析初稿 |
-| V0.11 | 2026-09-06 | CodeAgent | 对齐《OAG本体锚点语义检索与向量索引设计方案》V6.5：统一术语、检索职责、三类索引、MinIO/Task 构建链路、2/4 路 Weighted RRF、LLM 精排及 semanticExtensions.valueMappings |
-
 ---
 
 # 需求 IR-ONT-DIM-001 描述
 
 > **需求名称**：本体维值建模与检索  
 > **关联系统需求**：SR202607XXXXX（待定）  
-> **上位设计**：[OAG 本体锚点语义检索与向量索引设计方案](./OAG本体锚点语义检索与向量索引设计方案.md)  
-> **接口结构规范**：[OAG 本体子图语义检索接口 extractedEntities / 实体提取设计方案](./OAG语义子图检索接口extractedEntities结构设计方案.md)  
 > **说明**：本文中以 `.01`、`.02` 等后缀表示需求分析阶段的 SR 子需求追踪编号，正式编号以需求管理系统落号为准。
 
 ## 1. 需求定位
@@ -857,44 +850,14 @@ Instance 不配置 `display_* / description_*`，也不拼接 Property/ObjectTyp
 
 ---
 
-# 与 V0.10 主要不匹配项及修正
-
-| V0.10 描述 | 问题 | V0.11 修正 |
-| --- | --- | --- |
-| `is_semantic` 是正式维值开关 | 与当前 `Property.retrieval.enabled` 和准入规则不一致 | 改为 retrieval.enabled + datatype/value-shape/cardinality；is_semantic 仅兼容 |
-| OAC 负责运行时意图识别 | 与 OAG Entity Extraction/Linking 主链路职责冲突 | 运行时语义识别统一由 OAG 承担；业务 Skill 可直接传 extractedEntities |
-| OMS/OAC 直接调用 `/api/v1/index/enum-values`、`/instance-values` | 与当前统一 MinIO/Task 导入协议不一致 | 动态 Enum/Instance 统一 MinIO CSV + `/v1/onto-retrieval/{ontologyId}/index-data/notice` |
-| Enum/Instance 写 `t_metadata_evidence`/`t_instance_evidence` | 与三类正式索引结构不一致 | 改为 `t_oag_*`、`t_oag_enum_*`、`t_oag_instance_*` |
-| Enum/Instance 混在同一 evidence 表并用 type 区分 | 无法表达当前独立容量、更新、ANN 与生命周期策略 | Enum/Instance 物理隔离 |
-| `parent_id` 表达 Enum/Instance Property 归属 | 当前设计使用 `property_id + object_type_id` | 统一使用 property_id/object_type_id |
-| synonyms_zh/synonyms_en JSON 数组列 | 当前 OAG 热索引使用 LF String | 改为统一 `synonyms` TEXT/String |
-| Instance 带 display 多语言 | 当前 Instance 只存真实 value + synonyms | 删除 Instance display/description 多语言要求 |
-| “所有值走 6 路召回”/独立 synonym 通道 | 当前 6 个物理通道按 Semantic Unit 路由，synonym 是记录内字段 | OBJECT_TYPE/PROPERTY 2 路，VALUE 4 路；无独立 synonym 通道 |
-| BM25 精确匹配是独立通道 | 当前 lexical 是 Keyword Fuzzy + BM25，Exact/Phrase 只是 boost | 统一 lexical 语义 |
-| 手工置信度 +0.2/+0.1，固定 0.8 阈值 | 上位设计未定义该业务公式，易造成协议固化 | 使用 Weighted RRF + LLM Fine Rank + 可配置阈值/评测，不写死公式 |
-| OAC 先标准化维值，再组装条件调用 OAG | 调用顺序反转 | Agent/Skill 先调用 OAG 完成语义检索和值映射，再调用 OAC 数据查询 |
-| OAG 结果只返回 standardValue/confidence | 无法稳定表达值与本体归属及数据库过滤值 | 使用 `semanticExtensions.valueMappings` |
-
----
-
-# 附录
-
-## 参考文档
-
-1. [OAG 本体锚点语义检索与向量索引设计方案](./OAG本体锚点语义检索与向量索引设计方案.md)
-2. [OAG 本体子图语义检索接口 extractedEntities / 实体提取设计方案](./OAG语义子图检索接口extractedEntities结构设计方案.md)
-3. 《需求分析Spec_三方数据模型注册和访问.md》
-4. 《枚举设计文档1.0.md》
-
 ## 需求级术语映射
 
-| 旧术语 | 正式术语/处理方式 |
-| --- | --- |
-| 维值 | Enum Value / Instance Value |
-| 维值语义标识 is_semantic | Property.retrieval.enabled（正式）；is_semantic 仅兼容 |
-| 枚举值索引 | t_oag_enum_{ontology_id} |
-| 实例值索引 | t_oag_instance_{ontology_id} |
-| 维值意图识别 | Entity Extraction 中 Values / ValueHint |
-| 维值模糊检索 | VALUE Semantic Unit 的 Enum/Instance 4 路 Entity Linking |
-| 维值标准化 | valueMappings 中 sourceValue → canonicalValue + Property/ObjectType |
-| 置信度人工公式 | Weighted RRF 粗排 + LLM Fine Rank + unresolved |
+| 旧术语                | 正式术语/处理方式                                                          |
+| ------------------ | ------------------------------------------------------------------ |
+| 维值                 | Enum Value / Instance Value                                        |
+| 枚举值索引              | t_oag_enum_{ontology_id}                                           |
+| 实例值索引              | t_oag_instance_{ontology_id}                                       |
+| 维值意图识别             | Entity Extraction 中 Values / ValueHint                             |
+| 维值模糊检索             | VALUE Semantic Unit 的 Enum/Instance 4 路 Entity Linking             |
+| 维值标准化              | valueMappings 中 sourceValue → canonicalValue + Property/ObjectType |
+| 置信度人工公式            | Weighted RRF 粗排 + LLM Fine Rank + unresolved                       |

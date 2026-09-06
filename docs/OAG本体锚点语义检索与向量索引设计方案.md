@@ -1,4 +1,3 @@
-# OAG 本体锚点语义检索与向量索引设计方案
 
 ---
 
@@ -89,7 +88,7 @@ flowchart TD
 
 ### 1.4 总体架构
 
-![[Pasted image 20260905171417.png|1263]]
+[数据准备和消费](https://clouddragon.huawei.com/cloudmodeling/myspace/diagram?diagramId=4bf33e1218a74f538b53372709aee443)![数据准备和消费](https://cloudmodelingapi.tools.huawei.com/cloudmodelingdrawiosvr/d/3d10fb30d2974725840b2dd6e594c0b4?t=1788680164062)
 
 如下流程包括：创建语义索引-->子图检索
 
@@ -1186,7 +1185,7 @@ Generation 发布
 ---
 
 
-![[Pasted image 20260824205207.png]]
+[实例值索引同步流程](https://clouddragon.huawei.com/cloudmodeling/myspace/diagram?diagramId=c60d4e61fce6420ca2f704859a06e4f6)![实例值索引同步流程](https://cloudmodelingapi.tools.huawei.com/cloudmodelingdrawiosvr/d/027c8ce242aa4f9fb8478a134171cb25?t=1788680248217)
 
 1、手动创建索引->OAC : 应对首次全量索引创建 和 索引更新 场景  
 2、通知OAG->OAG读取minio文件：应对大数据量首次全量和非首次增量数据索引入库
