@@ -26,13 +26,14 @@ OQL 不直接面向物理表、物理列或数据库方言。执行时由 OAC（
 3. **命名字段优先**：所有关键语义通过字段名表达，避免依赖数组槽位位置。
 4. **引用闭包**：所有 `ref`、`sourceRef`、`targetRef`、`from`、`to` 必须引用当前层已声明 alias。
 5. **结构可校验**：生成后必须能通过结构校验、引用校验、操作约束校验和执行期语义校验。
-6. **字段显式**：返回字段、排序字段、更新字段必须显式列出，不使用隐式 `*`，除 `COUNT` 指标允许 `field = "*"`。
+6. **字段显式**：返回字段、排序字段、更新字段必须显式列出，不使用隐式 `*`，除 `COUNT` 指标允许 `field = "*"`。SQL 中的 `SELECT *` 在转换为 canonical OQL 时应由 schema 展开为显式字段列表。
 7. **省略未使用字段**：不得输出 `null`、空对象或空数组占位。
 8. **查询与写入分离**：查询类操作不得出现 `mutation`；写入类操作不得混入返回、排序或关系路径字段，除非本规范明确允许。
-9. **关系查询统一入口**：对象关系、路径关联、一跳关系导航均使用 `ASSOCIATION_QUERY`。
+9. **关系查询统一入口**：对象关系、路径关联、一跳关系导航，以及“关系路径 + 分组聚合”统一使用 `ASSOCIATION_QUERY`。
 10. **聚合过滤语义化**：聚合后过滤统一使用 `aggregateFilter`，不得使用 `having` 字段。
 11. **函数能力受控**：OQL 函数仅用于对象属性值的轻量转换、归一化、派生、过滤和返回字段语义标识；非核心函数必须通过 OAC 函数注册表扩展。
 12. **ID / NAME 语义明确**：`ID` / `NAME` 只作为返回字段类型指定函数，不表示数据库函数调用，不改变字段原始值。
+13. **查询操作边界明确**：无显式关系路径的明细查询使用 `QUERY`，无显式关系路径的聚合查询使用 `AGGREGATE`；只要查询显式依赖本体关系路径，无论返回明细还是聚合结果，均使用 `ASSOCIATION_QUERY`。`ASSOCIATION_QUERY` 不作为 `QUERY` / `AGGREGATE` 的通用替代。
 
 ---
 
@@ -46,6 +47,7 @@ OQL 不直接面向物理表、物理列或数据库方言。执行时由 OAC（
   "schemaRef": "<SCHEMA_REF>",
   "strict": true,
   "operation": "QUERY",
+  "distinct": false,
   "objects": [],
   "relationships": [],
   "conditions": {},
@@ -72,6 +74,7 @@ version
 schemaRef
 strict
 operation
+distinct
 objects
 relationships
 conditions
@@ -93,11 +96,12 @@ extensions
 | `schemaRef` | string | 是 | 本次请求绑定的本体 schema 标识 |
 | `strict` | boolean | 否 | 是否启用严格校验，默认 `true` |
 | `operation` | enum | 是 | `QUERY` / `AGGREGATE` / `ASSOCIATION_QUERY` / `CREATE` / `UPDATE` / `DELETE` / `UPSERT` / `BATCH` |
+| `distinct` | boolean | 否 | 是否对最终明细投影结果去重，语义对应 SQL `SELECT DISTINCT`；默认 `false`，仅用于 `QUERY` / `ASSOCIATION_QUERY` 明细模式 |
 | `objects` | array | 条件必填 | 对象声明 |
 | `relationships` | array | 条件必填 | 关系路径声明，仅 `ASSOCIATION_QUERY` 使用 |
 | `conditions` | object | 条件必填 | 对象级、明细级条件树 |
 | `returns` | array | 条件必填 | 返回字段、表达式、字段类型指定函数、分组字段或聚合指标 |
-| `aggregateFilter` | object | 否 | 聚合结果过滤，仅 `AGGREGATE` 使用 |
+| `aggregateFilter` | object | 否 | 聚合结果过滤，可用于 `AGGREGATE` 或包含聚合返回的 `ASSOCIATION_QUERY` |
 | `orders` | array | 否 | 排序定义 |
 | `maxResults` | object | 否 | 最大返回数量与偏移量控制 |
 | `sourceQuery` | array | 否 | 中间结果查询 |
@@ -148,7 +152,7 @@ extensions
 
 ### 3.2 `relationships`：关系路径声明
 
-`relationships` 用于显式声明对象之间的关系路径，主要用于 `ASSOCIATION_QUERY`。一跳关系导航也通过 `relationships` 表达，此时数组中只有一条关系。
+`relationships` 用于显式声明对象之间的本体关系路径，仅用于 `ASSOCIATION_QUERY`。一跳关系导航也通过 `relationships` 表达，此时数组中只有一条关系。
 
 ```json
 {
@@ -165,6 +169,17 @@ extensions
 }
 ```
 
+字段说明：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | :--: | --- |
+| `relationshipType` | string | 是 | 本体关系类型 |
+| `alias` | string | 是 | 关系 alias |
+| `from` | string | 是 | 起点对象 alias |
+| `to` | string | 是 | 终点对象 alias |
+| `direction` | enum | 是 | `OUTBOUND` / `INBOUND` / `BOTH`，表示本体关系遍历方向 |
+| `mode` | enum | 是 | `ONE` / `LIST`，表示关系扩展结果基数语义 |
+
 约束：
 
 1. `from` / `to` 必须引用当前层 `objects[].alias`。
@@ -173,6 +188,8 @@ extensions
 4. `relationships` 至少包含一条关系。
 5. 多跳路径关联按数组顺序表达路径。
 6. `mode = ONE` 时，该关系扩展结果必须恰好一条，否则应返回错误。
+7. `relationships` 只表达本体关系语义，不直接声明物理表、物理列、`JOIN` 类型或 `ON` 条件。
+8. OAC 必须根据 relationship 对应的 OMS binding（主外键、中间表、中间对象、图关系等）生成目标数据源的物理关联；无法解析 binding 时必须返回错误，不得退化为笛卡尔积。
 
 ### 3.3 `Expr`：表达式
 
@@ -660,6 +677,20 @@ OAC 可以通过函数注册表开放扩展函数。扩展函数必须先注册�
 }
 ```
 
+SQL 中的单字段别名 `expression [AS] alias` 如果需要在 OQL 中保留别名，应使用 `EXPR` + `FIELD`：
+
+```json
+{
+  "kind": "EXPR",
+  "expr": {
+    "kind": "FIELD",
+    "ref": "o",
+    "field": "orderNo"
+  },
+  "alias": "order_no"
+}
+```
+
 #### **3.5.2 派生表达式返回**
 
 注：若EXPR中涉及内置函数，其expr中内置函数的JSON格式参照 **3.3.3 受控函数表达式** ，但区别在于：内置函数的alias属性不写在内置函数内部，而是提升到与expr平级的alias位置。
@@ -698,8 +729,6 @@ OAC 可以通过函数注册表开放扩展函数。扩展函数必须先注册�
 	"alias": "absDeltaAmount"
 }
 ```
-
-
 
 #### 3.5.4 函数型分组字段
 
@@ -747,6 +776,48 @@ OAC 可以通过函数注册表开放扩展函数。扩展函数必须先注册�
   "alias": "orderCount"
 }
 ```
+
+字段说明：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | :--: | --- |
+| `kind` | enum | 是 | 固定为 `METRIC` |
+| `function` | enum | 是 | `COUNT` / `SUM` / `AVG` / `MIN` / `MAX` |
+| `ref` | string | 是 | 指标字段所属对象 alias |
+| `field` | string | 是 | 聚合字段；仅 `COUNT` 允许 `*` |
+| `distinct` | boolean | 否 | 是否先对聚合输入值去重，默认 `false`；语义对应聚合函数内部 `DISTINCT` |
+| `alias` | string | 是 | 聚合指标结果别名 |
+
+`METRIC` 可用于 `AGGREGATE`，也可用于采用聚合返回模式的 `ASSOCIATION_QUERY`。
+
+关系展开可能因一对多、多对多或多条关系路径产生重复逻辑行。若指标语义要求按对象或属性唯一值计数，应使用 `METRIC.distinct = true`，不得使用顶层 `distinct` 替代。
+
+例如，统计关联结果中的唯一订单数：
+
+```json
+{
+  "kind": "METRIC",
+  "function": "COUNT",
+  "ref": "o",
+  "field": "id",
+  "distinct": true,
+  "alias": "orderCount"
+}
+```
+
+对应 SQL 类语义：
+
+```sql
+COUNT(DISTINCT o.id) AS orderCount
+```
+
+约束：
+
+1. 聚合函数仅允许 `COUNT`、`SUM`、`AVG`、`MIN`、`MAX`。
+2. `COUNT` 允许 `field = "*"`，其他聚合函数不允许 `*`。
+3. `distinct` 省略时按 `false` 处理；`distinct = true` 时 `field` 必须为显式字段，不允许 `field = "*"`。
+4. 顶层 `distinct` 表达最终投影去重；`METRIC.distinct` 表达聚合输入去重，两者语义不同，不得互相替代。
+5. `COUNT(*)` 统计关系展开和 `conditions` 过滤后的逻辑行数；若业务语义是统计唯一对象，应显式使用对象唯一标识字段并设置 `distinct = true`。
 
 #### 3.5.7 `ID` / `NAME` 返回字段类型指定函数
 
@@ -854,20 +925,24 @@ OAC 可以通过函数注册表开放扩展函数。扩展函数必须先注册�
 
 #### 3.5.8 `returns` 约束
 
-1. `QUERY`、`ASSOCIATION_QUERY` 允许 `FIELDS`、`EXPR` 和字段类型指定 `FUNCTION`。
-2. `AGGREGATE` 只允许 `GROUP_BY` 和 `METRIC`。
-3. `FIELDS.fields` 必须显式列出，不允许 `*`。
-4. `EXPR`、`FUNCTION`、`GROUP_BY`、`METRIC` 必须声明 `alias`。
-5. `COUNT` 允许 `field = "*"`，其他聚合函数不允许 `*`。
-6. 聚合函数仅允许 `COUNT`、`SUM`、`AVG`、`MIN`、`MAX`。
+1. `QUERY` 允许 `FIELDS`、`EXPR` 和字段类型指定 `FUNCTION`。
+2. `AGGREGATE` 只允许 `GROUP_BY` 和 `METRIC`，且至少包含一个 `METRIC`。
+3. `ASSOCIATION_QUERY` 支持两种互斥返回模式：
+   - 明细模式：允许 `FIELDS`、`EXPR` 和字段类型指定 `FUNCTION`；
+   - 聚合模式：允许 `GROUP_BY` 和 `METRIC`，且至少包含一个 `METRIC`。
+4. `ASSOCIATION_QUERY` 的同一层 `returns` 不得混合明细模式与聚合模式；需要“聚合后再取明细”时应使用 `sourceQuery` 拆分阶段。
+5. `FIELDS.fields` 必须显式列出，不允许 `*`；SQL `SELECT *` 转换为 canonical OQL 时必须根据 schema 展开为显式字段列表。
+6. `EXPR`、`FUNCTION`、`GROUP_BY`、`METRIC` 必须声明 `alias`，`FIELDS` 除外。
 7. `GROUP_BY` 必须使用 `ref + field` 或 `expr` 表达分组维度。
-8. `ID` / `NAME` 字段类型指定函数必须使用 `returns.kind = "FUNCTION"`，不得使用 `returns.kind = "EXPR"`。
+8. `COUNT` 允许 `field = "*"`，其他聚合函数不允许 `*`。
+9. `METRIC.distinct = true` 时必须指定显式 `field`，不得与 `field = "*"` 同时使用。
+10. `ID` / `NAME` 字段类型指定函数必须使用 `returns.kind = "FUNCTION"`，不得使用 `returns.kind = "EXPR"`。
 
 ### 3.6 `aggregateFilter`：聚合结果过滤
 
 #### 3.6.1 定位
 
-`aggregateFilter` 用于对 `AGGREGATE` 操作中已经计算完成的聚合指标进行二次过滤。它表达的是“聚合后过滤”语义，等价于 SQL 中的 `HAVING`，但 OQL 不直接使用 `HAVING` 关键字，统一使用更贴近本体语义的 `aggregateFilter`。
+`aggregateFilter` 用于对已经计算完成的聚合指标进行二次过滤。它既可用于 `AGGREGATE`，也可用于采用聚合返回模式的 `ASSOCIATION_QUERY`。它表达的是“聚合后过滤”语义，等价于 SQL 中的 `HAVING`，但 OQL 不直接使用 `HAVING` 关键字，统一使用更贴近本体语义的 `aggregateFilter`。
 
 #### 3.6.2 与 `conditions` 的区别
 
@@ -951,7 +1026,7 @@ OAC 可以通过函数注册表开放扩展函数。扩展函数必须先注册�
 
 约束规则：
 
-1. `aggregateFilter` 仅允许出现在 `operation = "AGGREGATE"` 中。
+1. `aggregateFilter` 仅允许出现在 `operation = "AGGREGATE"` 或采用聚合返回模式的 `operation = "ASSOCIATION_QUERY"` 中。
 2. 使用 `aggregateFilter` 时，`returns` 必须至少包含一个 `METRIC`。
 3. `aggregateFilter.metricAlias` 必须引用 `returns` 中 `kind = "METRIC"` 的 `alias`。
 4. `aggregateFilter` 不得直接引用对象原始字段、关系字段或未声明 alias。
@@ -964,21 +1039,32 @@ OAC 可以通过函数注册表开放扩展函数。扩展函数必须先注册�
 11. `aggregateFilter` 不建议包含子查询；如需复杂聚合后再查询，应优先使用 `sourceQuery` 拆分为多阶段查询。
 12. `orders` 在聚合查询中优先引用 `returns.alias`，可以引用被 `aggregateFilter` 使用的指标 alias。
 
-执行语义：
+普通聚合执行语义：
 
 ```text
 对象绑定 -> conditions 明细过滤 -> 分组计算 -> 聚合指标计算 -> aggregateFilter 聚合后过滤 -> orders 排序 -> maxResults 截断
 ```
 
+关系聚合执行语义：
+
+```text
+对象绑定 -> relationships 关系绑定/路径扩展 -> conditions 明细过滤 -> 分组计算 -> 聚合指标计算 -> aggregateFilter 聚合后过滤 -> orders 排序 -> maxResults 截断
+```
+
 映射到 SQL 类数据源时：
 
 ```text
-conditions       -> WHERE
-GROUP_BY returns -> GROUP BY
-METRIC returns   -> 聚合函数
-aggregateFilter  -> HAVING
-orders           -> ORDER BY
-maxResults       -> LIMIT / OFFSET
+objects                    -> FROM table_reference / table alias
+relationships              -> JOIN ... ON ...（ON 来自 OMS binding）
+conditions                 -> WHERE
+GROUP_BY returns           -> GROUP BY
+METRIC returns             -> COUNT / SUM / AVG / MIN / MAX
+METRIC.distinct            -> aggregate(DISTINCT field)
+distinct                   -> SELECT DISTINCT（仅明细模式）
+aggregateFilter            -> HAVING
+orders                     -> ORDER BY
+maxResults.offset          -> START / OFFSET
+maxResults.limit           -> LIMIT
 ```
 
 ### 3.7 `orders`：排序定义
@@ -1012,8 +1098,9 @@ maxResults       -> LIMIT / OFFSET
 
 1. `direction` 只能为 `ASC` 或 `DESC`。
 2. 普通查询排序可以使用 `ref + field`。
-3. 聚合查询排序优先使用 `returns.alias`。
+3. `AGGREGATE` 或采用聚合返回模式的 `ASSOCIATION_QUERY` 中，排序优先使用 `returns.alias`。
 4. `ID` / `NAME` 不用于 `orders`。
+5. 同一查询允许多个排序项，按 `orders` 数组顺序生成 SQL `ORDER BY expression [ASC|DESC], ...`。
 
 ### 3.8 `maxResults`：分页与数量限制
 
@@ -1034,6 +1121,7 @@ maxResults       -> LIMIT / OFFSET
 2. `offset` 必须大于等于 0。
 3. 未指定时默认 `limit = 1000`，`offset = 0`。
 4. 最大 `limit` 应由 OAC 配置控制，避免大结果集风险。
+5. 对采用 `START start LIMIT limit` 的 SQL 方言，`offset` 映射为 `START start`；对采用 `LIMIT limit OFFSET offset` 的方言，由对应 Translator 按方言重排。
 
 ### 3.9 `sourceQuery`：中间结果查询
 
@@ -1046,11 +1134,45 @@ maxResults       -> LIMIT / OFFSET
 3. 子查询不允许包含 `BATCH` operation。
 4. 子查询层级建议不超过 2 层。
 
+### 3.10 `distinct`：结果去重
+
+`distinct = true` 表示对最终明细投影结果执行去重，语义对应 SQL `SELECT DISTINCT`。
+
+```json
+{
+  "distinct": true
+}
+```
+
+约束：
+
+1. `distinct` 省略时等价于 `false`。
+2. `distinct` 仅用于 `QUERY` 和采用明细返回模式的 `ASSOCIATION_QUERY`。
+3. `AGGREGATE` 和采用聚合返回模式的 `ASSOCIATION_QUERY` 不使用顶层 `distinct`；聚合结果粒度由 `GROUP_BY` 决定。
+4. `distinct` 的作用阶段位于明细返回投影之后、排序和分页之前。
+5. `distinct = true` 不等价于 `COUNT(DISTINCT field)`；聚合输入去重必须使用 `METRIC.distinct = true`。
+6. 对 SQL `SELECT *`，canonical OQL 不得直接返回 `*`；应由本体 schema / binding 展开为显式字段后，再应用 `distinct`。
+
 ---
 
 ## 4. Operation 规范
 
+查询类 operation 按两个维度确定：**是否显式依赖本体关系路径**、**返回结果是否包含聚合**。
+
+| 是否显式依赖 `relationships` | 返回模式 | operation | `returns` 主要类型 |
+| --- | --- | --- | --- |
+| 否 | 明细 | `QUERY` | `FIELDS` / `EXPR` / `FUNCTION` |
+| 否 | 聚合 | `AGGREGATE` | `GROUP_BY` / `METRIC` |
+| 是 | 明细 | `ASSOCIATION_QUERY` | `FIELDS` / `EXPR` / `FUNCTION` |
+| 是 | 聚合 | `ASSOCIATION_QUERY` | `GROUP_BY` / `METRIC` |
+
+`ASSOCIATION_QUERY` **不用于覆盖或替代** `QUERY` 和 `AGGREGATE`。从结构能力上，如果将 `relationships` 改为可选，`ASSOCIATION_QUERY` 可以退化表达普通明细或无关系聚合；但这种设计会使 operation 名称与实际语义不一致，并削弱结构校验、路由和执行计划选择的确定性，因此本规范不采用该方式。
+
+如果未来需要把三类查询统一为单一 operation，应优先将更通用的 `QUERY` 扩展为“对象查询总入口”，通过可选 `relationships` 和聚合返回模式表达不同查询形态，而不是让 `ASSOCIATION_QUERY` 承担无关联查询。
+
 ### 4.1 `QUERY`：普通对象查询
+
+`QUERY` 用于不显式依赖本体关系路径的明细对象查询。若查询需要沿本体 relationship 导航、归属、关联或路径扩展，应使用 `ASSOCIATION_QUERY`。
 
 ```json
 {
@@ -1127,12 +1249,13 @@ maxResults       -> LIMIT / OFFSET
 
 1. 必须包含 `objects` 与 `returns`。
 2. 不得出现 `relationships`、`aggregateFilter`、`mutation`。
-3. 多对象查询必须用 `conditions` 明确对象之间的关联条件。
+3. 不得使用 `conditions` 模拟 schema 中已经存在的本体关系路径；需要关系路径时使用 `ASSOCIATION_QUERY`。
 4. 允许 `FIELDS`、`EXPR` 和字段类型指定 `FUNCTION`。
+5. `QUERY` 不允许 `GROUP_BY`、`METRIC` 或 `aggregateFilter`；出现聚合意图且不依赖关系路径时使用 `AGGREGATE`。
 
 ### 4.2 `AGGREGATE`：聚合查询
 
-`AGGREGATE` 用于表达面向对象集合的分组统计、指标计算和聚合后过滤。
+`AGGREGATE` 用于表达不依赖本体关系路径的对象集合分组统计、指标计算和聚合后过滤。若统计逻辑依赖对象关系或多跳路径，必须使用 `ASSOCIATION_QUERY` 的聚合模式。
 
 基础聚合示例：
 
@@ -1238,10 +1361,14 @@ maxResults       -> LIMIT / OFFSET
 6. 聚合查询排序字段优先引用 `returns.alias`。
 7. 聚合查询不建议返回过大结果集，必须通过 `maxResults.limit` 控制返回规模。
 8. `ID` / `NAME` 不表达聚合指标。
+9. 顶层 `distinct` 不用于 `AGGREGATE`；聚合内部去重使用 `METRIC.distinct`。
+10. 一旦统计需要沿 `relationships` 进行关联、归属或路径扩展，应改用 `ASSOCIATION_QUERY` 聚合模式。
 
 ### 4.3 `ASSOCIATION_QUERY`：对象关系/路径关联查询
 
-`ASSOCIATION_QUERY` 用于表达对象之间的关系查询，包括一跳关系导航、多跳路径关联、明确关系类型/方向/路径顺序的关联查询。
+`ASSOCIATION_QUERY` 用于表达显式依赖本体 relationship 的查询，包括一跳关系导航、多跳路径关联以及关系路径上的分组聚合查询。该 operation 必须包含至少一条 `relationships`，不得用于无关系路径的普通查询或聚合查询。
+
+#### 4.3.1 明细关联查询
 
 ```json
 {
@@ -1286,15 +1413,244 @@ maxResults       -> LIMIT / OFFSET
 }
 ```
 
-约束：
+#### 4.3.2 关系路径 GROUP BY 聚合查询
+
+当查询需要“先沿本体关系路径展开，再对逻辑结果分组统计”时，仍使用 `ASSOCIATION_QUERY`，并在 `returns` 中使用 `GROUP_BY` 与 `METRIC`。
+
+例如：按客户区域和产品分类统计已完成订单的唯一订单数和订单金额，筛选总金额大于 10000 的分组，并按金额倒序分页。
+
+```json
+{
+  "version": "2.0",
+  "schemaRef": "sales-v1",
+  "strict": true,
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "Customer",
+      "alias": "c"
+    },
+    {
+      "objectType": "Order",
+      "alias": "o"
+    },
+    {
+      "objectType": "Product",
+      "alias": "p"
+    }
+  ],
+  "relationships": [
+    {
+      "relationshipType": "places_order",
+      "alias": "r1",
+      "from": "c",
+      "to": "o",
+      "direction": "OUTBOUND",
+      "mode": "LIST"
+    },
+    {
+      "relationshipType": "contains_product",
+      "alias": "r2",
+      "from": "o",
+      "to": "p",
+      "direction": "OUTBOUND",
+      "mode": "LIST"
+    }
+  ],
+  "conditions": {
+    "kind": "PREDICATE",
+    "ref": "o",
+    "field": "status",
+    "operator": "EQ",
+    "values": ["completed"]
+  },
+  "returns": [
+    {
+      "kind": "GROUP_BY",
+      "ref": "c",
+      "field": "region",
+      "alias": "region"
+    },
+    {
+      "kind": "GROUP_BY",
+      "ref": "p",
+      "field": "category",
+      "alias": "category"
+    },
+    {
+      "kind": "METRIC",
+      "function": "COUNT",
+      "ref": "o",
+      "field": "id",
+      "distinct": true,
+      "alias": "orderCount"
+    },
+    {
+      "kind": "METRIC",
+      "function": "SUM",
+      "ref": "o",
+      "field": "amount",
+      "alias": "totalAmount"
+    }
+  ],
+  "aggregateFilter": {
+    "kind": "METRIC_PREDICATE",
+    "metricAlias": "totalAmount",
+    "operator": "GT",
+    "values": [10000]
+  },
+  "orders": [
+    {
+      "field": "totalAmount",
+      "direction": "DESC"
+    },
+    {
+      "field": "region",
+      "direction": "ASC"
+    }
+  ],
+  "maxResults": {
+    "limit": 50,
+    "offset": 20
+  }
+}
+```
+
+对应 SQL 类数据源的逻辑语义示例：
+
+```sql
+SELECT
+  c.region AS region,
+  p.category AS category,
+  COUNT(DISTINCT o.id) AS orderCount,
+  SUM(o.amount) AS totalAmount
+FROM customer c
+JOIN orders o ON <由 places_order 的 OMS binding 生成>
+JOIN product p ON <由 contains_product 的 OMS binding 生成>
+WHERE o.status = 'completed'
+GROUP BY c.region, p.category
+HAVING SUM(o.amount) > 10000
+ORDER BY totalAmount DESC, region ASC
+START 20 LIMIT 50;
+```
+
+> SQL 中的物理表名、物理列名、JOIN 方式和 `ON` 条件属于 Translator / OMS binding 的物理执行语义，不进入 canonical OQL。OQL 只声明本体对象、关系、属性、过滤、分组和指标。
+
+#### 4.3.3 SELECT DISTINCT 关系明细查询
+
+例如：查询有已完成订单的客户区域，并对最终明细投影去重。
+
+```json
+{
+  "version": "2.0",
+  "schemaRef": "sales-v1",
+  "strict": true,
+  "operation": "ASSOCIATION_QUERY",
+  "distinct": true,
+  "objects": [
+    {
+      "objectType": "Customer",
+      "alias": "c"
+    },
+    {
+      "objectType": "Order",
+      "alias": "o"
+    }
+  ],
+  "relationships": [
+    {
+      "relationshipType": "places_order",
+      "alias": "r1",
+      "from": "c",
+      "to": "o",
+      "direction": "OUTBOUND",
+      "mode": "LIST"
+    }
+  ],
+  "conditions": {
+    "kind": "PREDICATE",
+    "ref": "o",
+    "field": "status",
+    "operator": "EQ",
+    "values": ["completed"]
+  },
+  "returns": [
+    {
+      "kind": "EXPR",
+      "expr": {
+        "kind": "FIELD",
+        "ref": "c",
+        "field": "region"
+      },
+      "alias": "region"
+    }
+  ],
+  "orders": [
+    {
+      "field": "region",
+      "direction": "ASC"
+    }
+  ],
+  "maxResults": {
+    "limit": 100,
+    "offset": 0
+  }
+}
+```
+
+#### 4.3.4 SQL SELECT 语义映射
+
+针对如下 SQL 查询结构：
+
+```sql
+SELECT [ DISTINCT ] { * | { expression [ [ AS ] alias ] [ , ... ] } }
+FROM table_reference [ [ AS ] alias ] [ , ... ]
+[ { join_type JOIN table_reference ON condition } [ , ... ] ]
+[ WHERE condition_expression ]
+[ GROUP BY { expression } [ , ... ] [ HAVING condition ] ]
+[ ORDER BY { expression } [ ASC | DESC ] [ , ... ] ]
+[ [ START start ] LIMIT limit ]
+```
+
+OQL 表达与 SQL 类数据源翻译关系如下：
+
+| SQL 语义 | OQL 表达 | 说明 |
+| --- | --- | --- |
+| `SELECT DISTINCT` | `distinct = true` | 仅用于最终明细投影去重 |
+| `SELECT *` | `returns.kind = "FIELDS"` + schema 显式字段展开 | canonical OQL 不保留隐式 `*` |
+| `expression AS alias` | `EXPR.alias` / `GROUP_BY.alias` / `METRIC.alias` | 返回别名显式声明 |
+| `FROM table_reference AS alias` | `objects[].objectType + alias` | 物理表由 OMS binding 解析，不直接暴露给 Agent |
+| `JOIN ... ON ...` | `relationships[]` + OMS binding | OQL 声明本体关系；物理连接条件由 binding 生成 |
+| `join_type` | Translator / binding 能力 | canonical OQL 不直接暴露 SQL join type；如未来需要表达“可选关系/保留无匹配对象”等逻辑语义，应新增本体语义字段，而不是直接注入物理 SQL 关键字 |
+| `WHERE` | `conditions` | 聚合前对象/关系明细过滤 |
+| `GROUP BY expression` | `returns.kind = "GROUP_BY"` | 可使用 `ref + field` 或 `expr` |
+| `COUNT/SUM/AVG/MIN/MAX` | `returns.kind = "METRIC"` | 聚合指标 |
+| `aggregate(DISTINCT field)` | `METRIC.distinct = true` | 聚合输入去重 |
+| `HAVING` | `aggregateFilter` | 只引用已声明 `METRIC.alias` |
+| `ORDER BY` | `orders[]` | 聚合模式优先引用 `returns.alias` |
+| `START start` | `maxResults.offset` | 方言由 Translator 负责 |
+| `LIMIT limit` | `maxResults.limit` | 最大返回数量 |
+
+说明：上述映射用于说明 OQL 到 SQL 类物理查询的逻辑对应关系，并不意味着 OQL 是 SQL AST。对于不同数据源，OAC 应根据 OMS binding 和 Translator 能力生成 SQL、GQL 或其他物理查询语言。
+
+#### 4.3.5 `ASSOCIATION_QUERY` 约束
 
 1. 必须包含 `objects`、`relationships`、`returns`。
-2. `relationships` 至少包含一条关系。
+2. `relationships` 至少包含一条关系；没有关系路径时不得使用 `ASSOCIATION_QUERY`。
 3. `relationships` 按路径顺序声明。
 4. `relationships[].from` / `relationships[].to` 必须引用当前层 `objects[].alias`。
 5. 不得出现 `mutation`。
 6. 一跳关系导航必须使用 `ASSOCIATION_QUERY`。
-7. 允许 `FIELDS`、`EXPR` 和字段类型指定 `FUNCTION`。
+7. 明细模式只允许 `FIELDS`、`EXPR` 和字段类型指定 `FUNCTION`。
+8. 聚合模式只允许 `GROUP_BY` 和 `METRIC`，且至少包含一个 `METRIC`。
+9. 同一层 `returns` 不允许混合明细模式与聚合模式。
+10. 聚合模式允许 `aggregateFilter`，但只能引用同层 `METRIC.alias`。
+11. 聚合模式排序优先引用 `GROUP_BY.alias` 或 `METRIC.alias`。
+12. 顶层 `distinct` 仅允许用于明细模式；聚合输入去重使用 `METRIC.distinct`。
+13. 关系展开后可能产生重复逻辑行；`COUNT(*)` 表示逻辑行数，统计唯一对象时必须使用唯一字段并设置 `METRIC.distinct = true`。
+14. 关系聚合查询不得仅因为出现 `GROUP BY`、聚合函数或 `HAVING` 而切换到 `AGGREGATE`；只要聚合依赖 `relationships`，operation 仍为 `ASSOCIATION_QUERY`。
+15. OMS binding 无法为任一 relationship 解析物理关联时必须返回绑定错误，不得生成笛卡尔积。
+16. `ASSOCIATION_QUERY` 不得在 `relationships` 为空或缺失时作为 `QUERY` / `AGGREGATE` 的替代 operation。
 
 ### 4.4 写操作
 
@@ -1442,21 +1798,23 @@ maxResults       -> LIMIT / OFFSET
 
 ## 5. Agent 生成流程
 
-1. 识别用户意图属于普通查询、聚合查询、对象关系/路径关联、创建、更新、删除、存在则更新或批处理。
-2. 选择唯一 `operation`。
-3. 明确 `schemaRef`。
-4. 声明参与对象和 alias。
-5. 根据 operation 填写必要模块。
-6. 对于对象级过滤，生成 `conditions`。
-7. 对于聚合查询，生成 `GROUP_BY` 和 `METRIC`。
+1. 识别用户意图属于明细查询、聚合查询、关系/路径查询、关系路径聚合、创建、更新、删除、存在则更新或批处理。
+2. 查询类 operation 按以下规则选择：
+   - 不显式依赖本体关系路径，返回对象明细：`QUERY`；
+   - 不显式依赖本体关系路径，需要分组或聚合：`AGGREGATE`；
+   - 显式依赖一跳/多跳本体关系路径：`ASSOCIATION_QUERY`，再根据返回意图区分明细模式或聚合模式。
+3. 不得在 `relationships` 缺失时生成 `ASSOCIATION_QUERY`，也不得因为希望“统一查询 operation”而用其替代 `QUERY` / `AGGREGATE`。
+4. 明确 `schemaRef`，声明参与对象和 alias。
+5. 对 `ASSOCIATION_QUERY` 按路径顺序声明 `relationships`。
+6. 对对象级、关系级、明细级过滤生成 `conditions`。
+7. 对 `AGGREGATE` 或 `ASSOCIATION_QUERY` 聚合模式生成 `GROUP_BY` 和 `METRIC`。
 8. 如果用户意图包含“聚合结果满足某条件”，生成 `aggregateFilter`。
-9. 如果需要轻量属性变换、时间归一、空值处理等表达能力，优先使用核心内置表达式函数；如需领域函数，必须使用已注册扩展函数。
-10. 如果用户要求返回字段的 ID、标识、编号、编码、名称、名字、显示名、中文名等维度语义，使用 `returns.kind = "FUNCTION"` 与 `field = "ID(field)" / "NAME(field)"`。
-11. 使用 canonical OQL 对象结构直接生成 JSON。
-12. 省略所有未使用字段。
-13. 调用 builder 做字段顺序和默认值稳定化。
-14. 调用 validator 做结构与引用校验。
-15. 仅当用户明确要求执行且请求校验通过时，才进入执行。
+9. 如果用户要求最终明细结果去重，生成顶层 `distinct = true`；如果用户要求聚合输入去重（如唯一用户数、唯一订单数），使用 `METRIC.distinct = true`。
+10. 如果需要轻量属性变换、时间归一、空值处理等表达能力，优先使用核心内置表达式函数；如需领域函数，必须使用已注册扩展函数。
+11. 如果用户要求返回字段的 ID、标识、编号、编码、名称、名字、显示名、中文名等维度语义，使用 `returns.kind = "FUNCTION"` 与 `field = "ID(field)" / "NAME(field)"`。
+12. 使用 canonical OQL 对象结构直接生成 JSON，并省略所有未使用字段。
+13. 调用 builder 做字段顺序和默认值稳定化，调用 validator 做结构、引用和 operation 边界校验。
+14. 仅当用户明确要求执行且请求校验通过时，才进入执行。
 
 生成禁忌：
 
@@ -1470,14 +1828,19 @@ maxResults       -> LIMIT / OFFSET
 8. 不跨 `sourceQuery` 层级引用 alias。
 9. 不在 `BATCH.items[]` 中嵌套 `BATCH`。
 10. 不伪造 schema 中不存在的对象、关系或字段。
-11. 一跳关系导航必须生成 `ASSOCIATION_QUERY`。
-12. 关系类型、方向和返回模式必须通过 `relationships` 表达。
-13. 聚合指标过滤必须生成 `aggregateFilter`，不得生成 `having` 字段。
-14. 聚合指标 alias 不得放入 `conditions`。
-15. 表达式函数必须使用 `kind = "FUNCTION"` 结构，不得将函数调用退化为字符串拼接。
-16. 不得生成未注册扩展函数。
-17. 当用户要求返回字段的 ID、标识、编号、编码、名称或名字语义时，必须使用 `returns.kind = "FUNCTION"`、`field = "ID(field)" / "NAME(field)"`，不得使用旧的 `EXPR + expr.kind = FUNCTION + args` 写法。
-18. 不得生成数据库方言函数、脚本函数、窗口函数、随机函数或系统环境函数。
+11. 不得在 `QUERY` / `AGGREGATE` 中声明 `relationships`；需要关系路径时使用 `ASSOCIATION_QUERY`。
+12. 不得在缺少 `relationships` 时生成 `ASSOCIATION_QUERY`。
+13. 不得使用 `conditions` 模拟 schema 中已有的本体关系连接。
+14. 聚合指标过滤必须生成 `aggregateFilter`，不得生成 `having` 字段。
+15. 聚合指标 alias 不得放入 `conditions`。
+16. 顶层 `distinct` 不得替代 `METRIC.distinct`；`COUNT(DISTINCT field)` 必须表达为 `METRIC.distinct = true`。
+17. 表达式函数必须使用 `kind = "FUNCTION"` 结构，不得将函数调用退化为字符串拼接。
+18. 不得生成未注册扩展函数。
+19. 当用户要求返回字段的 ID、标识、编号、编码、名称或名字语义时，必须使用 `returns.kind = "FUNCTION"`、`field = "ID(field)" / "NAME(field)"`，不得使用旧的 `EXPR + expr.kind = FUNCTION + args` 写法。
+20. 不得生成数据库方言函数、脚本函数、窗口函数、随机函数或系统环境函数。
+21. 不得因为关系查询中出现 `GROUP BY`、`COUNT`、`SUM`、`AVG`、`MIN`、`MAX` 或 `HAVING` 就切换到 `AGGREGATE`；只要统计依赖关系路径，就使用 `ASSOCIATION_QUERY` 聚合模式。
+22. 不得在 canonical OQL 中拼接物理 `JOIN ... ON table.column = table.column`；物理连接必须来自本体关系的 OMS binding。
+23. 不得直接输出 `SELECT *` 对应的 `FIELDS.fields = ["*"]`；必须根据 schema 展开显式字段。
 
 ---
 
@@ -1494,10 +1857,13 @@ maxResults       -> LIMIT / OFFSET
 7. 所有未使用字段必须省略。
 8. 不允许出现 `having` 字段；聚合后过滤统一使用 `aggregateFilter`。
 9. 不允许出现 `linkQuery` 字段或 `LINK_QUERY` operation。
+10. `distinct` 必须为 boolean；省略时按 `false` 处理。
+11. `QUERY` / `AGGREGATE` 不允许 `relationships`；`ASSOCIATION_QUERY` 必须至少包含一条 `relationships`。
+12. 顶层 `distinct` 只允许用于 `QUERY` 和 `ASSOCIATION_QUERY` 明细模式。
 
-### 6.2 聚合过滤校验
+### 6.2 聚合与聚合过滤校验
 
-1. `aggregateFilter` 只能用于 `AGGREGATE`。
+1. `aggregateFilter` 只能用于 `AGGREGATE` 或采用聚合返回模式的 `ASSOCIATION_QUERY`。
 2. `aggregateFilter.kind` 必须为 `METRIC_PREDICATE` 或 `GROUP`。
 3. `METRIC_PREDICATE.metricAlias` 必须引用 `returns` 中的 `METRIC.alias`。
 4. `aggregateFilter` 不得引用对象字段、关系字段或未声明 alias。
@@ -1505,6 +1871,12 @@ maxResults       -> LIMIT / OFFSET
 6. `GROUP.relation = NOT` 时，`children` 必须且仅有一个。
 7. 操作符与 `values` 个数必须匹配。
 8. 不允许生成 `having` 字段。
+9. 聚合模式必须至少包含一个 `METRIC`；无分组全局聚合可以不包含 `GROUP_BY`。
+10. 聚合模式 `returns` 不得混入 `FIELDS`、明细 `EXPR` 或字段类型指定 `FUNCTION`。
+11. 聚合函数只允许 `COUNT`、`SUM`、`AVG`、`MIN`、`MAX`；仅 `COUNT(*)` 允许 `field = "*"`。
+12. `METRIC.distinct` 必须为 boolean；`distinct = true` 时 `field` 必须为显式字段，禁止 `COUNT(DISTINCT *)`。
+13. 聚合排序引用 alias 时，该 alias 必须来自同层 `GROUP_BY.alias` 或 `METRIC.alias`。
+14. 顶层 `distinct` 不允许用于聚合模式。
 
 ### 6.3 表达式与函数校验
 
@@ -1520,6 +1892,17 @@ maxResults       -> LIMIT / OFFSET
 10. `ID` / `NAME` 不允许出现在 `conditions`、`orders`、`mutation`、`aggregateFilter` 中。
 11. 扩展函数必须具备函数注册信息，包括参数类型、返回类型、允许位置、是否可下推和不可下推时的 fallback 策略。
 12. 如果函数不可下推且 OAC 执行层不支持解释执行，应返回校验或执行计划错误。
+
+### 6.4 `ASSOCIATION_QUERY` 校验
+
+1. `ASSOCIATION_QUERY` 必须包含至少一条 `relationships`；不存在关系路径时必须改用 `QUERY` 或 `AGGREGATE`。
+2. `relationships[].from` / `relationships[].to` 必须引用当前层已声明的 `objects[].alias`。
+3. `ASSOCIATION_QUERY` 中若任一 `returns.kind` 为 `GROUP_BY` 或 `METRIC`，则进入聚合模式，所有返回项必须为 `GROUP_BY` 或 `METRIC`。
+4. 聚合模式使用 `aggregateFilter` 时必须至少存在一个 `METRIC`。
+5. 明细模式可以使用顶层 `distinct`；聚合模式不得使用顶层 `distinct`。
+6. 关系展开可能造成重复逻辑行；`COUNT(*)` 按逻辑行计数，唯一对象计数必须使用唯一字段和 `METRIC.distinct = true`。
+7. OMS binding 无法为某条 relationship 解析主外键、中间表、中间对象、图关系或其他物理关联时，应返回绑定错误，不得生成笛卡尔积查询。
+8. `ASSOCIATION_QUERY` 不得作为 `QUERY` / `AGGREGATE` 的无关系兼容写法。
 
 ---
 
@@ -1574,6 +1957,24 @@ maxResults       -> LIMIT / OFFSET
       "path": "returns[0]",
       "details": {
         "allowed": ["ID(fieldName)", "NAME(fieldName)"]
+      }
+    }
+  ]
+}
+```
+
+关系绑定错误建议使用：
+
+```json
+{
+  "success": false,
+  "errors": [
+    {
+      "code": "RELATIONSHIP_BINDING_ERROR",
+      "message": "Unable to resolve physical binding for relationship places_order.",
+      "path": "relationships[0]",
+      "details": {
+        "relationshipType": "places_order"
       }
     }
   ]
@@ -1677,7 +2078,70 @@ maxResults       -> LIMIT / OFFSET
 }
 ```
 
-### 8.4 UPDATE with FUNCTION
+### 8.4 ASSOCIATION_QUERY with GROUP BY / HAVING
+
+```json
+{
+  "version": "2.0",
+  "schemaRef": "<SCHEMA_REF>",
+  "strict": true,
+  "operation": "ASSOCIATION_QUERY",
+  "objects": [
+    {
+      "objectType": "<SourceObjectType>",
+      "alias": "s"
+    },
+    {
+      "objectType": "<TargetObjectType>",
+      "alias": "t"
+    }
+  ],
+  "relationships": [
+    {
+      "relationshipType": "<RelationshipType>",
+      "alias": "r1",
+      "from": "s",
+      "to": "t",
+      "direction": "OUTBOUND",
+      "mode": "LIST"
+    }
+  ],
+  "returns": [
+    {
+      "kind": "GROUP_BY",
+      "ref": "s",
+      "field": "<GroupField>",
+      "alias": "<GroupAlias>"
+    },
+    {
+      "kind": "METRIC",
+      "function": "COUNT",
+      "ref": "t",
+      "field": "id",
+      "distinct": true,
+      "alias": "cnt"
+    }
+  ],
+  "aggregateFilter": {
+    "kind": "METRIC_PREDICATE",
+    "metricAlias": "cnt",
+    "operator": "GT",
+    "values": [10]
+  },
+  "orders": [
+    {
+      "field": "cnt",
+      "direction": "DESC"
+    }
+  ],
+  "maxResults": {
+    "limit": 100,
+    "offset": 0
+  }
+}
+```
+
+### 8.5 UPDATE with FUNCTION
 
 ```json
 {
@@ -1711,7 +2175,7 @@ maxResults       -> LIMIT / OFFSET
 }
 ```
 
-### 8.5 QUERY with extension FUNCTION
+### 8.6 QUERY with extension FUNCTION
 
 ```json
 {
