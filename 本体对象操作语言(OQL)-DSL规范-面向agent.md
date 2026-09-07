@@ -47,7 +47,6 @@ OQL 不直接面向物理表、物理列或数据库方言。执行时由 OAC（
   "schemaRef": "<SCHEMA_REF>",
   "strict": true,
   "operation": "QUERY",
-  "distinct": false,
   "objects": [],
   "relationships": [],
   "conditions": {},
@@ -74,7 +73,6 @@ version
 schemaRef
 strict
 operation
-distinct
 objects
 relationships
 conditions
@@ -96,7 +94,6 @@ extensions
 | `schemaRef` | string | 是 | 本次请求绑定的本体 schema 标识 |
 | `strict` | boolean | 否 | 是否启用严格校验，默认 `true` |
 | `operation` | enum | 是 | `QUERY` / `AGGREGATE` / `ASSOCIATION_QUERY` / `CREATE` / `UPDATE` / `DELETE` / `UPSERT` / `BATCH` |
-| `distinct` | boolean | 否 | 是否对最终明细投影结果去重，语义对应 SQL `SELECT DISTINCT`；默认 `false`，仅用于 `QUERY` / `ASSOCIATION_QUERY` 明细模式 |
 | `objects` | array | 条件必填 | 对象声明 |
 | `relationships` | array | 条件必填 | 关系路径声明，仅 `ASSOCIATION_QUERY` 使用 |
 | `conditions` | object | 条件必填 | 对象级、明细级条件树 |
@@ -785,39 +782,17 @@ SQL 中的单字段别名 `expression [AS] alias` 如果需要在 OQL 中保留�
 | `function` | enum | 是 | `COUNT` / `SUM` / `AVG` / `MIN` / `MAX` |
 | `ref` | string | 是 | 指标字段所属对象 alias |
 | `field` | string | 是 | 聚合字段；仅 `COUNT` 允许 `*` |
-| `distinct` | boolean | 否 | 是否先对聚合输入值去重，默认 `false`；语义对应聚合函数内部 `DISTINCT` |
 | `alias` | string | 是 | 聚合指标结果别名 |
 
 `METRIC` 可用于 `AGGREGATE`，也可用于采用聚合返回模式的 `ASSOCIATION_QUERY`。
 
-关系展开可能因一对多、多对多或多条关系路径产生重复逻辑行。若指标语义要求按对象或属性唯一值计数，应使用 `METRIC.distinct = true`，不得使用顶层 `distinct` 替代。
-
-例如，统计关联结果中的唯一订单数：
-
-```json
-{
-  "kind": "METRIC",
-  "function": "COUNT",
-  "ref": "o",
-  "field": "id",
-  "distinct": true,
-  "alias": "orderCount"
-}
-```
-
-对应 SQL 类语义：
-
-```sql
-COUNT(DISTINCT o.id) AS orderCount
-```
+关系展开可能因一对多、多对多或多条关系路径产生重复逻辑行。OQL 不提供聚合输入去重控制字段；服务端应根据统一执行策略和物理数据源能力处理必要的去重语义，Agent 不得生成额外去重参数。
 
 约束：
 
 1. 聚合函数仅允许 `COUNT`、`SUM`、`AVG`、`MIN`、`MAX`。
 2. `COUNT` 允许 `field = "*"`，其他聚合函数不允许 `*`。
-3. `distinct` 省略时按 `false` 处理；`distinct = true` 时 `field` 必须为显式字段，不允许 `field = "*"`。
-4. 顶层 `distinct` 表达最终投影去重；`METRIC.distinct` 表达聚合输入去重，两者语义不同，不得互相替代。
-5. `COUNT(*)` 统计关系展开和 `conditions` 过滤后的逻辑行数；若业务语义是统计唯一对象，应显式使用对象唯一标识字段并设置 `distinct = true`。
+3. `COUNT(*)` 表示关系展开和 `conditions` 过滤后的逻辑行计数；如服务端需要对对象唯一标识进行去重计数，由执行层根据既定策略处理，不在 canonical OQL 中增加控制字段。
 
 #### 3.5.7 `ID` / `NAME` 返回字段类型指定函数
 
@@ -935,8 +910,7 @@ COUNT(DISTINCT o.id) AS orderCount
 6. `EXPR`、`FUNCTION`、`GROUP_BY`、`METRIC` 必须声明 `alias`，`FIELDS` 除外。
 7. `GROUP_BY` 必须使用 `ref + field` 或 `expr` 表达分组维度。
 8. `COUNT` 允许 `field = "*"`，其他聚合函数不允许 `*`。
-9. `METRIC.distinct = true` 时必须指定显式 `field`，不得与 `field = "*"` 同时使用。
-10. `ID` / `NAME` 字段类型指定函数必须使用 `returns.kind = "FUNCTION"`，不得使用 `returns.kind = "EXPR"`。
+9. `ID` / `NAME` 字段类型指定函数必须使用 `returns.kind = "FUNCTION"`，不得使用 `returns.kind = "EXPR"`。
 
 ### 3.6 `aggregateFilter`：聚合结果过滤
 
@@ -1059,8 +1033,6 @@ relationships              -> JOIN ... ON ...（ON 来自 OMS binding）
 conditions                 -> WHERE
 GROUP_BY returns           -> GROUP BY
 METRIC returns             -> COUNT / SUM / AVG / MIN / MAX
-METRIC.distinct            -> aggregate(DISTINCT field)
-distinct                   -> SELECT DISTINCT（仅明细模式）
 aggregateFilter            -> HAVING
 orders                     -> ORDER BY
 maxResults.offset          -> START / OFFSET
@@ -1134,24 +1106,16 @@ maxResults.limit           -> LIMIT
 3. 子查询不允许包含 `BATCH` operation。
 4. 子查询层级建议不超过 2 层。
 
-### 3.10 `distinct`：结果去重
+### 3.10 结果去重执行约定
 
-`distinct = true` 表示对最终明细投影结果执行去重，语义对应 SQL `SELECT DISTINCT`。
-
-```json
-{
-  "distinct": true
-}
-```
+canonical OQL 不提供结果去重或聚合输入去重控制字段。去重属于 OAC 服务端统一执行策略，不由 Agent 显式声明。
 
 约束：
 
-1. `distinct` 省略时等价于 `false`。
-2. `distinct` 仅用于 `QUERY` 和采用明细返回模式的 `ASSOCIATION_QUERY`。
-3. `AGGREGATE` 和采用聚合返回模式的 `ASSOCIATION_QUERY` 不使用顶层 `distinct`；聚合结果粒度由 `GROUP_BY` 决定。
-4. `distinct` 的作用阶段位于明细返回投影之后、排序和分页之前。
-5. `distinct = true` 不等价于 `COUNT(DISTINCT field)`；聚合输入去重必须使用 `METRIC.distinct = true`。
-6. 对 SQL `SELECT *`，canonical OQL 不得直接返回 `*`；应由本体 schema / binding 展开为显式字段后，再应用 `distinct`。
+1. Agent 不得生成任何结果去重或聚合输入去重控制字段。
+2. OAC 服务端根据统一策略、OMS binding 和目标数据源能力，在物理查询生成或结果装配阶段处理必要的去重。
+3. SQL 输入中包含显式去重语义时，转换为 canonical OQL 后不保留独立控制字段，由服务端执行策略统一处理。
+4. 不同物理数据源的具体实现由对应 Translator / Executor 负责，不向 canonical OQL 暴露数据库方言关键字。
 
 ---
 
@@ -1361,8 +1325,7 @@ maxResults.limit           -> LIMIT
 6. 聚合查询排序字段优先引用 `returns.alias`。
 7. 聚合查询不建议返回过大结果集，必须通过 `maxResults.limit` 控制返回规模。
 8. `ID` / `NAME` 不表达聚合指标。
-9. 顶层 `distinct` 不用于 `AGGREGATE`；聚合内部去重使用 `METRIC.distinct`。
-10. 一旦统计需要沿 `relationships` 进行关联、归属或路径扩展，应改用 `ASSOCIATION_QUERY` 聚合模式。
+9. 一旦统计需要沿 `relationships` 进行关联、归属或路径扩展，应改用 `ASSOCIATION_QUERY` 聚合模式。
 
 ### 4.3 `ASSOCIATION_QUERY`：对象关系/路径关联查询
 
@@ -1417,7 +1380,7 @@ maxResults.limit           -> LIMIT
 
 当查询需要“先沿本体关系路径展开，再对逻辑结果分组统计”时，仍使用 `ASSOCIATION_QUERY`，并在 `returns` 中使用 `GROUP_BY` 与 `METRIC`。
 
-例如：按客户区域和产品分类统计已完成订单的唯一订单数和订单金额，筛选总金额大于 10000 的分组，并按金额倒序分页。
+例如：按客户区域和产品分类统计已完成订单数量和订单金额，筛选总金额大于 10000 的分组，并按金额倒序分页。
 
 ```json
 {
@@ -1482,7 +1445,6 @@ maxResults.limit           -> LIMIT
       "function": "COUNT",
       "ref": "o",
       "field": "id",
-      "distinct": true,
       "alias": "orderCount"
     },
     {
@@ -1522,7 +1484,7 @@ maxResults.limit           -> LIMIT
 SELECT
   c.region AS region,
   p.category AS category,
-  COUNT(DISTINCT o.id) AS orderCount,
+  COUNT(o.id) AS orderCount,
   SUM(o.amount) AS totalAmount
 FROM customer c
 JOIN orders o ON <由 places_order 的 OMS binding 生成>
@@ -1534,76 +1496,14 @@ ORDER BY totalAmount DESC, region ASC
 START 20 LIMIT 50;
 ```
 
-> SQL 中的物理表名、物理列名、JOIN 方式和 `ON` 条件属于 Translator / OMS binding 的物理执行语义，不进入 canonical OQL。OQL 只声明本体对象、关系、属性、过滤、分组和指标。
+> SQL 中的物理表名、物理列名、JOIN 方式、`ON` 条件以及服务端自动处理的去重策略属于 Translator / OMS binding / Executor 的物理执行语义，不进入 canonical OQL。OQL 只声明本体对象、关系、属性、过滤、分组和指标。
 
-#### 4.3.3 SELECT DISTINCT 关系明细查询
-
-例如：查询有已完成订单的客户区域，并对最终明细投影去重。
-
-```json
-{
-  "version": "2.0",
-  "schemaRef": "sales-v1",
-  "strict": true,
-  "operation": "ASSOCIATION_QUERY",
-  "distinct": true,
-  "objects": [
-    {
-      "objectType": "Customer",
-      "alias": "c"
-    },
-    {
-      "objectType": "Order",
-      "alias": "o"
-    }
-  ],
-  "relationships": [
-    {
-      "relationshipType": "places_order",
-      "alias": "r1",
-      "from": "c",
-      "to": "o",
-      "direction": "OUTBOUND",
-      "mode": "LIST"
-    }
-  ],
-  "conditions": {
-    "kind": "PREDICATE",
-    "ref": "o",
-    "field": "status",
-    "operator": "EQ",
-    "values": ["completed"]
-  },
-  "returns": [
-    {
-      "kind": "EXPR",
-      "expr": {
-        "kind": "FIELD",
-        "ref": "c",
-        "field": "region"
-      },
-      "alias": "region"
-    }
-  ],
-  "orders": [
-    {
-      "field": "region",
-      "direction": "ASC"
-    }
-  ],
-  "maxResults": {
-    "limit": 100,
-    "offset": 0
-  }
-}
-```
-
-#### 4.3.4 SQL SELECT 语义映射
+#### 4.3.3 SQL SELECT 语义映射
 
 针对如下 SQL 查询结构：
 
 ```sql
-SELECT [ DISTINCT ] { * | { expression [ [ AS ] alias ] [ , ... ] } }
+SELECT { * | { expression [ [ AS ] alias ] [ , ... ] } }
 FROM table_reference [ [ AS ] alias ] [ , ... ]
 [ { join_type JOIN table_reference ON condition } [ , ... ] ]
 [ WHERE condition_expression ]
@@ -1616,7 +1516,6 @@ OQL 表达与 SQL 类数据源翻译关系如下：
 
 | SQL 语义 | OQL 表达 | 说明 |
 | --- | --- | --- |
-| `SELECT DISTINCT` | `distinct = true` | 仅用于最终明细投影去重 |
 | `SELECT *` | `returns.kind = "FIELDS"` + schema 显式字段展开 | canonical OQL 不保留隐式 `*` |
 | `expression AS alias` | `EXPR.alias` / `GROUP_BY.alias` / `METRIC.alias` | 返回别名显式声明 |
 | `FROM table_reference AS alias` | `objects[].objectType + alias` | 物理表由 OMS binding 解析，不直接暴露给 Agent |
@@ -1625,7 +1524,6 @@ OQL 表达与 SQL 类数据源翻译关系如下：
 | `WHERE` | `conditions` | 聚合前对象/关系明细过滤 |
 | `GROUP BY expression` | `returns.kind = "GROUP_BY"` | 可使用 `ref + field` 或 `expr` |
 | `COUNT/SUM/AVG/MIN/MAX` | `returns.kind = "METRIC"` | 聚合指标 |
-| `aggregate(DISTINCT field)` | `METRIC.distinct = true` | 聚合输入去重 |
 | `HAVING` | `aggregateFilter` | 只引用已声明 `METRIC.alias` |
 | `ORDER BY` | `orders[]` | 聚合模式优先引用 `returns.alias` |
 | `START start` | `maxResults.offset` | 方言由 Translator 负责 |
@@ -1633,7 +1531,7 @@ OQL 表达与 SQL 类数据源翻译关系如下：
 
 说明：上述映射用于说明 OQL 到 SQL 类物理查询的逻辑对应关系，并不意味着 OQL 是 SQL AST。对于不同数据源，OAC 应根据 OMS binding 和 Translator 能力生成 SQL、GQL 或其他物理查询语言。
 
-#### 4.3.5 `ASSOCIATION_QUERY` 约束
+#### 4.3.4 `ASSOCIATION_QUERY` 约束
 
 1. 必须包含 `objects`、`relationships`、`returns`。
 2. `relationships` 至少包含一条关系；没有关系路径时不得使用 `ASSOCIATION_QUERY`。
@@ -1646,11 +1544,10 @@ OQL 表达与 SQL 类数据源翻译关系如下：
 9. 同一层 `returns` 不允许混合明细模式与聚合模式。
 10. 聚合模式允许 `aggregateFilter`，但只能引用同层 `METRIC.alias`。
 11. 聚合模式排序优先引用 `GROUP_BY.alias` 或 `METRIC.alias`。
-12. 顶层 `distinct` 仅允许用于明细模式；聚合输入去重使用 `METRIC.distinct`。
-13. 关系展开后可能产生重复逻辑行；`COUNT(*)` 表示逻辑行数，统计唯一对象时必须使用唯一字段并设置 `METRIC.distinct = true`。
-14. 关系聚合查询不得仅因为出现 `GROUP BY`、聚合函数或 `HAVING` 而切换到 `AGGREGATE`；只要聚合依赖 `relationships`，operation 仍为 `ASSOCIATION_QUERY`。
-15. OMS binding 无法为任一 relationship 解析物理关联时必须返回绑定错误，不得生成笛卡尔积。
-16. `ASSOCIATION_QUERY` 不得在 `relationships` 为空或缺失时作为 `QUERY` / `AGGREGATE` 的替代 operation。
+12. 关系展开后可能产生重复逻辑行；必要的结果去重或聚合输入去重由服务端统一执行策略处理，不在 canonical OQL 中增加控制字段。
+13. 关系聚合查询不得仅因为出现 `GROUP BY`、聚合函数或 `HAVING` 而切换到 `AGGREGATE`；只要聚合依赖 `relationships`，operation 仍为 `ASSOCIATION_QUERY`。
+14. OMS binding 无法为任一 relationship 解析物理关联时必须返回绑定错误，不得生成笛卡尔积。
+15. `ASSOCIATION_QUERY` 不得在 `relationships` 为空或缺失时作为 `QUERY` / `AGGREGATE` 的替代 operation。
 
 ### 4.4 写操作
 
@@ -1809,7 +1706,7 @@ OQL 表达与 SQL 类数据源翻译关系如下：
 6. 对对象级、关系级、明细级过滤生成 `conditions`。
 7. 对 `AGGREGATE` 或 `ASSOCIATION_QUERY` 聚合模式生成 `GROUP_BY` 和 `METRIC`。
 8. 如果用户意图包含“聚合结果满足某条件”，生成 `aggregateFilter`。
-9. 如果用户要求最终明细结果去重，生成顶层 `distinct = true`；如果用户要求聚合输入去重（如唯一用户数、唯一订单数），使用 `METRIC.distinct = true`。
+9. 结果去重和聚合输入去重不生成 OQL 控制字段，由 OAC 服务端统一执行策略处理。
 10. 如果需要轻量属性变换、时间归一、空值处理等表达能力，优先使用核心内置表达式函数；如需领域函数，必须使用已注册扩展函数。
 11. 如果用户要求返回字段的 ID、标识、编号、编码、名称、名字、显示名、中文名等维度语义，使用 `returns.kind = "FUNCTION"` 与 `field = "ID(field)" / "NAME(field)"`。
 12. 使用 canonical OQL 对象结构直接生成 JSON，并省略所有未使用字段。
@@ -1833,7 +1730,7 @@ OQL 表达与 SQL 类数据源翻译关系如下：
 13. 不得使用 `conditions` 模拟 schema 中已有的本体关系连接。
 14. 聚合指标过滤必须生成 `aggregateFilter`，不得生成 `having` 字段。
 15. 聚合指标 alias 不得放入 `conditions`。
-16. 顶层 `distinct` 不得替代 `METRIC.distinct`；`COUNT(DISTINCT field)` 必须表达为 `METRIC.distinct = true`。
+16. 不得生成结果去重或聚合输入去重控制字段；相关执行语义由 OAC 服务端统一处理。
 17. 表达式函数必须使用 `kind = "FUNCTION"` 结构，不得将函数调用退化为字符串拼接。
 18. 不得生成未注册扩展函数。
 19. 当用户要求返回字段的 ID、标识、编号、编码、名称或名字语义时，必须使用 `returns.kind = "FUNCTION"`、`field = "ID(field)" / "NAME(field)"`，不得使用旧的 `EXPR + expr.kind = FUNCTION + args` 写法。
@@ -1857,9 +1754,7 @@ OQL 表达与 SQL 类数据源翻译关系如下：
 7. 所有未使用字段必须省略。
 8. 不允许出现 `having` 字段；聚合后过滤统一使用 `aggregateFilter`。
 9. 不允许出现 `linkQuery` 字段或 `LINK_QUERY` operation。
-10. `distinct` 必须为 boolean；省略时按 `false` 处理。
-11. `QUERY` / `AGGREGATE` 不允许 `relationships`；`ASSOCIATION_QUERY` 必须至少包含一条 `relationships`。
-12. 顶层 `distinct` 只允许用于 `QUERY` 和 `ASSOCIATION_QUERY` 明细模式。
+10. `QUERY` / `AGGREGATE` 不允许 `relationships`；`ASSOCIATION_QUERY` 必须至少包含一条 `relationships`。
 
 ### 6.2 聚合与聚合过滤校验
 
@@ -1874,9 +1769,7 @@ OQL 表达与 SQL 类数据源翻译关系如下：
 9. 聚合模式必须至少包含一个 `METRIC`；无分组全局聚合可以不包含 `GROUP_BY`。
 10. 聚合模式 `returns` 不得混入 `FIELDS`、明细 `EXPR` 或字段类型指定 `FUNCTION`。
 11. 聚合函数只允许 `COUNT`、`SUM`、`AVG`、`MIN`、`MAX`；仅 `COUNT(*)` 允许 `field = "*"`。
-12. `METRIC.distinct` 必须为 boolean；`distinct = true` 时 `field` 必须为显式字段，禁止 `COUNT(DISTINCT *)`。
-13. 聚合排序引用 alias 时，该 alias 必须来自同层 `GROUP_BY.alias` 或 `METRIC.alias`。
-14. 顶层 `distinct` 不允许用于聚合模式。
+12. 聚合排序引用 alias 时，该 alias 必须来自同层 `GROUP_BY.alias` 或 `METRIC.alias`。
 
 ### 6.3 表达式与函数校验
 
@@ -1899,10 +1792,9 @@ OQL 表达与 SQL 类数据源翻译关系如下：
 2. `relationships[].from` / `relationships[].to` 必须引用当前层已声明的 `objects[].alias`。
 3. `ASSOCIATION_QUERY` 中若任一 `returns.kind` 为 `GROUP_BY` 或 `METRIC`，则进入聚合模式，所有返回项必须为 `GROUP_BY` 或 `METRIC`。
 4. 聚合模式使用 `aggregateFilter` 时必须至少存在一个 `METRIC`。
-5. 明细模式可以使用顶层 `distinct`；聚合模式不得使用顶层 `distinct`。
-6. 关系展开可能造成重复逻辑行；`COUNT(*)` 按逻辑行计数，唯一对象计数必须使用唯一字段和 `METRIC.distinct = true`。
-7. OMS binding 无法为某条 relationship 解析主外键、中间表、中间对象、图关系或其他物理关联时，应返回绑定错误，不得生成笛卡尔积查询。
-8. `ASSOCIATION_QUERY` 不得作为 `QUERY` / `AGGREGATE` 的无关系兼容写法。
+5. 关系展开可能造成重复逻辑行；必要的去重由 OAC 服务端统一执行策略处理，不在 canonical OQL 中增加控制字段。
+6. OMS binding 无法为某条 relationship 解析主外键、中间表、中间对象、图关系或其他物理关联时，应返回绑定错误，不得生成笛卡尔积查询。
+7. `ASSOCIATION_QUERY` 不得作为 `QUERY` / `AGGREGATE` 的无关系兼容写法。
 
 ---
 
@@ -2118,7 +2010,6 @@ OQL 表达与 SQL 类数据源翻译关系如下：
       "function": "COUNT",
       "ref": "t",
       "field": "id",
-      "distinct": true,
       "alias": "cnt"
     }
   ],
