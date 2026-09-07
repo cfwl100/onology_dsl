@@ -1,8 +1,8 @@
 
 ---
 
-> 版本：V6.5  
-> 日期：2026-09-06  
+> 版本：V6.7  
+> 日期：2026-09-07  
 > 文档定位：OAG 本体语义索引管理、混合语义检索、本体对象投影与子图构建的正式设计规范。  
 > 设计范围：覆盖索引模型与构建、OAC/MinIO 数据接入、Entity Extraction / Entity Linking、Lexical + Dense 混合召回、Weighted RRF、LLM 精排、PathProbePlan、nGQL/图算法执行以及最终结果返回。
 
@@ -683,11 +683,14 @@ GaussVector 与 OpenSearch 都以 `id` 做幂等覆盖和删除定位。
 
 ```text
 Property.referenceEnumId
+  → Property.id / Property.name
+  → Property 所属 ObjectType.id / ObjectType.name
   → EnumType.values[]
   → EnumValue.value
   → EnumValue.refSynonymTypeId
   → SynonymType.synonyms
   → SynonymFlattener
+  → OntologyMappingValidator 校验归属 ID/Name
   → t_oag_enum_{ontology_id}
 ```
 
@@ -697,24 +700,45 @@ Property.referenceEnumId
 t_oag_enum_{ontology_id}
 ```
 
-| 字段                   | GaussVector 类型       | OpenSearch 类型      |  非空 | 说明                                   |
-| -------------------- | -------------------- | ------------------ | --: | ------------------------------------ |
+| 字段                   | GaussVector 类型       | OpenSearch 类型      |  非空 | 说明 |
+| -------------------- | -------------------- | ------------------ | --: | ---- |
 | `vector`             | `DOUBLE[]`           | -                  |   ✔ | Enum Value 1024 维向量，仅 GaussVector 保存 |
-| `value`              | `VARCHAR(4096 CHAR)` | `keyword + text`   |   ✔ | 真实标准枚举值，是权威过滤值                       |
-| `property_id`        | `VARCHAR(512 CHAR)`  | `keyword`          |   ✔ | 引用该 Enum 的 Property.id               |
-| `object_type_id`     | `VARCHAR(256 CHAR)`  | `keyword`          |     | Property 所属 ObjectType.id            |
-| `description_zh`     | `TEXT`               | `text`             |     | 中文 description                       |
-| `description_en`     | `TEXT`               | `text`             |     | 英文 description                       |
-| `description_lang_1` | `TEXT`               | `text`             |     | 第 1 个额外语言 description                |
-| `description_lang_2` | `TEXT`               | `text`             |     | 第 2 个额外语言 description                |
-| `synonyms`           | `TEXT`               | `text multi-field` |     | LF 分隔的 Enum Value 同义词                |
-| `defaultDataValue`   | `TEXT`               | `text`             |     | 枚举值的数据库原始值，用于查询的过滤条件，比如`华为`对应的`0`    |
+| `value`              | `VARCHAR(4096 CHAR)` | `keyword + text`   |   ✔ | 真实标准枚举值，是权威过滤值 |
+| `property_id`        | `VARCHAR(512 CHAR)`  | `keyword`          |   ✔ | 引用该 Enum 的 Property.id；确定性归属键 |
+| `property_name`      | `VARCHAR(512 CHAR)`  | `keyword`          |   ✔ | Property 权威 `name` 的索引快照；用于检索结果直接携带归属名称和后续精排语义上下文 |
+| `object_type_id`     | `VARCHAR(256 CHAR)`  | `keyword`          |     | Property 所属 ObjectType.id；确定性归属键 |
+| `object_type_name`   | `VARCHAR(512 CHAR)`  | `keyword`          |   ✔ | ObjectType 权威 `name` 的索引快照；用于检索结果直接携带归属名称和后续精排语义上下文 |
+| `description_zh`     | `TEXT`               | `text`             |     | 中文 description |
+| `description_en`     | `TEXT`               | `text`             |     | 英文 description |
+| `description_lang_1` | `TEXT`               | `text`             |     | 第 1 个额外语言 description |
+| `description_lang_2` | `TEXT`               | `text`             |     | 第 2 个额外语言 description |
+| `synonyms`           | `TEXT`               | `text multi-field` |     | LF 分隔的 Enum Value 同义词 |
+| `defaultDataValue`   | `TEXT`               | `text`             |     | 枚举值的数据库原始值，用于查询的过滤条件，比如 `华为` 对应的 `0` |
 
 业务唯一键：
 
 ```text
 object_type_id + property_id + normalized(value)
 ```
+
+`property_name / object_type_name` 是**归属名称冗余字段**，不进入业务唯一键，也不替代 ID。名称来源按数据接入方式区分，但写索引前必须统一通过当前 ontology generation 做 ID/Name 一致性校验：
+
+```text
+OMS 静态 Enum
+  → OAG 从本体资产组装 property_id/property_name/object_type_id/object_type_name
+
+MinIO notice 动态 Enum
+  → OAC/DataSync/业务生产者在 CSV 中同时提供
+     property_id + property_name + object_type_id + object_type_name
+
+两类来源
+  → OntologyMappingValidator
+  → 校验 Property.id ↔ Property.name
+  → 校验 ObjectType.id ↔ ObjectType.name
+  → GaussVector + OpenSearch 双写
+```
+
+notice CSV 中名称缺失、ID 无法解析或 ID/Name 不一致都属于数据质量错误，不允许 OAG 在线静默补齐后继续写入；调用方必须修正源 CSV 后重新提交。
 
 `values[].id` 可用于 OMS 源数据追踪和质量校验，但不作为 `t_oag_enum_{ontology_id}` 持久化字段。SearchHit 层的 `recordType=ENUM_VALUE` 由 Normalizer 统一补充，不要求为此增加物理 `type` 字段。
 
@@ -742,17 +766,21 @@ object_type_id + property_id + normalized(value)
 3. `{synonyms}` 使用 LF 平铺 String；
 4. 不再构造 `synonyms_value / synonyms_description`；
 5. 不追加 SynonymType 自身 `name / display / description`；
-6. 不在向量前追加 ObjectType / Property 文本，归属由 `property_id + object_type_id` 确定；
-7. 空字段跳过，不写占位值。
+6. `property_name / object_type_name` **保存但不拼入 Value Embedding**，避免同一 Property/ObjectType 下大量值因共享父级名称产生不必要的向量聚类和语义污染；
+7. `property_name / object_type_name` 在 ANN 命中后随 SearchHit 原样带回，作为 Value 归属的可读语义上下文，供 RRF 后候选组装和 LLM Fine Rank 使用；
+8. 归属的确定性仍由 `property_id + object_type_id` 保证，名称只用于语义解释、精排和减少运行时二次查本体名称；
+9. 空字段跳过，不写占位值。
 
 ### 2.4.3 全文索引内容和规则
 
 OpenSearch 检索字段：
 
 ```text
-Exact / Filter:
+Exact / Filter / Return Context:
   property_id
+  property_name
   object_type_id
+  object_type_name
   value.keyword
   display_*.keyword
   synonyms
@@ -763,6 +791,8 @@ BM25 / Phrase:
   description_*
   synonyms.bm25
 ```
+
+`property_name / object_type_name` 默认作为 `keyword` 归属上下文保存并随 `_source` 返回，不加入 Value lexical 主评分字段。这样可以让检索命中直接携带可读名称，又避免因为 Property/ObjectType 名称相同而把同一归属下的大量 Value 一并拉高 BM25 分数。若未来需要按归属名称做精确过滤，可直接使用其 keyword 字段。
 
 ### 2.4.4 索引存储具体实现
 
@@ -781,14 +811,30 @@ IVF_NLIST 推荐初值：4 * sqrt(N)
 object_type_id + property_id + normalized(value)
 ```
 
-同一业务键再次 UPSERT 时覆盖原记录，包括 `display / description / synonyms / vector`；同义词变化不会生成新的 Enum 记录。
+同一业务键再次 UPSERT 时覆盖原记录，包括 `property_name / object_type_name / display / description / synonyms / vector`；同义词变化或归属对象/属性重命名不会生成新的 Enum 记录。
+
+OpenSearch `_source` 与 GaussVector 标量返回列必须同时保留：
+
+```text
+property_id
+property_name
+object_type_id
+object_type_name
+value
+```
+
+因此 Dense 与 Lexical 两条通道都可以在不额外访问 OMS/NebulaGraph 的情况下，把 Value 的真实归属 ID + 名称送入 SearchHit Normalizer。
+
+当 Property/ObjectType 发生 rename 且 ID 不变时，应通过 ontology generation 的索引刷新/增量 UPSERT 同步更新两套存储中的名称快照；名称变化不改变稳定业务键。
 
 ### 2.4.5 注意事项
 
 - `value` 是唯一权威业务过滤值，display / description / synonyms 只负责召回、排序和解释；
+- `property_id / object_type_id` 是确定性归属事实，`property_name / object_type_name` 是与当前 ontology generation 一致的可读语义快照；
 - 一个 EnumType 被多个 Property 引用时必须展开，不能只按 EnumType/value 全局去重；
 - Enum synonym 不建立独立记录；
-- Enum / Property / ObjectType 的归属信息必须在入库前完成 Ontology Mapping 校验；
+- Enum / Property / ObjectType 的归属信息和名称必须在入库前完成 Ontology Mapping 校验；
+- `property_name / object_type_name` 不进入 Value Embedding，也不作为业务唯一键；
 - 物理 Schema 按语言字段逐列展开，不能重新合并成多语言 JSON 对象。
 
 ---
@@ -813,19 +859,23 @@ Instance 索引保存去重后的真实业务列值及其内嵌同义词，不�
 t_oag_instance_{ontology_id}
 ```
 
-| 字段               | GaussVector 类型       | OpenSearch 类型      |  非空 | 说明                                       |
-| ---------------- | -------------------- | ------------------ | --: | ---------------------------------------- |
+| 字段               | GaussVector 类型       | OpenSearch 类型      |  非空 | 说明 |
+| ---------------- | -------------------- | ------------------ | --: | ---- |
 | `vector`         | `DOUBLE[]`           | -                  |   ✔ | Instance Value 1024 维向量，仅 GaussVector 保存 |
-| `value`          | `VARCHAR(4096 CHAR)` | `keyword + text`   |   ✔ | 去重后的真实标准列值，是权威过滤值                        |
-| `synonyms`       | `TEXT`               | `text multi-field` |     | 实例值同义词，LF 分隔；用于召回与解释                     |
-| `property_id`    | `VARCHAR(512 CHAR)`  | `keyword`          |   ✔ | 所属 Property.id                           |
-| `object_type_id` | `VARCHAR(256 CHAR)`  | `keyword`          |     | Property 所属 ObjectType.id                |
+| `value`          | `VARCHAR(4096 CHAR)` | `keyword + text`   |   ✔ | 去重后的真实标准列值，是权威过滤值 |
+| `synonyms`       | `TEXT`               | `text multi-field` |     | 实例值同义词，LF 分隔；用于召回与解释 |
+| `property_id`    | `VARCHAR(512 CHAR)`  | `keyword`          |   ✔ | 所属 Property.id；确定性归属键 |
+| `property_name`  | `VARCHAR(512 CHAR)`  | `keyword`          |   ✔ | Property 权威 `name` 的索引快照；用于检索结果直接携带归属名称和后续精排语义上下文 |
+| `object_type_id` | `VARCHAR(256 CHAR)`  | `keyword`          |     | Property 所属 ObjectType.id；确定性归属键 |
+| `object_type_name` | `VARCHAR(512 CHAR)`| `keyword`          |   ✔ | ObjectType 权威 `name` 的索引快照；用于检索结果直接携带归属名称和后续精排语义上下文 |
 
 业务唯一键：
 
 ```text
 object_type_id + property_id + normalized(value)
 ```
+
+`property_name / object_type_name` 不参与业务唯一键。OMS 内部来源可由 OAG 从本体资产组装名称；通过 `index-data/notice` 导入的 Instance Value 则要求 OAC/DataSync/业务生产者在 CSV 中显式提供 `property_name / object_type_name`。OAG 正式写入前必须基于当前 ontology generation 校验 ID/Name 一致性；名称不能替代 ID 做归属判断。
 
 `synonyms` 不参与业务唯一键。SearchHit 层的 `recordType=INSTANCE_VALUE` 由 Normalizer 统一补充，不要求增加物理 `type` 字段。
 
@@ -842,31 +892,37 @@ Instance Dense 只使用真实值及其同义词：
 
 1. `value` 必须放在首行并作为主语义；
 2. `synonyms` 只增强别名、黑话、业务俗称的 Dense 召回；
-3. 不拼接 Property / ObjectType 名称、display、description，归属由结构字段确定；
-4. Instance 不配置 `display_* / description_*` 多语言字段；
-5. 对 Struct 等组合值，使用规范化后的可读 `value` 表达作为 `{value}`，不额外注入父对象文本。
+3. `property_name / object_type_name` **保存但不拼入 Instance Embedding**，避免同一属性下大量实例值因为共享父级名称而发生无意义聚类；
+4. Dense 命中后必须从同一物理记录带回 `property_id / property_name / object_type_id / object_type_name`，无需在线二次查询本体名称；
+5. Instance 不配置 `display_* / description_*` 多语言字段；
+6. 对 Struct 等组合值，使用规范化后的可读 `value` 表达作为 `{value}`，不额外注入父对象文本。
 
 ### 2.5.3 全文索引内容和规则
 
 检索基于向标检索策略，OpenSearch 检索字段：
 
 ```text
-Exact / Filter:
+Exact / Filter / Return Context:
   property_id
+  property_name
   object_type_id
+  object_type_name
 
 BM25:
   value
   synonyms.bm25
 ```
 
+`property_name / object_type_name` 默认不参与 Instance Value BM25 主评分，只作为归属上下文随 `_source` 返回；需要时可用于 keyword 精确过滤/诊断。
 
-命中 synonym 时统一返回：
+命中 value 或 synonym 时统一返回：
 
 ```text
-value         = 真实标准实例值
-property_id
-object_type_id
+value             = 真实标准实例值
+property_id       = 所属 Property.id
+property_name     = 所属 Property.name
+object_type_id    = 所属 ObjectType.id
+object_type_name  = 所属 ObjectType.name
 ```
 
 ### 2.5.4 索引存储具体实现
@@ -876,11 +932,11 @@ object_type_id
 当前版本使用单张 `t_oag_instance_{ontology_id}`，同一个规范化值如果属于多组 Property / ObjectType，允许保存多条物理记录：
 
 ```text
-(value=A, property=P1, objectType=O1)
-(value=A, property=P2, objectType=O2)
+(value=A, property=P1, propertyName=PN1, objectType=O1, objectTypeName=ON1)
+(value=A, property=P2, propertyName=PN2, objectType=O2, objectTypeName=ON2)
 ```
 
-这样可以避免 `property_id / object_type_id` 数组化带来的更新放大和索引过滤复杂度。
+这样可以避免 `property_id / object_type_id` 数组化带来的更新放大和索引过滤复杂度，同时让每条命中记录天然携带完整可读归属上下文。
 
 GaussVector ANN：
 
@@ -895,7 +951,18 @@ OpenSearch `_id` 与 GaussVector 幂等键均由：
 object_type_id + property_id + normalized(value)
 ```
 
-确定。
+确定。名称字段不参与 `_id`/幂等键；Property/ObjectType rename 时只需覆盖当前业务记录。
+
+OpenSearch `_source` 与 GaussVector 标量返回列必须同时包含：
+
+```text
+property_id
+property_name
+object_type_id
+object_type_name
+value
+synonyms
+```
 
 #### 容量与分表演进
 
@@ -923,7 +990,9 @@ t_oag_instance_value_{ontology_id}
 t_oag_instance_binding_{ontology_id}
   value_id
   property_id
+  property_name
   object_type_id
+  object_type_name
   UNIQUE(value_id, property_id, object_type_id)
 ```
 
@@ -932,11 +1001,11 @@ t_oag_instance_binding_{ontology_id}
 ```text
 Value 表 Exact/BM25/Dense
   → value_id
-  → Binding 批量展开 property_id / object_type_id
+  → Binding 批量展开 property_id / property_name / object_type_id / object_type_name
   → Entity Linking / RRF / LLM 消歧
 ```
 
-存储演进不能改变上层 Entity Linking 和 `semanticExtensions.valueMappings` 的结果语义。
+存储演进不能改变上层 Entity Linking 和 `semanticExtensions.valueMappings` 的结果语义；无论单表还是 Value+Binding 双表，检索层必须返回同一组归属 ID + 名称字段。
 
 ### 2.5.5 注意事项：索引准入与高基数控制
 
@@ -976,9 +1045,7 @@ UUID
 
 高基数自由文本进入单独 Document / RAG Index，不进入 Instance Value Resolver。
 
-DataSync / 业务服务可以源侧预去重，但 OAG 写入前仍必须按 `object_type_id + property_id + normalized(value)` 再次去重并执行幂等 UPSERT。
-
----
+DataSync / 业务服务可以源侧预去重，但 OAG 写入前仍必须按 `object_type_id + property_id + normalized(value)` 再次去重并执行幂等 UPSERT；notice CSV 必须同时提供 `property_name / object_type_name`，OAG 基于当前 ontology generation 校验两组 ID/Name 后再写入。
 
 ## 2.6 三类索引统一存储与治理
 
@@ -999,7 +1066,8 @@ Instance Value：object_type_id + property_id + normalized(value)
 3. `synonyms` 以 canonical LF String 整字段覆盖，不做语言 Map merge；
 4. DELETE 必须同时删除 GaussVector 与 OpenSearch 中对应记录；
 5. OpenSearch 使用稳定业务键生成确定性 `_id`；
-6. 双写一致性、Chunk 重放和 Publish 由第 3 章统一保证。
+6. `property_name / object_type_name` 与对应 ID 一起双写到 GaussVector/OpenSearch；OMS 内部来源由 OAG 从本体资产组装，notice 动态来源由 OAC/DataSync/业务生产者在 CSV 中提供，OAG 统一执行 ID/Name 一致性校验；名称不进入稳定业务键；
+7. 双写一致性、Chunk 重放和 Publish 由第 3 章统一保证。
 
 
 ### 2.6.2 数据质量治理
@@ -1020,6 +1088,9 @@ Enum values[].id / value 源数据重复
 Enum Value.refSynonymTypeId 不存在
 Property.referenceEnumId 不存在
 Parent ObjectType 缺失
+property_id 无法解析 Property.name
+object_type_id 无法解析 ObjectType.name
+property_name / object_type_name 与当前 ontology generation 的 ID 映射不一致
 ```
 
 OAG `synonyms` 热字段额外校验：
@@ -1060,7 +1131,8 @@ Property
   → GraphTopologyCache / has_property 双重校验
 
 Enum Value / Instance Value
-  → property_id + object_type_id 直接记录归属
+  → property_id + object_type_id 记录确定性归属
+  → property_name + object_type_name 记录当前 ontology generation 的可读归属快照
 ```
 
 SeedNodeProjector 规则：
@@ -1082,6 +1154,8 @@ Enum / Instance 作为最终语义证据和 ValueMapping 来源保留，但不�
 | Enum Value     | value  + description + synonyms         | value/description/synonyms        | `GsIVFFLAT + COSINE`               | `object_type_id / property_id` |
 | Instance Value | value + synonyms                        | value/synonyms                    | 中小规模 `GsIVFFLAT`；千万/亿级 `GsDiskANN` | `object_type_id / property_id` |
 
+Enum/Instance 的 Dense 与 Lexical 命中都必须返回 `property_id / property_name / object_type_id / object_type_name`。两个名称字段是精排与解释上下文，不改变 Dense/Lexical 的主召回文本，也不改变稳定业务键。
+
 ### 2.6.5 关键注意事项
 
 1. **三类稳定实体、三套物理索引**，不要把 Enum/Instance 混入本体对象表；
@@ -1093,7 +1167,8 @@ Enum / Instance 作为最终语义证据和 ValueMapping 来源保留，但不�
 7. **业务唯一键不包含 synonyms**，同义词变化只能覆盖现有业务记录；
 8. **ANN 参数按表规模独立配置**，实例表不能机械复用本体对象表的 ANN 参数；
 9. **Property 作用域必须由 parent_id / object_type_id 约束**，避免跨对象错误链接；
-10. **版本信息放 Generation / Import Job**，不向每条向量记录扩散运维字段。
+10. **Enum/Instance 归属名称随命中返回**：`property_name / object_type_name` 与 ID 同记录保存，避免 RRF/精排阶段为每个 Value 再做名称查表；
+11. **版本信息放 Generation / Import Job**，不向每条向量记录扩散运维字段。
 
 ---
 
@@ -1526,6 +1601,108 @@ POST
 | `size`       | Integer(int64) | 否    | -       | `minimum: 0`                     | 预期文件字节数；OAG 可通过 `headObject` 二次校验       |
 | `sha256`     | String         | 是    | -       | `pattern: ^[A-Fa-f0-9]{64}$`     | 文件 SHA-256；用于不可变校验和 Chunk 稳定标识          |
 
+##### notice 对应 CSV 文件结构
+
+`index-data/notice` 虽然只在 JSON Body 中注册 MinIO 文件元信息，但 `dataType` 同时决定 `files[]` 中每一个 CSV 的**唯一合法逻辑 Schema**。调用方不需要再通过其他接口协商 CSV 结构；OAG 必须按 `dataType` 对 Header 和逐行字段进行校验。
+
+同一个 notice 请求内所有 `files[]` 必须满足：
+
+```text
+同一个 dataType
+→ 同一个规范 Header
+→ 同一套字段顺序和字段语义
+→ 不允许 METADATA_ENUM / INSTANCE_VALUE 混装
+```
+
+`CLEAR` 不读取 CSV，因此不存在 CSV Schema：
+
+| `dataType` | `importMode` | CSV 文件要求 | 规范 Header |
+|---|---|---|---|
+| `METADATA_ENUM` | `FULL_REPLACE / INCREMENTAL` | `files` 必选 | `property_id,property_name,object_type_id,object_type_name,value,display_zh,display_en,display_lang_1,display_lang_2,description_zh,description_en,description_lang_1,description_lang_2,synonyms,defaultDataValue,op` |
+| `INSTANCE_VALUE` | `FULL_REPLACE / INCREMENTAL` | `files` 必选 | `property_id,property_name,object_type_id,object_type_name,value,synonyms,op` |
+| `INSTANCE_VALUE` | `CLEAR` | `files` 可省略且不读取 | 无 |
+
+> Header 是接口契约的一部分。第一版要求字段名和顺序与规范 Header 一致，禁止同一批文件出现列缺失、列重排或额外未知列。后续如需 Schema 演进，应显式增加协议版本，而不是静默放宽 Header。
+
+**METADATA_ENUM CSV 字段：**
+
+| CSV 字段 | UPSERT | DELETE | 说明 |
+|---|---:|---:|---|
+| `property_id` | 必选 | 必选 | 引用 Enum 的 Property.id；作为稳定归属键的一部分 |
+| `property_name` | 必选 | 必选 | Property 的规范 `name`；由生产者提供，必须与 `property_id` 在当前 ontology generation 中一致 |
+| `object_type_id` | 必选 | 必选 | Property 所属 ObjectType.id；作为稳定归属键的一部分 |
+| `object_type_name` | 必选 | 必选 | ObjectType 的规范 `name`；由生产者提供，必须与 `object_type_id` 在当前 ontology generation 中一致 |
+| `value` | 必选 | 必选 | 真实标准枚举值；与归属 ID 一起确定业务键 |
+| `display_zh` | 可选 | 忽略 | 中文显示名 |
+| `display_en` | 可选 | 忽略 | 英文显示名 |
+| `display_lang_1` | 可选 | 忽略 | 第 1 个额外语言显示名 |
+| `display_lang_2` | 可选 | 忽略 | 第 2 个额外语言显示名 |
+| `description_zh` | 可选 | 忽略 | 中文描述 |
+| `description_en` | 可选 | 忽略 | 英文描述 |
+| `description_lang_1` | 可选 | 忽略 | 第 1 个额外语言描述 |
+| `description_lang_2` | 可选 | 忽略 | 第 2 个额外语言描述 |
+| `synonyms` | 可选 | 忽略 | LF 语义的平铺同义词；CSV 中使用 `\n` 转义分隔 |
+| `defaultDataValue` | 可选 | 忽略 | 数据库实际过滤值，例如显示值“华为”对应 `0` |
+| `op` | 必选 | 必选 | `UPSERT / DELETE`；`FULL_REPLACE` 中只允许 `UPSERT` |
+
+METADATA_ENUM 示例：
+
+```csv
+property_id,property_name,object_type_id,object_type_name,value,display_zh,display_en,display_lang_1,display_lang_2,description_zh,description_en,description_lang_1,description_lang_2,synonyms,defaultDataValue,op
+prop:ont:vehicle:sp:bodyColor,bodyColor,obj:ont:vehicle:Vehicle,Vehicle,red,红色,Red,Rojo,,红色,Red color,Color rojo,,"红\n赤色\nRed\nRojo",R,UPSERT
+```
+
+**INSTANCE_VALUE CSV 字段：**
+
+| CSV 字段 | UPSERT | DELETE | 说明 |
+|---|---:|---:|---|
+| `property_id` | 必选 | 必选 | 所属 Property.id；作为稳定归属键的一部分 |
+| `property_name` | 必选 | 必选 | Property 的规范 `name`；由生产者提供，必须与 `property_id` 在当前 ontology generation 中一致 |
+| `object_type_id` | 必选 | 必选 | 所属 ObjectType.id；作为稳定归属键的一部分 |
+| `object_type_name` | 必选 | 必选 | ObjectType 的规范 `name`；由生产者提供，必须与 `object_type_id` 在当前 ontology generation 中一致 |
+| `value` | 必选 | 必选 | 去重后的真实 Instance Value；与归属 ID 一起确定业务键 |
+| `synonyms` | 可选 | 忽略 | 实例值同义词；CSV 中使用 `\n` 转义分隔 |
+| `op` | 必选 | 必选 | `UPSERT / DELETE`；`FULL_REPLACE` 中只允许 `UPSERT` |
+
+INSTANCE_VALUE 示例：
+
+```csv
+property_id,property_name,object_type_id,object_type_name,value,synonyms,op
+prop:subscriber:subLevel,subLevel,obj:subscriber:Subscriber,Subscriber,VIP,"重要客户\nVIP客户",UPSERT
+prop:subscriber:subLevel,subLevel,obj:subscriber:Subscriber,Subscriber,GOLD,"黄金客户\nGold Customer",UPSERT
+```
+
+CSV 与物理索引字段边界：
+
+```text
+CSV 输入
+  property_id
+  property_name
+  object_type_id
+  object_type_name
+  value
+  ...业务语义字段
+        ↓
+OntologyMappingValidator
+        ↓
+校验 property_id ↔ property_name
+校验 object_type_id ↔ object_type_name
+        ↓
+SearchRecord Normalizer
+        ↓
+GaussVector + OpenSearch
+```
+
+因此 `property_name / object_type_name` **属于 notice CSV Header，并且是必选字段**。OAC/DataSync/业务生产者必须提供当前本体版本下的规范 `Property.name / ObjectType.name`，不能传 display、别名或任意业务展示文本。OAG 不负责为 notice CSV 静默补齐名称，只负责基于当前 ontology generation 校验 ID/Name 一致性；校验失败时任务进入失败，调用方修正 CSV 后重新提交。
+
+记录级操作规则：
+
+1. `FULL_REPLACE` 构建新的 Staging Generation，CSV 行只允许 `op=UPSERT`；删除语义由全量替换后的 Generation 切换自然完成，不在全量文件中混入 `DELETE`；
+2. `INCREMENTAL` 允许 `UPSERT / DELETE`；`DELETE` 的执行定位只消费稳定业务键 `object_type_id + property_id + normalized(value)`，但 CSV 仍必须提供 `property_name / object_type_name`，用于提交时的 ID/Name 一致性校验；其他业务语义字段可以为空并被忽略；
+3. `rowCount` 表示**不含 Header 的数据行数**，包含 UPSERT 和 DELETE 行；如果 notice 提供 `rowCount`，后台解析完成后必须与实际数据行数一致；
+4. `files[]` 中任一文件 Header 与 `dataType` 不匹配时，整个 Task 进入失败，不允许按“尽量解析”方式猜测列含义；
+5. CSV 中必须包含 `property_name / object_type_name`，但不包含 `vector / type`；OAG 使用生产者提供并校验通过的名称写入物理索引，`vector / type` 仍由 OAG 根据索引类型在内部生成。
+
 `sha256` 定义为**MinIO 对象原始字节流**的 SHA-256（FIPS 180-4），按文件从第 0 字节顺序读取，不做换行符转换、字符集转码、CSV 解析或压缩内容重写；输出 64 位小写十六进制字符串。生产者上传完成后计算并发送，OAG 下载时再次流式计算并与 notice 值比较，校验失败立即终止任务，禁止对内容已变化的 objectKey 继续恢复。
 
 Java 参考实现：
@@ -1660,7 +1837,7 @@ CLEAR：dataType 必须为 INSTANCE_VALUE，files 可省略
 T_OAG_INDEX_TASK 持久化成功
 ```
 
-MinIO 对象存在性、size/checksum、CSV Header、逐行 Schema、Ontology Mapping 等校验可以在后台任务阶段执行；如果后台校验失败，任务进入 `STATUS=2` 并通过任务查询/错误查询接口返回详细错误。实现如果选择在 `202` 前执行 `headObject`，则对象不存在可以同步返回 `404 MINIO_OBJECT_NOT_FOUND`，但不得因此把百万级 CSV 内容同步加载到 API 线程。
+MinIO 对象存在性、size/checksum、`dataType ↔ CSV Header`、逐行字段/`op` Schema、`rowCount`、Ontology Mapping 等校验可以在后台任务阶段执行；如果后台校验失败，任务进入 `STATUS=2` 并通过任务查询/错误查询接口返回详细错误。推荐稳定错误码至少区分 `CSV_HEADER_MISMATCH / CSV_ROW_SCHEMA_ERROR / CSV_OWNER_NAME_MISSING / OWNER_ID_NAME_MISMATCH / CSV_OPERATION_INVALID / CSV_ROW_COUNT_MISMATCH / ONTOLOGY_MAPPING_ERROR`。实现如果选择在 `202` 前执行 `headObject`，则对象不存在可以同步返回 `404 MINIO_OBJECT_NOT_FOUND`，但不得因此把百万级 CSV 内容同步加载到 API 线程。
 
 ---
 
@@ -2186,6 +2363,11 @@ components:
     MinioCsvFile:
       type: object
       required: [bucket, objectKey, sha256]
+      description: >-
+        MinIO 中的不可变 UTF-8 CSV 文件。CSV 逻辑 Schema 不由本对象单独声明，
+        而由父级 IndexFileImportRequest.dataType 唯一确定；同一请求内所有 files
+        必须使用对应 dataType 的规范 Header。METADATA_ENUM/INSTANCE_VALUE 的每一行
+        都必须携带 property_id/property_name/object_type_id/object_type_name，OAG 校验 ID/Name 一致性。
       properties:
         bucket: { type: string, minLength: 3, maxLength: 63 }
         objectKey: { type: string, minLength: 1, maxLength: 1024 }
@@ -2214,7 +2396,11 @@ components:
         files:
           type: array
           minItems: 1
-          description: FULL_REPLACE/INCREMENTAL 时必选；CLEAR 时选填
+          description: >-
+            FULL_REPLACE/INCREMENTAL 时必选；CLEAR 时选填。
+            dataType=METADATA_ENUM 时每个文件必须使用 METADATA_ENUM 规范 Header；
+            dataType=INSTANCE_VALUE 时必须使用 INSTANCE_VALUE 规范 Header；禁止混装。
+            两类 CSV 均要求生产者提供 property_name/object_type_name。
           items: { $ref: '#/components/schemas/MinioCsvFile' }
       additionalProperties: false
 
@@ -2445,6 +2631,8 @@ components:
 
 ### 3.4.1 CSV Schema 与编码规则
 
+本节是 3.3.3 `index-data/notice` 中 CSV 契约的详细展开。**3.3.3 的接口级 Header/字段约束与本节必须保持同源一致**；接口实现应以 `dataType` 选择固定 Schema Validator，不允许分别维护两套可漂移的 CSV 定义。
+
 所有 OAC / DataSync / 业务服务 → MinIO 的索引数据文件统一采用：
 
 ```text
@@ -2458,6 +2646,8 @@ LF 作为推荐换行符
 
 CSV 不包含 `vector`，因为向量必须由 OAG 使用当前配置的 Embedding 模型统一生成；CSV 也不要求携带物理 `type`，因为 `index-data/notice.dataType` 已唯一确定目标类型。
 
+`property_name / object_type_name` 是 OAG 物理索引中的归属名称快照，同时也是 notice CSV 的正式必选字段。OAC/DataSync/业务生产者必须与 `property_id / object_type_id` 一起提供当前 ontology generation 下的规范 `Property.name / ObjectType.name`。OAG 读取 CSV 后通过 OntologyMappingValidator 校验两组 ID/Name，一致后组装统一 SearchRecord 并写入 GaussVector + OpenSearch；名称缺失或 ID/Name 不一致时任务失败，不做静默补齐。
+
 文本中出现逗号、双引号或换行时按标准 CSV quoting 规则转义；双引号使用 `""` 表示。`synonyms` 不再保存 JSON Object。逻辑上仍以 LF 分隔；为保证“一条业务记录对应一条 CSV 物理行”，CSV 中推荐写入两个字符 `\n` 作为转义分隔，OAG 读取字段后一次性转换为 LF，再执行 trim/去空/去重。
 
 #### METADATA_ENUM CSV
@@ -2465,13 +2655,15 @@ CSV 不包含 `vector`，因为向量必须由 OAG 使用当前配置的 Embeddi
 Header：
 
 ```csv
-property_id,object_type_id,value,display_zh,display_en,display_lang_1,display_lang_2,description_zh,description_en,description_lang_1,description_lang_2,synonyms,defaultDataValue,op
+property_id,property_name,object_type_id,object_type_name,value,display_zh,display_en,display_lang_1,display_lang_2,description_zh,description_en,description_lang_1,description_lang_2,synonyms,defaultDataValue,op
 ```
 
 | CSV 字段               | 目标字段                 | 说明                             |
 | -------------------- | -------------------- | ------------------------------ |
 | `property_id`        | `property_id`        | 引用 Enum 的 Property.id          |
+| `property_name`      | `property_name`      | Property 的规范 `name`；生产者必选提供，OAG 校验 ID/Name 一致性 |
 | `object_type_id`     | `object_type_id`     | Property 所属 ObjectType.id      |
+| `object_type_name`   | `object_type_name`   | ObjectType 的规范 `name`；生产者必选提供，OAG 校验 ID/Name 一致性 |
 | `value`              | `value`              | 真实枚举值                          |
 | `display_zh`         | `display_zh`         | 中文 display                     |
 | `display_en`         | `display_en`         | 英文 display                     |
@@ -2488,8 +2680,8 @@ property_id,object_type_id,value,display_zh,display_en,display_lang_1,display_la
 示例：
 
 ```csv
-property_id,object_type_id,value,display_zh,display_en,display_lang_1,display_lang_2,description_zh,description_en,description_lang_1,description_lang_2,synonyms,op
-prop:ont:vehicle:sp:bodyColor,obj:ont:vehicle:Vehicle,red,红色,Red,Rojo,,红色,Red color,Color rojo,,"红\n赤色\nRed\nRojo",UPSERT
+property_id,property_name,object_type_id,object_type_name,value,display_zh,display_en,display_lang_1,display_lang_2,description_zh,description_en,description_lang_1,description_lang_2,synonyms,defaultDataValue,op
+prop:ont:vehicle:sp:bodyColor,bodyColor,obj:ont:vehicle:Vehicle,Vehicle,red,红色,Red,Rojo,,红色,Red color,Color rojo,,"红\n赤色\nRed\nRojo",R,UPSERT
 ```
 
 #### INSTANCE_VALUE CSV
@@ -2497,24 +2689,36 @@ prop:ont:vehicle:sp:bodyColor,obj:ont:vehicle:Vehicle,red,红色,Red,Rojo,,红�
 Header：
 
 ```csv
-property_id,object_type_id,value,synonyms,op
+property_id,property_name,object_type_id,object_type_name,value,synonyms,op
 ```
 
 | CSV 字段           | 目标字段                 | 说明                  |
 | ---------------- | -------------------- | ------------------- |
 | `property_id`    | `property_id`        | 所属 Property.id      |
+| `property_name`  | `property_name`      | Property 的规范 `name`；生产者必选提供，OAG 校验 ID/Name 一致性 |
 | `object_type_id` | `object_type_id`     | 所属 ObjectType.id    |
+| `object_type_name` | `object_type_name` | ObjectType 的规范 `name`；生产者必选提供，OAG 校验 ID/Name 一致性 |
 | `value`          | `value`              | 真实 Instance Value   |
 | `synonyms`       | `synonyms`           | 实例值同义词；CSV 中使用 `\n` 转义表达 LF 分隔 |
 | `op`             | 导入操作                 | `UPSERT` / `DELETE` |
 
 ```csv
-property_id,object_type_id,value,synonyms,op
-prop:subscriber:subLevel,obj:subscriber:Subscriber,VIP,"重要客户\nVIP客户",UPSERT
-prop:subscriber:subLevel,obj:subscriber:Subscriber,GOLD,"黄金客户\nGold Customer",UPSERT
+property_id,property_name,object_type_id,object_type_name,value,synonyms,op
+prop:subscriber:subLevel,subLevel,obj:subscriber:Subscriber,Subscriber,VIP,"重要客户\nVIP客户",UPSERT
+prop:subscriber:subLevel,subLevel,obj:subscriber:Subscriber,Subscriber,GOLD,"黄金客户\nGold Customer",UPSERT
 ```
 
-OAG 最终按 `object_type_id + property_id + normalized(value)` 保证 GaussVector 和 OpenSearch 中不存在重复业务记录。
+OAG 最终按 `object_type_id + property_id + normalized(value)` 保证 GaussVector 和 OpenSearch 中不存在重复业务记录。正式双写前还必须执行：
+
+```text
+CSV property_id / property_name / object_type_id / object_type_name
+  → OntologyMappingValidator
+  → 校验 Property ID/Name + ObjectType ID/Name
+  → SearchRecord Normalizer
+  → GaussVector + OpenSearch
+```
+
+其中 ID 是确定性归属事实，名称由 OAC/DataSync/业务生产者随 notice CSV 提供；OAG 负责权威一致性校验而不是静默补齐。名称缺失或 ID/Name 不一致属于 Ontology Mapping / CSV 数据质量错误。
 
 ---
 
@@ -3729,7 +3933,9 @@ RRF 前，OAG 将 GaussVector 与 OpenSearch 结果统一成 SearchHit，不向�
 ```json
 {
   "propertyId": "prop:ont:vehicle:sp:bodyColor",
+  "propertyName": "bodyColor",
   "objectTypeId": "vehicle-object-id",
+  "objectTypeName": "Vehicle",
   "type": "ENUM_VALUE",
   "value": "red",
   "matched_field": "synonyms",
@@ -3745,7 +3951,9 @@ RRF 前，OAG 将 GaussVector 与 OpenSearch 结果统一成 SearchHit，不向�
 ```json
 {
   "propertyId": "subClass-property-id",
+  "propertyName": "subClass",
   "objectTypeId": "subscriber-object-id",
+  "objectTypeName": "Subscriber",
   "type": "INSTANCE_VALUE",
   "value": "VIP",
   "matched_field": "value",
@@ -3756,9 +3964,27 @@ RRF 前，OAG 将 GaussVector 与 OpenSearch 结果统一成 SearchHit，不向�
 }
 ```
 
-Dense 的 Enum/Instance SearchHit 使用相同业务身份字段，只将 `retrieval_mode/channel/score/distance` 切换到对应 Dense 通道。
+Dense 的 Enum/Instance SearchHit 使用**完全相同的业务身份与归属字段**：
+
+```text
+propertyId
+propertyName
+objectTypeId
+objectTypeName
+type
+value
+```
+
+只将 `retrieval_mode / channel / score / distance` 切换到对应 Dense 通道。`propertyName / objectTypeName` 直接来自与向量同一条物理记录的标量列，因此 Dense 命中不需要按 ID 再访问 OMS/NebulaGraph 才能获得名称。
 
 `matched_field / matched_value` 用于解释用户文本具体命中了 `name/display/description/synonyms/value` 中哪一项。对于 fuzziness 命中，`matched_value` 保存命中字段中最能解释本次匹配的真实源文本，不保存查询扩展词本身。
+
+Enum/Instance SearchHit 的归属规则：
+
+1. `propertyId / objectTypeId` 是候选归属与分组的确定性键；
+2. `propertyName / objectTypeName` 是当前 ontology generation 下与 ID 对应的可读名称快照；
+3. 名称参与后续候选解释和 LLM Fine Rank 上下文，但不能替代 ID 做 membership/ownership 校验；
+4. 如果索引记录缺少名称或 ID/name 不一致，应视为索引质量问题并触发重建/修复，而不是在线静默查表掩盖。
 
 ### 4.3.2 group_id 与通道内去重
 
@@ -3792,7 +4018,7 @@ top 3~5 supporting_hits
 hit_count
 ```
 
-所有 supporting hit 必须保留 `recordType / objectTypeId / propertyId / value / matched_field / matched_value / channel / rank` 等真实证据字段。
+所有 supporting hit 必须保留 `recordType / objectTypeId / objectTypeName / propertyId / propertyName / value / matched_field / matched_value / channel / rank` 等真实证据字段。归属分组仍只使用 ID；名称用于解释与精排上下文。
 
 ---
 
@@ -4070,15 +4296,24 @@ sourceValue
 Value Linking Candidates
 ```
 
-最终候选补齐：
+最终候选必须补齐：
 
 ```text
 actual value
 property_id
+property_name
 object_type_id
+object_type_name
+recordType
+score
 ```
 
-其中 `actual value` 来自真实索引 `value`，不在 OAG 内维护第二套 canonical 字典。
+其中：
+
+- `actual value` 来自真实索引 `value`，不在 OAG 内维护第二套 canonical 字典；
+- `property_id / object_type_id` 是确定性归属；
+- `property_name / object_type_name` 直接来自命中索引记录中的名称快照，用于让候选在进入后续精排时具备完整可读语义；
+- 名称不参与 group key，也不能替代 ID 做归属校验。
 
 ### 4.6.1 Value 携带 Property Hint
 
@@ -4107,9 +4342,10 @@ accountStatus
 → 对已链接的 Property/ObjectType 候选施加归属 filter
 → 执行 Value 4 路召回
 → 4 路 RRF
+→ 命中直接携带 propertyName/objectTypeName
 ```
 
-Property Hint 是强作用域提示，但必须经过真实本体 Property Linking 后才能转换为 `property_id` filter，不能把用户文本直接当内部 ID。
+Property Hint 是强作用域提示，但必须经过真实本体 Property Linking 后才能转换为 `property_id` filter，不能把用户文本直接当内部 ID。检索结果中的 `propertyName/objectTypeName` 用于确认候选的人类可读语义，不改变 ID filter。
 
 ### 4.6.2 Value 未携带 Property、但 ObjectType 已知
 
@@ -4132,6 +4368,7 @@ Account → 2 路 Linking → targetObjectTypes[]
 VIP     → Enum/Instance 4 路召回
         → 使用 targetObjectTypes[] 作为 object_type_id 候选作用域
         → 根据命中记录反解 Property
+        → 同时得到 property_name / object_type_name
 ```
 
 ### 4.6.3 Value-only
@@ -4154,18 +4391,68 @@ Value-only
 → 共 4 路召回
 → 根据命中记录中的 property_id + object_type_id 聚合
 → 4 路 RRF
+→ 直接读取 property_name + object_type_name
 → 解析真实 Property/ObjectType 归属
 ```
+
+名称字段在 value-only 场景尤其重要：相同或近似 Value 可能命中多个 Property/ObjectType，精排需要看到例如 `VIP → customerLevel → Account` 与 `VIP → subscriberLevel → Subscriber` 的完整业务语义，而不能只看到两个内部 ID。
 
 规则：
 
 1. 不根据编码形态猜 Site/BaseStation/nativeId；
 2. Enum/Instance 不是 Core Graph 顶点，图规划时投影到真实 Property/ObjectType；
-3. Value Linking 在当前阶段完成真实 `value / property_id / object_type_id` 归属解析；`matched_field / matched_value / supporting_hits` 不向 LLM 精排阶段传递；
-4. 同一个业务 Value 可在不同 Property 下存在，不能仅按 value 文本全局去重；
-5. value-only 的候选域更大，应使用更严格的 TopK、候选上限和超时保护。
+3. Value Linking 在当前阶段完成真实 `value / property_id / property_name / object_type_id / object_type_name` 归属解析；
+4. `matched_field / matched_value / channelHits / supporting_hits` 等原始检索证据不进入 LLM 精排阶段；
+5. 同一个业务 Value 可在不同 Property 下存在，不能仅按 value 文本全局去重；
+6. value-only 的候选域更大，应使用更严格的 TopK、候选上限和超时保护。
 
----
+### 4.6.4 精排使用的紧凑 ValueLink 结构
+
+RRF 后把 Value 候选压缩为精排可消费的 `valueLinks`，只保留业务语义与归属，不传底层召回证据：
+
+```text
+valueLinks[]
+  ├─ sourceValue
+  └─ targetValues[]
+       ├─ recordType
+       ├─ value
+       ├─ propertyId
+       ├─ propertyName
+       ├─ objectTypeId
+       ├─ objectTypeName
+       ├─ score
+       └─ defaultDataValue   # Enum 可选
+```
+
+示例：
+
+```json
+{
+  "sourceValue": "VIP",
+  "targetValues": [
+    {
+      "recordType": "INSTANCE_VALUE",
+      "value": "VIP",
+      "propertyId": "prop-account-customer-level",
+      "propertyName": "customerLevel",
+      "objectTypeId": "obj-account",
+      "objectTypeName": "Account",
+      "score": 0.912
+    },
+    {
+      "recordType": "INSTANCE_VALUE",
+      "value": "VIP",
+      "propertyId": "prop-subscriber-level",
+      "propertyName": "subscriberLevel",
+      "objectTypeId": "obj-subscriber",
+      "objectTypeName": "Subscriber",
+      "score": 0.887
+    }
+  ]
+}
+```
+
+`valueLinks` 的目的不是让 LLM 重新检索或创造 Value，而是为 ObjectType/Property 种子精排提供“用户值究竟命中了哪个业务属性/对象”的可读证据。程序侧仍以 ID 做候选真实性与归属校验。
 
 ## 4.7 基于 ExtractedEntity 的端到端路由示例
 
@@ -4244,18 +4531,36 @@ Entity #2（value-only）
 
 ## 4.8 本章输出与第 5 章衔接
 
-本章输出给 LLM Fine Rank 的是**真实候选集合 + ObjectType / Property 归属结构**，不是最终检索结果。Keyword/Dense/RRF 的多通道证据在本章内部完成消费，不继续传递到精排 Prompt。
+本章输出给 LLM Fine Rank 的是**真实候选集合 + ObjectType / Property 归属结构 + 紧凑 ValueLink 语义上下文**，不是底层检索结果。Keyword/Dense/RRF 的原始多通道证据在本章内部完成消费，不继续传递到精排 Prompt。
 
 ```text
 ObjectType / Property
   → 本体定义 2 路 RRF
   → 形成结构化候选
-  → 精排输入仅保留 sourceObjectType / targetObjectTypes / propertyLinks / targetProperties 及候选 id/name/score
+  → 精排输入保留 sourceObjectType / targetObjectTypes / propertyLinks / targetProperties 及候选 id/name/score
 
 Enum / Instance Value
   → 值 4 路 RRF
-  → 完成 actual value + property_id + object_type_id 的确定性归属解析
+  → 完成 actual value + property_id + property_name + object_type_id + object_type_name 的确定性归属解析
+  → 压缩为 valueLinks[]
+  → valueLinks 只保留 value + owner ID/name + score (+ defaultDataValue)
   → 不把 lexical/dense supporting evidence 传给精排 LLM
+```
+
+精排阶段的 `extracted_entities` 因此可以包含：
+
+```text
+extracted_entities[]
+  ├─ sourceObjectType
+  ├─ targetObjectTypes[]
+  │    └─ propertyLinks[]
+  └─ valueLinks[]
+       ├─ sourceValue
+       └─ targetValues[]
+            ├─ value
+            ├─ propertyId / propertyName
+            ├─ objectTypeId / objectTypeName
+            └─ score
 ```
 
 核心约束：
@@ -4265,12 +4570,12 @@ Enum / Instance Value
 3. VALUE 只使用 Enum/Instance 4 路融合；
 4. Property 必须在每个候选 ObjectType 作用域内独立召回和排序；
 5. Enum/Instance 按真实 `Property + ObjectType` 归属聚合，确定性的 `value / property_id / object_type_id` 由程序侧继续用于结果投影；
-6. `rrfScore / channelHits / supporting_hits / matched_field / matched_value` 在召回/粗排阶段结束后停止向下传递，不进入 LLM Fine Rank Prompt；
-7. RRF 只融合各通道 rank，不直接比较 OpenSearch `_score` 与 cosine 原始分数；其融合结果用于产生候选顺序/score，原始通道证据不再向精排传递；
-8. LLM 只能从真实候选中选择，不能生成新的 ObjectType/Property/Value ID；
-9. Relationship 不在本章直接 Entity Linking，由后续图规划结合 `searchContext.search_path` 和 Graph Hint 处理。
-
----
+6. `property_name / object_type_name` 与 ID 同命中记录返回，作为精排可读语义上下文；名称不能替代 ID 做 ownership 校验；
+7. `rrfScore / channelHits / supporting_hits / matched_field / matched_value` 在召回/粗排阶段结束后停止向下传递，不进入 LLM Fine Rank Prompt；
+8. `valueLinks` 只保留精排真正需要的业务语义字段，不携带底层 OpenSearch `_score`、Dense distance 或原始 supporting hits；
+9. RRF 只融合各通道 rank，不直接比较 OpenSearch `_score` 与 cosine 原始分数；其融合结果用于产生候选顺序/score；
+10. LLM 只能从真实候选中选择 ObjectType/Property，ValueLink 只能作为输入证据，不能据此生成新的 ObjectType/Property/Value ID；
+11. Relationship 不在本章直接 Entity Linking，由后续图规划结合 `searchContext.search_path` 和 Graph Hint 处理。
 
 # 5. LLM 精排与最终语义检索结果
 
@@ -4312,34 +4617,42 @@ SeedNodeProjector / 后续子图构建
 |---|---|---|
 | `original_query` | 用户原始问题 | 判断用户真实查询目标、过滤对象、返回字段以及多实体业务意图 |
 | `search_context` | 业务侧注入的 SearchContext | 使用 `target_entity / search_path / extensions` 辅助目标实体判断和业务消歧 |
-| `extracted_entities` | 上一步 Entity Linking / 粗排后的结构化候选输出 | 提供 LLM 唯一允许裁剪和选择的 ObjectType / Property 候选集合 |
+| `extracted_entities` | 上一步 Entity Linking / 粗排后的结构化候选输出 | 提供 LLM 唯一允许裁剪和选择的 ObjectType / Property 候选集合，并携带只读 `valueLinks` 作为 Value → Property/ObjectType 的可读归属语义上下文 |
 
 ### 5.1.2 `extracted_entities` 在精排阶段的语义
 
-精排阶段的 `extracted_entities` 表示**上一步已经完成 Entity Linking 与粗排后的结构化候选结果**。其中本体定义候选保持 ObjectType → Property 的归属关系，例如：
+精排阶段的 `extracted_entities` 表示**上一步已经完成 Entity Linking 与粗排后的结构化候选结果**。其中本体定义候选保持 ObjectType → Property 的归属关系，Value 候选以只读 `valueLinks` 提供归属语义上下文：
 
 ```text
 extracted_entities[]
   ├─ sourceObjectType
-  └─ targetObjectTypes[]
-       ├─ id / name / score
-       └─ propertyLinks[]
-            ├─ sourceProperty
-            └─ targetProperties[]
-                 └─ id / name / score
+  ├─ targetObjectTypes[]
+  │    ├─ id / name / score
+  │    └─ propertyLinks[]
+  │         ├─ sourceProperty
+  │         └─ targetProperties[]
+  │              └─ id / name / score
+  └─ valueLinks[]
+       ├─ sourceValue
+       └─ targetValues[]
+            ├─ recordType / value / score
+            ├─ propertyId / propertyName
+            └─ objectTypeId / objectTypeName
 ```
 
-LLM 只能在这个结构内做删除和保留：
+LLM 只能在真实 ObjectType/Property 候选内做删除和保留；`valueLinks` 只用于帮助判断哪个候选归属更符合用户原始值语义：
 
 ```text
 允许：
 - 删除不相关 targetObjectType
 - 删除不相关 targetProperty
+- 使用 valueLinks 中的 propertyName/objectTypeName 辅助消歧
 - 保留 0 / 1 / N 个真实候选
 
 禁止：
-- 新建 ObjectType / Property
+- 新建 ObjectType / Property / Value
 - 修改候选 id / name / score
+- 修改 valueLinks 中的 value / owner ID / owner name / score
 - 将某个 Property 移到另一个 ObjectType 下
 - 生成 Relationship / Function / Action
 - 重新执行关键词或向量召回
@@ -4356,7 +4669,8 @@ LLM Fine Rank 负责：
 5. 在每个已选择 ObjectType 自己的 Property 候选范围内裁剪 Property；
 6. 保留用户问题中用于查询目标、过滤、返回、聚合、排序或后续查询生成所必需的种子；
 7. 删除仅名称相似、但与当前业务问题无关的候选；
-8. 无法可靠消歧时允许保留多个候选；没有可信候选时允许输出 unresolved。
+8. 当 `valueLinks` 存在时，结合 `sourceValue → propertyName → objectTypeName` 判断 Value 归属是否支持当前 ObjectType/Property 候选，尤其用于 value-only 或同值多属性场景；
+9. 无法可靠消歧时允许保留多个候选；没有可信候选时允许输出 unresolved。
 
 ---
 
@@ -4446,7 +4760,8 @@ targetProperties[]
 3. Query 明确要求返回、过滤、聚合、排序或时间语义的 Property 应优先保留；
 4. `search_context` 明确的业务目标可以帮助区分同名或近义 Property；
 5. 如果多个 Property 都是当前问题必要字段，可以同时保留；
-6. 没有可信 Property 时允许不选，并记录 unresolved。
+6. 若 `valueLinks` 中某个 sourceValue 明确命中当前 Property/ObjectType 的 `propertyId/objectTypeId`，其 `propertyName/objectTypeName` 可作为保留该 Property 的附加语义证据；
+7. 没有可信 Property 时允许不选，并记录 unresolved。
 
 ### 5.3.3 最小充分种子原则
 
@@ -4502,13 +4817,29 @@ targetProperties[]
             }
           ]
         }
+      ],
+      "valueLinks": [
+        {
+          "sourceValue": "VIP",
+          "targetValues": [
+            {
+              "recordType": "INSTANCE_VALUE",
+              "value": "VIP",
+              "propertyId": "prop-subscriber-level",
+              "propertyName": "subscriberLevel",
+              "objectTypeId": "obj-subscriber",
+              "objectTypeName": "Subscriber",
+              "score": 0.887
+            }
+          ]
+        }
       ]
     }
   ]
 }
 ```
 
-Prompt Builder 不再拼装任何额外精排上下文字段。
+Prompt Builder 不再拼装额外的底层检索证据字段；`valueLinks` 已属于 `extracted_entities` 的紧凑候选上下文，因此仍保持 `original_query + search_context + extracted_entities` 三类顶层输入。
 
 ---
 
@@ -4539,18 +4870,19 @@ Prompt Builder 不再拼装任何额外精排上下文字段。
    - extensions：已注册业务语义的扩展信息。
 
 3. extracted_entities
-   上一步已经完成实体链接和粗排后的结构化候选结果，是你唯一允许选择的 ObjectType / Property 候选集合。
+   上一步已经完成实体链接和粗排后的结构化候选结果。targetObjectTypes/propertyLinks 是你唯一允许选择的 ObjectType / Property 候选集合；其中 valueLinks 是只读的 Value 归属语义上下文，包含真实 value、Property/ObjectType ID 与名称，可用于辅助消歧。
 
 # Hard Constraints
 1. 只能选择 extracted_entities 中真实存在的 ObjectType / Property 候选。
 2. 禁止生成、猜测或补充输入中不存在的 ObjectType ID、Property ID、name 或 score。
 3. 禁止修改候选的 id、name、score；所有保留字段必须原样复制。
 4. Property 只能从当前已选择 ObjectType 自己的 propertyLinks[].targetProperties[] 中选择，禁止跨 ObjectType 归属。
-5. 禁止生成 Relationship、RelationshipProperty、Function、Action。
-6. 禁止重新执行关键词检索、向量检索、融合排序或重新打分。
-7. 禁止生成 nGQL、Cypher、OQL 或任何查询语句。
-8. 不使用未提供的上下文，不假设存在 Skill Context、检索证据或图拓扑信息。
-9. 只输出符合 Output Schema 的 JSON，不输出 Markdown、自然语言解释或详细推理过程。
+5. valueLinks 只能作为只读证据使用；禁止修改或生成其中的 value、propertyId、propertyName、objectTypeId、objectTypeName、score，也不能把名称当作新的内部 ID。
+6. 禁止生成 Relationship、RelationshipProperty、Function、Action。
+7. 禁止重新执行关键词检索、向量检索、融合排序或重新打分。
+8. 禁止生成 nGQL、Cypher、OQL 或任何查询语句。
+9. 不使用未提供的上下文，不假设存在 Skill Context、额外检索证据或图拓扑信息。
+10. 只输出符合 Output Schema 的 JSON，不输出 Markdown、自然语言解释或详细推理过程。
 
 # Context Usage
 ## original_query
@@ -4570,12 +4902,18 @@ Prompt Builder 不再拼装任何额外精排上下文字段。
 - 仅使用其中语义明确的业务信息辅助消歧。
 - 不从未知扩展字段中推导新的本体事实。
 
+## extracted_entities.valueLinks
+- valueLinks 是 Value Entity Linking/RRF 后的紧凑只读候选。
+- 使用 sourceValue、propertyName、objectTypeName 判断用户值更符合哪个业务属性/对象。
+- propertyId/objectTypeId 是归属硬约束，名称只提供可读语义，不得据名称创造新候选。
+- 不会提供 matched_field、matched_value、channelHits、supporting_hits 等底层召回证据。
+
 # Decision Priority
 按以下优先级判断：
 0. 候选真实性和 ObjectType / Property 归属硬约束；
 1. original_query 中明确表达的用户意图；
 2. search_context 中业务明确注入的目标和约束；
-3. extracted_entities 中已有候选顺序和结构。
+3. extracted_entities 中已有候选顺序、结构以及 valueLinks 的 Value 归属语义上下文。
 
 # ObjectType Selection Rules
 1. 对每个 sourceObjectType，从 targetObjectTypes[] 中选择 0 / 1 / N 个真实候选。
@@ -4593,7 +4931,8 @@ Prompt Builder 不再拼装任何额外精排上下文字段。
 4. 原始问题中用于返回、过滤、聚合、排序、时间或后续查询生成的必要 Property 应保留。
 5. search_context 可以帮助区分同名、近义或业务含义不同的 Property。
 6. 多个 Property 都是当前问题必要字段时可以同时保留。
-7. 没有可信 Property 时允许不选择，并在 unresolved 中记录。
+7. valueLinks 中与候选 Property/ObjectType ID 一致的 sourceValue → propertyName → objectTypeName 可作为附加语义证据；
+8. 没有可信 Property 时允许不选择，并在 unresolved 中记录。
 
 # Minimal Sufficient Seed Rule
 最终结果必须是满足用户当前任务的最小充分种子集合。
@@ -4688,18 +5027,19 @@ You receive exactly three inputs:
    - extensions: registered business-specific context.
 
 3. extracted_entities
-   Structured candidates produced by the previous entity-linking and coarse-ranking step. This is the only allowed ObjectType / Property candidate set.
+   Structured candidates produced by the previous entity-linking and coarse-ranking step. targetObjectTypes/propertyLinks are the only allowed ObjectType / Property candidate set; valueLinks is read-only Value ownership context carrying real values plus Property/ObjectType IDs and names for disambiguation.
 
 # Hard Constraints
 1. Select only ObjectType / Property candidates that already exist in extracted_entities.
 2. Never generate, infer, or fabricate an ObjectType ID, Property ID, name, or score that is absent from the input.
 3. Never modify candidate id, name, or score. Copy every selected value exactly from the input.
 4. A Property may only be selected from the propertyLinks[].targetProperties[] of its selected ObjectType. Never move a Property candidate across ObjectType scopes.
-5. Do not generate Relationship, RelationshipProperty, Function, or Action.
-6. Do not rerun keyword retrieval, vector retrieval, fusion ranking, or rescoring.
-7. Do not generate nGQL, Cypher, OQL, or any other query language.
-8. Do not rely on context that is not provided. Do not assume Skill Context, retrieval evidence, or graph-topology evidence exists.
-9. Output JSON matching the Output Schema only. Do not output Markdown, prose explanations, or detailed reasoning.
+5. Treat valueLinks as read-only evidence. Never modify or fabricate value, propertyId, propertyName, objectTypeId, objectTypeName, or score, and never treat a name as a newly invented internal ID.
+6. Do not generate Relationship, RelationshipProperty, Function, or Action.
+7. Do not rerun keyword retrieval, vector retrieval, fusion ranking, or rescoring.
+8. Do not generate nGQL, Cypher, OQL, or any other query language.
+9. Do not rely on context that is not provided. Do not assume Skill Context, additional retrieval evidence, or graph-topology evidence exists.
+10. Output JSON matching the Output Schema only. Do not output Markdown, prose explanations, or detailed reasoning.
 
 # Context Usage
 ## original_query
@@ -4719,12 +5059,18 @@ You receive exactly three inputs:
 - Use only business information with defined semantics for disambiguation.
 - Do not infer new ontology facts from unknown extension fields.
 
+## extracted_entities.valueLinks
+- valueLinks contains compact, read-only candidates produced by Value Entity Linking/RRF.
+- Use sourceValue, propertyName, and objectTypeName to judge which business ownership best fits the user's value.
+- propertyId/objectTypeId remain hard ownership constraints; names are semantic context only and cannot create new candidates.
+- matched_field, matched_value, channelHits, supporting_hits, and other low-level retrieval evidence are intentionally omitted.
+
 # Decision Priority
 Use this priority order:
 0. Candidate reality and ObjectType / Property ownership hard constraints;
 1. Explicit intent in original_query;
 2. Explicit business targets and constraints in search_context;
-3. Existing candidate order and structure in extracted_entities.
+3. Existing candidate order/structure in extracted_entities plus the Value ownership context in valueLinks.
 
 # ObjectType Selection Rules
 1. For each sourceObjectType, select 0 / 1 / N real candidates from targetObjectTypes[].
@@ -4742,7 +5088,8 @@ Use this priority order:
 4. Keep Properties required by the original query for output, filtering, aggregation, ordering, time semantics, or downstream query generation.
 5. Use search_context to distinguish same-name, near-synonym, or business-semantically different Properties.
 6. Keep multiple Properties when all are necessary for the current question.
-7. If no trustworthy Property exists, select none and add an unresolved entry.
+7. A sourceValue → propertyName → objectTypeName mapping in valueLinks whose IDs match the candidate may be used as additional semantic evidence;
+8. If no trustworthy Property exists, select none and add an unresolved entry.
 
 # Minimal Sufficient Seed Rule
 Return the minimally sufficient seed set required by the user's current task.
@@ -4932,7 +5279,7 @@ selectedSeedNodes
 → Core Graph Seeds
 ```
 
-Enum / Instance Value 的真实值及其 `property_id / object_type_id` 已由值检索阶段确定，其值语义继续由程序侧结果装配器处理；LLM 种子精排器不重新判断 Value 类型、不生成 Value ID，也不需要额外值证据输入。
+Enum / Instance Value 的真实值及其 `property_id / property_name / object_type_id / object_type_name` 已由值检索阶段确定，并以紧凑 `valueLinks` 作为 `extracted_entities` 的一部分进入种子精排。LLM 可以利用 Value 归属名称帮助判断 ObjectType/Property 候选是否符合原始问题，但不重新检索、不修改 Value、不生成 Value ID；最终值语义仍由程序侧结果装配器按真实候选和已验证 Seed 处理。
 
 最终语义事实继续分为：
 
@@ -4947,7 +5294,7 @@ seedNodes
   = LLM 精排后的 ObjectType / Property 候选经程序校验和投影得到的图构建种子
 ```
 
-LLM 只决定“哪些已有本体种子应该保留”；值的标准值、Property/ObjectType 归属和最终结果装配由确定性程序逻辑完成。
+LLM 只决定“哪些已有本体种子应该保留”；`valueLinks` 只提供可读归属证据。值的标准值、Property/ObjectType ID 归属和最终结果装配仍由确定性程序逻辑完成，名称用于语义判断和解释。
 
 ---
 
@@ -4964,7 +5311,7 @@ sequenceDiagram
     participant G as Subgraph Builder
 
     U->>E: original_query + search_context
-    E-->>R: extracted_entities
+    E-->>R: extracted_entities（含 compact valueLinks）
     U->>R: original_query + search_context
     R->>L: original_query + search_context + extracted_entities
     L-->>V: selectedSeedNodes + unresolved
@@ -4979,7 +5326,7 @@ sequenceDiagram
 1. 精排 Prompt 运行时输入只能是 `original_query + search_context + extracted_entities`；
 2. 不向精排 LLM 传递 Skill Context；
 3. 不向精排 LLM 传递 `rrfScore / channelHits / supporting_hits / matched_field / matched_value`；
-4. 不向精排 LLM 传递 Graph Hint 或 Value Supporting Evidence；
+4. 不向精排 LLM 传递 Graph Hint 或 Value 原始 Supporting Evidence；允许 `extracted_entities.valueLinks` 携带压缩后的 `value + propertyId/propertyName + objectTypeId/objectTypeName + score` 作为归属语义上下文；
 5. Prompt 本身不得依赖设计文档章节号；
 6. LLM 只能裁剪输入候选，不能生成新候选；
 7. Property 必须保持 ObjectType 归属；
@@ -5258,7 +5605,7 @@ canonicalValue + defaultDataValue + property + objectType
 
 1. 只为最终选中的 Enum/Instance 生成 ValueMapping；
 2. `sourceValue` 保留用户原文；
-3. `canonicalValue` 必须来自真实索引 `value`，不得使用 display/synonym/LLM 新造值；
+3. `canonicalValue` 必须来自真实索引 `value`，不得使用 display/synonym/LLM 新造值；`property.name / objectType.name` 优先复用最终 Value 命中中的 `property_name / object_type_name`，并以对应 ID 做一致性校验；
 4. Enum synonym 示例：`严重 → CRITICAL → Alarm.severity`；
 5. Instance 示例：`12JKS0885_IN_RSNM_KALIBATA3_MC → Site.nativeId`；
 6. 同一个 sourceValue 存在多个合法归属时允许多个 Mapping，按 confidence 降序；
@@ -5390,7 +5737,7 @@ ObjectType.id
 
 ### 6.2 Property → ObjectType：Topology Cache 优先
 
-当前本体对象向量表保持现有 Seed Schema，不额外保存 Property 的 `objectTypeId`；但 Metadata/Instance Evidence 记录会直接保存 `propertyid + objectTypeId`。
+当前本体对象索引保持现有 ObjectType/Property Schema；Enum/Instance Value 索引则直接保存 `property_id / property_name / object_type_id / object_type_name`，因此 Value 命中可直接获得完整 ID + 名称归属。
 
 因此 Property → ObjectType 的推荐实现为：
 
@@ -6893,6 +7240,7 @@ Fallback Rate
 ```text
 sourceValue → canonicalValue Accuracy
 Value → Property/ObjectType Mapping Accuracy
+Value Owner Name Completeness / ID-Name Consistency
 defaultDataValue Accuracy
 semanticExtensions Completeness
 Cypher / nGQL / OQL Seed Accuracy
@@ -7171,7 +7519,7 @@ rollbackVersion
 4. OpenSearch lexical 统一使用 Keyword Fuzzy，不维护 Exact Ranked List；
 5. RRF 按 Semantic Unit 类型分别执行 OntologyDefinitionFusion 和 ValueFusion，不做跨类型一次 6 路融合；
 6. LLM Fine Rank 的运行时输入固定为 `original_query + search_context + extracted_entities`；
-7. 召回阶段内部证据可以进入 Trace/调试日志，但不作为 LLM 精排输入；
+7. 召回阶段的原始 `matched_field / matched_value / channelHits / supporting_hits` 可以进入 Trace/调试日志，但不作为 LLM 精排输入；仅允许压缩后的 `valueLinks` 携带 `value + Property/ObjectType ID/name + score` 进入 `extracted_entities` 作为只读归属语义上下文；
 8. LLM 精排失败按“相同三输入重试 1 次 → 上一步候选顺序配置化 TopN”降级；
 9. `PathProbePlan.limits` 是所有图策略统一的运行时保护边界；
 10. FULL_REPLACE / INCREMENTAL / CLEAR 都必须遵守任务状态、双端一致性和恢复语义；
