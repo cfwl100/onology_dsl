@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Execute OAC Operation.
 
-The execution script reuses scripts/oql_validator.py as the single OQL validation gate.
+The execution script reuses scripts/oql_validator.py as the common OQL validation gate
+and adds ASSOCIATION_QUERY mode checks required by the unified Skill contract.
 
 Input guidance:
 - Use --input for complex or long OQL JSON, especially on Windows shells.
@@ -23,6 +24,9 @@ from trace_utils import build_headers, get_context_by_session
 from oql_validator import validate_oql_dict
 
 warnings.filterwarnings("ignore")
+
+ASSOCIATION_DETAIL_RETURN_KINDS = {"FIELDS", "EXPR", "FUNCTION"}
+ASSOCIATION_AGGREGATE_RETURN_KINDS = {"GROUP_BY", "METRIC"}
 
 
 def compact(data: Any) -> str:
@@ -64,9 +68,73 @@ def apply_runtime_defaults(oql: dict[str, Any]) -> None:
         oql["strict"] = True
 
 
+def association_query_mode_errors(oql: dict[str, Any]) -> list[dict[str, Any]]:
+    """Validate ASSOCIATION_QUERY detail/aggregate mode semantics.
+
+    ASSOCIATION_QUERY has two mutually exclusive return modes:
+    - detail: FIELDS / EXPR / FUNCTION
+    - aggregate: GROUP_BY / METRIC, with at least one METRIC
+
+    aggregateFilter is only valid in aggregate mode. The JSON Schema constrains the
+    allowed return shapes; this function enforces the cross-item/cross-field rules
+    that are awkward to express in the embedded lightweight validator.
+    """
+    if str(oql.get("operation", "")).upper() != "ASSOCIATION_QUERY":
+        return []
+
+    returns = oql.get("returns")
+    if not isinstance(returns, list):
+        return []
+
+    kinds = {
+        str(item.get("kind", "")).upper()
+        for item in returns
+        if isinstance(item, dict) and item.get("kind") is not None
+    }
+    has_detail = bool(kinds & ASSOCIATION_DETAIL_RETURN_KINDS)
+    has_aggregate = bool(kinds & ASSOCIATION_AGGREGATE_RETURN_KINDS)
+    errors: list[dict[str, Any]] = []
+
+    if has_detail and has_aggregate:
+        errors.append(
+            {
+                "code": "OQL_ASSOCIATION_RETURN_MODE_ERROR",
+                "message": (
+                    "ASSOCIATION_QUERY returns must use one mode only: "
+                    "detail(FIELDS/EXPR/FUNCTION) or aggregate(GROUP_BY/METRIC)"
+                ),
+                "path": "$.returns",
+            }
+        )
+
+    if has_aggregate and not any(
+        isinstance(item, dict) and str(item.get("kind", "")).upper() == "METRIC"
+        for item in returns
+    ):
+        errors.append(
+            {
+                "code": "OQL_ASSOCIATION_AGGREGATE_ERROR",
+                "message": "ASSOCIATION_QUERY aggregate mode must contain at least one METRIC",
+                "path": "$.returns",
+            }
+        )
+
+    if "aggregateFilter" in oql and not has_aggregate:
+        errors.append(
+            {
+                "code": "OQL_ASSOCIATION_AGGREGATE_FILTER_ERROR",
+                "message": "aggregateFilter is only allowed in ASSOCIATION_QUERY aggregate mode",
+                "path": "$.aggregateFilter",
+            }
+        )
+
+    return errors
+
+
 def validate_for_execution(oql: dict[str, Any]) -> tuple[bool, list[dict[str, Any]]]:
     apply_runtime_defaults(oql)
     errors = validate_oql_dict(oql)
+    errors.extend(association_query_mode_errors(oql))
     return not errors, errors
 
 

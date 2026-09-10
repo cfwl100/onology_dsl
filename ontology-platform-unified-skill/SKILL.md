@@ -57,9 +57,9 @@ python scripts/semantic_subgraph_search.py --query "<问题/业务主题>" --ont
 **不能凭空制造平台事实**：对象须来自子图 `objectType`；字段须来自子图 `property` 并经 `has_property` 确认归属；关系须来自 `defines_relation.properties.name`；OQL 须通过 schema 与 validator。`本体ID` 作 `schemaRef` 来源，上游已给则原样保留不编造，上游不给则`schemaRef`参数不设置。
 
 ### 操作类型路由（判型在生成 OQL 时一并完成）
-- 只查对象属性/明细/列表/字段值 → `QUERY`
-- 关系/路径/遍历/归属/连接/一跳/多跳 → `ASSOCIATION_QUERY`
-- 统计/聚合/分组/计数/求和/平均/极值/聚合后过滤 → `AGGREGATE`
+- **不显式依赖本体关系路径**，只查对象属性/明细/列表/字段值 → `QUERY`
+- **显式依赖本体关系路径**（关系/路径/遍历/归属/连接/一跳/多跳）→ `ASSOCIATION_QUERY`；无论返回明细还是包含分组、计数、求和、平均、极值、聚合后过滤，都保持 `ASSOCIATION_QUERY`
+- **不显式依赖本体关系路径**，但需要统计/聚合/分组/计数/求和/平均/极值/聚合后过滤 → `AGGREGATE`
 
 ### OQL 公共结构（`version` 固定 `"1.0"`，契约以 `schemas/` 下 schema 为准）
 - 顶层：`version`、`schemaRef`、`strict`、`operation`、`objects[]`、`conditions`、`returns[]`、`maxResults`。
@@ -88,8 +88,8 @@ python scripts/semantic_subgraph_search.py --query "<问题/业务主题>" --ont
 
 ### 各操作要点
 - **QUERY**（无关联明细）：声明 `objects`+`returns`；不用 `relationships`/`aggregateFilter`/`mutation`；`returns.ref` 引用 `objects[].alias`；不把聚合/关系写入 returns。
-- **ASSOCIATION_QUERY**（关联路径）：必须声明 `objects`+`relationships`+`returns`；每条关系含 `relationshipType`/`alias`(r1,r2..)/`from`/`to`，`from`/`to` 引用 `objects[].alias`，多跳前跳 `to`=后跳 `from`；`returns.ref` 可引用对象或关系 alias，需完整路径则含每个 relationship alias；条件 `ref` 可引用对象或关系 alias，路径关系字段不写到对象条件上。
-- **AGGREGATE**（聚合统计）：必须声明 `objects`+`returns`，`returns` 至少一个 `METRIC`，可含 `GROUP_BY`；不用 `relationships`/`mutation`/非聚合返回项；`COUNT` 可统计全部，`SUM`/`AVG`/`MIN`/`MAX` 须绑可聚合字段；`aggregateFilter`（聚合后过滤，类似 HAVING）`metricAlias` 须引用 `returns` 中 `METRIC.alias`；`conditions` 为聚合前明细级过滤，`ref` 引用 `objects[].alias`。
+- **ASSOCIATION_QUERY**（关联路径）：必须声明 `objects`+`relationships`+`returns`；每条关系含 `relationshipType`/`alias`(r1,r2..)/`from`/`to`，`from`/`to` 引用 `objects[].alias`，多跳前跳 `to`=后跳 `from`；支持两种互斥返回模式：①明细模式仅 `FIELDS`/`EXPR`/`FUNCTION`；②聚合模式仅 `GROUP_BY`/`METRIC` 且至少一个 `METRIC`。聚合模式可使用 `aggregateFilter`，其 `metricAlias` 必须引用同层 `METRIC.alias`；`conditions` 始终表示关系展开后的聚合前明细过滤。只要统计依赖 `relationships`，不得切换为 `AGGREGATE`。
+- **AGGREGATE**（无关联聚合统计）：仅用于**不显式依赖 `relationships`** 的聚合；必须声明 `objects`+`returns`，`returns` 至少一个 `METRIC`，可含 `GROUP_BY`；不用 `relationships`/`mutation`/非聚合返回项；`COUNT` 可统计全部，`SUM`/`AVG`/`MIN`/`MAX` 须绑可聚合字段；`aggregateFilter`（聚合后过滤，类似 HAVING）`metricAlias` 须引用 `returns` 中 `METRIC.alias`；`conditions` 为聚合前明细级过滤，`ref` 引用 `objects[].alias`。
 
 ### 生成与执行流程（直连，无中间规划轮）
 1. 由 OAG 原始子图事实 + 业务定制，**一次生成** OQL JSON（判型同时完成）。
@@ -131,7 +131,7 @@ AGGREGATE：
   "returns":[{ "kind":"METRIC","function":"COUNT","ref":"k","field":"id","alias":"cnt" }],
   "maxResults":1000 }
 ```
-ASSOCIATION_QUERY：`objects[]`+`relationships[]`(`relationshipType`/`alias`/`from`/`to`)+`conditions`(GROUP/PREDICATE)+`returns`(可引用对象或关系 alias)，详见 `schemas/oql-association-query.schema.json`。
+ASSOCIATION_QUERY：`objects[]`+`relationships[]`(`relationshipType`/`alias`/`from`/`to`)+`conditions`(GROUP/PREDICATE)+`returns`。关系明细使用 `FIELDS/EXPR/FUNCTION`；关系聚合使用 `GROUP_BY/METRIC`（至少一个 `METRIC`），并可带 `aggregateFilter`，详见 `schemas/oql-association-query.schema.json`。
 
 ---
 
