@@ -1,6 +1,6 @@
 {
   "title": "OQL ASSOCIATION_QUERY JSON Schema",
-  "description": "对象关系/路径关联查询；用于一跳关系导航和多跳路径。",
+  "description": "对象关系/路径关联查询；支持一跳/多跳关系明细查询，以及关系路径上的 GROUP_BY + METRIC 聚合查询。",
   "type": "object",
   "additionalProperties": false,
   "required": ["version","schemaRef","operation","objects","relationships","returns"],
@@ -8,16 +8,17 @@
     "version": {"const":"1.0","description":"OQL 协议版本。"},
     "schemaRef": {"type":"string","minLength":1,"description":"本体 schema 标识。"},
     "strict": {"type":"boolean","default":true,"description":"是否严格校验，默认 true。"},
-    "conditions": {"$ref":"#/definitions/condition","description":"过滤条件；不用时省略。"},
-    "orders": {"type":"array","items":{"$ref":"#/definitions/order"},"minItems":1,"description":"排序；不用时省略。"},
+    "conditions": {"$ref":"#/definitions/condition","description":"关系展开后的聚合前明细过滤；不用时省略。"},
+    "orders": {"type":"array","items":{"$ref":"#/definitions/order"},"minItems":1,"description":"排序；明细模式可按对象字段排序，聚合模式优先按 GROUP_BY/METRIC alias 排序。"},
     "maxResults": {"$ref":"#/definitions/maxResults","description":"最大返回条数。"},
     "sourceQuery": {"$ref":"#/definitions/sourceQuery","description":"中间结果查询。"},
     "options": {"$ref":"#/definitions/options","description":"执行选项。"},
     "extensions": {"$ref":"#/definitions/extensions","description":"业务扩展参数。"},
-    "operation": {"const":"ASSOCIATION_QUERY","description":"对象关系/路径查询。"},
+    "operation": {"const":"ASSOCIATION_QUERY","description":"显式依赖本体关系路径的查询；支持明细和聚合两种返回模式。"},
     "objects": {"type":"array","items":{"$ref":"#/definitions/object"},"minItems":2,"description":"路径涉及对象声明。"},
     "relationships": {"type":"array","items":{"$ref":"#/definitions/relationship"},"minItems":1,"description":"关系路径，按跳数顺序声明。"},
-    "returns": {"type":"array","items":{"oneOf":[{"$ref":"#/definitions/fieldsReturn"},{"$ref":"#/definitions/singleFieldReturn"},{"$ref":"#/definitions/exprReturn"},{"$ref":"#/definitions/idNameReturn"},{"$ref":"#/definitions/functionReturn"}]},"minItems":1,"description":"返回字段/表达式/ID-NAME。"}
+    "returns": {"oneOf":[{"$ref":"#/definitions/detailReturns"},{"$ref":"#/definitions/aggregateReturns"}],"description":"两种互斥返回模式：明细模式 FIELDS/EXPR/FUNCTION；聚合模式 GROUP_BY/METRIC，且至少包含一个 METRIC（由执行前语义校验保证）。"},
+    "aggregateFilter": {"$ref":"#/definitions/aggregateFilter","description":"仅聚合模式使用；聚合后过滤，metricAlias 必须引用同层 METRIC.alias。"}
   },
   "definitions": {
     "alias": {"type":"string","minLength":1,"pattern":"^[A-Za-z][A-Za-z0-9]*$","description":"对象/关系别名；ref、from、to 必须引用已声明别名。"},
@@ -44,6 +45,11 @@
     "idNameReturn": {"type":"object","additionalProperties":false,"required":["kind","ref","field","alias"],"description":"返回 ID(field)/NAME(field) 维度语义。","properties":{"kind":{"const":"FUNCTION"},"ref":{"$ref":"#/definitions/alias"},"field":{"$ref":"#/definitions/idNameField"},"alias":{"type":"string","minLength":1}}},
     "functionReturn": {"type":"object","additionalProperties":false,"required":["kind","name","args","alias"],"description":"直接返回函数表达式结果。","properties":{"kind":{"const":"FUNCTION"},"namespace":{"type":"string","minLength":1,"description":"函数命名空间（可选）。"},"name":{"type":"string","minLength":1,"not":{"enum":["ID","NAME","id","name"]},"description":"函数名，必须大写，如ABS、ROUND、SUBSTRING、NOW、YEAR、DATE_ADD等。"},"args":{"type":"array","items":{"oneOf":[{"$ref":"#/definitions/fieldExpr"},{"$ref":"#/definitions/valueExpr"},{"$ref":"#/definitions/literalExpr"},{"$ref":"#/definitions/functionExpr"}]},"description":"函数参数数组，按参数顺序排列。"},"alias":{"type":"string","minLength":1,"description":"函数结果别名，供外层引用。"}}},
     "singleFieldReturn": {"type":"object","additionalProperties":false,"required":["kind","ref","field"],"description":"返回单个字段，可选 alias。","properties":{"kind":{"const":"FIELDS"},"ref":{"$ref":"#/definitions/alias"},"field":{"$ref":"#/definitions/returnField"},"alias":{"type":"string","minLength":1}}},
+    "groupByReturn": {"type":"object","additionalProperties":false,"required":["kind","alias"],"oneOf":[{"required":["ref","field"]},{"required":["expr"]}],"description":"关联聚合分组字段；普通分组用 ref+field，函数型分组用 expr。","properties":{"kind":{"const":"GROUP_BY"},"ref":{"$ref":"#/definitions/alias"},"field":{"$ref":"#/definitions/field"},"expr":{"$ref":"#/definitions/expr"},"alias":{"type":"string","minLength":1}}},
+    "metricReturn": {"type":"object","additionalProperties":false,"required":["kind","function","ref","field","alias"],"description":"关联聚合指标；COUNT 可用 field='*'，其他函数使用具体字段。去重由服务端统一处理，不提供 distinct 字段。","properties":{"kind":{"const":"METRIC"},"function":{"enum":["COUNT","SUM","AVG","MIN","MAX"]},"ref":{"$ref":"#/definitions/alias"},"field":{"type":"string","minLength":1,"not":{"pattern":"^(ID|NAME)\\("}},"alias":{"type":"string","minLength":1,"description":"可被 aggregateFilter.metricAlias 引用。"}}},
+    "detailReturns": {"type":"array","items":{"oneOf":[{"$ref":"#/definitions/fieldsReturn"},{"$ref":"#/definitions/singleFieldReturn"},{"$ref":"#/definitions/exprReturn"},{"$ref":"#/definitions/idNameReturn"},{"$ref":"#/definitions/functionReturn"}]},"minItems":1,"description":"ASSOCIATION_QUERY 明细返回模式。"},
+    "aggregateReturns": {"type":"array","items":{"oneOf":[{"$ref":"#/definitions/groupByReturn"},{"$ref":"#/definitions/metricReturn"}]},"minItems":1,"description":"ASSOCIATION_QUERY 聚合返回模式；至少一个 METRIC 由执行前语义校验保证。"},
+    "aggregateFilter": {"oneOf":[{"type":"object","additionalProperties":false,"required":["kind","metricAlias","operator"],"description":"关联聚合后的指标过滤。","properties":{"kind":{"const":"METRIC_PREDICATE"},"metricAlias":{"type":"string","minLength":1},"operator":{"enum":["EQ","NE","GT","GTE","LT","LTE","BETWEEN","IN","NOT_IN","IS_NULL","IS_NOT_NULL"]},"values":{"type":"array"}}},{"type":"object","additionalProperties":false,"required":["kind","relation","children"],"description":"聚合过滤逻辑组。","properties":{"kind":{"const":"GROUP"},"relation":{"enum":["AND","OR","NOT"]},"children":{"type":"array","items":{"$ref":"#/definitions/aggregateFilter"},"minItems":1}}}],"description":"ASSOCIATION_QUERY 聚合模式专用，只引用 METRIC.alias。"},
     "relationship": {"type":"object","additionalProperties":false,"required":["relationshipType","alias","from","to"],"description":"关系路径声明；from/to 引用 objects alias。","properties":{"relationshipType":{"type":"string","minLength":1,"description":"本体关系类型。"},"alias":{"$ref":"#/definitions/alias"},"from":{"$ref":"#/definitions/alias"},"to":{"$ref":"#/definitions/alias"},"direction":{"type":"string","minLength":1,"description":"关系方向，如 OUTBOUND/INBOUND。"},"mode":{"enum":["ONE","LIST"],"description":"ONE 期望单条，LIST 允许多条。"}}}
   }
 }
