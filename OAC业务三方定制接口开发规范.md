@@ -1,17 +1,19 @@
 # OAC 业务三方定制接口开发规范
 
-> **文档版本**：1.0  
-> **发布日期**：2026-07  
+> **文档版本**：1.1  
+> **发布日期**：2026-08  
 > **执行请求版本**：1.0  
 > **语法来源**：《本体对象操作语言（OQL）DSL 规范 - 面向Agent.md》  
 > **Binding 数据来源**：《数据模型对接本体知识平台规范_v1.0.md》全文  
-> **适用范围**：业务或三方数据访问服务对接 OAC，接收精简执行请求与执行所需 Binding，完成物理查询翻译、执行和结果组装
+> **适用范围**：业务或三方数据访问服务对接 OAC，接收精简执行请求与执行所需 Binding，完成物理查询翻译、执行和结果组装；以及业务模型属性增量同步至 OMS 的扩展接入
 
 ---
 
 ## 1. 规范目标与边界
 
 本规范定义 OAC 到业务三方服务的执行接口。三方接口不直接暴露面向 Agent 的语言名称，而使用独立的“执行请求（Execution Request）”概念，避免三方接口模型与 OAC 面向 Agent 的语言模型发生混淆。
+
+本规范同时定义业务模型属性增量同步扩展，用于指导业务三方服务向 OMS 提供模型字段差异，并由 OMS 本体建模页面进行人工确认和受控导入。属性增量同步属于模型管理面能力，不属于 `/ontology-access/v1/execute` 查询执行协议。
 
 ### 1.1 单一事实来源
 
@@ -24,6 +26,7 @@
 | 对象类型 Binding 根结构和属性 Binding | 同一规范第 5.6 节 |
 | 关系类型 Binding 根结构和关系上下文 | 同一规范第 5.7 节 |
 | 三方请求包络、字段裁剪、字段归一化和接口错误码 | 本规范 |
+| 业务模型属性增量查询、OMS 人工导入及升级保护规则 | 本规范第 16 章 |
 
 ### 1.2 执行请求投影原则
 
@@ -1210,10 +1213,467 @@ result=SUCCESS
 
 ---
 
-## 16. 参考规范
+## 16. 业务模型属性增量同步扩展规范（iFM 告警场景）
+
+### 16.1 目标、范围与边界
+
+本章定义业务三方服务与 OMS 之间的模型属性增量同步扩展。iFM 告警服务是首个落地场景，其他业务模型可以复用本章契约。
+
+目标：
+
+1. iFM 告警服务对 iFM 告警字段和 OMS 中的本体告警属性进行比对，仅返回新增和修改的增量属性；
+2. OMS 本体建模页面提供“导入”能力，由建模人员手动确认增量属性并写入告警本体模型草稿；
+3. OMS 保护本体已有语义和一线人工定制，避免 iFM 再次同步或 APP 升级覆盖人工修改；
+4. 新增属性在建立 Property Binding 并发布新本体版本后，才对 OAC 查询运行态生效。
+
+边界：
+
+- 本期只处理 `ADD` 和 `UPDATE`，不自动删除本体属性；
+- 同步对象必须是 OMS 中已存在的告警 ObjectType，不通过本接口自动创建 ObjectType 或 Relationship；
+- 属性增量接口只传模型字段元数据，不传告警实例数据、数据库连接凭据或认证密钥；
+- iFM 不直接修改 OMS 属性，也不直接修改已发布本体版本；
+- 属性导入属于模型管理面流程，不使用 `ExecutionRequest` 和 `/ontology-access/v1/execute`。
+
+### 16.2 平台与业务三方职责
+
+| 组件 | 开发职责 |
+|---|---|
+| iFM 告警服务 | 提供告警字段增量查询接口；接收当前本体属性摘要；按稳定字段身份比对；返回 `ADD`/`UPDATE`、变化字段和源模型版本。 |
+| OMS 后端 | 调用 iFM 接口；解析 Catalog Field；校验类型和冲突；生成预览任务；按规则合并属性；创建或更新 Property Binding；生成草稿版本；记录审计。 |
+| OMS 本体建模页面 | 提供“导入 iFM 告警属性”入口、差异预览、冲突提示、勾选导入和结果展示；人工编辑显示名称或描述时设置修改标识。 |
+| APP 升级模块 | 按属性来源和人工修改标识执行保护性合并；不删除 iFM 导入属性和用户创建属性。 |
+| OAC | 不参与导入过程；仅在新本体版本发布后读取更新后的属性和 Binding。 |
+
+### 16.3 端到端流程
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as 建模人员
+    participant P as OMS 本体建模页面
+    participant M as OMS
+    participant I as iFM 告警服务
+    participant C as Catalog / Binding 存储
+    participant O as OAC
+
+    U->>P: 点击“导入 iFM 告警属性”
+    P->>M: 创建增量预览
+    M->>M: 读取当前告警 ObjectType 属性摘要
+    M->>I: POST 告警属性增量查询接口
+    I->>I: 比对 iFM 字段与本体属性
+    I-->>M: 返回 ADD / UPDATE 增量属性
+    M->>C: 解析 Field、校验类型和 Binding
+    M-->>P: 返回差异预览、保护状态和冲突项
+    U->>P: 选择属性并确认导入
+    P->>M: 提交导入任务
+    M->>M: 校验版本、幂等和合并规则
+    M->>C: 原子写入 Property、Binding、草稿和审计记录
+    M-->>P: 返回导入结果
+    U->>P: 评审并发布本体草稿
+    P->>M: 发布本体版本
+    M-->>O: 后续查询读取新版本 Binding
+```
+
+处理步骤：
+
+1. 建模人员选择目标本体、告警 ObjectType 和 iFM 数据源，创建属性增量预览；
+2. OMS 读取当前草稿。不存在草稿时读取已发布版本的属性摘要，但预览阶段不修改模型；
+3. OMS 从 DataSource 的受治理配置获取 `propertyDeltaQueryUrl`，调用 iFM；
+4. iFM 返回新增和修改属性；
+5. OMS 将 `columnName` 解析到 Catalog Field，校验数据类型和 Binding 完整性；
+6. 页面展示当前值、新值、变化字段、人工保护状态和冲突原因；
+7. 建模人员选择安全项提交；OMS 使用乐观锁和事务写入草稿；
+8. 草稿发布后，OMS 失效相关 Binding 缓存，OAC 后续请求使用新版本。
+
+### 16.4 iFM 告警属性增量查询接口
+
+#### 16.4.1 端点
+
+```http
+POST /api/v1/ifm/alarm-model/properties/delta
+Content-Type: application/json
+```
+
+接口地址由 iFM DataSource 的受治理配置注册给 OMS，建议能力名为 `PROPERTY_DELTA_QUERY`。实际路径可以由业务方配置覆盖，但请求和响应语义必须符合本节。
+
+#### 16.4.2 请求头
+
+| Header | 必填 | 说明 |
+|---|:---:|---|
+| `Content-Type` | 是 | 固定为 `application/json` |
+| `X-Request-Id` | 是 | 全链路请求标识 |
+| `X-Tenant-Id` | 条件必填 | 多租户场景必填 |
+| `X-Timeout-Ms` | 否 | OMS 分配给本次差异查询的超时预算 |
+
+#### 16.4.3 请求体
+
+```json
+{
+  "version": "1.0",
+  "ontologyId": "dtmi.ontology.ifm_alarm.1",
+  "objectTypeId": "Alarm",
+  "ontologyVersion": "27.1.0-draft-3",
+  "lastSourceModelVersion": "ifm-alarm-2026.07.01",
+  "properties": [
+    {
+      "propertyId": "prop_alarm_name",
+      "propertyName": "alarm_name",
+      "columnName": "alarm_name",
+      "dataType": "STRING",
+      "displayName": {
+        "zh": "告警名称",
+        "en": "Alarm Name"
+      },
+      "description": "告警标准名称",
+      "sourceFieldId": "ifm_field_alarm_name"
+    }
+  ]
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|:---:|---|
+| `version` | string | 是 | 增量接口版本，当前固定为 `1.0` |
+| `ontologyId` | string | 是 | 目标本体 ID |
+| `objectTypeId` | string | 是 | 目标告警 ObjectType ID 或稳定名称 |
+| `ontologyVersion` | string | 是 | 本次比较使用的本体版本，用于追踪和并发校验 |
+| `lastSourceModelVersion` | string | 否 | OMS 上次成功同步的 iFM 模型版本 |
+| `properties` | array | 是 | 当前告警本体属性摘要；无属性时传空数组 |
+| `properties[].propertyId` | string | 否 | OMS 属性 ID |
+| `properties[].propertyName` | string | 是 | 本体属性名称 |
+| `properties[].columnName` | string | 否 | 已绑定数据库列名 |
+| `properties[].dataType` | string | 是 | 本体逻辑类型 |
+| `properties[].displayName` | object | 否 | 当前中英文显示名称 |
+| `properties[].description` | string | 否 | 当前本体属性描述 |
+| `properties[].sourceFieldId` | string | 否 | iFM 稳定字段 ID，已导入属性建议保留 |
+
+`displayNameModifiedByUser` 和 `descriptionModifiedByUser` 是 OMS 内部保护字段，不要求 iFM 参与合并判断。OMS 可以不将其发送给 iFM，最终覆盖规则由 OMS 负责。
+
+#### 16.4.4 成功响应
+
+```json
+{
+  "resultCode": "20000",
+  "resultMessage": "success",
+  "data": {
+    "deltaId": "delta-20260801-0001",
+    "sourceSystem": "iFM",
+    "sourceModelVersion": "ifm-alarm-2026.08.01",
+    "properties": [
+      {
+        "changeType": "ADD",
+        "sourceFieldId": "ifm_field_root_cause",
+        "propertyName": "root_cause",
+        "columnName": "root_cause",
+        "dataType": "STRING",
+        "displayName": {
+          "zh": "根因",
+          "en": "Root Cause"
+        },
+        "description": "iFM 告警自定义页面中的根因说明",
+        "changedFields": [
+          "propertyName",
+          "columnName",
+          "dataType",
+          "displayName",
+          "description"
+        ]
+      },
+      {
+        "changeType": "UPDATE",
+        "sourceFieldId": "ifm_field_severity",
+        "propertyName": "severity",
+        "columnName": "severity",
+        "dataType": "INT",
+        "displayName": {
+          "zh": "告警级别",
+          "en": "Alarm Severity"
+        },
+        "description": "iFM 最新字段描述",
+        "changedFields": [
+          "dataType",
+          "displayName.zh",
+          "description"
+        ]
+      }
+    ]
+  }
+}
+```
+
+#### 16.4.5 增量属性字段
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|:---:|---|
+| `changeType` | enum | 是 | `ADD` 或 `UPDATE`；本期不接受 `DELETE` |
+| `sourceFieldId` | string | 建议必填 | iFM 稳定字段 ID，用于识别属性重命名和保证幂等 |
+| `propertyName` | string | 是 | 告警属性名称 |
+| `columnName` | string | 否 | 数据库列名；为空时 OMS 默认使用 `propertyName` |
+| `dataType` | string | 是 | iFM 字段类型或已归一化逻辑类型 |
+| `displayName.zh` | string | 否 | 中文显示名称 |
+| `displayName.en` | string | 否 | 英文显示名称 |
+| `description` | string | 否 | iFM 告警自定义页面字段描述 |
+| `changedFields` | array | `UPDATE` 必填 | 本次发生变化的字段路径 |
+
+业务最小必需信息为：告警属性名称、数据库列名、属性类型、中英文显示名称和描述。为了保证重命名识别、幂等和版本控制，业务方应同时提供 `sourceFieldId`、`sourceModelVersion`、`deltaId` 和 `changedFields`。
+
+### 16.5 属性匹配和差异计算规则
+
+iFM 应按以下顺序匹配属性：
+
+1. `sourceSystem + sourceFieldId`：稳定字段身份相同，视为同一属性；允许识别属性名称或数据库列名变化；
+2. `DataSource + Dataset + columnName`：缺少 `sourceFieldId` 时按物理字段匹配；
+3. 规范化后的 `propertyName`：仅在同一告警 ObjectType 内兜底匹配；
+4. 均无法匹配时返回 `ADD`。语义近似但键不同的字段不得自动合并。
+
+差异规则：
+
+| 场景 | iFM 返回 | OMS 处理 |
+|---|---|---|
+| iFM 存在、本体不存在 | `ADD` | 解析 Field，创建 Property 和 Property Binding |
+| 同一属性的名称、列名、类型、显示名称或描述变化 | `UPDATE` + `changedFields` | 按第 16.7 节优先级合并 |
+| 本体存在、iFM 不存在 | 不返回或仅在诊断信息提示 | 本期不自动删除 |
+| 无法确定是否为同一属性 | 不得返回自动重命名结论 | 作为新增候选或人工冲突 |
+
+`UPDATE` 的 `changedFields` 必须与响应值变化一致。响应值发生变化但未在 `changedFields` 声明时，OMS 返回 `IFM_DELTA_PAYLOAD_INVALID`。
+
+### 16.6 OMS 本体建模页面导入流程
+
+OMS 在告警 ObjectType 属性页面增加“导入 iFM 告警属性”入口。
+
+页面能力：
+
+| 页面区域 | 展示和操作 |
+|---|---|
+| 查询条件 | iFM 数据源、告警数据集、目标本体版本、刷新增量 |
+| 汇总栏 | 新增数、修改数、安全可导入数、冲突数、源模型版本、生成时间 |
+| 差异列表 | 勾选、变化类型、属性名、列名、类型、当前/新显示名称、当前/新描述、人工保护状态、Binding 状态、冲突原因 |
+| 默认选择 | 可解析 Field 的 `ADD` 默认选中；无保护冲突的 `UPDATE` 默认选中；类型冲突和列冲突默认不选中 |
+| 操作 | 全选安全项、仅选新增、仅选修改、查看差异、导入、取消 |
+| 结果 | 成功、跳过、失败和冲突明细；支持按 `taskId` 查询审计结果 |
+
+平台内部建议采用预览和提交两阶段接口：
+
+```http
+POST /api/v1/ontologies/{ontologyId}/object-types/{objectTypeId}/property-imports/preview
+POST /api/v1/ontologies/{ontologyId}/object-types/{objectTypeId}/property-imports/{taskId}/commit
+GET  /api/v1/ontologies/{ontologyId}/object-types/{objectTypeId}/property-imports/{taskId}
+```
+
+提交规则：
+
+1. 请求携带 `taskId`、`baseOntologyVersion`、选中的明细 ID 和 `Idempotency-Key`；
+2. OMS 重新校验任务有效期、源模型版本、目标草稿版本和 Catalog Field；
+3. 不存在草稿时，以当前已发布版本复制生成草稿；
+4. 在同一事务内写入 Property、Property Binding、导入记录、修订历史和草稿版本摘要；
+5. 默认 `allowPartial=false`，任一选中项失败则整体回滚；页面应先剔除冲突项再提交；
+6. 导入完成后仍需人工评审并发布，发布前不影响 OAC 运行态。
+
+### 16.7 描述和显示名称优先级
+
+#### 16.7.1 描述优先级
+
+本体告警模型属性描述优先级高于 iFM 告警自定义页面字段描述：
+
+| 场景 | 处理 |
+|---|---|
+| 新增属性 | 本体属性不存在时使用 iFM 描述；iFM 描述为空则保持为空 |
+| 修改属性且本体当前描述为空 | 使用 iFM 非空描述 |
+| 修改属性且本体当前描述非空 | 保留本体描述，不使用 iFM 覆盖 |
+| 一线人工修改过描述 | 始终保留当前描述，APP 升级也不得覆盖 |
+
+#### 16.7.2 显示名称优先级
+
+| 场景 | 处理 |
+|---|---|
+| 新增属性 | 使用 iFM 中英文显示名称；缺失语言可以为空 |
+| `displayNameModifiedByUser=false` | iFM 非空显示名称可以更新对应语言 |
+| `displayNameModifiedByUser=true` | 保留一线当前显示名称 |
+| iFM 导入动作 | 不得把人工修改标识设置为 `true`，也不得清除已有 `true` 标识 |
+
+### 16.8 OMS 属性来源和人工修改标识
+
+OMS 的属性模型应增加以下内部字段。这些字段不属于 OAC 三方执行 Binding，不需要传入 `/ontology-access/v1/execute`。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `sourceType` | enum | `APP_BASELINE`、`IFM_IMPORT`、`USER_CREATED` |
+| `sourceSystem` | string | 来源系统，例如 `iFM` |
+| `sourceFieldId` | string | 来源系统稳定字段 ID |
+| `sourceModelVersion` | string | 最近同步的来源模型版本 |
+| `displayNameModifiedByUser` | boolean | 显示名称是否被一线人工修改，默认 `false` |
+| `descriptionModifiedByUser` | boolean | 描述是否被一线人工修改，默认 `false` |
+| `lastImportTaskId` | string | 最近一次导入任务 ID |
+| `lastImportedAt` | datetime | 最近导入时间 |
+| `rowVersion` | long | 乐观锁版本 |
+
+人工修改标识规则：
+
+- 用户在 OMS 本体建模页面直接编辑中文或英文显示名称并保存时，设置 `displayNameModifiedByUser=true`；
+- 用户直接编辑描述并保存时，设置 `descriptionModifiedByUser=true`；
+- 页面提供“恢复为产品默认值/外部来源值”操作，恢复成功后可以将对应标识重置为 `false`；
+- iFM 导入、批量迁移和 APP 升级不得误设置人工修改标识。
+
+建议增加以下审计实体：
+
+| 实体 | 核心字段 |
+|---|---|
+| `PropertyImportTask` | `taskId`、`ontologyId`、`objectTypeId`、`baseOntologyVersion`、`sourceModelVersion`、`deltaId`、`status`、`operator` |
+| `PropertyImportItem` | `sourceFieldId`、`propertyName`、`columnName`、`changeType`、`changedFields`、`beforeValue`、`afterValue`、`validationStatus`、`importResult` |
+| `PropertyRevision` | `propertyId`、`revision`、`changeSource`、`beforeValue`、`afterValue`、`operator`、`requestId`、`changeTime` |
+
+### 16.9 数据类型和 Binding 校验
+
+新增属性必须通过 `columnName` 定位到 Catalog Field，并创建 Property Binding。无法定位物理 Field 时不得发布。
+
+| iFM 类型示例 | OMS 逻辑类型 | 处理 |
+|---|---|---|
+| `VARCHAR`、`CHAR`、`TEXT`、`STRING` | `STRING` | 兼容 |
+| `TINYINT`、`SMALLINT`、`INT`、`INTEGER` | `INT` | 兼容；`INT` 到 `BIGINT` 可安全拓宽 |
+| `BIGINT`、`LONG` | `BIGINT` | 兼容；到 `INT` 为缩窄，默认冲突 |
+| `FLOAT`、`DOUBLE` | `DOUBLE` | 兼容 |
+| `DECIMAL`、`NUMERIC` | `DECIMAL` | 精度和标度变化需要校验 |
+| `DATE`、`DATETIME`、`TIMESTAMP` | `TIMESTAMP` | 格式和时区写入时序信息或扩展属性 |
+| `BOOL`、`BOOLEAN` | `BOOLEAN` | 兼容 |
+| 未知或复杂结构 | `STRUCT` 或 `UNKNOWN` | 默认不自动导入 |
+
+数据库列名为空时，OMS 按 `columnName = propertyName` 处理。列名变化只有在 `sourceFieldId` 稳定且新列可以解析到 Field 时才允许自动更新 Binding。
+
+### 16.10 APP 升级保护
+
+APP 升级必须按照属性来源和分字段人工修改标识执行保护性合并：
+
+| 属性或字段状态 | 升级处理 |
+|---|---|
+| `sourceType=APP_BASELINE` 且显示名称未人工修改 | 应用新 APP 显示名称 |
+| `sourceType=APP_BASELINE` 且显示名称已人工修改 | 保留一线当前显示名称 |
+| `sourceType=APP_BASELINE` 且描述未人工修改 | 应用新 APP 描述 |
+| `sourceType=APP_BASELINE` 且描述已人工修改 | 保留一线当前描述 |
+| `sourceType=IFM_IMPORT` 或 `USER_CREATED`，升级包没有同源属性 | 完整保留，不删除、不覆盖 |
+| 升级包与 iFM 属性出现同一稳定字段 ID 或受治理属性键 | 进入冲突预览；人工修改字段保留，其他字段按升级策略合并 |
+
+伪代码：
+
+```text
+for each property:
+    if property.sourceType in [IFM_IMPORT, USER_CREATED]
+       and appPackage.hasNoManagedMatch(property):
+        preserve(property)
+        continue
+
+    if property.displayNameModifiedByUser:
+        keep current displayName
+    else:
+        apply incoming APP displayName
+
+    if property.descriptionModifiedByUser:
+        keep current description
+    else:
+        apply incoming APP description
+```
+
+存量属性首次引入人工修改标识时：
+
+1. 能获取旧 APP 基线值时，将当前值与旧基线不同的字段标记为 `true`；
+2. 无法获取旧基线时采用保守策略，非空显示名称和描述默认标记为 `true`，防止升级误覆盖。
+
+### 16.11 幂等、一致性、审计和回滚
+
+| 设计项 | 要求 |
+|---|---|
+| 幂等 | 提交接口使用 `Idempotency-Key`；服务端建议以 `ontologyId + objectTypeId + deltaId + selectedItemHash` 去重 |
+| 乐观锁 | 提交必须携带 `baseOntologyVersion` 或 `rowVersion`；版本变化返回 `ONTOLOGY_VERSION_CONFLICT` |
+| 任务有效期 | 预览任务建议保留 30 分钟；过期后必须重新查询差异 |
+| 原子性 | 默认所有选中项在一个事务中提交，失败时整体回滚 |
+| 并发控制 | 同一 `ontologyId + objectTypeId` 同时只允许一个 `IMPORTING` 任务 |
+| 审计 | 记录操作者、请求 ID、源模型版本、差异 ID、选中项、前后值、跳过原因和发布版本 |
+| 回滚 | 未发布草稿可按 `PropertyRevision` 撤销；已发布版本通过新草稿回滚，不直接修改历史版本 |
+
+### 16.12 扩展错误码
+
+| 错误码 | HTTP | 说明 |
+|---|:---:|---|
+| `IFM_DELTA_QUERY_FAILED` | 502/504 | iFM 增量接口不可用、超时或返回失败 |
+| `IFM_DELTA_PAYLOAD_INVALID` | 400 | 必填字段缺失，或 `changedFields` 与实际变化不一致 |
+| `PROPERTY_FIELD_NOT_FOUND` | 400 | 数据库列无法解析到 Catalog Field |
+| `PROPERTY_TYPE_CONFLICT` | 400 | 属性数据类型不兼容或未知 |
+| `ONTOLOGY_VERSION_CONFLICT` | 409 | 预览后目标草稿或发布版本发生变化 |
+| `PROPERTY_IMPORT_TASK_EXPIRED` | 409 | 属性导入预览任务已过期 |
+| `PROPERTY_IMPORT_DUPLICATE` | 200/409 | 重复提交相同幂等键；推荐返回原任务结果 |
+| `PROPERTY_IMPORT_FAILED` | 500 | 属性、Binding、草稿或审计记录写入失败，事务已回滚 |
+
+### 16.13 安全和可观测性
+
+安全要求：
+
+- iFM 增量接口只传字段元数据，不传告警实例数据；
+- 请求和响应不得包含数据库密码、Token、私钥和完整连接配置；
+- 导入、人工编辑、重置修改标识和发布操作必须校验本体模型管理权限；
+- 普通日志不得记录完整 `beforeValue`/`afterValue`，详细差异写入受控审计存储；
+- 接口调用必须透传 `X-Request-Id`，形成 OMS、iFM 和审计存储的完整调用链。
+
+建议日志字段：
+
+```text
+requestId=req-20260801-001
+taskId=import-task-001
+deltaId=delta-20260801-0001
+tenantId=tenant-a
+ontologyId=dtmi.ontology.ifm_alarm.1
+objectTypeId=Alarm
+baseOntologyVersion=27.1.0-draft-3
+sourceSystem=iFM
+sourceModelVersion=ifm-alarm-2026.08.01
+selectedAddCount=8
+selectedUpdateCount=3
+preservedDisplayNameCount=2
+preservedDescriptionCount=5
+result=SUCCESS
+```
+
+建议监控指标：
+
+| 指标 | 类型 | 说明 |
+|---|---|---|
+| `oms_ifm_property_delta_query_total` | counter | iFM 增量查询次数，按数据源和结果分组 |
+| `oms_ifm_property_delta_query_seconds` | histogram | iFM 增量查询耗时 |
+| `oms_property_import_task_total` | counter | 导入任务数，按状态分组 |
+| `oms_property_import_item_total` | counter | 导入明细数，按 `ADD`、`UPDATE`、`SKIP`、`CONFLICT`、`FAILED` 分组 |
+| `oms_property_user_override_preserved_total` | counter | iFM 导入或 APP 升级中保留的一线人工修改字段数 |
+| `oms_property_import_rollback_total` | counter | 导入事务回滚次数和原因 |
+
+### 16.14 开发与验收清单
+
+#### 16.14.1 iFM 业务三方开发检查
+
+- [ ] 提供 `POST` 属性增量查询接口；
+- [ ] 返回属性名、数据库列名、属性类型、中英文显示名称和描述；
+- [ ] 提供稳定 `sourceFieldId`、`sourceModelVersion`、`deltaId` 和 `changedFields`；
+- [ ] 只返回 `ADD` 和 `UPDATE`，不触发 OMS 自动删除；
+- [ ] `UPDATE.changedFields` 与实际变化一致；
+- [ ] 接口支持 `X-Request-Id`、超时和统一错误响应；
+- [ ] 不返回告警实例数据和连接凭据；
+- [ ] 完成与 OMS 的接口契约测试。
+
+#### 16.14.2 OMS 平台开发检查
+
+- [ ] 本体建模页面提供预览、差异对比、人工选择和导入结果；
+- [ ] `columnName` 为空时默认等于 `propertyName`；
+- [ ] 新增属性必须建立有效 Property Binding；
+- [ ] 本体非空描述不会被 iFM 描述覆盖；
+- [ ] 显示名称和描述分别具备人工修改标识；
+- [ ] iFM 导入不会清除人工修改标识；
+- [ ] APP 升级不会覆盖人工修改字段，不删除 iFM 导入属性；
+- [ ] 导入只写草稿，发布后才影响 OAC；
+- [ ] 提交具备幂等、乐观锁、原子事务、审计和回滚；
+- [ ] 覆盖新增、修改、类型冲突、版本冲突、重复提交、超时和升级保护测试。
+
+---
+
+## 17. 参考规范
 
 | 规范 | 用途 |
 |---|---|
 | 《本体对象操作语言（OQL）DSL 规范 - 面向Agent.md》 | 仅作为执行请求字段结构和语义来源，不作为三方接口入参名称 |
 | 《数据模型对接本体知识平台规范_v1.0.md》 | Binding、Catalog、目录层级和资产字段来源 |
-| 《OAC业务三方定制接口开发规范.md》 | OAC 到业务三方服务的执行接口契约 |
+| 《OAC业务三方定制接口开发规范.md》 | OAC 到业务三方服务的执行接口契约，以及业务模型属性增量同步扩展规范 |
