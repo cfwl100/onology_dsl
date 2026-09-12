@@ -133,6 +133,59 @@ AGGREGATE：
 ```
 ASSOCIATION_QUERY：`objects[]`+`relationships[]`(`relationshipType`/`alias`/`from`/`to`)+`conditions`(GROUP/PREDICATE)+`returns`。关系明细使用 `FIELDS/EXPR/FUNCTION`；关系聚合使用 `GROUP_BY/METRIC`（至少一个 `METRIC`），并可带 `aggregateFilter`，详见 `schemas/oql-association-query.schema.json`。
 
+#### 三对象关联聚合最小示例
+
+以下示例用于说明三个本体对象通过两条关系完成关联聚合。示例不绑定任何具体物理表名、字段名或客户模型，真实对象、属性和关系必须来自 OAG 返回的本体子图，物理主外键关系由 OMS binding 解析。
+
+| 本体逻辑对象 | 示例 alias | 典型绑定语义 |
+|---|---|---|
+| 事实对象 A | `a` | 以 `<统计周期字段> + <主体标识字段>` 标识一个周期内的事实记录 |
+| 主体对象 B | `b` | 通过 `<统计周期字段> + <主体标识字段>` 与事实对象 A 建立绑定 |
+| 明细对象 C | `c` | 通过 `<统计周期字段> + <主体标识字段>` 与主体对象 B 建立绑定 |
+
+关系链可抽象表达为：**事实对象 A → 主体对象 B → 明细对象 C**。若底层采用关系型数据源，OMS binding 可将两条本体关系解析为类似以下组合键关联：
+
+```text
+a.<统计周期字段> = b.<统计周期字段> AND a.<主体标识字段> = b.<主体标识字段>
+b.<统计周期字段> = c.<统计周期字段> AND b.<主体标识字段> = c.<主体标识字段>
+```
+
+这些物理关联条件**不写入 OQL `conditions` 或 `relationships`**。OQL 只声明本体对象及本体关系；`objectType`、`relationshipType` 和字段名都必须使用 OAG 返回的真实本体元素，下面的尖括号内容仅为泛化占位符。
+
+示例问题：**统计某个周期，按主体分类和明细状态分组，汇总事实指标。**
+
+```json
+{
+  "version":"1.0",
+  "schemaRef":"<本体ID>",
+  "strict":true,
+  "operation":"ASSOCIATION_QUERY",
+  "objects":[
+    {"objectType":"<事实对象A>","alias":"a"},
+    {"objectType":"<主体对象B>","alias":"b"},
+    {"objectType":"<明细对象C>","alias":"c"}
+  ],
+  "relationships":[
+    {"relationshipType":"<A关联B关系>","alias":"r1","from":"a","to":"b","direction":"OUTBOUND","mode":"ONE"},
+    {"relationshipType":"<B关联C关系>","alias":"r2","from":"b","to":"c","direction":"OUTBOUND","mode":"ONE"}
+  ],
+  "conditions":{
+    "kind":"PREDICATE","ref":"b","field":"<统计周期字段>","operator":"EQ","values":["<目标周期>"]
+  },
+  "returns":[
+    {"kind":"GROUP_BY","ref":"b","field":"<主体分类字段>","alias":"subjectCategory"},
+    {"kind":"GROUP_BY","ref":"c","field":"<明细状态字段>","alias":"detailStatus"},
+    {"kind":"METRIC","function":"SUM","ref":"a","field":"<事实指标字段>","alias":"totalMetric"}
+  ],
+  "orders":[
+    {"field":"totalMetric","direction":"DESC"}
+  ],
+  "maxResults":1000
+}
+```
+
+该示例体现三个关键原则：① 三个对象的物理表名和组合主外键不进入 canonical OQL；② OQL 只使用 OAG 返回的对象、属性、关系语义，OMS binding 负责把两条本体关系转换为真实物理关联；③ 查询显式依赖两条 `relationships`，因此即使包含 `GROUP_BY + SUM`，operation 仍必须为 `ASSOCIATION_QUERY`，不能改成 `AGGREGATE`。
+
 ---
 
 ## Function 函数调用
