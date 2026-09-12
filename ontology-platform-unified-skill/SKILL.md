@@ -133,6 +133,59 @@ AGGREGATE：
 ```
 ASSOCIATION_QUERY：`objects[]`+`relationships[]`(`relationshipType`/`alias`/`from`/`to`)+`conditions`(GROUP/PREDICATE)+`returns`。关系明细使用 `FIELDS/EXPR/FUNCTION`；关系聚合使用 `GROUP_BY/METRIC`（至少一个 `METRIC`），并可带 `aggregateFilter`，详见 `schemas/oql-association-query.schema.json`。
 
+#### 三表关联聚合最小示例：收入 → 用户 → 订购产品
+
+以下示例用于说明三张月表映射为本体对象后的关系聚合。物理表与组合关联键如下：
+
+| 本体逻辑对象 | 物理表 | 组合键/绑定关系 |
+|---|---|---|
+| 用户月数据 `u` | `devpublic.tb_mk_sc_user_zhib_data01_mon`（标准指标库多维度指标_客户数据月表） | 主对象键：`STATIS_MONTH + USER_ID` |
+| 订购产品月数据 `p` | `devpublic.tb_mk_sc_user_zhib_prod01_mon`（标准指标库多维度指标_订购数据汇总月表） | 通过 `STATIS_MONTH + USER_ID` 关联用户月数据 |
+| 收入月数据 `i` | `devpublic.TB_MK_SC_USER_INCOME_MON`（标准指标库多维度指标_收入数据汇总月表） | 通过 `STATIS_MONTH + USER_ID` 关联用户月数据 |
+
+关系链按业务语义表达为：**收入数据 → 用户数据 → 订购产品数据**。物理层由 OMS binding 将两条本体关系分别解析为：
+
+```text
+i.STATIS_MONTH = u.STATIS_MONTH AND i.USER_ID = u.USER_ID
+u.STATIS_MONTH = p.STATIS_MONTH AND u.USER_ID = p.USER_ID
+```
+
+上述物理主外键/组合键条件**不写入 OQL `conditions` 或 `relationships`**，OQL 只声明本体关系；`relationshipType` 必须使用 OAG 返回的真实本体关系名，下面的 `<收入关联用户关系>` / `<用户关联订购产品关系>` 仅表示关系位置，不得直接当作平台事实。
+
+示例问题：**统计 202607 月，按高套客户标识和 FTTR 订购状态分组，汇总套餐费收入。**
+
+```json
+{
+  "version":"1.0",
+  "schemaRef":"<本体ID>",
+  "strict":true,
+  "operation":"ASSOCIATION_QUERY",
+  "objects":[
+    {"objectType":"标准指标库多维度指标_收入数据汇总月表","alias":"i"},
+    {"objectType":"标准指标库多维度指标_客户数据月表","alias":"u"},
+    {"objectType":"标准指标库多维度指标_订购数据汇总月表","alias":"p"}
+  ],
+  "relationships":[
+    {"relationshipType":"<收入关联用户关系>","alias":"r1","from":"i","to":"u","direction":"OUTBOUND","mode":"ONE"},
+    {"relationshipType":"<用户关联订购产品关系>","alias":"r2","from":"u","to":"p","direction":"OUTBOUND","mode":"ONE"}
+  ],
+  "conditions":{
+    "kind":"PREDICATE","ref":"u","field":"STATIS_MONTH","operator":"EQ","values":[202607]
+  },
+  "returns":[
+    {"kind":"GROUP_BY","ref":"u","field":"KHLX_GAOTAO","alias":"highTierCustomer"},
+    {"kind":"GROUP_BY","ref":"p","field":"JTSC_FTTR_USER","alias":"fttrSubscribed"},
+    {"kind":"METRIC","function":"SUM","ref":"i","field":"SR_TCF_FEE","alias":"totalPackageFee"}
+  ],
+  "orders":[
+    {"field":"totalPackageFee","direction":"DESC"}
+  ],
+  "maxResults":1000
+}
+```
+
+字段来源：`KHLX_GAOTAO` 来自客户数据月表，`JTSC_FTTR_USER` 来自订购数据汇总月表，`SR_TCF_FEE`（收入分产品_套餐费，单位：分）来自收入数据汇总月表。该查询显式依赖两条本体关系，因此即使包含 `GROUP_BY + SUM`，operation 仍必须为 `ASSOCIATION_QUERY`，不能改成 `AGGREGATE`。
+
 ---
 
 ## Function 函数调用
