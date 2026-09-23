@@ -1,0 +1,50 @@
+{
+  "input": {
+    "workbook": "tests/OAG_本体索引结构.xlsx",
+    "query_file": "tests/oag_vector_eval_queries.csv",
+    "auto_generate_queries": true,
+    "auto_query_limit": 2000,
+    "max_auto_terms_per_entity": 3
+  },
+  "embedding": {
+    "provider": "sentence_transformers",
+    "model_name_or_path": "BAAI/bge-m3",
+    "dimension": 1024,
+    "batch_size": 32,
+    "normalize_embeddings": true,
+    "device": null,
+    "trust_remote_code": false
+  },
+  "vector_store": {
+    "backend": "gaussvector",
+    "dsn_env": "GAUSSVECTOR_DSN",
+    "schema": "public",
+    "table": "oag_vector_eval",
+    "create_index": true,
+    "ivf_nlist": "auto"
+  },
+  "evaluation": {
+    "variants": [
+      "all_fields_single",
+      "core_short_single",
+      "term_description_multi",
+      "context_shadow_multi",
+      "atomic_field_rows"
+    ],
+    "query_strategies": [
+      "whole",
+      "token",
+      "semantic_phrase",
+      "hybrid"
+    ],
+    "top_ks": [1, 3, 5, 10],
+    "document_limit": 100,
+    "role_weights": {
+      "description": 0.95,
+      "context": 0.95
+    }
+  },
+  "output": {
+    "directory": "tests/oag_vector_eval_output"
+  }
+}
