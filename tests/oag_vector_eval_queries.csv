@@ -1,0 +1,6 @@
+query_id,question,expected_entity_keys,semantic_units,category,language
+q001,查询账户标识,seed|account-property-Account-accountId,账户标识,seed_property,zh
+q002,查询正式账户,metadata|account-enum-AccountClass||1,正式账户,enum_value,zh
+q003,查询测试账户,metadata|account-enum-AccountClass||2,测试账户,enum_value,zh
+q004,查询账户的货币代码,seed|account-property-Account-currencyTypeCode,账户|货币代码,seed_property,zh
+q005,Find the account identifier,seed|account-property-Account-accountId,account identifier,seed_property,en
