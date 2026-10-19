@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/cfwl100/onology_dsl/blob/main/docs/schemas/oag-software-subgraph-response.schema.json",
   "title": "OAG 软件场景语义子图检索响应（2026-10 附件实测兼容结构）",
-  "description": "严格按 OAG验证截图(1).txt 已观察字段建立可执行的兼容型结构定义。函数/动作非空项结构未见于附件，采用开放对象；旧实例不一定包含新扩展集合，不把所有增强字段设为强制必填。",
+  "description": "仅描述软件场景 V2 子图响应。V2 复用 V1 顶层与图容器形态，增加语义扩展和 V2 Property 节点数据类型；V1 使用历史执行链路及历史响应 DTO，不受此 Schema 约束。Function/Action 非空 DTO 仍以既有服务定义为准。",
   "type": "object",
   "required": [
     "resultCode",
@@ -26,7 +26,7 @@
   "$defs": {
     "SubgraphResult": {
       "type": "object",
-      "description": "核心图结构保持 V1；seedNodes、propertyValuesLinks 和 semanticExtensions 兼容性按实际是否提供来解析。",
+      "description": "本 Schema 只校验 V2：顶层与核心 nodes/edges/functions/actions 容器沿用 V1，其他辅助集合、semanticExtensions 与 Property dataType 仅按 V2 契约支持；并非 V1 响应定义。",
       "properties": {
         "seedNodes": {
           "type": "array",
@@ -275,7 +275,7 @@
     },
     "GraphNode": {
       "type": "object",
-      "description": "图节点，沿用 V1。",
+      "description": "V2 图节点：基本 id/label/properties 容器沿用既有字段，仅当 label=property 时在 V2 properties 中补充可选 dataType；V1 的 Property 节点保持原结构，不受 V2 Schema 影响。",
       "properties": {
         "id": {
           "type": "string",
@@ -287,8 +287,14 @@
         },
         "properties": {
           "type": "object",
-          "description": "原 V1 属性映射，显示名、描述、主键等 JSON 可能以字符串形式返回（例如 display 字符串包含 JSON 文本）。",
-          "additionalProperties": true
+          "description": "V2 节点属性容器；label=property 的 V2 新增类型值使用 dataType（取自 OMS Property 定义，类型缺失时不伪造）。本 Schema 不要求所有旧或非 Property 节点都存在此字段。",
+          "additionalProperties": true,
+          "properties": {
+            "dataType": {
+              "type": "string",
+              "description": "**V2-only**：当 GraphNode.label 为 property 时，可附带从 OMS 权威属性定义得到的字段数据类型。V1 使用原响应结构，不增加这个字段。"
+            }
+          }
         }
       },
       "required": [
@@ -330,7 +336,7 @@
     },
     "SemanticExtensions": {
       "type": "object",
-      "description": "按附件实测定义。",
+      "description": "V2 新增语义扩展，不属于原 V1 的序列化返回结构；valueMappings 内的 dataType 描述值映射类型，不等同于 Property 节点 properties.dataType。",
       "properties": {
         "valueMappings": {
           "type": "array",
