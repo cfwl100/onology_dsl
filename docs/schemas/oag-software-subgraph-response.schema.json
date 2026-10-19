@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/cfwl100/onology_dsl/blob/main/docs/schemas/oag-software-subgraph-response.schema.json",
-  "title": "OAG 软件场景语义子图检索响应（2026-10 附件实测兼容结构）",
-  "description": "仅描述软件场景 V2 子图响应。V2 复用 V1 顶层与图容器形态，增加语义扩展和 V2 Property 节点数据类型；V1 使用历史执行链路及历史响应 DTO，不受此 Schema 约束。Function/Action 非空 DTO 仍以既有服务定义为准。",
+  "title": "OAG 统一 V2 语义子图检索响应（V1 能力全覆盖）",
+  "description": "V2 支持自然语言 query 与结构化 entities，完整覆盖 V1 ObjectType、Property、Relationship、Function、Action 检索及返回能力，并支持正式 V2 定义中的 RelationshipProperty。seedNodes、propertyValuesLinks、semanticExtensions、Property dataType 为按租户配置和有效输入模式出现的新增扩展，不要求 query-only 都有值映射。",
   "type": "object",
   "required": [
     "resultCode",
@@ -26,7 +26,7 @@
   "$defs": {
     "SubgraphResult": {
       "type": "object",
-      "description": "本 Schema 只校验 V2：顶层与核心 nodes/edges/functions/actions 容器沿用 V1，其他辅助集合、semanticExtensions 与 Property dataType 仅按 V2 契约支持；并非 V1 响应定义。",
+      "description": "V2 统一响应：V1 nodes/edges/functions/actions 等基本结果保留；可随检索模式和租户配置加入 seedNodes/propertyValuesLinks/semanticExtensions 及 Property 数据类型。",
       "properties": {
         "seedNodes": {
           "type": "array",
@@ -275,7 +275,7 @@
     },
     "GraphNode": {
       "type": "object",
-      "description": "V2 图节点：基本 id/label/properties 容器沿用既有字段，仅当 label=property 时在 V2 properties 中补充可选 dataType；V1 的 Property 节点保持原结构，不受 V2 Schema 影响。",
+      "description": "V2 节点结构：必须覆盖 V1 的实体/属性及关系语义；按租户配置可给 label=property 的 nodes[].properties 附加 dataType；V2 增强默认无向路径不改变真实有向边。",
       "properties": {
         "id": {
           "type": "string",
@@ -336,7 +336,7 @@
     },
     "SemanticExtensions": {
       "type": "object",
-      "description": "V2 新增语义扩展，不属于原 V1 的序列化返回结构；valueMappings 内的 dataType 描述值映射类型，不等同于 Property 节点 properties.dataType。",
+      "description": "V2 可选语义扩展：若发生值映射时可返回 valueMappings；内部 Skill query-only 不要求这个扩展，V1 迁移前仍沿用原响应。",
       "properties": {
         "valueMappings": {
           "type": "array",
