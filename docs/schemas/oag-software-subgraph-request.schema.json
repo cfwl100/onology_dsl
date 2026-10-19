@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/cfwl100/onology_dsl/blob/main/docs/schemas/oag-software-subgraph-request.schema.json",
+  "title": "OAG 软件场景语义子图检索请求（V1 参数兼容）",
+  "description": "POST /v1/onto-retrieval/{ontologyId}/subgraph/semantic-search 的软件场景请求 Body。沿用 V1 现有参数；新增必填 entities。tenant/认证/trace 等在 Header，ontologyId 在 Path。query 属于 V1 字段；软件场景不依赖 query。",
+  "type": "object",
+  "required": [
+    "entities"
+  ],
+  "properties": {
+    "query": {
+      "type": "string",
+      "description": "历史 V1 自然语言字段；软件场景由 entities 提供切词结果，不要求 query。是否同时传递 query 由服务端约定。"
+    },
+    "seedRetrievalMode": {
+      "type": "string",
+      "description": "原 V1 召回模式；软件样例 hybrid。",
+      "enum": [
+        "vector",
+        "keyword",
+        "hybrid"
+      ]
+    },
+    "similarityThreshold": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "V1 相似度阈值；样例为 0.1，非验收推荐值。"
+    },
+    "topK": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "V1 字段名区分大小写，为 topK（非 topk）。"
+    },
+    "graphExpansionStrategy": {
+      "type": "string",
+      "description": "V1 图拓展策略。",
+      "enum": [
+        "minimal",
+        "khop",
+        "component"
+      ]
+    },
+    "hopLimit": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "V1 最大跳数。"
+    },
+    "adaptiveRetrieval": {
+      "type": "integer",
+      "enum": [
+        0,
+        1
+      ],
+      "description": "沿用 V1：软件专项调用样例固定为 0；该 Schema 不限制旧模式取值 1。"
+    },
+    "includeFunctions": {
+      "type": "integer",
+      "enum": [
+        0,
+        1
+      ],
+      "description": "V1 是否返回 Function。"
+    },
+    "includeActions": {
+      "type": "integer",
+      "enum": [
+        0,
+        1
+      ],
+      "description": "V1 是否返回 Action。"
+    },
+    "entities": {
+      "$ref": "#/$defs/Entities"
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "Entities": {
+      "type": "object",
+      "description": "软件场景切词结构：显式实体与属性候选值分离。两数组可择一出现，但至少一组有数据。",
+      "properties": {
+        "extractedEntities": {
+          "type": "array",
+          "description": "业务侧已与 OMS 本体定义对齐的 ObjectType / Property 显式锚点；可省略。",
+          "items": {
+            "$ref": "#/$defs/ExtractedEntity"
+          }
+        },
+        "propertyValues": {
+          "type": "array",
+          "description": "携带冗余可能的值候选，按对象分组；可省略。",
+          "items": {
+            "$ref": "#/$defs/PropertyValueGroup"
+          }
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "extractedEntities"
+          ],
+          "properties": {
+            "extractedEntities": {
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "required": [
+            "propertyValues"
+          ],
+          "properties": {
+            "propertyValues": {
+              "minItems": 1
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "ExtractedEntity": {
+      "type": "object",
+      "description": "显式对象/属性种子。",
+      "properties": {
+        "objectType": {
+          "type": "string",
+          "description": "本体对象类型规范名称。",
+          "minLength": 1
+        },
+        "properties": {
+          "type": "array",
+          "description": "已对齐的属性列表；输入可只提供 objectType。",
+          "items": {
+            "type": "string",
+            "description": "真实属性名称。",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "objectType"
+      ],
+      "additionalProperties": true
+    },
+    "PropertyValueGroup": {
+      "type": "object",
+      "description": "值候选按 ObjectType 分组。",
+      "properties": {
+        "objectType": {
+          "type": "string",
+          "description": "属性值所属对象类型规范名称。",
+          "minLength": 1
+        },
+        "propertyValues": {
+          "type": "array",
+          "description": "当前对象下的一个或多个待链接属性值。",
+          "items": {
+            "$ref": "#/$defs/PropertyValue"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "objectType",
+        "propertyValues"
+      ],
+      "additionalProperties": true
+    },
+    "PropertyValue": {
+      "type": "object",
+      "description": "单个属性值候选。",
+      "properties": {
+        "property": {
+          "type": "string",
+          "description": "可为空串：附件用 property=\"\" 表示属性未知的 value-only 候选，不等于已解析出属性。"
+        },
+        "value": {
+          "type": "string",
+          "description": "业务待标准化的原始值。",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "property",
+        "value"
+      ],
+      "additionalProperties": true
+    }
+  }
+}
