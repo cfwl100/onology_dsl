@@ -1,0 +1,387 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/cfwl100/onology_dsl/blob/main/docs/schemas/oag-software-subgraph-response.schema.json",
+  "title": "OAG 软件场景语义子图检索响应（2026-10 附件实测兼容结构）",
+  "description": "严格按 OAG验证截图(1).txt 已观察字段建立可执行的兼容型结构定义。函数/动作非空项结构未见于附件，采用开放对象；旧实例不一定包含新扩展集合，不把所有增强字段设为强制必填。",
+  "type": "object",
+  "required": [
+    "resultCode",
+    "resultMessage",
+    "result"
+  ],
+  "properties": {
+    "resultCode": {
+      "type": "integer",
+      "description": "业务结果码；附件成功值为 200。"
+    },
+    "resultMessage": {
+      "type": "string",
+      "description": "业务结果信息；附件为 success。"
+    },
+    "result": {
+      "$ref": "#/$defs/SubgraphResult"
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "SubgraphResult": {
+      "type": "object",
+      "description": "核心图结构保持 V1；seedNodes、propertyValuesLinks 和 semanticExtensions 兼容性按实际是否提供来解析。",
+      "properties": {
+        "seedNodes": {
+          "type": "array",
+          "description": "显式种子与值命中种子；实测存在重复 sourceObjectType，不能按名称假设天然唯一。",
+          "items": {
+            "$ref": "#/$defs/SeedNode"
+          }
+        },
+        "propertyValuesLinks": {
+          "type": "array",
+          "description": "值候选链接证据，可包含同一对象的多条记录。",
+          "items": {
+            "$ref": "#/$defs/PropertyValuesLink"
+          }
+        },
+        "nodes": {
+          "type": "array",
+          "description": "本体顶点，包含 ObjectType、Property 等。",
+          "items": {
+            "$ref": "#/$defs/GraphNode"
+          }
+        },
+        "edges": {
+          "type": "array",
+          "description": "有向本体图边，保留真实 sourceId / targetId。",
+          "items": {
+            "$ref": "#/$defs/GraphEdge"
+          }
+        },
+        "functions": {
+          "type": "array",
+          "description": "附件为 []；非空 Function DTO 尚无法据此确定，维持 V1 兼容开放结构。",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "actions": {
+          "type": "array",
+          "description": "附件为 []；非空 Action DTO 尚无法据此确定，维持 V1 兼容开放结构。",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "semanticExtensions": {
+          "$ref": "#/$defs/SemanticExtensions"
+        }
+      },
+      "required": [
+        "nodes",
+        "edges",
+        "functions",
+        "actions"
+      ],
+      "additionalProperties": true
+    },
+    "SeedNode": {
+      "type": "object",
+      "description": "种子节点条目。",
+      "properties": {
+        "sourceObjectType": {
+          "type": "string",
+          "description": "业务输入或值链接命中的源对象名称。"
+        },
+        "targetObjectTypes": {
+          "type": "array",
+          "description": "归属到本体的候选对象列表。",
+          "items": {
+            "$ref": "#/$defs/TargetObjectType"
+          }
+        }
+      },
+      "required": [
+        "sourceObjectType",
+        "targetObjectTypes"
+      ],
+      "additionalProperties": true
+    },
+    "TargetObjectType": {
+      "type": "object",
+      "description": "源对象下的本体对象候选。",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "本体 ObjectType ID；附件发现空字符串，故不能强制 minLength 1。"
+        },
+        "name": {
+          "type": "string",
+          "description": "本体对象规范名称。"
+        },
+        "score": {
+          "type": "number",
+          "description": "附件中的直接锚点使用 0.0，不应理解为未命中。"
+        },
+        "propertyLinks": {
+          "type": "array",
+          "description": "源属性到真实属性的链接记录。",
+          "items": {
+            "$ref": "#/$defs/PropertyLink"
+          }
+        },
+        "descriptionZh": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "descriptionEn": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "synonyms": {
+          "type": [
+            "string",
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "附件为 null；真实非空载荷需以 V1 DTO 为准。"
+        }
+      },
+      "required": [
+        "name",
+        "id"
+      ],
+      "additionalProperties": true
+    },
+    "PropertyLink": {
+      "type": "object",
+      "description": "附件所有 propertyLinks 均为 []；非空结构参照软件详细设计，保留扩展字段。",
+      "properties": {
+        "sourceProperty": {
+          "type": "string",
+          "description": "业务侧的属性名称。"
+        },
+        "targetProperties": {
+          "type": "array",
+          "description": "真实本体属性候选。",
+          "items": {
+            "$ref": "#/$defs/TargetProperty"
+          }
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "TargetProperty": {
+      "type": "object",
+      "description": "属性候选。",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "本体属性 ID。"
+        },
+        "name": {
+          "type": "string",
+          "description": "本体属性规范名称。"
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "PropertyValuesLink": {
+      "type": "object",
+      "description": "值链接分组结果。",
+      "properties": {
+        "sourceObjectType": {
+          "type": "string",
+          "description": "值候选所属的本体对象名称。"
+        },
+        "sourceObjectTypeId": {
+          "type": "string",
+          "description": "值候选所属本体对象 ID；截图存在该字段。"
+        },
+        "valuesLinks": {
+          "type": "array",
+          "description": "该对象上的实际归属属性和值映射候选。",
+          "items": {
+            "$ref": "#/$defs/ValuesLink"
+          }
+        }
+      },
+      "required": [
+        "sourceObjectType",
+        "valuesLinks"
+      ],
+      "additionalProperties": true
+    },
+    "ValuesLink": {
+      "type": "object",
+      "description": "真实属性归属及对应值候选。",
+      "properties": {
+        "sourceProperty": {
+          "type": "string",
+          "description": "解析后归属 Property 名称。"
+        },
+        "sourcePropertyId": {
+          "type": "string",
+          "description": "解析后归属 Property ID。"
+        },
+        "sourceValue": {
+          "type": "string",
+          "description": "用户原始值。"
+        },
+        "valuesMapping": {
+          "type": "array",
+          "description": "候选标准值；可能一对多，不能强制 Top1。",
+          "items": {
+            "$ref": "#/$defs/ValueCandidate"
+          }
+        }
+      },
+      "required": [
+        "sourceValue",
+        "valuesMapping"
+      ],
+      "additionalProperties": true
+    },
+    "ValueCandidate": {
+      "type": "object",
+      "description": "值链接候选（包含分数）。",
+      "properties": {
+        "canonicalValue": {
+          "type": "string",
+          "description": "被检索到的标准值。"
+        },
+        "defaultDataValue": {
+          "type": "string",
+          "description": "标准值对应默认物理数据值。"
+        },
+        "score": {
+          "type": "number",
+          "description": "候选分数，不代表已通过业务规则判定最终可用。"
+        }
+      },
+      "required": [
+        "canonicalValue",
+        "defaultDataValue"
+      ],
+      "additionalProperties": true
+    },
+    "GraphNode": {
+      "type": "object",
+      "description": "图节点，沿用 V1。",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "顶点 ID。"
+        },
+        "label": {
+          "type": "string",
+          "description": "图库节点类型；实测 objectType / property。"
+        },
+        "properties": {
+          "type": "object",
+          "description": "原 V1 属性映射，显示名、描述、主键等 JSON 可能以字符串形式返回（例如 display 字符串包含 JSON 文本）。",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "properties"
+      ],
+      "additionalProperties": true
+    },
+    "GraphEdge": {
+      "type": "object",
+      "description": "本体关系边，保留原始方向。",
+      "properties": {
+        "sourceId": {
+          "type": "string",
+          "description": "真实有向边起点 ID。"
+        },
+        "targetId": {
+          "type": "string",
+          "description": "真实有向边终点 ID。"
+        },
+        "edgeType": {
+          "type": "string",
+          "description": "边类型；实测 defines_relation / has_property。"
+        },
+        "propertyMap": {
+          "type": "object",
+          "description": "原 V1 边属性映射，可能包含 name、junctionConfig、businessSemanticDescription 等字符串字段。",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "sourceId",
+        "targetId",
+        "edgeType",
+        "propertyMap"
+      ],
+      "additionalProperties": true
+    },
+    "SemanticExtensions": {
+      "type": "object",
+      "description": "按附件实测定义。",
+      "properties": {
+        "valueMappings": {
+          "type": "array",
+          "description": "附件现网返回为扁平映射数组；嵌套 objectType/property 形态属于拟议后续契约。",
+          "items": {
+            "$ref": "#/$defs/FlatValueMapping"
+          }
+        }
+      },
+      "required": [
+        "valueMappings"
+      ],
+      "additionalProperties": true
+    },
+    "FlatValueMapping": {
+      "type": "object",
+      "description": "现网样例支持同一个 sourceValue 返回多条命中，不自动唯一化。",
+      "properties": {
+        "propertyName": {
+          "type": "string",
+          "description": "Property 名称；附件为扁平字段。"
+        },
+        "objectTypeName": {
+          "type": "string",
+          "description": "ObjectType 名称；附件为扁平字段。"
+        },
+        "sourceValue": {
+          "type": "string",
+          "description": "业务原始值。"
+        },
+        "canonicalValue": {
+          "type": "string",
+          "description": "索引检索的标准值。"
+        },
+        "defaultDataValue": {
+          "type": "string",
+          "description": "默认数据存储值。"
+        },
+        "dataType": {
+          "type": "string",
+          "description": "返回数据类型；实测 string。"
+        }
+      },
+      "required": [
+        "propertyName",
+        "objectTypeName",
+        "sourceValue",
+        "canonicalValue",
+        "defaultDataValue"
+      ],
+      "additionalProperties": true
+    }
+  }
+}
