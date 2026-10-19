@@ -1,50 +1,38 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/cfwl100/onology_dsl/blob/main/docs/schemas/oag-software-subgraph-request.schema.json",
-  "title": "OAG 软件场景语义子图检索请求（V1 参数兼容）",
-  "description": "OAG 软件场景 V2 请求 Body（具体 V2 路由待联调冻结）：复用原 V1 字段名称和含义，并新增必填 entities。仅用于 V2 Schema 校验，绝不可将 entities 必填条件施加到 V1 的原 query 请求；Header/Path 参数按接口版本分别管理。",
+  "title": "OAG 统一 V2 语义子图检索请求（query/entities 双模式）",
+  "description": "正式 V2 路径：POST /v2/onto-retrieval/subgraph/semantic-search。ontologyId Body 必填。query 与 entities 至少一个有效非空，同时存在时优先 entities。正式接口声明 entities 为 JSON String（1～102400 字符），已有 CBS 示例是 Object：两种传输形态并列供联调，不意味着后端实际均支持。接口文档使用 topk，原内部 Skill 脚本使用 topK，须迁移适配。",
   "type": "object",
   "required": [
-    "entities"
+    "ontologyId"
   ],
   "properties": {
+    "ontologyId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "V2 Body 本体 ID 必填；V1 中 ontologyId 是 Path 参数。"
+    },
     "query": {
       "type": "string",
-      "description": "V1 原字段；V2 可选，不替代 V2 必填 entities；V1 接口的 query 及其验证独立保持原状。"
+      "maxLength": 1024,
+      "description": "自然语言查询：有效非空时触发 V1 能力继承模式；与 entities 至少一个有效非空。"
     },
-    "seedRetrievalMode": {
-      "type": "string",
-      "description": "原 V1 召回模式；软件样例 hybrid。",
-      "enum": [
-        "vector",
-        "keyword",
-        "hybrid"
+    "entities": {
+      "description": "V2 结构化实体：正式参数表为 JSON String（1～102400 字符），CBS 示例为 JSON Object；传输支持范围必须以实际 Controller/DTO 联调为准。双输入均有效时优先 entities。",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Entities"
+        },
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 102400,
+          "contentMediaType": "application/json",
+          "description": "JSON 序列化实体结构，必须由服务端额外解析及验证业务结构；JSON Schema contentMediaType 仅注释，不保证可解析。"
+        }
       ]
-    },
-    "similarityThreshold": {
-      "type": "number",
-      "minimum": 0,
-      "maximum": 1,
-      "description": "V1 相似度阈值；样例为 0.1，非验收推荐值。"
-    },
-    "topK": {
-      "type": "integer",
-      "minimum": 1,
-      "description": "V1 字段名区分大小写，为 topK（非 topk）。"
-    },
-    "graphExpansionStrategy": {
-      "type": "string",
-      "description": "V1 图拓展策略。",
-      "enum": [
-        "minimal",
-        "khop",
-        "component"
-      ]
-    },
-    "hopLimit": {
-      "type": "integer",
-      "minimum": 1,
-      "description": "V1 最大跳数。"
     },
     "adaptiveRetrieval": {
       "type": "integer",
@@ -52,7 +40,45 @@
         0,
         1
       ],
-      "description": "沿用 V1：软件专项调用样例固定为 0；该 Schema 不限制旧模式取值 1。"
+      "default": 1,
+      "description": "V2 默认 1；当本体 ObjectType+Property 数 <=300 时默认全量返回，超过阈值按策略；CBS entities 可传 0。"
+    },
+    "seedRetrievalMode": {
+      "type": "string",
+      "enum": [
+        "vector",
+        "keyword",
+        "hybrid"
+      ],
+      "default": "vector"
+    },
+    "similarityThreshold": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.6,
+      "description": "vector/hybrid 模式匹配阈值。"
+    },
+    "topk": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 3,
+      "description": "正式 V2 参数表使用 topk 小写，原 Skill 的 topK 要由迁移代码明确转换，不默认服务端支持别名。"
+    },
+    "graphExpansionStrategy": {
+      "type": "string",
+      "enum": [
+        "minimal",
+        "khop",
+        "component"
+      ],
+      "default": "minimal"
+    },
+    "hopLimit": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 3,
+      "description": "V2 正式表规定 khop 时控制图外扩深度。"
     },
     "includeFunctions": {
       "type": "integer",
@@ -60,7 +86,8 @@
         0,
         1
       ],
-      "description": "V1 是否返回 Function。"
+      "default": 0,
+      "description": "继承 V1 Function 能力。"
     },
     "includeActions": {
       "type": "integer",
@@ -68,17 +95,15 @@
         0,
         1
       ],
-      "description": "V1 是否返回 Action。"
-    },
-    "entities": {
-      "$ref": "#/$defs/Entities"
+      "default": 0,
+      "description": "继承 V1 Action 能力。"
     }
   },
   "additionalProperties": true,
   "$defs": {
     "Entities": {
       "type": "object",
-      "description": "软件场景切词结构：显式实体与属性候选值分离。两数组可择一出现，但至少一组有数据。",
+      "description": "entities 的业务 JSON 结构，允许 extractedEntities 与 propertyValues 中至少一项非空；用于软件对象示例及对 JSON String 解码后业务结构的服务端校验。",
       "properties": {
         "extractedEntities": {
           "type": "array",
@@ -187,5 +212,38 @@
       ],
       "additionalProperties": true
     }
-  }
+  },
+  "anyOf": [
+    {
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      }
+    },
+    {
+      "required": [
+        "entities"
+      ],
+      "properties": {
+        "entities": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Entities"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 102400
+            }
+          ]
+        }
+      }
+    }
+  ]
 }
