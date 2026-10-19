@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/cfwl100/onology_dsl/blob/main/docs/schemas/oag-software-subgraph-request.schema.json",
   "title": "OAG 软件场景语义子图检索请求（V1 参数兼容）",
-  "description": "POST /v1/onto-retrieval/{ontologyId}/subgraph/semantic-search 的软件场景请求 Body。沿用 V1 现有参数；新增必填 entities。tenant/认证/trace 等在 Header，ontologyId 在 Path。query 属于 V1 字段；软件场景不依赖 query。",
+  "description": "OAG 软件场景 V2 请求 Body（具体 V2 路由待联调冻结）：复用原 V1 字段名称和含义，并新增必填 entities。仅用于 V2 Schema 校验，绝不可将 entities 必填条件施加到 V1 的原 query 请求；Header/Path 参数按接口版本分别管理。",
   "type": "object",
   "required": [
     "entities"
@@ -10,7 +10,7 @@
   "properties": {
     "query": {
       "type": "string",
-      "description": "历史 V1 自然语言字段；软件场景由 entities 提供切词结果，不要求 query。是否同时传递 query 由服务端约定。"
+      "description": "V1 原字段；V2 可选，不替代 V2 必填 entities；V1 接口的 query 及其验证独立保持原状。"
     },
     "seedRetrievalMode": {
       "type": "string",
