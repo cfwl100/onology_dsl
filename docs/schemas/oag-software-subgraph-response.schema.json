@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/cfwl100/onology_dsl/blob/main/docs/schemas/oag-software-subgraph-response.schema.json",
-  "title": "OAG 统一 V2 语义子图检索响应（V1 能力全覆盖）",
-  "description": "V2 支持自然语言 query 与结构化 entities，完整覆盖 V1 ObjectType、Property、Relationship、Function、Action 检索及返回能力，并支持正式 V2 定义中的 RelationshipProperty。seedNodes、propertyValuesLinks、semanticExtensions、Property dataType 为按租户配置和有效输入模式出现的新增扩展，不要求 query-only 都有值映射。",
+  "title": "OAG V2 本体子图响应：Property 全量枚举与实例值结构",
+  "description": "V2 返回 nodes/edges/functions/actions 等图结构；Property 节点 properties 直接输出 propertyEnumValues（OMS 全量枚举）及 propertyInstanceValues（仅 t_oag_instance_{ontology_id} 实例值检索匹配），移除 result.semanticExtensions。请求 query/entities 双模式原有规则不变；旧 V1 DTO 不受此 V2 Schema 约束。",
   "type": "object",
   "required": [
     "resultCode",
@@ -26,7 +26,7 @@
   "$defs": {
     "SubgraphResult": {
       "type": "object",
-      "description": "V2 统一响应：V1 nodes/edges/functions/actions 等基本结果保留；可随检索模式和租户配置加入 seedNodes/propertyValuesLinks/semanticExtensions 及 Property 数据类型。",
+      "description": "V2 图响应，保留 seedNodes 和可选实例诊断 propertyValuesLinks；不再允许 semanticExtensions。EnumType 全量枚举统一装配在 Property 节点。",
       "properties": {
         "seedNodes": {
           "type": "array",
@@ -37,7 +37,7 @@
         },
         "propertyValuesLinks": {
           "type": "array",
-          "description": "值候选链接证据，可包含同一对象的多条记录。",
+          "description": "可选的历史实例值链接诊断信息；**仅**来自 t_oag_instance_{ontology_id}，不可包含枚举索引候选。正式值结构以 Property 节点的 propertyEnumValues/propertyInstanceValues 为准。",
           "items": {
             "$ref": "#/$defs/PropertyValuesLink"
           }
@@ -71,9 +71,6 @@
             "type": "object",
             "additionalProperties": true
           }
-        },
-        "semanticExtensions": {
-          "$ref": "#/$defs/SemanticExtensions"
         }
       },
       "required": [
@@ -82,7 +79,12 @@
         "functions",
         "actions"
       ],
-      "additionalProperties": true
+      "additionalProperties": true,
+      "not": {
+        "required": [
+          "semanticExtensions"
+        ]
+      }
     },
     "SeedNode": {
       "type": "object",
@@ -238,7 +240,7 @@
         },
         "valuesMapping": {
           "type": "array",
-          "description": "候选标准值；可能一对多，不能强制 Top1。",
+          "description": "可选实例候选链接诊断，只对应 t_oag_instance_{ontology_id} 的 Instance Value；不可携带 Enum Value 值映射。",
           "items": {
             "$ref": "#/$defs/ValueCandidate"
           }
@@ -252,15 +254,11 @@
     },
     "ValueCandidate": {
       "type": "object",
-      "description": "值链接候选（包含分数）。",
+      "description": "实例值链接证据：canonicalValue 及可选 score。枚举的 defaultDataValue 已移至 Property 节点 propertyEnumValues，不在实例映射诊断中产生。",
       "properties": {
         "canonicalValue": {
           "type": "string",
           "description": "被检索到的标准值。"
-        },
-        "defaultDataValue": {
-          "type": "string",
-          "description": "标准值对应默认物理数据值。"
         },
         "score": {
           "type": "number",
@@ -268,14 +266,13 @@
         }
       },
       "required": [
-        "canonicalValue",
-        "defaultDataValue"
+        "canonicalValue"
       ],
       "additionalProperties": true
     },
     "GraphNode": {
       "type": "object",
-      "description": "V2 节点结构：必须覆盖 V1 的实体/属性及关系语义；按租户配置可给 label=property 的 nodes[].properties 附加 dataType；V2 增强默认无向路径不改变真实有向边。",
+      "description": "图节点保留真实 id/label/properties；当 label=property 时 properties 必须包含 dataType、propertyEnumValues 和 propertyInstanceValues 两类数组。非 Property 节点不得伪装具备上述值结构；枚举不再经 t_oag_enum 检索。",
       "properties": {
         "id": {
           "type": "string",
@@ -287,12 +284,26 @@
         },
         "properties": {
           "type": "object",
-          "description": "V2 节点属性容器；label=property 的 V2 新增类型值使用 dataType（取自 OMS Property 定义，类型缺失时不伪造）。本 Schema 不要求所有旧或非 Property 节点都存在此字段。",
+          "description": "Property 节点按 OMS 同版本定义补齐数据类型与完整枚举，另附真实实例索引命中。两个数组在 Property 节点中始终存在，非适用场景为空数组。",
           "additionalProperties": true,
           "properties": {
             "dataType": {
               "type": "string",
-              "description": "**V2-only**：当 GraphNode.label 为 property 时，可附带从 OMS 权威属性定义得到的字段数据类型。V1 使用原响应结构，不增加这个字段。"
+              "description": "仅 V2 Property 的 OMS 权威数据类型；当类型为枚举或存在真实 EnumType 绑定时查询全量 values[]。"
+            },
+            "propertyEnumValues": {
+              "type": "array",
+              "description": "完整 OMS EnumType/values[]；不受 query、TopK、阈值和实例检索命中影响；只有真实 EnumType 绑定的 Property 可能非空。",
+              "items": {
+                "$ref": "#/$defs/PropertyEnumValue"
+              }
+            },
+            "propertyInstanceValues": {
+              "type": "array",
+              "description": "当前请求中真正通过 t_oag_instance_{ontology_id} 检索及归属过滤的实例映射。无命中时空数组，非实例全量扫描。",
+              "items": {
+                "$ref": "#/$defs/PropertyInstanceValue"
+              }
             }
           }
         }
@@ -302,7 +313,66 @@
         "label",
         "properties"
       ],
-      "additionalProperties": true
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "label": {
+                "const": "property"
+              }
+            },
+            "required": [
+              "label"
+            ]
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "required": [
+                  "dataType",
+                  "propertyEnumValues",
+                  "propertyInstanceValues"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "label": {
+                "not": {
+                  "const": "property"
+                }
+              }
+            },
+            "required": [
+              "label"
+            ]
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "propertyEnumValues"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "propertyInstanceValues"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "GraphEdge": {
       "type": "object",
@@ -334,60 +404,82 @@
       ],
       "additionalProperties": true
     },
-    "SemanticExtensions": {
+    "PropertyEnumValue": {
       "type": "object",
-      "description": "V2 可选语义扩展：若发生值映射时可返回 valueMappings；内部 Skill query-only 不要求这个扩展，V1 迁移前仍沿用原响应。",
-      "properties": {
-        "valueMappings": {
-          "type": "array",
-          "description": "附件现网返回为扁平映射数组；嵌套 objectType/property 形态属于拟议后续契约。",
-          "items": {
-            "$ref": "#/$defs/FlatValueMapping"
-          }
-        }
-      },
+      "description": "Property 的 OMS EnumType 全量枚举项；isDefault 按用户示例采用字符串 true/false（非 JSON Boolean），description/synonyms 缺失时可省略，字段不得由 LLM 或索引猜测。",
       "required": [
-        "valueMappings"
+        "value",
+        "isDefault",
+        "defaultDataValue"
       ],
-      "additionalProperties": true
-    },
-    "FlatValueMapping": {
-      "type": "object",
-      "description": "现网样例支持同一个 sourceValue 返回多条命中，不自动唯一化。",
       "properties": {
-        "propertyName": {
+        "value": {
           "type": "string",
-          "description": "Property 名称；附件为扁平字段。"
+          "description": "OMS 枚举规范 value"
         },
-        "objectTypeName": {
+        "isDefault": {
           "type": "string",
-          "description": "ObjectType 名称；附件为扁平字段。"
-        },
-        "sourceValue": {
-          "type": "string",
-          "description": "业务原始值。"
-        },
-        "canonicalValue": {
-          "type": "string",
-          "description": "索引检索的标准值。"
+          "enum": [
+            "true",
+            "false"
+          ],
+          "description": "枚举是否默认值，字符串形式，与提供的接口样例严格一致"
         },
         "defaultDataValue": {
           "type": "string",
-          "description": "默认数据存储值。"
+          "description": "默认物理值，比如 0/1/2 的字符串表示，由 OMS 提供"
         },
-        "dataType": {
-          "type": "string",
-          "description": "返回数据类型；实测 string。"
+        "description": {
+          "type": "object",
+          "description": "OMS 多语言描述；可缺省",
+          "properties": {
+            "en": {
+              "type": "string"
+            },
+            "zh": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        },
+        "synonyms": {
+          "type": "object",
+          "description": "OMS 多语言同义词数组；可缺省",
+          "properties": {
+            "en": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "zh": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": true
         }
       },
-      "required": [
-        "propertyName",
-        "objectTypeName",
-        "sourceValue",
-        "canonicalValue",
-        "defaultDataValue"
-      ],
       "additionalProperties": true
+    },
+    "PropertyInstanceValue": {
+      "type": "object",
+      "description": "仅来自 t_oag_instance_{ontology_id} 的有效实例值匹配，保留输入 sourceValue 和标准 canonicalValue，不附加枚举 defaultDataValue。",
+      "required": [
+        "sourceValue",
+        "canonicalValue"
+      ],
+      "properties": {
+        "sourceValue": {
+          "type": "string"
+        },
+        "canonicalValue": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
     }
   }
 }
