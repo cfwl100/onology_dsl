@@ -142,66 +142,73 @@ OMS 保持服务无状态或将可恢复状态外置；在本体加密的需求�
 
 ## 3. OAG 统一接口、自动交付与高可用（Q4-06～11）
 
-### 3.1 一个 V2 入口覆盖服务和软件场景（Q4-06）
+### 3.1 按附件最新 V2 接口统一服务与软件场景（Q4-06）
 
-统一使用 `POST /v2/onto-retrieval/subgraph/semantic-search`。
+**实际接口契约**：《1.子图检索接口设计v2.md》定义 `POST /v2/onto-retrieval/subgraph/semantic-search`、`Content-Type=application/json`。原 V1 中位于 Path 的 `ontologyId` 进入 V2 Body；`query`/`entities` 至少提供一个，**`entities` 在 HTTP Body 是 1～102400 字符的 JSON String**；两者均存在时优先 entities 并跳过实体提取。
 
-**Q4 默认行为**：不再建立或读写枚举值索引 `t_oag_enum_{ontology_id}`；值索引只检索 `t_oag_instance_{ontology_id}`。对于保留下来的 Enum Property，从 OMS 的 EnumType/values[] 同 revision **全量读取** `value/isDefault/defaultDataValue/description/synonyms`，装入 Property 节点 `propertyEnumValues`；实例命中装入 `propertyInstanceValues`；V2 结果不再输出 `semanticExtensions`。无有效实例索引命中不意味着“枚举不存在”，显式 `extractedEntities` 必须保留。
+| 参数 | 最新 V2 规则 | Skill 兼容性 |
+|---|---|---|
+| `ontologyId` | Body String，1～256 字符，必填 | CLI `--ontology-id` 或 `ONTOLOGY_ID` |
+| `query` | 可选，1～1024 字符 | 保留 `python scripts/semantic_subgraph_search.py --query "..."` |
+| `entities` | 可选，JSON 字符串，内含 `{"entities":{"extractedEntities":[...]}}` | Script 将 JSON 文件/对象序列化为 String；不发送嵌套的 `entities.entities` |
+| `adaptiveRetrieval` | API 默认 1；软件场景传 0 | Script query-only 默认 1、entities 默认 0；显式 0 不丢失 |
+| `seedRetrievalMode` | 接口默认 `vector`，可选 keyword/hybrid | Skill 为兼容旧调用**显式指定 hybrid** |
+| `similarityThreshold` | 默认 0.6，vector/hybrid 有效 | 支持 CLI/完整 Body 覆盖 |
+| `topk` | **小写 k**，默认 3 | 旧 CLI `--topK` 仍接收，Body 只发送 `topk` |
+| `graphExpansionStrategy` / `hopLimit` | minimal/khop/component，hopLimit 默认 3 | `--hopLimit` 别名保留 |
+| `includeFunctions` / `includeActions` | API 默认 0/0 | Skill 保留原 includeFunctions=1（显式传值） |
 
-**兼容关系**：返回结构体中增加了可选的propertyvalue等字段，排查上游业务（OWS、SEC、NIS）解析子图的代码逻辑。
+**entities 内容约束**：`extractedEntities` **非空**、各项必须有 `objectType`，`properties` 可省略（软件场景已约定不传）；`propertyValues` 可省略。每个值组的 `objectType` 非空、`value` 非空；`property` 可省略或使用 `""`，表示按该对象所有可检索语义字段链接。`seedNodes` 只包含对象，不构造 Property 种子。枚举不建立 `t_oag_enum_{ontology_id}` 检索索引，OMS 属性 EnumType 全量返回；实例值链接只使用 `t_oag_instance_{ontology_id}`。
 
-接口描述参见：
-ICT服务与软件/Agentic Operation Center/Docs/27/27.3.0/02.设计/02.设计文档/Agentic Operation Center 27.3.0 功能设计说明书(IR20260729001097_OAG子图检索能力增强)
-
-**接口样例（query-only）**：
-
-```json
-{
-  "ontologyId": "cbs-ontology-id",
-  "query": "查询账户及关联对象属性",
-  "seedRetrievalMode": "hybrid",
-  "graphExpansionStrategy": "minimal",
-  "topk": 3,
-  "includeFunctions": 1
-}
-```
-
-**Property 值结构示意（响应片段）**：
+**V2 结果关键差异（以附件响应示例 2-1 为准）**：
 
 ```json
 {
-  "label": "property",
-  "properties": {
-    "name": "paymentType",
-    "dataType": "enum",
-    "propertyEnumValues": [
+  "resultCode": 200,
+  "resultMessage": "success",
+  "result": {
+    "seedNodes": [],
+    "propertyValuesLinks": [],
+    "nodes": [
       {
-        "value": "Prepaid",
-        "isDefault": "true",
-        "defaultDataValue": "0",
-        "description": {"zh": "先付费再使用服务。", "en": "pay first and then use the service."}
-      },
-      {
-        "value": "Postpaid",
-        "isDefault": "false",
-        "defaultDataValue": "1"
+        "id": "payment-type-property-id",
+        "label": "property",
+        "properties": {"name": "paymentType", "dataType": "enum", "enumDataType": "string"},
+        "propertyEnumValues": [
+          {"value": "Prepaid", "isDefault": "true", "defaultDataValue": "0"},
+          {"value": "Postpaid", "isDefault": "false", "defaultDataValue": "1"},
+          {"value": "Hybrid", "isDefault": "false", "defaultDataValue": "2"}
+        ]
       }
     ],
-    "propertyInstanceValues": []
+    "edges": [],
+    "functions": [],
+    "actions": []
   }
 }
 ```
 
-示例只说明字段结构，**实际必须返回 OMS 定义的全部枚举项**，不能将这两条视为完整模型。`isDefault` 在现有 V2 响应设计中为 `"true"/"false"` 字符串；具体 DTO 遵循 Schema。仅有枚举信息不能自动构造业务 Cypher 过滤条件。
+这里 `propertyEnumValues` **在 `nodes[]` 节点顶层，不在 `nodes[].properties` 内部**；`propertyInstanceValues` 也位于节点顶层，且仅当 Property 支持语义检索、存在本次实例链接结果时返回。`properties.dataType=enum` 时另带 `enumDataType`。`propertyValuesLinks[].valuesLinks[].valuesMapping[]` 是独立的值链接证据，附件示例包含 `canonicalValue/defaultDataValue/score`；**不能混同 `propertyInstanceValues`**。`isDefault` 使用 `"true"/"false"` 字符串，枚举全量由 OMS 定义决定；不得把所有枚举自动作为 Cypher 过滤值。
 
-### 3.2 Skill V1 → V2 与 deprecated 管理（Q4-07）
+**尚未统一的两套结果形态**：附件 query 示例1-2 使用旧式 `nodes[].type` 与 `edges[].name`，而 entities 示例2-1 使用 `label/properties` 与 `edgeType/propertyMap`；本次 Schema 允许两套示例，Skill 不进行静默错误转换，后端统一 DTO 时需专门回归。旧 V2 Schema 曾把双数组放进 `properties` 的定义已修正；旧 V1 的独立响应结构在 deprecated 期间不变。
 
-仓库中存在 `ontology-platform-unified-skill/scripts/semantic_subgraph_search.py` 及其他历史目录副本。当前所查脚本仍拼接 V1 URL，并使用 `topK`、默认 `hybrid`、`includeFunctions=1`。本期需要迁移**实际发布和运行**的 Python/Skill.md/前端等调用方，不仅修改某个文件路径。
+### 3.2 Skill 和脚本从 V1 迁移到 V2（Q4-07）
 
-迁移适配：
-1. URL 从 `/v1/onto-retrieval/{ontologyId}/subgraph/semantic-search` 改为 `/v2/onto-retrieval/subgraph/semantic-search`。
-2. 先发布 V2 兼容 Skill，再在 V1 返回响应头中**建议**加入 `Deprecation` 等公告（具体日期经评审，不自行设定）。
-3. **deprecated 不等于立即删除**：观测 V1 调用来源、服务端流量清零、兼容回归及灰度回退全部完成后另行审批下线。V1 保持原路径和返回结构直到正式退役。
+**本次改造文件**：`ontology-platform-unified-skill/SKILL.md`、`ontology-platform-unified-skill/scripts/semantic_subgraph_search.py`。原脚本按 `/v1/onto-retrieval/{ontologyId}/subgraph/semantic-search` 拼接 URL、Body 使用 `topK`、强制 query，不支持 entities，并且 HTTP 失败可能被当成成功。迁移后的脚本改用 `/v2/onto-retrieval/subgraph/semantic-search`，`ontologyId` 入 Body、发送 `topk`，支持 query-only、entities-only 与混合输入，并进行本地参数校验。
+
+**Skill 调用**：
+
+```bash
+python scripts/semantic_subgraph_search.py --query "<问题/业务主题>"
+python scripts/semantic_subgraph_search.py --ontology-id "<本体ID>" --entities-file ./entities.json --adaptive-retrieval 0
+python scripts/semantic_subgraph_search.py --query-json @request-v2.json
+```
+
+第一条需要环境变量 `ONTOLOGY_ID`；仍需 `SERVICE_NAMESPACE`、`TENANT_ID`。`--entities-file` 或 `--entities` 传入内部对象或 `{"entities":{...}}` 包装后自动转 HTTP JSON String。完整 Body 支持显式 0，不再通过 `or default` 覆盖。脚本正确识别 HTTP 非 2xx、`resultCode` 失败、`result=null`、非法 JSON 和网络超时，失败时输出结构化错误并返回非零退出；**保留原 `message_type=message_ontololgy_subgraph` 以避免上游包装契约突变**。
+
+**维护副本边界**：GitHub 仓库存在 `0713/...` 和 `onto-skill/platform-skill/...` 的历史脚本与 Skill 副本；本次实际修改的是根目录 `ontology-platform-unified-skill` 主版本。发布前必须确认部署入口是否引用其他副本，若是，应将同等 V2 适配同步到正式发布位置，不能误以为修改主版本就完成了所有运行节点的升级。
+
+**V1 deprecation**：迁移各调用方后可按正式评审添加 `Deprecation`/`Sunset` 公告，监控旧端点调用来源及流量；V1 不立即删除，需业务回归、灰度回退和退役批准。
 
 ### 3.3 App 安装自动建索引：先修复手动问题（Q4-08）
 
@@ -393,21 +400,55 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_stage_job_key
 
 原草案设计在 transport 线程等待许可最长 300 秒，可能耗尽入口线程；建议在详细设计中评估异步短等待和快速拒绝。队列已满时返回可归因的限流响应（原设计 503），并与上游连接失败、Embedding 503 区分。附件 **<20% 拒绝比例**只适用于其指定负载与配置，不能为日常服务故障开脱。
 
-### 5.3 只入 OpenSearch 的实例语义字段预研（Q4-18）
+### 5.3 OMS Property `retrieval` 索引模式扩展设计（Q4-18，预研）
 
-本项为**预研**：支持 OMS 在 Property 上定义语义检索模式，部分实例值**仅建 OpenSearch 倒排索引，不产生 Embedding、不写向量索引**。实际字段名/权限与模式枚举需联调冻结。
+**设计输入**：现有属性定义在 `retrieval` 下只有 `enabled`（样例 `accountId` 为 `false`）。新增**可选** `indexMode`（建议命名，需 OMS 模型 Schema 评审），支持 **仅关键词、仅向量、混合**三种取值；未填写 `indexMode` 且启用检索时默认**混合索引**，以兼容既有开启检索的属性。保留 `retrieval.enabled=false` 的优先级，**禁用属性不能因为省略 indexMode 被自动启用**。
 
-| Property 模式（建议值） | 建库与查询动作 | 边界 |
-|---|---|---|
-| `HYBRID` | OpenSearch 词法 + GaussVector 向量，查询后按有效通道融合 | 保留原有混合召回 |
-| `LEXICAL_ONLY` | **仅 OpenSearch**，跳过 Embedding/Vector，查询只运行 Keyword | 适合号码、纯数字 ID、短标识及部分结构化属性 |
-| `DISABLED` | 不进入 OAG 实例值索引，也不参与语义检索 | 不影响本体的物理 Binding |
+**OMS Property 最小改造示例**（原 `id/name/display/description/status/extensions/dataType/refSynonymTypeName/createdAt` 等属性字段全部保留）：
 
-**混合检索时如何只检索关键词**：先按 Property 真正可用的索引通道构建检索计划；对 `LEXICAL_ONLY` 即便全局请求为 hybrid，也只触发 lexical。单通道候选直接按对应排名输出，不用缺失的 Dense 分数惩罚它；`similarityThreshold` 的 Dense 阈值不能过滤 Keyword-only 结果。若上游强制 vector 而该 Property 无向量，需要明确定义“拒绝/提示降级”机制，不悄悄向不存在的 Vector 索引发请求。
+```json
+{
+  "id": "dtmi.65313863.property-type.38396236-3130393330653430.1",
+  "name": "accountId",
+  "dataType": "long",
+  "retrieval": {
+    "enabled": true,
+    "indexMode": "KEYWORD_ONLY"
+  }
+}
+```
 
-**是否全部入 OpenSearch**：**不是**。只有 `HYBRID`/`LEXICAL_ONLY` 且满足检索准入、属性类型和权限的实例值进入 OpenSearch；`DISABLED` 不入库。OMS 定义索引 `t_oag_{ontology_id}` 与 Instance 值索引 `t_oag_instance_{ontology_id}` 分开管理，枚举直接来自 OMS 的 EnumType/values[]，不建 `t_oag_enum`。
+完整字段表：
 
-**安全冲突**：如《本体模型文件支持加密》要求 OpenSearch 严格 ID-only，原始 BM25/fuzzy 无法保留全部能力；必须安全评审最小授权词法字段/受控 token 或接受召回降级。以数字、长 ID、多语言名称和同义词黄金集对比 Recall@K、Precision@K、索引写入/容量与查询延迟。
+| 字段 | 类型 | 默认 / 取值 | 规则 |
+|---|---|---|---|
+| `retrieval.enabled` | boolean | 沿用模型既有值，如 `false` | **false=不构建实例语义索引，也不参与值召回**；属性仍可在 OMS 建模/Binding/子图属性补全出现 |
+| `retrieval.indexMode` | string（可省略） | `HYBRID`（当 enabled=true 且字段缺失时） | `KEYWORD_ONLY` / `VECTOR_ONLY` / `HYBRID`；建议仅 enabled=true 时生效 |
+| `retrieval` 整体缺失 | 继承既有模型规范 | 不在本文另行改变 enabled 的缺省 | 防止新字段引入对旧模型的隐式索引启用 |
+
+**四种有效运行状态**：
+
+| enabled / indexMode | OpenSearch | GaussVector | Embedding | 查询通道 |
+|---|---|---|---|---|
+| `false` / 任意（建议不填） | 不建 | 不建 | 不调用 | 无 |
+| `true` / 字段省略或 `HYBRID` | 建 | 建 | 调用 | Keyword + Vector，RRF 或既有融合 |
+| `true` / `KEYWORD_ONLY` | **建** | 不建 | 不调用 | **仅 Keyword** |
+| `true` / `VECTOR_ONLY` | 不建 | **建** | 调用 | **仅 Vector** |
+
+**OMS → OAG 建库闭环**：
+
+1. OMS 模型字段支持配置检索启用/模式，下发真实 Property ID、ObjectType ID、revision、enabled/indexMode；前端单选提供“混合/仅关键词/仅向量”，只有 enabled=true 时可编辑，默认混合。保存时校验枚举值并保证旧数据兼容。
+2. OAG 在索引任务启动时按同 revision 生成 `(ObjectTypeId, PropertyId, mode)` 构建计划；**只对可用通道写数据**。KEYWORD_ONLY 跳过 Embedding/GaussVector；VECTOR_ONLY 跳过 OpenSearch；HYBRID 双写。旧任务/模型 revision 不可混用不同模式。
+3. 模式变化应按**增删索引通道做增量迁移**：HYBRID→KEYWORD_ONLY 删除该属性原向量文档，KEYWORD_ONLY→HYBRID 补建向量（需要 Embedding），VECTOR_ONLY→HYBRID 补建词法，enabled=true→false 按安全策略清理两类索引；采用版本化发布/双库对账，不使一半迁移的模式对外可见。
+4. 对 `accountId` 这类长数字/标识串，词法建议采用 **keyword 精确索引**（必要时另设授权前缀匹配），不依赖 BGE-M3 Dense 相似度识别数字差一位的真实身份；是否支持模糊分词由安全与业务确认。
+
+**查询路由与融合**：进入 Instance Value Linking 时按 `objectType + propertyId` 确定其 indexMode，然后将请求全局 `seedRetrievalMode` 与 Property 支持通道做**交集**。全局 `hybrid` + KEYWORD_ONLY 只执行 Keyword，+VECTOR_ONLY 只执行 Vector；只有一个可用通道时不应以“缺少另一通道分数”进行惩罚；RRF 仅对实际执行的通道融合，`similarityThreshold` 仅约束 Vector。若全局请求为 `vector` 而属性只有 KEYWORD_ONLY，**不得偷偷改为 keyword**；应定义空候选/显式不兼容诊断（具体 API 行为待评审）。当 `property` 省略或 `""` 时，检索当前 ObjectType 下**所有 `retrieval.enabled=true` 的语义字段**，并按各属性模式分派查询，不无条件扫描所有非语义属性。
+
+**是否所有实例都入 OpenSearch？** 否。只有 `HYBRID`/`KEYWORD_ONLY` 的有效属性值进入 OpenSearch；`VECTOR_ONLY` 只入向量库；`enabled=false` 不入二者。**EnumType/values[] 永远来自 OMS 本体定义，不由 `indexMode` 启动枚举索引。**
+
+**与 Q4-19 安全方案的依赖**：如果最终要求 OpenSearch 严格 ID-only，基于 name/description/value 的 BM25/Keyword 检索能力将受限，须安全评审允许的受控词法字段或明确精确检索/召回降级，不得声称在严格 ID-only 下完整保留模糊召回。
+
+**预研验收**：验证四状态的实际索引内容与 Embedding 调用次数；全文/向量单通道路由、hybrid 的 RRF 与 topK；revision 模式切换/删除、跨租户隔离、无 property 过滤时的对象内字段路由；使用纯数字 AccountId、英文/中文短文本、同义词测试 Recall@K/Precision@K、磁盘量、入库/查询耗时。正式 DTO 字段名和值取值、模式变化是全量重建还是增量、禁用后索引删除授权等由 OMS/OAG/安全联评后冻结。
 
 ---
 
@@ -597,7 +638,7 @@ bundle.submit(task.withTenant(authTenantId).withConfigVersion(bundle.configVersi
 | IDX-Q4-15 | Q4-15 | LVQ 先建/后建同环境 A/B；预建可用性与 COPY 总耗时、Recall 验证，COPY 批大小可按租户 DCC 调整/回退 |
 | IDX-Q4-16 | Q4-16 | Delete/CLEAR 与 DataSync 联调，双库成功对账、幂等、重试及冲突处理 |
 | IDX-Q4-17 | Q4-17 | FULL 与 incremental 的数据库差异对比准确；无新键不调用 Embedding、不误删已有键；分批并发安全 |
-| SEC-Q4-18 | Q4-18 | OMS 属性模式 HYBRID/LEXICAL_ONLY/DISABLED 原型；只查 Keyword 不调用 Vector；不是所有 Property 强制入 OpenSearch |
+| SEC-Q4-18 | Q4-18 | OMS retrieval.enabled + 可选 indexMode（HYBRID/KEYWORD_ONLY/VECTOR_ONLY），disabled 不建；混合/单路建库查询、模式迁移、无 property 路由与旧数据兼容 |
 | SEC-Q4-19 | Q4-19 | name/description 索引最小化、ID→定义回查与权限正确，严格 ID-only/BM25 矛盾完成加密专项安全评审 |
 | SEC-Q4-20 | Q4-20 | 加密堆栈参数控制后台日志明文和前端脱敏；专项认证与生产日志/导出/异常回归无泄露 |
 
@@ -662,7 +703,7 @@ bundle.submit(task.withTenant(authTenantId).withConfigVersion(bundle.configVersi
 | D-08 | 2U4G 与 3U4G 的测试职责、平均延迟的统计分母、propertyValues 分桶边界 | OAG/测试/CBS |
 | D-09 | V2 `topk`/附件 `topK`、`undirected-filter=false/true` 以及 25/30 并发默认 | OAG/Skill/配置底座 |
 | D-10 | LVQ 提前建索引的数据库版本支持、COPY Batch 值域和回退 | OAG/GaussVector |
-| D-11 | Keyword-only 入库范围与 ID-only 索引的 BM25 安全冲突 | OMS/OAG/安全 |
+| D-11 | OMS `retrieval.indexMode` 值域、默认、迁移/旧数据兼容；Keyword/Vector 单路入库与 ID-only 的 BM25 安全冲突 | OMS/OAG/安全 |
 | D-12 | 10 QPS 压测是否需要集群级租户配额服务，DCC Watch 失效时如何保护查询资源 | OAG/平台底座 |
 
 **设计收口**：本轮方案将 Q4 最新 20 项需求聚焦为“公共加密/GDE 依赖 → 手动索引稳定性 → 异步索引全量/增量 → 租户级 DCC 资源隔离 → OAG V2 统一查询 → 精确的性能与安全验收”。所有原始配置键与新附件的规模、约束、测试条件均分别标明；**没有把代码扫描的默认值当成运行配置，也没有把 3U4G 建议压测当成 2U4G 已验收。**
