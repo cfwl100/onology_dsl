@@ -229,12 +229,37 @@ ICT服务与软件/Agentic Operation Center/Docs/27/27.3.0/02.设计/02.设计�
 
 ## 4. 实例索引构建、差异同步与性能（Q4-12、Q4-14～17）
 
-### 4.1 全量/增量数据链路（Q4-12）
+### 4.1 DataSync/Spark 异步导入与去重前移（Q4-12）
 
-规模要求为：**单表首次全量 1000 万行（对应 100 万用户假设），增量 10 万行**；DataSync/Spark 按 `(tenantId, ontologyId, objectTypeId, propertyId)` 拆分读取、Normalize/Dedup 后形成分区文件和 Manifest，再通知 OAG 执行建库。
+**工作负载**：单表首次全量 1000 万行（对应 100 万用户场景），增量 10 万行。业务数据的生产、文件落地和 OAG 索引构建需异步解耦，按同一 `jobId/snapshotVersion/ontologyRevision` 固定完整快照边界。三项优化分别为：
 
-复用既有 OAG 的 MinIO CSV + 持久化 Task 体系。
+1. **DataSync 生产者/消费者异步拆分（需求指定：爱华）**：Producer 将 CSV 分区文件、checksum 和 Manifest 先写入 MinIO，全部对象写入成功后发布 **READY**；Consumer 独立消费 READY，调用 OAG notice 接口传 taskId/jobId/Manifest URI（实际参数以现有协议为准）。这样从 OAG“创建语义索引”同步调用路径中移除**上游 CSV 上传与等待**，但 OAG **仍须从 MinIO 读取已就绪 CSV**，不是删除 MinIO 读取过程。Consumer 在 OAG 接受并持久化任务后才确认消息；失败重试、死信与重放必须幂等。
+2. **Spark 合并小文件（需求指定：振鲁）**：上游 Spark 对图数据和语义索引数据按快照、租户/本体、Property 分区进行 coalesce/compaction，减少 DataSync 大量小文件请求、MinIO OPEN/LIST 与文件解析线程争用。目标文件大小、文件数阈值按 1000 万行压测确定；不得跨 snapshot/revision 或不同归属键任意合并。
+3. **Spark 前置数据去重（图和语义）**：图数据按完整实体/边主键和版本去重；语义值按 `(tenantId, ontologyId, objectTypeId, propertyId, normalized(value))` 去重并结合来源事件序号保证新写优先，减少 COPY 主键冲突。上游去重是性能优化，**OAG/向量库仍需唯一约束及幂等校验**，尤其是重传、跨分区和历史增量乱序场景。
 
+```mermaid
+sequenceDiagram
+    participant S as Spark
+    participant P as DataSync Producer
+    participant M as MinIO
+    participant C as DataSync Consumer
+    participant O as OAG Task
+    participant DB as Vector / OpenSearch
+    S->>S: 图与语义索引去重 + 小文件合并
+    S->>P: 上传准备完毕的分区数据
+    P->>M: 异步写入 CSV + checksum + Manifest
+    M-->>P: 写入成功
+    P->>C: READY(jobId, snapshotVersion, manifestUri)
+    C->>O: notice(jobId, manifestUri, idempotencyKey)
+    O-->>C: ACCEPTED(taskId)
+    O->>M: 流式读取就绪 CSV
+    O->>DB: Staging → Diff → 增量 Embedding → Verify/Publish
+    O-->>C: Published / Failed
+```
+
+**失败及背压边界**：只有 Manifest 表示预期分区全部 READY、checksum/行数核对通过时，FULL_REPLACE 才允许执行差异删除；不能每收到一个并发 CSV 批次就做全量 DELETE。Producer/Consumer/OAG 以 jobId + partitionId + 文件版本幂等；队列满时返回可重试错误，不可无限等待或丢消息。索引服务应将上传用时、READY→NOTICE 延迟、OAG MinIO 读时、COPY/Embedding/双写时分别统计，**异步转移不等于端到端耗时消失**。
+
+**联调交付**：Spark 端输出合并前/后文件数量、去重前/后行数与归属校验；DataSync 输出 READY/ACK/重放；OAG 输出 Task/Manifest/checksum/差异行数及双库存储一致性；在 1000 万全量、10 万增量、重复通知、乱序分区和中断恢复下共同验收。
 
 ### 4.2 定义索引“全量比对 + 增量 Embedding”（Q4-14）
 
@@ -323,15 +348,46 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_stage_job_key
 
 ## 5. 查询性能与分级索引预研（Q4-13、Q4-18）
 
-### 5.1 单实例 3 秒 / 10 QPS 与横向扩展（Q4-13）
+### 5.1 子图检索性能规格与横向扩展（Q4-13）
 
-原需求明确 **单实例“3s、10QPS”**。实现评测建议将 3 s 定义为**待评审 P95 候选**，明确它是否含 OMS EnumType 读取、网络与图库算法，且区分冷/热缓存。不能将“3s”未经评审自动当作 P99 或整个 CBS 端到端 SLA。
+**权威性能输入**：《子图检索的查询性能规格(10-26).md》。该指标专用于软件场景，Pipeline **只包含实体链接 → 实体裁剪 → 子图构建**；不计 CBS 业务分词、索引数据入库或 Cypher 执行。**本轮正式规格从旧草案“3 s”调整为附件给出的“2U4G 单实例、10 QPS、平均耗时 ≤5 s、极端拒绝比例 <20%”**。附件另建议**实际压测按 3U4G 开展**；二者须分开标注并各自测量，不能拿 3U4G 的成绩证明 2U4G 指标。
 
-建议同一版本/本体/索引快照分别测试 query/entities、低/中/高种子数、minimal/khop/component、实例值命中/未命中、Enum Property 数量和全量枚举基数；采集单实例稳态 10 QPS 时的 P50/P95/P99、错误率、GC、队列延迟、Embedding/向量库/图库 QPS。再测 2/3 实例伸缩，计算 `scaleEfficiency = aggregateQPS / (singleQPS × instanceCount)`，并区分共享数据库成为瓶颈的情形。
+| 约束类别 | 附件值 | 验收边界 |
+|---|---|---|
+| 本体模型 | ObjectType **≤150**，Property **≤3000**，Edge **≤400** | 当前 CBS 144/2896/370 在约束内，后续 revision 超限需重新评估 |
+| 单实例配置 | **2U4G** | 静态内存图预算 **1 GB（10 × 100 MB）**；该规格最多承载 **10 个本体** |
+| CPU 单核下限 | SHA-256 256B **≥280 万 ops/s、≥700 MB/s** | CPU 密集型基准；附件有 openssl 命令 |
+| 输入对象 | `entities` 对象数 **<20** | 超出范围不可直接按此性能基线承诺 |
+| `propertyValues` 数量分布 | **1–4：40%；4–8：50%；8–12：<10%** | 4/8 边界重合且占比未封闭为 100%，压测脚本需先冻结分桶含义，不自行修改附件 |
+| 流量与样本 | 每秒发 **10 个请求，连续 1000 次**，CXO 黄金测试集 L1 | 记录成功、拒绝、业务异常和超时；发送约 100 秒 |
+| 平均耗时 | **≤5 s** | 平均统计口径与未完成/拒绝请求处理须评审冻结；P95/P99 可观测但**不是附件硬阈值** |
+| 吞吐 | **最大 10 QPS** | 这是附件列出的输入/吞吐规格，需同时报告成功 QPS |
+| 流控拒绝 | 极端场景 **<20%** | 队列满的拒绝属正常但必须单独统计比例 |
+| 内存/资源变化 | 后续新增 CPU 密集任务 | 应下调性能基线或增加资源，不默认仍保持 2U4G 指标 |
+| 硬件 | ARM 鲲鹏 920C 物理机为标配，x86 Intel 2288 HV6/E9000 虚拟机为局点情况 | 记录架构、CPU 单核基准和虚拟化条件 |
 
-### 5.2 语义检索信号量限流
+**固定参数快照**（附件使用 `topK`，正式 V2 Body 字段可能为 `topk`，按 API DTO 联调适配）：
 
-原始参数为 `semantic-search.max-pool-size=25`、`queue-capacity=50`、`timeout-seconds=300`，说明在 transport 线程就地等待并发许可、满队列返回 503。**这只是原配置草案，不是合理超时的实测证明**；transport 线程同步排队 300 秒可能放大入口线程阻塞，应优先评估异步排队、短等待或立即拒绝与客户端重试退避。限流须按实际 token/租户/实例预算，并监控 active、queued、wait、rejected、timeout。服务不可用 503 与限流 503 应可追踪区分。
+| 参数 | 本次测试条件 | 说明 |
+|---|---|---|
+| `seedRetrievalMode` | `hybrid` | 向量+关键词 |
+| `similarityThreshold` | **0.7** | 与 V2 接口缺省 0.6 不同 |
+| `topK` / V2 `topk` | **≤3** | >3 不在附件测试范围 |
+| `hopLimit` | **≤3** | khop 生效 |
+| `adaptiveRetrieval` | **1** | 小本体 ≤300 节点可全量；具体计数边界需核实 |
+| `includeFunctions` / `includeActions` | **0 / 0** | 不扩大关联对象 |
+| `graphExpansionStrategy` | **minimal** | 路径低冗余策略 |
+| `subgraph-retrieval-cache-switch` | **false** | **压测关闭问题缓存**，不能用缓存命中虚增指标 |
+
+**执行规则**：重启后预热 **3 分钟**，前 **3 次**压测结果不计；**查询高峰不得并行进行实例值向量化入库**，需错峰。测试在 2U4G 基准和 3U4G 建议资源分别运行，采集成功请求平均时延、P50/P95/P99、拒绝率、错误率、CPU/内存/GC、OMS EnumType 读取、Instance 检索和图算法耗时、每租户活跃线程及排队情况。扩到 2/3 Pod 时分别固定总入口 QPS 和每 Pod 压力，评估共享向量库/图库饱和，而非默认线性扩展。
+
+### 5.2 租户级查询准入与信号量流控
+
+《新增Value参数统计_2026-10-31.md》扫描值：`semantic-search.max-pool-size=30`、`semantic-search.queue-capacity=50`、`semantic-search.timeout-seconds=300`。**旧 Q4 草案 max-pool-size=25**，两者为不同来源而非同时生效的真值；必须读取运行配置并冻结基线。并发许可、队列容量与 ThreadPoolExecutor 核心线程数不是同一概念。
+
+**租户隔离**：每个 `(tenantId, query/entities 输入模式)` 按需建立准入控制器（或等效配额记录），独立统计 inflight/queued/rejected/timeout；所有租户共享宿主 Pod/后端全局上限与公平调度，拒绝不能转嫁给另一租户。按租户 DCC Watch 变更配额，不能只修改 Java `@Value` 字段；Watch 详细方案见 §7.3～§7.5。
+
+原草案设计在 transport 线程等待许可最长 300 秒，可能耗尽入口线程；建议在详细设计中评估异步短等待和快速拒绝。队列已满时返回可归因的限流响应（原设计 503），并与上游连接失败、Embedding 503 区分。附件 **<20% 拒绝比例**只适用于其指定负载与配置，不能为日常服务故障开脱。
 
 ### 5.3 只入 OpenSearch 的语义字段预研（Q4-18）
 
