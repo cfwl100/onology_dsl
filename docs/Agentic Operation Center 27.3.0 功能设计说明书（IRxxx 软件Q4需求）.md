@@ -72,3 +72,55 @@ TODO：整理成表格
 # 2. 详细设计与实现
 
 TODO：按照关键能力进行分章节进行设计，中间相似类别的章节可以适当合并
+
+
+
+
+参数列表：
+```
+
+一、系统组网参数（场景包）
+控制内存图，nebulaGraph图数据库依赖
+onto_encrypt: "0"
+oag:
+  cache.type: ${CACHE_TYPE}
+
+二、租户级别参数（DCC）
+# 语义检索接入控制配置（subgraphSemanticSearchV2，信号量在 transport 线程就地限流）
+semantic-search:
+  # 最大并发数（同时在跑的请求数上限）
+  max-pool-size: 25
+  # 等待队列容量（排队请求数上限，满则立即拒绝返回503）
+  queue-capacity: 50
+  # 排队等待并发许可的超时时间（秒），超时按限流返回503
+  timeout-seconds: 300
+  
+include-all-properties: true
+
+include-keys: false
+
+# 连通子图路径/子图查询方向与边类型过滤开关：
+# true  = 不区分方向（正向反向混合，仅需连通），且只取 defines_relation / has_property 边
+# false = 历史兼容逻辑（默认，任意/单方向，不计边类型）
+subgraph:
+  undirected-filter: false
+
+
+# 相似度定义 0 - 1的小数
+ontology-object-similarity-threshold: -1
+instance-similarity-threshold: -1
+
+# top K
+instance-topk: -1
+rrf-topk: -1
+
+# 链接开关
+# 是否做对象链接（object 召回），默认 false
+enable-object-linking: false
+# 是否做属性链接（property 召回），默认 true；软件场景下置为 false（属性已在外部对齐）
+enable-property-linking: false
+# 是否做属性值链接（enum/instance 值召回），默认 false；软件场景下置为 true
+enable-property-value-linking: true
+
+embedding并发数：embedding-thread-pool-size
+```
