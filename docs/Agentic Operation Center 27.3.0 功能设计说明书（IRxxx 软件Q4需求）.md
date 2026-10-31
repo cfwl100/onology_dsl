@@ -320,19 +320,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_stage_job_key
 
 **幂等与隔离**：每个 ontology 只允许一个冲突的 FULL 发布；不同分区文件可并行 ingest，但发布/删除互斥。必要时使用租约、advisory lock 或 Task 行 CAS；不能用仅 JVM 内锁跨 Pod 协调。日志可记录 jobId、差异数量，不打印完整用户值。
 
-### 4.4 Embedding 并发与资源限流（Q4-12、14、17）
+### 4.4 Embedding 并发、线程池隔离与 DCC 管理（Q4-12、14、17）
 
-建议一层统一的有界执行器协调去重后 Embedding 批次，不在请求级/批次级反复创建子线程池。外层通过 semaphore 限制“同时在飞请求数”，内部服务端调用也要校验限流是否真的生效；CompletableFuture 任务必须完整汇聚等待，失败 batch 可重试且不会重复写已成功键。监控包含排队耗时、超时、in-flight、batch size、token、模型 GPU/CPU 利用率、向量写入水位及失败比例。
+**租户资源归属**：Embedding 外层提交线程池、模型内部执行线程池、实例索引解析/COPY/Flush、Task 通知队列均根据鉴权 `tenantId` 选用受控资源实例；跨租户不能互相挤占专属队列、错误地沿用 ThreadLocal 租户上下文或读取其他租户的配置。内部 embedding 服务如仍有独立并行任务/请求上限，必须额外校验，不能把外层 `embedding-thread-pool-size=1` 理解为上下游所有并发均为 1。
 
-对于 BGE-M3 1024 维，FP32 单条原始向量约 4096 字节（不含索引、复制与文本），**1000 万条的理论原始向量数据约 38.1 GiB**，但实际需按**去重后语义值条数**而非源业务记录总行数计算，并补充 LVQ/倒排索引、冗余、存储副本和备份空间。1024 维系既有方案，不代表所有模型均固定该维度。
+**统一执行模型**：`tenantId → TenantResourceRegistry → TenantExecutorBundle`，其中包含 Embedding、batchInstance、parseFile、parallelFlush、notice 与查询准入配额；ResourceRegistry 同时受 Pod 级总线程/CPU/内存/连接预算限制。实际可采用按租户懒创建的独立有界线程池或能保证租户队列隔离/配额的等效调度器；闲置租户池应安全退役，**不能为所有历史租户永久创建固定数量线程**。
 
-### 4.5 LVQ 建表前置与 COPY 批次调优（Q4-15）
+**嵌套并发控制**：从 DataSync Task → Embedding batch 只使用明确的一处任务编排和并发令牌；CompletableFuture 任务可以先提交到有界队列，但**执行中的请求数不能超过租户允许的 in-flight 限额**。同一轮 Task 的 Batch Future 全部 join/收敛状态；失败批次按稳定 Key 幂等重试，拒绝/超时区分可重试与业务失败。跨线程传递 tenantId、traceId 和任务上下文必须在执行前设置、执行结束清理，防止线程复用串租户。
 
-原需求希望 **LVQ 在建表阶段创建，COPY 后免 rebuildindex**。这应列为**需基于当前 GaussVector 版本实测验证的优化假设**，不能仅凭需求就保证预建索引一定比批量导入后再建更快：空表先建索引可能加大每批 COPY 的维护成本，并影响 WAL/IO、写放大及召回。
+**DCC 热更新**：参数动态监听、修改线程池 core/max、租户 Batch/Flush/Parse 配额与全局容量校验遵循 §7.4；排队中的老 Task 保持原 tenantId、任务版本和可恢复语义；若降低配额，不强制中断正在 Embedding 的请求，等待排空后逐步调整。在线修改 `batchInstance.maxBatchSize` 只对新建批次生效，避免一个正在 COPY 的分片中途改变切分边界。
 
-设计 A/B：A=先建表/COPY 后建立或 REBUILD LVQ；B=先建 LVQ 再 COPY，结束验证索引有效且无需二次 rebuild。在相同数据、并发和资源条件下比较总耗时、COPY rows/s、存储体积、峰值 CPU/IO、索引状态、Recall/Latency 和失败恢复。**只有数据库能力验证通过，才把 B 设置为默认**。
+**度量**：每租户 `activeThreads/queuedTasks/rejected/timeout/embeddingInFlight/batchSize`、模型端实际请求并发、向量写入水位、CPU/内存/GC、全局资源使用率；DCC 版本变化与前后配置快照需可追踪。测试必须包含 2+ 租户同时入库、大租户满队列、小租户正常完成及多 Pod 不同租户任务接管。
 
-`copy-batch-size` 建议纳入后续 DCC 租户/任务配置，但须明确参数边界和受控范围：一次 COPY 文件的记录数与 DataSync 的上传分区大小、Embedding 批大小是三个独立参数，不可混用。基于实际数据库版本校验有效取值与热修改语义。
+### 4.5 LVQ 预建与 COPY 批大小 DCC 调优（Q4-15）
+
+本需求要求在建表阶段尝试创建 LVQ，使数据 COPY 后无需 rebuild；必须在目标 GaussVector 版本通过 A/B 验证：A=COPY 后创建/REBUILD LVQ；B=预先创建 LVQ 再 COPY。对同一 1000 万行数据、同硬件/副本/任务并发比较**总耗时、COPY rows/s、索引状态、索引写放大、Recall、查询 P95 和失败恢复**。预建索引可能增加每行写入开销，**不得未经验证就认定 B 必然更优**。
+
+**租户级 DCC 参数**：附件统计列出 `batchInstance.maxBatchSize=1000/4000` 两种代码扫描默认值，与本需求新增的 `copy-batch-size` **不等价**。设计中分别定义：① Spark 合并后文件目标大小，② Instance 逻辑批大小，③ GaussVector COPY 分片大小，④ Embedding 请求 Batch 大小；不混为同一参数。新 `copy-batch-size` 若实现应按租户 DCC 注册，受 Pod 最大写入内存、数据库连接/事务和索引容量上限约束，**只对新任务或新 COPY 分片生效**。调参前后保存版本快照与测试数据，并提供按租户回退。
 
 ### 4.6 Delete 接口及索引删除联调（Q4-16）
 
@@ -431,55 +435,150 @@ OMS Property 增加**建议**检索模式枚举：
 
 ---
 
-## 7. 参数分层与原始配置清单（Q4-05、Q4-10）
+## 7. 参数分层、DCC 租户监听与资源池隔离（Q4-05、Q4-10）
 
-### 7.1 分层原则
+### 7.1 参数统计口径与分级原则
 
-| 层级 | 来源 | 典型参数 | 约束 |
-|---|---|---|---|
-| 组网/场景包级 | App/场景包安装清单 | `onto_encrypt`、`oag.cache.type`、图数据库依赖和组网拓扑 | 与部署版本绑定，不能由租户请求随意覆盖 |
-| 系统/租户配置级 | 配置中心（DCC） | `semantic-search.*`、模型/实例阈值、topk、链接开关、索引 COPY 大小 | 明确 tenantId+输入模式，记录版本、审计及回退 |
-| 请求/任务级 | V2 API、索引 Task | ontologyId、query/entities、检索策略、jobId、mode、sourceVersion | 只允许已定义参数覆盖；不能越过安全/资源全局上限 |
+**附件依据**：《新增Value参数统计_2026-10-31.md》统计最近 3 个月 Java 新增 `@Value`：**115 处注解、83 个唯一配置 Key**，统计提交范围为 `git log --since=2026-07-31`、最新提交 `e5d4d74d`（2026-10-27）。**该统计只说明代码新增声明和默认值，不证明所有键已注册到 DCC、具备动态监听或已在本体服务运行时生效**。同名 Key 的不同默认值按原表保留，不能未经检查选一个作为正式配置。
 
-**读取优先级（建议）**：显式合法请求字段遵守 API 契约；系统安全/容量上限始终约束执行；租户 + 模式覆盖仅适用于允许覆盖的参数，缺失时采用版本化系统预置。配置中心不可用时不允许把安全相关限制解释成无限制。
+| 分级 | 配置来源与示例 | 本次约束 |
+|---|---|---|
+| 场景包/部署组网 | `onto_encrypt`、`oag.cache.type`、图数据库依赖 | 跟随 GDE 公共参数分级；不能由租户 Body 越权修改 |
+| **租户级 DCC** | §7.2 的线程池、资源准入、检索/排序、功能开关、索引任务参数 | **按租户隔离资源/队列，按租户 Watch/推送更新，具备资源上限、审计和安全回退** |
+| 系统级非 DCC | 附件第 5/6/7 类：MinIO、Nebula、OpenSearch、证书与数据库、租户初始化/namespace、Pod/日志/探针 | **不放置在 DCC**，由部署底座/系统密钥或环境管理；租户不能随意覆盖基础设施连接参数 |
+| 请求/任务级 | V2 query/entities、topk、hopLimit、jobId、snapshotVersion、COPY 任务模式 | 原 API 参数不自动提升为 DCC；请求可覆盖项受安全/资源限额约束 |
 
-### 7.2 原文参数保留与建议解释
+**优先级（建议）**：实际执行以 `认证租户 → inputMode(query/entities) → DCC tenant/mode override → DCC 已登记基线 → 版本兼容预置` 解析，并受 Pod/集群硬上限约束。对于 Body 已定义的检索参数，先遵守接口规定的显式值与默认值优先级，DCC 仅对允许覆盖的资源/功能执行配置，不得悄然重写用户显式合法请求。DCC 读不到、键非法或 Watch 断线时不得把安全策略、队列上限解释成无限制。
 
-以下先**如实保留原 Q4 参数和值**；字段是否支持热更新、DCC 的真实命名空间、`-1` 的语义与运行范围需要代码/配置评审确认。不要将本表直接复制成已上线 YAML：
+### 7.2 需要纳入 DCC 的候选参数清单（按附件原 Key）
 
-| 级别 | 原配置键 | 原值 | 设计说明 |
-|---|---|---|---|
-| 场景包 | `onto_encrypt` | `"0"` | 加密开关原值；0/1 语义待安全评审 |
-| 场景包 | `oag.cache.type` | `CACHE_TYPE` 变量 | 内存图/图库依赖选择，合法值待查 |
-| DCC | `semantic-search.max-pool-size` | `25` | 最大并发请求数 |
-| DCC | `semantic-search.queue-capacity` | `50` | 等待队列上限 |
-| DCC | `semantic-search.timeout-seconds` | `300` | 等待并发许可的秒数 |
-| DCC | `include-all-properties` | `true` | 全量属性装配 |
-| DCC | `include-keys` | `false` | 是否输出键属性的原始配置值 |
-| DCC | `subgraph.undirected-filter` | **`false`** | **Q4 原文默认 false**；见 §7.3 与软件 V2 新默认冲突 |
-| DCC | `ontology-object-similarity-threshold` | `-1` | 原始哨兵值；必须确认是“继承默认”还是“禁用” |
-| DCC | `instance-similarity-threshold` | `-1` | 同上，不能按合法相似度负数直接参与计算 |
-| DCC | `instance-topk` | `-1` | 哨兵值，不可直接交给 TopK 检索 |
-| DCC | `rrf-topk` | `-1` | 哨兵值，实际融合排名数需校验 |
-| DCC | `enable-object-linking` | `false` | 软件 entities 模式跳过 Object 重复链接 |
-| DCC | `enable-property-linking` | `false` | 原备注称通用默认 true，软件场景覆盖 false |
-| DCC | `enable-property-value-linking` | `true` | 原备注称通用默认 false；**新 V2 仅 Instance**，不再启用 Enum 索引 |
-| 建议 DCC | `embedding-thread-pool-size` | 未给值 | Embedding 并发有界控制；原文只给了键名 |
-| 建议 DCC | `copy-batch-size` | 未给值 | 仅是原需求中的拟新增项，范围待性能评审 |
+以下四类为本轮**DCC 注册与分类候选**，默认值严格采用附件扫描值，`8/20`、`1000/4000`、`1/6` 是**源码多个位置不同默认值**，需先统一实际含义。实际名字、租户/模式作用域、热更新安全性、值域与 DCC 注册方式在联调时冻结。
 
-### 7.3 原文配置与既有软件设计冲突清单
+**A. 线程池/批处理/模型缓存（10 项，全部明确资源归属）**
 
-| 冲突 | Q4 原文 | 既有软件场景文档 | 处理原则与待决策 |
-|---|---|---|---|
-| 无向图开关 | `undirected-filter: false`，历史方向逻辑为默认 | V2 minimal 设计采用默认 `true`，10/30 先预置、后续再 DCC | **不得静默覆盖其中一方**；需要按实际发布版本 + query/entities 模式明确生效值，并形成升级回归/回退策略 |
-| 值链接语义 | 备注称“enum/instance 值召回” | 最新 V2 只使用 `t_oag_instance_{ontology_id}`，OMS 全量返回 Enum | `enable-property-value-linking=true` 仅启动 Instance 链接，Enum 链接分支应移除 |
-| DCC 时序 | Q4 直接列出租户级参数 | 软件专项把 10/30 定为服务端预置，后续 DCC 注册接管 | 先冻结运行有效值，再按租户/模式登记，防止升级漂移 |
-| 本体敏感字段 | “向量/全文索引只保留 ID” | 通用 OAG 设计使用 name/description/synonyms 和 BM25 | 在安全评审前不能同时保证严格 ID-only 和完整 fuzzy 召回 |
-| 检索阈值 | `-1` | V2 Body `similarityThreshold=0.6`（示例默认） | 先定义 -1 继承/禁用含义及 Body/DCC 优先级，不得将 -1 当真实相似度 |
+| 参数 Key | 附件默认值 | 资源属性与 DCC 生效要求 |
+|---|---|---|
+| `embedding-thread-core-pool-size` | `8` | 模型内部租户执行池 core；按 tenant 建配额，不能只建立一个全局池 |
+| `embedding-thread-max-pool-size` | `32` | 模型内部租户执行池 max，必须 `core ≤ max` 且受全局预算 |
+| `embedding-model-cache-size` | `10` | 模型对象缓存容量，**不是线程数**；按租户划分缓存占用和可见性、全局有界 |
+| `embedding-thread-pool-size` | `1` | Embedding 外层批任务并发；附件显示 5 处使用，不可假设它控制内层全部并发 |
+| `batchInstance.threadPoolSize` | `8 / 20` | Instance 批次执行资源，租户独立队列/配额，默认冲突待收敛 |
+| `batchInstance.maxBatchSize` | `1000 / 4000` | 批处理大小，按 tenant 配置，影响下一批次而非中途重切 |
+| `batchInstance.retry` | `3` | 任务失败重试次数，租户级重试节流防止雪崩 |
+| `parallelFlush.Size` | `8 / 20` | 向量库并行 Flush 额度；真实 Key 的大小写必须保持并核实实际读取 |
+| `parseFile.threadPoolSize` | `20` | CSV 解析资源；按租户限制文件并行处理数和排队 |
+| `notice.threadPoolSize` | `20` | Notice/任务消费资源；防止大租户挤占小租户的通知 |
 
-### 7.4 配置发布与回滚
+**B. 查询准入、排序/检索与 RRF（16 项）**
 
-配置更新先校验 Schema、上下限、权限和租户/模式作用域，记录 configVersion 与操作者；同一请求只读取一致快照。灰度可按租户或 OAG 实例进行，错误率和时延异常时回滚到上一个已知有效版本。安全/加密参数、向量维度和索引类型等需要重建或重启的参数必须标识 `restartRequired/reindexRequired`，不能直接宣称热生效。
+| 参数 Key | 附件默认值 | 建议作用域 |
+|---|---|---|
+| `semantic-search.max-pool-size` | `30` | 租户级查询并发许可（旧 Q4 25，仅历史草案） |
+| `semantic-search.queue-capacity` | `50` | 租户级等待队列长度 |
+| `semantic-search.timeout-seconds` | `300` | 租户级许可等待超时；300 s 风险需复评 |
+| `rrf.k` | `10` | 租户+query/entities 模式的融合平滑参数 |
+| `rrf.channel-weights.ontology-object-vector` | `0.5` | 对象 vector 通道权重，核实与 dense 是否为别名 |
+| `rrf.channel-weights.ontology-object-lexical` | `0.5` | 对象关键词权重 |
+| `rrf.channel-weights.ontology-object-dense` | `0.5` | 对象 dense 权重，注意同义 Key 重复 |
+| `rrf.channel-weights.instance-vector` | `0.5` | 实例 vector 通道权重，核实与 dense 是否为别名 |
+| `rrf.channel-weights.instance-lexical` | `0.5` | 实例关键词权重 |
+| `rrf.channel-weights.instance-dense` | `0.5` | 实例 dense 权重，检查双重加权 |
+| `ontology-object-similarity-threshold` | `-1` | 租户/模式覆盖；`-1` 哨兵含义待定义 |
+| `instance-similarity-threshold` | `-1` | 同上；不能以 -1 作为实际余弦阈值 |
+| `instance-topk` | `-1` | 实例候选 TopK，实际最大值需约束 |
+| `rrf-topk` | `-1` | RRF 输出 TopK，不能无限放大 |
+| `adjacency-cache-max-size` | `1000` | 租户级图邻接缓存额度，亦受总堆内存约束 |
+| `rule-config-path` | 无 | **文件系统路径属于特殊风险项**；建议系统级受控白名单路径或仅 DCC 发布可信 Rule 版本 ID，不允许租户任意指定本地路径，最终归属待安全评审 |
+
+**C. 检索开关 / 子图过滤（7 项）**
+
+| 参数 Key | 附件默认值 | 作用 |
+|---|---|---|
+| `subgraph.undirected-filter` | `false` | 附件源码默认 false；既有软件 V2 预置 true，需按版本+模式冻结 |
+| `enable-object-linking` | `false` | 软件 entities 关闭已对齐对象的二次链接 |
+| `enable-property-linking` | `false` | 软件 entities 关闭已对齐属性的二次链接；query 不得被误关闭 |
+| `enable-property-value-linking` | `true` | 当前软件 V2 仅 Instance Value Linking，不再构建 Enum 索引 |
+| `include-all-properties` | `true` | Property 属性补全，枚举全量另遵循 Schema |
+| `include-keys` | `false` | Key 属性返回控制，不能绕过必要模型完整性规则 |
+| `subgraph-retrieval-cache-switch` | `true` | 查询缓存开关；**性能压测必须覆盖为 false** |
+
+**D. 索引任务与任务保留（5 项）**
+
+| 参数 Key | 附件默认值 | 作用 |
+|---|---|---|
+| `index-build.max-retry` | `3` | 租户索引任务失败重试；结合全局重试洪峰控制 |
+| `index-task.max-concurrent-tasks` | `10` | 租户后台任务并发许可，另有全局上限 |
+| `index-task.queue-length` | `200` | 租户后台排队上限与公平性 |
+| `index-task.queue-timeout-hours` | `1 / 6` | 不同源码默认冲突；按任务类别核实实际 timeout |
+| `index-task.file-ttl-hours` | `168` | 文件有效期，不能短于可恢复任务处理窗口 |
+
+**系统级排除**：附件第 5/6/7 类标注无需进入 DCC：MinIO scheme/证书/实例名/bucket、GaussVector/OpenSearch 实例名、Nebula IP/port/space、Elasticsearch URI/证书、JDBC 连接、`support_new_tenants`/tenantId 初始化、namespace/镜像模板、`POD_NAME/NODE_NAME/HOST_IP/LOG_LEVEL_CONFIGMAP_PATH` 和探针端口。`server.ssl.trust-store-password` 等敏感信息须由密钥机制管理，**不复制真实密码到 DCC**。上述配置虽涉及环境/租户身份，也不因字段含 tenant 就自动成为租户 DCC 开关。
+
+**本轮参数差异收口**：共 10 + 16 + 7 + 5 = **38 个上述配置项**（包括待安全评审的 `rule-config-path`）；不能将 83 个唯一 Key 全部无差别放到 DCC。配置注册最终清单需核对实际源码、同名 Key 默认冲突及权限，避免把部分系统级 Key 错迁到租户配置。
+
+### 7.3 线程池资源按租户划分：实现架构
+
+**目标不只是“不同租户读取不同参数”，而是线程池/队列/并发资源真正隔离。**
+
+```mermaid
+flowchart TD
+    A[鉴权 tenantId] --> B[TenantResourceRegistry]
+    D[DCC tenant/mode 配置] --> W[Listener / Watch Manager]
+    W --> B
+    B --> E[Tenant-A ExecutorBundle]
+    B --> F[Tenant-B ExecutorBundle]
+    E --> E1[Embedding / Batch / Parse / Flush / Notice]
+    F --> F1[Embedding / Batch / Parse / Flush / Notice]
+    E --> G[Pod 级 CPU/线程/内存/连接全局配额]
+    F --> G
+    G --> H[Embedding / Storage 共享后端]
+```
+
+- 入口从认证上下文获取 `tenantId`，不能信任任意 Body 伪造；每个 TenantExecutorBundle 按租户持有独立的提交配额、执行队列、Worker 与缓存预算，或采用能证明等效隔离的有界虚拟队列调度器。
+- Bundle 可按活跃租户**懒创建、空闲回收**，不能为每个历史租户永久分配 core=8、max=32 导致线程数爆炸。保留已排队任务的 Tenant 所属信息，Pod 重启通过持久化 Task 恢复。
+- ThreadPoolExecutor 至少校验 `corePoolSize ≤ maxPoolSize`、queueCapacity/拒绝策略、keepAlive；租户专属并发许可还要受 Pod `maxTotalWorkers/maxConcurrentEmbeddings/maxConnections` 之类的**全局硬预算**约束（这些新名称只是待设计资源上限，不是当前配置 Key）。
+- 跨线程通过任务上下文明确设置/清理 tenantId、traceId、revision，不得因 ThreadLocal 复用串租户。Embedding 模型内部可能另起线程或 HTTP 请求；外层 `embedding-thread-pool-size=1` 不证明实际模型并发只有 1，须做真实请求 in-flight 观测。
+- 大租户满队列不能挤占小租户的队列；后端 GaussVector/Embedding 连接等共享依赖仍有全局限制和公平调度。不同 Pod 的租户 DCC 配置须统一；**仅按 Pod 设置 10 个并发配额不等于租户集群总配额是 10**。若需全局租户限额，应采用集中配额/一致性租约或将目标配额在副本间分配，最终选择需联调冻结。
+
+### 7.4 DCC 按租户监听、热变更及线程池安全迁移
+
+**推荐控制流程（设计建议，不宣称 DCC 现有 SDK 已支持）**：
+
+1. **配置登记**：将 §7.2 的候选 Key 逐项定义 `tenantId + inputMode/operationType + configKey + version + value + range + dynamic/restartRequired`；记录来源、默认值和审计，支持既有租户预置迁移。`@Value` 只是在 Bean 初始化时读取一次，**不具备自动 DCC 动态监听能力**。
+2. **订阅与初始化**：OAG 每 Pod 通过 DCC 官方 Listener/Watch SDK（或等价机制）订阅对应租户/键范围；首次加载和重连后获取**完整配置快照**并按版本检查，不能只消费增量事件而丢失中间更新。
+3. **校验后生效**：先对线程 `core ≤ max`、批大小/队列/超时合理区间、权限及 Pod 总预算做整套校验；通过则以不可变 `TenantConfigSnapshot` 原子发布。当前请求固定所用 `configVersion`；新请求使用新版本，不混用半组新旧字段。
+4. **线程池平滑调整**：增长时先调整最大容量再调整 core；缩小时先降低 core/限制入队，再安全降低 max（需按实际线程池合法 API 顺序）；旧 Worker 正在执行的任务允许自然完成，不强制中断 Embedding/COPY；不能把已排队的任务转到其他租户队列。
+5. **无法原地改变的配置**：队列容量、部分拒绝策略和资源池类型不一定支持在线调整；可在本租户创建新版本 ExecutorBundle，切换新任务入口，旧 Bundle **drain → shutdown**，超过恢复窗口则将持久化 Task 交给重试队列，不强制丢弃。
+6. **DCC 不可用/版本跳跃**：按同租户已校验的最后有效配置或发布预置继续运行，记录 `degraded/configStale` 并告警；越权/非法修改拒绝并保持旧值，任何失败**不得放宽安全或全局线程限制**。订阅恢复时做全量对账，防止 Pod 之间配置漂移。
+7. **可观测性**：配置回调记录 tenantId（可脱敏）、key、configVersion、来源、结果/原因和生效时间；资源面监控每租户 `active/queued/rejected/completed`, embedding 请求 in-flight、Batch/Flush 队列深度、内存/线程上限、DCC 监听延迟和失败次数。
+
+**示意伪代码**（不代表当前运行 API）：
+
+```java
+void onTenantConfigChanged(String tenantId, ConfigEvent event) {
+    TenantConfigSnapshot next = dcc.loadAndValidateSnapshot(tenantId, event.version());
+    budgetGuard.validate(tenantId, next); // 多个线程池/队列总配额一起验证
+    resourceRegistry.applyAtomically(tenantId, next); // 新任务见新快照，旧任务安全 drain
+}
+TenantExecutorBundle bundle = resourceRegistry.getOrCreate(authTenantId);
+bundle.submit(task.withTenant(authTenantId).withConfigVersion(bundle.configVersion()));
+```
+
+### 7.5 DCC 参数兼容、冲突和验收
+
+| 决策项 | 附件/旧草案情况 | 本轮规则 |
+|---|---|---|
+| 搜索并发 | 附件 `max-pool-size=30`，旧 Q4 为 25 | **记录版本差异**，以实际租户有效值冻结；不是性能附件证明了 30 最优 |
+| 批次线程数 | `batchInstance.threadPoolSize=8/20`、`parallelFlush.Size=8/20` | 查源码有效注入点、作用阶段和具体模式后再统一 DCC 默认 |
+| 批大小 | `batchInstance.maxBatchSize=1000/4000`，需求另有 COPY 批大小 | 区分逻辑 Batch、COPY 分片与 Spark 合并文件大小，不能复用同一 Key |
+| 任务队列超时 | `index-task.queue-timeout-hours=1/6` | 按任务类型/版本决定，确保不少于消息重放窗口 |
+| 无向图 | 统计显示 `undirected-filter=false`，软件 V2 设计 true | 明确租户 + query/entities + 发布版本的生效矩阵并回归，不静默修改 |
+| 缓存开关 | 统计 `subgraph-retrieval-cache-switch=true` | **性能压测强制 false**，并保存 DCC 快照与请求参数 |
+| RRF 权重 | `vector` 与 `dense` 两组同值、合计不能假设已归一 | 先核查是否同一通道别名，防止重复融合权重 |
+| 配置差异与多实例 | 静态 @Value + DCC 事件 | 完整回放、Watch 重连、Pod 重启和配置版本对账 |
+| 容量安全 | 每租户线程数可独立调节 | 一次修改需验证所有活跃租户和 Pod 全局预算，不能因租户数增长导致 OOM/线程耗尽 |
+
+**租户隔离测试矩阵**：T1=租户 A 满载 embedding、租户 B 仍可查询/写入；T2=更新 A 池 max/queue、B 无变化；T3=A 缩小 pool、旧请求自然完成且不丢任务；T4=Pod A/B Watch 事件乱序、断线重连后同版本；T5=异常值、过量配额、DCC 不可达时保留旧快照；T6=新租户首次创建/空闲回收；T7=多 Pod 受总配额/后端资源限制且不会跨租户泄漏。所有测试记录实际线程数、拒绝、Task 完成率和内存曲线。
 
 ---
 
