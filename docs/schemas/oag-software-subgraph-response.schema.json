@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/cfwl100/onology_dsl/blob/main/docs/schemas/oag-software-subgraph-response.schema.json",
-  "title": "OAG V2 本体子图响应：Property 全量枚举与实例值结构",
-  "description": "V2 返回 nodes/edges/functions/actions 等图结构；Property 节点 properties 直接输出 propertyEnumValues（OMS 全量枚举）及 propertyInstanceValues（仅 t_oag_instance_{ontology_id} 实例值检索匹配），移除 result.semanticExtensions。请求 query/entities 双模式原有规则不变；旧 V1 DTO 不受此 V2 Schema 约束。",
+  "title": "OAG V2 响应 Schema（实体示例2-1的节点扩展为准）",
+  "description": "Property 的 propertyEnumValues/propertyInstanceValues 位于 nodes[] 顶层，不能挂到 properties 里；附件 query 示例1-2 和 entities 示例2-1 使用两套节点边形态，当前兼容两者，待后端统一 DTO。",
   "type": "object",
   "required": [
     "resultCode",
@@ -11,7 +11,10 @@
   ],
   "properties": {
     "resultCode": {
-      "type": "integer",
+      "type": [
+        "string",
+        "integer"
+      ],
       "description": "业务结果码；附件成功值为 200。"
     },
     "resultMessage": {
@@ -19,7 +22,14 @@
       "description": "业务结果信息；附件为 success。"
     },
     "result": {
-      "$ref": "#/$defs/SubgraphResult"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SubgraphResult"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "additionalProperties": true,
@@ -37,14 +47,14 @@
         },
         "propertyValuesLinks": {
           "type": "array",
-          "description": "可选的历史实例值链接诊断信息；**仅**来自 t_oag_instance_{ontology_id}，不可包含枚举索引候选。正式值结构以 Property 节点的 propertyEnumValues/propertyInstanceValues 为准。",
+          "description": "与 seedNodes 并列的链接证据，包括未命中且 valuesMapping=[] 的对象组，不能假设仅包含最终种子。",
           "items": {
             "$ref": "#/$defs/PropertyValuesLink"
           }
         },
         "nodes": {
           "type": "array",
-          "description": "本体顶点，包含 ObjectType、Property 等。",
+          "description": "query 可用旧式 type 节点，entities 示例2-1 使用 label/properties；属性双值数组挂在节点顶层。",
           "items": {
             "$ref": "#/$defs/GraphNode"
           }
@@ -254,7 +264,7 @@
     },
     "ValueCandidate": {
       "type": "object",
-      "description": "实例值链接证据：canonicalValue 及可选 score。枚举的 defaultDataValue 已移至 Property 节点 propertyEnumValues，不在实例映射诊断中产生。",
+      "description": "候选值映射 canonicalValue/defaultDataValue/score，用于 propertyValuesLinks 的链接证据。",
       "properties": {
         "canonicalValue": {
           "type": "string",
@@ -263,6 +273,10 @@
         "score": {
           "type": "number",
           "description": "候选分数，不代表已通过业务规则判定最终可用。"
+        },
+        "defaultDataValue": {
+          "type": "string",
+          "description": "附件 propertyValuesLinks.valuesMapping 中实际存在的字段，注意和 propertyInstanceValues 不同。"
         }
       },
       "required": [
@@ -272,7 +286,7 @@
     },
     "GraphNode": {
       "type": "object",
-      "description": "图节点保留真实 id/label/properties；当 label=property 时 properties 必须包含 dataType、propertyEnumValues 和 propertyInstanceValues 两类数组。非 Property 节点不得伪装具备上述值结构；枚举不再经 t_oag_enum 检索。",
+      "description": "兼容 label/properties 新式节点和 query 示例1-2 的 type/display 旧式节点。",
       "properties": {
         "id": {
           "type": "string",
@@ -284,34 +298,46 @@
         },
         "properties": {
           "type": "object",
-          "description": "Property 节点按 OMS 同版本定义补齐数据类型与完整枚举，另附真实实例索引命中。两个数组在 Property 节点中始终存在，非适用场景为空数组。",
+          "description": "仅含 dataType、enumDataType、name、display、description、primaryKeys 等元数据；双值数组不在此处",
           "additionalProperties": true,
           "properties": {
             "dataType": {
               "type": "string",
               "description": "仅 V2 Property 的 OMS 权威数据类型；当类型为枚举或存在真实 EnumType 绑定时查询全量 values[]。"
             },
-            "propertyEnumValues": {
-              "type": "array",
-              "description": "完整 OMS EnumType/values[]；不受 query、TopK、阈值和实例检索命中影响；只有真实 EnumType 绑定的 Property 可能非空。",
-              "items": {
-                "$ref": "#/$defs/PropertyEnumValue"
-              }
-            },
-            "propertyInstanceValues": {
-              "type": "array",
-              "description": "当前请求中真正通过 t_oag_instance_{ontology_id} 检索及归属过滤的实例映射。无命中时空数组，非实例全量扫描。",
-              "items": {
-                "$ref": "#/$defs/PropertyInstanceValue"
-              }
+            "enumDataType": {
+              "type": "string",
+              "description": "枚举实际数据类型，dataType=enum 时返回"
             }
           }
+        },
+        "type": {
+          "type": "string",
+          "description": "query 示例1-2 节点类型 ObjectType/Property"
+        },
+        "display": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "propertyEnumValues": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PropertyEnumValue"
+          },
+          "description": "枚举型 Property 全量 EnumType/values[]，位置为 nodes[] 顶层"
+        },
+        "propertyInstanceValues": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PropertyInstanceValue"
+          },
+          "description": "允许语义检索的 Property 链接到的实例取值，位置为 nodes[] 顶层"
         }
       },
       "required": [
-        "id",
-        "label",
-        "properties"
+        "id"
       ],
       "additionalProperties": true,
       "allOf": [
@@ -330,9 +356,7 @@
             "properties": {
               "properties": {
                 "required": [
-                  "dataType",
-                  "propertyEnumValues",
-                  "propertyInstanceValues"
+                  "dataType"
                 ]
               }
             }
@@ -342,9 +366,43 @@
           "if": {
             "properties": {
               "label": {
-                "not": {
-                  "const": "property"
-                }
+                "const": "property"
+              },
+              "properties": {
+                "type": "object",
+                "properties": {
+                  "dataType": {
+                    "const": "enum"
+                  }
+                },
+                "required": [
+                  "dataType"
+                ]
+              }
+            },
+            "required": [
+              "label",
+              "properties"
+            ]
+          },
+          "then": {
+            "required": [
+              "propertyEnumValues"
+            ],
+            "properties": {
+              "properties": {
+                "required": [
+                  "enumDataType"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "label": {
+                "const": "objectType"
               }
             },
             "required": [
@@ -352,31 +410,40 @@
             ]
           },
           "then": {
-            "properties": {
-              "properties": {
-                "not": {
-                  "anyOf": [
-                    {
-                      "required": [
-                        "propertyEnumValues"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "propertyInstanceValues"
-                      ]
-                    }
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "propertyEnumValues"
+                  ]
+                },
+                {
+                  "required": [
+                    "propertyInstanceValues"
                   ]
                 }
-              }
+              ]
             }
           }
+        }
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "label",
+            "properties"
+          ]
+        },
+        {
+          "required": [
+            "type"
+          ]
         }
       ]
     },
     "GraphEdge": {
       "type": "object",
-      "description": "本体关系边，保留原始方向。",
+      "description": "兼容 entities 示例2-1 sourceId/targetId/edgeType/propertyMap 与 query 示例1-2 id/name/display 等历史形态。",
       "properties": {
         "sourceId": {
           "type": "string",
@@ -394,15 +461,34 @@
           "type": "object",
           "description": "原 V1 边属性映射，可能包含 name、junctionConfig、businessSemanticDescription 等字符串字段。",
           "additionalProperties": true
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "display": {
+          "type": "string"
         }
       },
-      "required": [
-        "sourceId",
-        "targetId",
-        "edgeType",
-        "propertyMap"
-      ],
-      "additionalProperties": true
+      "required": [],
+      "additionalProperties": true,
+      "anyOf": [
+        {
+          "required": [
+            "sourceId",
+            "targetId",
+            "edgeType",
+            "propertyMap"
+          ]
+        },
+        {
+          "required": [
+            "id"
+          ]
+        }
+      ]
     },
     "PropertyEnumValue": {
       "type": "object",
