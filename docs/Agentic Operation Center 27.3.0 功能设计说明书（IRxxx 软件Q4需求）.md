@@ -190,6 +190,8 @@ OMS 保持服务无状态或将可恢复状态外置；在本体加密的需求�
 
 这里 `propertyEnumValues` **在 `nodes[]` 节点顶层，不在 `nodes[].properties` 内部**；`propertyInstanceValues` 也位于节点顶层，且仅当 Property 支持语义检索、存在本次实例链接结果时返回。`properties.dataType=enum` 时另带 `enumDataType`。`propertyValuesLinks[].valuesLinks[].valuesMapping[]` 是独立的值链接证据，附件示例包含 `canonicalValue/defaultDataValue/score`；**不能混同 `propertyInstanceValues`**。`isDefault` 使用 `"true"/"false"` 字符串，枚举全量由 OMS 定义决定；不得把所有枚举自动作为 Cypher 过滤值。
 
+**附件示例与 Q4 实施要求的两项不一致**：① 附件 query 请求示例1 未填写 `ontologyId`，但参数表标记为必填；Skill 按参数表执行校验，不能以缺失字段的样例放宽必填项。② 附件示例2-1 的 `propertyValuesLinks.valuesMapping` 含枚举规范值候选（如 Prepaid），但最新 Q4 要求**不建立、不检索 Enum 索引**；此类旧例仅能说明 `valuesMapping` 的 DTO 结构，**不能推导新方案仍会通过 Enum 向量链接产生候选**。OMS 全量枚举位于 `propertyEnumValues`，真实 Instance 链接证据按线上新实现产生；必要时需业务/接口团队确认兼容策略。
+
 **尚未统一的两套结果形态**：附件 query 示例1-2 使用旧式 `nodes[].type` 与 `edges[].name`，而 entities 示例2-1 使用 `label/properties` 与 `edgeType/propertyMap`；本次 Schema 允许两套示例，Skill 不进行静默错误转换，后端统一 DTO 时需专门回归。旧 V2 Schema 曾把双数组放进 `properties` 的定义已修正；旧 V1 的独立响应结构在 deprecated 期间不变。
 
 ### 3.2 Skill 和脚本从 V1 迁移到 V2（Q4-07）
