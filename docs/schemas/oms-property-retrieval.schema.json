@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/cfwl100/onology_dsl/blob/main/docs/schemas/oms-property-retrieval.schema.json",
+  "title": "OMS Property retrieval 扩展（Q4-18 预研建议 Schema）",
+  "description": "仅校验现有 Property.retrieval 子结构，不是完整 OMS Property Schema；新增可选 indexMode。不填写时（且 enabled=true）按 HYBRID 执行；enabled=false 始终禁用两类索引；retrieval 整体缺失时按现网旧版模型兼容语义处理，不擅自开启检索。",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "type": "boolean",
+      "description": "沿用 OMS 原有开关；false 不产生 OpenSearch/GaussVector 实例值索引。"
+    },
+    "indexMode": {
+      "type": "string",
+      "enum": [
+        "KEYWORD_ONLY",
+        "VECTOR_ONLY",
+        "HYBRID"
+      ],
+      "default": "HYBRID",
+      "description": "enabled=true 时生效；省略时按 HYBRID。KEYWORD_ONLY=仅倒排；VECTOR_ONLY=仅向量；HYBRID=两路。"
+    }
+  },
+  "required": [
+    "enabled"
+  ],
+  "additionalProperties": true,
+  "examples": [
+    {
+      "enabled": false
+    },
+    {
+      "enabled": true
+    },
+    {
+      "enabled": true,
+      "indexMode": "KEYWORD_ONLY"
+    },
+    {
+      "enabled": true,
+      "indexMode": "VECTOR_ONLY"
+    },
+    {
+      "enabled": true,
+      "indexMode": "HYBRID"
+    }
+  ],
+  "$comment": "JSON Schema default 是注释性信息；后端 OMS/OAG 必须在实现中填充缺省值并对模型 revision 做校验。"
+}
