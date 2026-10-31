@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/cfwl100/onology_dsl/blob/main/docs/schemas/oag-software-subgraph-request.schema.json",
-  "title": "OAG 统一 V2 语义子图检索请求（query/entities 双模式）",
-  "description": "正式 V2 路径：POST /v2/onto-retrieval/subgraph/semantic-search。ontologyId Body 必填。query 与 entities 至少一个有效非空，同时存在时优先 entities。正式接口声明 entities 为 JSON String（1～102400 字符），已有 CBS 示例是 Object：两种传输形态并列供联调，不意味着后端实际均支持。接口文档使用 topk，原内部 Skill 脚本使用 topK，须迁移适配。",
+  "title": "OAG V2 请求 JSON Schema（按最新接口附件）",
+  "description": "POST /v2/onto-retrieval/subgraph/semantic-search；ontologyId 在 Body。query/entities 至少一个非空，entities 非空优先；HTTP entities 是 JSON String，内容须包含 {entities:{extractedEntities:[...],propertyValues:[...]}}。",
   "type": "object",
   "required": [
     "ontologyId"
@@ -20,19 +20,11 @@
       "description": "自然语言查询：有效非空时触发 V1 能力继承模式；与 entities 至少一个有效非空。"
     },
     "entities": {
-      "description": "V2 结构化实体：正式参数表为 JSON String（1～102400 字符），CBS 示例为 JSON Object；传输支持范围必须以实际 Controller/DTO 联调为准。双输入均有效时优先 entities。",
-      "oneOf": [
-        {
-          "$ref": "#/$defs/Entities"
-        },
-        {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 102400,
-          "contentMediaType": "application/json",
-          "description": "JSON 序列化实体结构，必须由服务端额外解析及验证业务结构；JSON Schema contentMediaType 仅注释，不保证可解析。"
-        }
-      ]
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 102400,
+      "contentMediaType": "application/json",
+      "description": "实际 HTTP 类型为 String。字符串解码后必须校验本 schema 的 $defs.Entities；业务侧不得直接传 JSON Object。"
     },
     "adaptiveRetrieval": {
       "type": "integer",
@@ -103,14 +95,15 @@
   "$defs": {
     "Entities": {
       "type": "object",
-      "description": "entities 的业务 JSON 结构，允许 extractedEntities 与 propertyValues 中至少一项非空；用于软件对象示例及对 JSON String 解码后业务结构的服务端校验。",
+      "description": "HTTP entities 内层结构，extractedEntities 至少有一个对象；其 properties 可省略，propertyValues 可省略。",
       "properties": {
         "extractedEntities": {
           "type": "array",
           "description": "业务侧已与 OMS 本体定义对齐的 ObjectType / Property 显式锚点；可省略。",
           "items": {
             "$ref": "#/$defs/ExtractedEntity"
-          }
+          },
+          "minItems": 1
         },
         "propertyValues": {
           "type": "array",
@@ -120,29 +113,10 @@
           }
         }
       },
-      "anyOf": [
-        {
-          "required": [
-            "extractedEntities"
-          ],
-          "properties": {
-            "extractedEntities": {
-              "minItems": 1
-            }
-          }
-        },
-        {
-          "required": [
-            "propertyValues"
-          ],
-          "properties": {
-            "propertyValues": {
-              "minItems": 1
-            }
-          }
-        }
-      ],
-      "additionalProperties": true
+      "additionalProperties": true,
+      "required": [
+        "extractedEntities"
+      ]
     },
     "ExtractedEntity": {
       "type": "object",
@@ -198,7 +172,7 @@
       "properties": {
         "property": {
           "type": "string",
-          "description": "可为空串：附件用 property=\"\" 表示属性未知的 value-only 候选，不等于已解析出属性。"
+          "description": "可省略或空串，均表示不指定 Property、在 objectType 的可检索语义字段做值链接"
         },
         "value": {
           "type": "string",
@@ -207,7 +181,6 @@
         }
       },
       "required": [
-        "property",
         "value"
       ],
       "additionalProperties": true
@@ -232,16 +205,9 @@
       ],
       "properties": {
         "entities": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/Entities"
-            },
-            {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 102400
-            }
-          ]
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 102400
         }
       }
     }
