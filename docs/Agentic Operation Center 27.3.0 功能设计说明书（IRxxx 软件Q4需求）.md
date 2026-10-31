@@ -431,7 +431,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_stage_job_key
 
 ### 7.1 参数统计口径与分级原则
 
-**附件依据**：《新增Value参数统计_2026-10-31.md》统计最近 3 个月 Java 新增 `@Value`：**115 处注解、83 个唯一配置 Key**，统计提交范围为 `git log --since=2026-07-31`、最新提交 `e5d4d74d`（2026-10-27）。**该统计只说明代码新增声明和默认值，不证明所有键已注册到 DCC、具备动态监听或已在本体服务运行时生效**。同名 Key 的不同默认值按原表保留，不能未经检查选一个作为正式配置。
+**附件依据**：《新增Value参数统计_2026-10-31.md》统计最近 3 个月 Java 新增 `@Value`：**115 处注解、83 个唯一配置 Key**，统计提交范围为 `git log --since=2026-07-31`、最新提交 `e5d4d74d`（2026-10-27）。**该统计只说明代码新增声明和默认值，不证明所有键已注册到 DCC、具备动态监听或已在本体服务运行时生效**。**统计一致性注意**：附件摘要写 83 个唯一 Key，但七类明细表实际逐行列出 **72 个不同 Key**（本轮 DCC 候选 38 个、系统级 34 个），有 **11 个 Key 未在附件分类明细中列出**；必须重新对照源码扫描结果补齐后才可宣称完成全部 83 项分类。同名 Key 的不同默认值按原表保留，不能未经检查选一个作为正式配置。
 
 | 分级 | 配置来源与示例 | 本次约束 |
 |---|---|---|
@@ -506,7 +506,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_stage_job_key
 
 **系统级排除**：附件第 5/6/7 类标注无需进入 DCC：MinIO scheme/证书/实例名/bucket、GaussVector/OpenSearch 实例名、Nebula IP/port/space、Elasticsearch URI/证书、JDBC 连接、`support_new_tenants`/tenantId 初始化、namespace/镜像模板、`POD_NAME/NODE_NAME/HOST_IP/LOG_LEVEL_CONFIGMAP_PATH` 和探针端口。`server.ssl.trust-store-password` 等敏感信息须由密钥机制管理，**不复制真实密码到 DCC**。上述配置虽涉及环境/租户身份，也不因字段含 tenant 就自动成为租户 DCC 开关。
 
-**本轮参数差异收口**：共 10 + 16 + 7 + 5 = **38 个上述配置项**（包括待安全评审的 `rule-config-path`）；不能将 83 个唯一 Key 全部无差别放到 DCC。配置注册最终清单需核对实际源码、同名 Key 默认冲突及权限，避免把部分系统级 Key 错迁到租户配置。
+**本轮参数差异收口**：10 + 16 + 7 + 5 = **38 个已列出的 DCC 候选**（其中 `rule-config-path` 尚需安全评审），另有 **34 个系统级明细 Key 明确不进入 DCC**。附件摘要与明细差 **11 个未列出 Key**，先追溯扫描源码再归类，不能默认这些缺失项属于 DCC。配置注册清单还须核对同 Key 不同默认值、权限和实际生效点。
 
 ### 7.3 线程池资源按租户划分：实现架构
 
@@ -657,7 +657,7 @@ bundle.submit(task.withTenant(authTenantId).withConfigVersion(bundle.configVersi
 | D-03 | GDE 公共场景包分层与故障恢复规范、OMS 分域接口/缓存 revision | GDE/OMS/CBS |
 | D-04 | 手动建索引偶现根因、修复验收后 OMS 自动通知/发布流程 | OMS/OAG |
 | D-05 | DataSync READY/NOTICE/ACK、Spark 文件合并与图/语义去重稳定 Key、快照水位 | Spark/DataSync/OAG |
-| D-06 | **DCC 38 项候选注册**；同名默认值差异、Rule 路径安全、租户资源隔离与动态 Watch API | OAG/配置底座 |
+| D-06 | **DCC 已列 38 项候选注册**、34 项系统级排除；核对附件摘要 83 与明细 72 差的 **11 个未列出 Key**，再定最终注册清单；包括默认冲突、Rule 路径与租户 Watch API | OAG/配置底座 |
 | D-07 | Pod 与集群层面租户线程/队列/Embedding/连接池的总资源预算和副本间分配 | OAG/架构/资源管理 |
 | D-08 | 2U4G 与 3U4G 的测试职责、平均延迟的统计分母、propertyValues 分桶边界 | OAG/测试/CBS |
 | D-09 | V2 `topk`/附件 `topK`、`undirected-filter=false/true` 以及 25/30 并发默认 | OAG/Skill/配置底座 |
