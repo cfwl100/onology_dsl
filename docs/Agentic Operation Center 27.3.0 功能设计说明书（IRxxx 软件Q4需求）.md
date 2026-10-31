@@ -18,7 +18,7 @@
 
 CBS 面向运营商问账、集团客户问账，以及经营、销售、运营、运维人员的问计、问因和辅助决策。例如预付费账户数量、优惠余额、套餐月活 TOP3、账单风险等。业务 IRB 目标为**准确率 90%、业务端到端 5 分钟**；这不是 OAG 单接口 SLA。当前 CBS 本体参考规模为 **144 个 ObjectType、2896 个 Property、370 个 Relationship、11 个业务域**，模型仍在迭代。
 
-本期 Q4 的重点不是新造一套独立本体系统，而是让 OMS/OAG 具备**安全交付、接口统一、自动索引、多实例扩展、配置治理、可恢复的数据同步与可量化的检索性能**。
+本期 Q4 的重点是让 OMS/OAG 具备**安全交付、接口统一、自动索引、多实例扩展、配置治理、可恢复的数据同步与可量化的检索性能**。
 
 ### 1.2 目标、原则与交付边界
 
@@ -105,30 +105,20 @@ flowchart LR
 
 ### 2.1 本体模型加密及安全边界（Q4-01）
 
-**原要求**：本体模型加密、多实例与参数拆分；给定场景包示意参数为 `onto_encrypt: "0"`。**原文没有约定 0/1 的最终含义、加密算法、密钥轮换或加密字段边界**，须与安全基线确认。
+**原要求**：本体模型加密、多实例与参数拆分；给定场景包示意参数为 `onto_encrypt: "0"`。安全设计参见：《Agentic Operation Center 27.3.0 功能设计说明书（IR20260731000589 SR20260806887817本体模型文件支持加密）.md》。
 
-建议执行分层保护：持久化资产与 App 包按授权和可用 KMS/密钥服务进行静态加密；传输层使用内部标准认证与 TLS；运行期仅在授权的 OMS/OAG 进程内按需解密。密钥标识与密文、数据访问权限分离，密钥不存日志、不随 App 包外泄；恢复必须验证重启后的密钥可访问性以及多实例一致读取。
-
-| 设计点 | 建议机制 | 验证 |
-|---|---|---|
-| 兼容旧模型 | 加密模式切换前标识模型/包版本与加密状态；只允许显式迁移 | 明文旧包升级、加密新包安装、回滚 |
-| 多实例 | 各 OMS 实例通过统一密钥服务获得同一版本密钥，不依赖单机本地文件 | 任意 Pod 重建后读取一致 |
-| 密钥轮换 | 记录 keyVersion，分批重加密；新旧版本过渡期间可解密历史资产 | 不中断查询、异常轮换回退 |
-| 故障与审计 | 密钥不可达禁止降级输出明文；脱敏记录失败码与 traceId | 失败封闭，日志无密钥或本体正文 |
-
-`onto_encrypt` 是**原始候选参数**，其默认及开关效力必须在详细设计中说明；不能根据名字自行假设 `"0"` 一定表示开启或关闭。
 
 ### 2.2 分域与本体定义查询（Q4-02）
 
-沿用既有 OMS 分组模型：`ontologyGroup`、`groupMember` 是本体元数据；CBS Agent 负责按域选组，OAG **不接受 groupFilter、也不以分组截断子图连接**。OMS 同一本体的分组、成员和 ObjectType/Property 定义须按同一 revision 返回，权限由 OMS 控制。
+沿用既有 OMS 分组模型：`ontologyGroup`、`groupMember` 是本体元数据；CBS Agent 负责按域选组，OAG **不接受 groupFilter、也不以分组截断子图连接**。。
 
-**建议复用的三类接口**（源于配套软件方案，Q4 原文只提出“建立接口规范”，未给出正式 URL）：
+**建议复用的三类接口**：
 
 | 能力 | 建议路径 | 缓存与边界 |
 |---|---|---|
-| 查询分组列表 | `GET /api/v1/ontologies/{ontologyId}/groups` | ETag/revision；按权限返回可见组 |
-| 查询组成员及模型定义 | `POST /api/v1/ontologies/{ontologyId}/group/members` | 分页、revision 检查、批量返回定义 |
-| 批量查组归属 | `POST /api/v1/ontologies/{ontologyId}/group-members:resolve` | 避免逐对象 N+1；未分组对象合法 |
+| 查询分组列表 | `GET /api/v1/ontologies/{ontologyId}/list` | 用于查询当前本体中的可见分组，适用于分组列表 |
+| 查询组成员及模型定义 | `POST /api/v1/ontologies/{ontologyId}/group/members` | 按分组返回当前本体中的分组定义及对象成员 |
+
 
 **双层缓存**：OMS 服务端缓存 Key 建议为 `(tenantId, ontologyId, revision, visibilityScope, groupId, pageCursor)`；客户端 Agent 缓存同样带 tenant/revision，TTL 是失效兜底而非唯一一致性策略。App 发布或模型修订变更时服务端失效旧 revision 缓存，Agent 通过版本头/响应字段发现变化并重新取数。禁止将无权限用户的缓存结果复用给其他租户。
 
@@ -136,15 +126,15 @@ flowchart LR
 
 ### 2.3 OMS 多实例水平扩展（Q4-03）
 
-OMS 保持服务无状态或将可恢复状态外置；负载由服务发现/网关分担，各实例缓存私有但通过**模型版本事件 + 查询时 revision 校验**维持最终一致。写入走同一元数据事务及乐观版本检查，防止两个实例同时修改同一组/模型发生最后写覆盖。准备就绪探针必须验证必要依赖；正在发布中的 revision 不能向客户暴露部分组成员。
+OMS 保持服务无状态或将可恢复状态外置；在本体加密的需求中跟踪。
 
 ### 2.4 OMS App 安装参数分层（Q4-05）
 
-OMS 读取的网络拓扑、加密模式等由场景包版本化配置；系统运行参数由统一配置管理；请求参数只表达业务操作与任务选择，不能由用户 Body 越权改写加密/权限开关。升级流程先验证配置 Schema、密钥可用性与模型兼容，安装完成后再更新发布 revision。具体参数映射统一见第 7 章，避免 OMS/OAG 两套同名参数含义不一致。
+OMS 读取的网络拓扑、加密模式等由场景包版本化配置；在本体加密需求中详细描述，包含本体加密参数、参数拆分。
 
 ### 2.5 OMS 快速恢复指导书（Q4-04）
 
-形成可执行 Runbook：① 判断 OMS Pod/网关、数据库、模型 revision、KMS 与缓存依赖；② 读取 traceId、任务 ID 和版本；③ 区分只读降级、模型写入失败、组缓存失效、密钥不可达；④ 恢复应用副本与外部依赖、重新装载指定 revision；⑤ 核验组成员、权限与多实例一致性。**不建议未经授权直接改数据库、清空所有租户缓存或临时关闭加密。** 灾备 RTO/RPO 在实际演练后冻结。
+形成可执行 Runbook：① 判断 OMS Pod/网关、数据库、KMS 与缓存依赖；② 读取 traceId、任务 ID 和版本；③ 区分只读降级、模型写入失败、组缓存失效、密钥不可达；④ 恢复应用副本与外部依赖、重新装载指定 revision；⑤ 核验组成员、权限与多实例一致性。**不建议未经授权直接改数据库、清空所有租户缓存或临时关闭加密。** 灾备 RTO/RPO 在实际演练后冻结。
 
 ---
 
@@ -152,11 +142,14 @@ OMS 读取的网络拓扑、加密模式等由场景包版本化配置；系统�
 
 ### 3.1 一个 V2 入口覆盖服务和软件场景（Q4-06）
 
-统一使用 `POST /v2/onto-retrieval/subgraph/semantic-search`，Body 中 `ontologyId` 必填，`query` 与 `entities` 至少一个非空、同时存在时 `entities` 优先。通用 query 保留对象/属性提取、vector/keyword/hybrid 和 minimal/khop/component；软件 entities 接收已经对齐的对象/属性和值，避免重复链接。输入的 `entities` 是 JSON String 还是 JSON Object 应以服务端 DTO 联调确定，不因静态 Schema 两种都允许就推断运行时全部兼容。
+统一使用 `POST /v2/onto-retrieval/subgraph/semantic-search`。
 
 **Q4 默认行为**：不再建立或读写枚举值索引 `t_oag_enum_{ontology_id}`；值索引只检索 `t_oag_instance_{ontology_id}`。对于保留下来的 Enum Property，从 OMS 的 EnumType/values[] 同 revision **全量读取** `value/isDefault/defaultDataValue/description/synonyms`，装入 Property 节点 `propertyEnumValues`；实例命中装入 `propertyInstanceValues`；V2 结果不再输出 `semanticExtensions`。无有效实例索引命中不意味着“枚举不存在”，显式 `extractedEntities` 必须保留。
 
-**兼容关系**：原通用 V6.7 文档曾要求三类索引和 `semanticExtensions.valueMappings`；本 Q4 的软件 V2 以最新专项契约为目标，保留 `t_oag_{ontology_id}`（ObjectType/Property）和 `t_oag_instance_{ontology_id}`（Instance）两类，逐个盘点其他消费方后迁移。旧 V1 在退役前保留旧 DTO，不直接强制修改历史消费者。
+**兼容关系**：返回结构体中增加了可选的propertyvalue等字段，排查上游业务（OWS、SEC、NIS）解析子图的代码逻辑。
+
+接口描述参见：
+ICT服务与软件/Agentic Operation Center/Docs/27/27.3.0/02.设计/02.设计文档/Agentic Operation Center 27.3.0 功能设计说明书(IR20260729001097_OAG子图检索能力增强)
 
 **接口样例（query-only）**：
 
@@ -204,43 +197,17 @@ OMS 读取的网络拓扑、加密模式等由场景包版本化配置；系统�
 仓库中存在 `ontology-platform-unified-skill/scripts/semantic_subgraph_search.py` 及其他历史目录副本。当前所查脚本仍拼接 V1 URL，并使用 `topK`、默认 `hybrid`、`includeFunctions=1`。本期需要迁移**实际发布和运行**的 Python/Skill.md/前端等调用方，不仅修改某个文件路径。
 
 迁移适配：
-1. URL 从 `/v1/onto-retrieval/{ontologyId}/subgraph/semantic-search` 改为 `/v2/onto-retrieval/subgraph/semantic-search`，ontologyId 进入 Body；保留实际网关前缀、鉴权和 trace Header。
-2. 将 `topK` 适配正式 V2 字段 `topk`；原 Skill 要求的 hybrid、Function/Action 等能力显式传参，不依赖新默认。
-3. 检测 HTTP 非 2xx、业务 `resultCode`、空图及版本不匹配；不得把 HTTP 200 下的业务失败直接当成功。
-4. 先发布 V2 兼容 Skill，再在 V1 返回响应头中**建议**加入 `Deprecation`/`Sunset` 等公告（具体日期经评审，不自行设定）。
-5. **deprecated 不等于立即删除**：观测 V1 调用来源、服务端流量清零、兼容回归及灰度回退全部完成后另行审批下线。V1 保持原路径和返回结构直到正式退役。
+1. URL 从 `/v1/onto-retrieval/{ontologyId}/subgraph/semantic-search` 改为 `/v2/onto-retrieval/subgraph/semantic-search`。
+2. 先发布 V2 兼容 Skill，再在 V1 返回响应头中**建议**加入 `Deprecation` 等公告（具体日期经评审，不自行设定）。
+3. **deprecated 不等于立即删除**：观测 V1 调用来源、服务端流量清零、兼容回归及灰度回退全部完成后另行审批下线。V1 保持原路径和返回结构直到正式退役。
 
 ### 3.3 App 安装触发定义索引与内存图刷新（Q4-08）
 
-**建议事件/内部接口契约**（原 Q4 只要求“OMS 调用 OAG”，未指定正式 API）：
-
-`POST /internal/v1/ontologies/{ontologyId}/index-sync`，建议传 `tenantId`（从鉴权上下文读取，不相信 Body 自报）、`appId`、`ontologyRevision`、`operation=INSTALL|UPGRADE|ROLLBACK`、`idempotencyKey`。返回 `taskId` 和可查询的任务状态；不建议在 OMS 安装事务内同步等待所有 Embedding 完成。
-
-```mermaid
-sequenceDiagram
-    participant OMS
-    participant OAG
-    participant Store as Index Storage
-    participant Graph as Graph Cache/DB
-    OMS->>OMS: App 模型写入并冻结 revision
-    OMS->>OAG: index-sync(revision, idempotencyKey)
-    OAG-->>OMS: taskId / ACCEPTED
-    OAG->>Store: 构建版本化定义索引与增量向量
-    OAG->>Graph: 预热相同 revision 图
-    OAG->>OAG: 校验两类资产 / Publish
-    OAG-->>OMS: task status = PUBLISHED
-    OMS->>OMS: 更新 App 安装/可用状态
-```
-
-**一致性协议**：按 `(tenantId, ontologyId, revision)` 建任务并幂等去重，旧新两个 revision 保持读写隔离。只有**定义索引与图缓存（或真实图库访问）都对应同一 revision 且 Verify 通过**才将 activeRevision 切换到新版本；失败保留旧 activeRevision，记录失败项，支持安全重试。OMS/App 的“模型元数据已提交”和“检索能力已可用”是两个不同状态，不可仅凭 HTTP 202 宣告完成发布。
-
-**Task 状态建议**：`ACCEPTED → BUILDING → VERIFYING → PUBLISHING → PUBLISHED`，异常为 `FAILED_RETRYABLE / FAILED_FINAL / CANCELED`；具体 Task API 与事件总线实现需联调。安装场景包参数验证失败、KMS 不可达、旧 revision 被清理等应阻止发布新检索版本并返回可归因错误。
+保持现有的调用通道，在内存图场景重点验证。
 
 ### 3.4 OAG 多实例与图缓存同步（Q4-09）
 
-实例间不共享 Java 堆缓存对象，采用**持久化 activeRevision + 版本事件**：各 OAG Pod 收到 PUBLISHED 后异步装载新图；请求读取 activeRevision 并核对本地 cacheRevision，不一致时使用版本化可用图或进行受控加载，严禁使用旧图配新索引。建议设置单飞刷新、加载队列上限、缓存命中指标、每 revision 最长持有时间和实例级 Ready。
-
-**多实例负载**：入口按真实可用实例分流；在途任务 ID、检查点和索引状态持久化，不能绑定单个 Pod。建库后台任务需带租户/本体锁或租约；租约失效后由其他实例接管时从 checkpoint 恢复，不能重复发布或双重删表。测试 2/3 实例滚动升级、请求切换、并发发布与旧图 fallback。
+在《ICT服务与软件/Agentic Operation Center/Docs/27/27.3.0/02.设计/02.设计文档/Agentic Operation Center 27.3.0 功能设计说明书（IR20260731000589 SR20260806887975&SR20260806887798本体模型支持内存图管理和子图检索）.md》中详细描述。
 
 ### 3.5 OAG 配置分层与故障恢复（Q4-10～11）
 
@@ -254,26 +221,45 @@ OAG Runbook 至少覆盖：V2 503 限流/排队、Embedding 服务 503/重置、
 
 ### 4.1 全量/增量数据链路（Q4-12）
 
-原规模要求为：**单表首次全量 1000 万行（对应 100 万用户假设），增量 10 万行**；这是测试工作负载，不表示单条记录必占某固定字节。DataSync/Spark 按 `(tenantId, ontologyId, objectTypeId, propertyId)` 拆分读取、Normalize/Dedup 后形成分区文件和 Manifest，再通知 OAG 执行建库。
+规模要求为：**单表首次全量 1000 万行（对应 100 万用户假设），增量 10 万行**；DataSync/Spark 按 `(tenantId, ontologyId, objectTypeId, propertyId)` 拆分读取、Normalize/Dedup 后形成分区文件和 Manifest，再通知 OAG 执行建库。
 
-建议复用既有 OAG 的 MinIO CSV + 持久化 Task 体系，Manifest 至少包含 `jobId/mode/ontologyId/revision/snapshotVersion/partitionId/expectedPartitions/rowCount/checksum/objectKey`。模式建议沿用 `FULL_REPLACE / INCREMENTAL / CLEAR`，若当前接口另有模式名则以已发布契约为准。DataSync/Spark 只生产数据，**OAG 负责归一化、归属校验、Embedding、向量/关键词写入、Verify 和最终发布**。
+复用既有 OAG 的 MinIO CSV + 持久化 Task 体系。
 
-| 阶段 | 输入 | 处理与失败行为 |
-|---|---|---|
-| Snapshot/增量准备 | 数据源高水位、分区清单 | 固定快照边界；多批上传不能被当作多个完整快照 |
-| Staging 导入 | MinIO 文件、Manifest | 文件 checksum、去重与行数校验；分批 COPY/staging |
-| Diff 与 Embedding | Staging 与现网 Active | 仅新增/真实变更生成 Embedding；未变行复用原向量 |
-| Batch write | OpenSearch、GaussVector | 受控并发、限流、重试；保留失败记录与 checkpoint |
-| Verify/Publish | Task 汇总与双存储版本 | 全部分区完成且一致性通过后发布，失败不暴露半成品 |
-| Recovery | 持久化 Task/checkpoint | 幂等重放未完成分区；禁止全量中间批触发全表删除 |
-
-**指标**：全量/增量用时、rows/s、Embedding 请求数/耗时、复用向量比率、staging COPY 用时、DB CPU/IO、OpenSearch/GaussVector 写入成功数、两库差异、失败重试与恢复时间。
 
 ### 4.2 定义索引“全量比对 + 增量 Embedding”（Q4-14）
 
-本体定义索引键为稳定模型 ID（及 revision/租户范围）；Hash 只对**实际参与 Embedding 的规范化文本、模型名/维度和必要语义字段**计算。Name/Description 变化并非必然都需要重新算向量：仅嵌入输入发生变化才重新向量化；但词法索引、权威本体定义的变化仍需同步更新。反之，embedding 模型、维度或归一化规则改变时，即便文本没变也必须按版本重建。
-
-流程为 `Extract current definitions → Normalize → Diff(active id + inputHash + modelVersion) → Reuse unchanged vectors → Embed new/changed → Verify → Publish`。不建议直接对所有定义先 DROP 表再重算向量；模型索引的完整快照删除与增量更新走不同任务类型。
+验证结果：
+```
+SELECT  
+test."value",  
+test.object_type_id,  
+test.property_id  
+FROM test  
+WHERE NOT EXISTS (  
+SELECT 1  
+FROM "t_oag_instance_dtmi.ontology.65313863.1"  
+WHERE "t_oag_instance_dtmi.ontology.65313863.1"."value" = test."value"  
+AND "t_oag_instance_dtmi.ontology.65313863.1".object_type_id = test.object_type_id  
+AND "t_oag_instance_dtmi.ontology.65313863.1".property_id = test.property_id  
+);  
+ontoretrievalvectordb2000=# SELECT  
+ontoretrievalvectordb2000-# test."value",  
+ontoretrievalvectordb2000-# test.object_type_id,  
+ontoretrievalvectordb2000-# test.property_id  
+ontoretrievalvectordb2000-# FROM test  
+ontoretrievalvectordb2000-# WHERE NOT EXISTS (  
+ontoretrievalvectordb2000(# SELECT 1  
+ontoretrievalvectordb2000(# FROM "t_oag_instance_dtmi.ontology.65313863.1"  
+ontoretrievalvectordb2000(# WHERE "t_oag_instance_dtmi.ontology.65313863.1"."value" = test."value"  
+ontoretrievalvectordb2000(# AND "t_oag_instance_dtmi.ontology.65313863.1".object_type_id = test.object_type_id  
+ontoretrievalvectordb2000(# AND "t_oag_instance_dtmi.ontology.65313863.1".property_id = test.property_id  
+ontoretrievalvectordb2000(# );  
+value | object_type_id | property_id  
+--------------+---------------------------------------+-------------  
+温控器A | oag_instance_dtmi.ontology.65313863.1 | P1001  
+3号车间-东区 | oag_instance_dtmi.ontology.65313863.1 | P1002  
+(2 rows)
+```
 
 ### 4.3 Incremental 和 FULL_REPLACE 的数据库差异比对（Q4-17）
 
