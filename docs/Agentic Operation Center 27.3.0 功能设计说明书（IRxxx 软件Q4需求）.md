@@ -150,6 +150,8 @@ OMS 保持服务无状态或将可恢复状态外置；在本体加密的需求�
 
 **实际接口契约**：《1.子图检索接口设计v2.md》定义 `POST /v2/onto-retrieval/subgraph/semantic-search`、`Content-Type=application/json`。原 V1 中位于 Path 的 `ontologyId` 进入 V2 Body；`query`/`entities` 至少提供一个，**`entities` 在 HTTP Body 是 1～102400 字符的 JSON String**；两者均存在时优先 entities 并跳过实体提取。
 TODO：增加参见：ICT服务与软件/Agentic Operation Center/Docs/27/27.3.0/02.设计/02.设计文档/Agentic Operation Center 27.3.0 功能设计说明书(IR20260729001097_OAG子图检索能力增强)/1.子图检索接口设计v2.md
+接口规范：本体子图语义检索接口v2 > 字段说明: https://wiki.huawei.com/wiki/WIKI2026101013239851?title=%E5%AD%97%E6%AE%B5%E8%AF%B4%E6%98%8E
+
 
 | 参数 | 最新 V2 规则 | Skill 兼容性 |
 |---|---|---|
@@ -162,38 +164,6 @@ TODO：增加参见：ICT服务与软件/Agentic Operation Center/Docs/27/27.3.0
 | `topk` | **小写 k**，默认 3 | 旧 CLI `--topK` 仍接收，Body 只发送 `topk` |
 | `graphExpansionStrategy` / `hopLimit` | minimal/khop/component，hopLimit 默认 3 | `--hopLimit` 别名保留 |
 | `includeFunctions` / `includeActions` | API 默认 0/0 | Skill 保留原 includeFunctions=1（显式传值） |
-
-**entities 内容约束**：`extractedEntities` **非空**、各项必须有 `objectType`，`properties` 可省略（软件场景已约定不传）；`propertyValues` 可省略。每个值组的 `objectType` 非空、`value` 非空；`property` 可省略或使用 `""`，表示按该对象所有可检索语义字段链接。`seedNodes` 只包含对象，不构造 Property 种子。枚举不建立 `t_oag_enum_{ontology_id}` 检索索引，OMS 属性 EnumType 全量返回；实例值链接只使用 `t_oag_instance_{ontology_id}`。
-
-**V2 结果关键差异（以附件响应示例 2-1 为准）**：
-
-```json
-{
-  "resultCode": 200,
-  "resultMessage": "success",
-  "result": {
-    "seedNodes": [],
-    "propertyValuesLinks": [],
-    "nodes": [
-      {
-        "id": "payment-type-property-id",
-        "label": "property",
-        "properties": {"name": "paymentType", "dataType": "enum", "enumDataType": "string"},
-        "propertyEnumValues": [
-          {"value": "Prepaid", "isDefault": "true", "defaultDataValue": "0"},
-          {"value": "Postpaid", "isDefault": "false", "defaultDataValue": "1"},
-          {"value": "Hybrid", "isDefault": "false", "defaultDataValue": "2"}
-        ]
-      }
-    ],
-    "edges": [],
-    "functions": [],
-    "actions": []
-  }
-}
-```
-
-这里 `propertyEnumValues` **在 `nodes[]` 节点顶层，不在 `nodes[].properties` 内部**；`propertyInstanceValues` 也位于节点顶层，且仅当 Property 支持语义检索、存在本次实例链接结果时返回。`properties.dataType=enum` 时另带 `enumDataType`。`propertyValuesLinks[].valuesLinks[].valuesMapping[]` 是独立的值链接证据，附件示例包含 `canonicalValue/defaultDataValue/score`；**不能混同 `propertyInstanceValues`**。`isDefault` 使用 `"true"/"false"` 字符串，枚举全量由 OMS 定义决定；不得把所有枚举自动作为 Cypher 过滤值。
 
 
 ### 3.2 Skill 和脚本从 V1 迁移到 V2（Q4-07）
@@ -259,8 +229,26 @@ sequenceDiagram
     O-->>C: Published / Failed
 ```
 
+TODO：增加章节，用于验证100W用户 1000W索引数据全量同步，参考之前的验证结果：
+|   |   |   |   |   |   |   |   |   |
+|---|---|---|---|---|---|---|---|---|
+       
+|测试模型|服务器类型|OAG规格|数据规格|测试场景|速率(条/s)|   |   |总耗时(s)|
+|OAG接口同步实例化数据|embedding读数据|向量入库|
+|单文件 全量|920C+物理机|3U4G|10w|8并发|345.01|526.73|814.71|289.85|
+|单文件 全量|HV6+虚拟机|3U4G|18w|8并发|340.74|463.32|706.09|528.26|
+|多文件 10并发 全量|920C+物理机|3U4G|200w|8并发|262.81|215.18|316.83|7,610.10|
+|多文件 10并发 增量|920C+物理机|3U4G|20w|8并发|403.8|859.52|770.90|505.20|
+|多文件 10并发 全量|920C+物理机|3U4G|20w|16并发|387.32|1,550.39|556.49|526.70|
+|多文件 10并发 增量|920C+物理机|3U4G|20w|16并发|451.32|1,252.11|826.45|452.00|
+
+
+TODO: 将github docs/本体实例增强数据分批增量Embedding独立临时表设计方案.md 补充到4. 实例索引构建、差异同步与性能中
+https://github.com/cfwl100/onology_dsl/blob/main/docs/%E6%9C%AC%E4%BD%93%E5%AE%9E%E4%BE%8B%E5%A2%9E%E5%BC%BA%E6%95%B0%E6%8D%AE%E5%88%86%E6%89%B9%E5%A2%9E%E9%87%8FEmbedding%E7%8B%AC%E7%AB%8B%E4%B8%B4%E6%97%B6%E8%A1%A8%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88.md?utm_source=chatgpt.com
+
 
 ### 4.2 定义索引“全量比对 + 增量 Embedding”（Q4-14）
+
 
 验证结果：
 
