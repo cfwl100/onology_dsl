@@ -287,71 +287,173 @@ sequenceDiagram
 
 **通过条件**：1000 万全量和 10 万增量均记录数据完整数/去重数、源 Manifest checksum、任务最终状态、重复 Embedding 率、向量/倒排计数一致性、无主键冲突、错误恢复。**最新原始需求只给了规模没有给全量入库总时长硬阈值；最终总耗时、资源预算、可扩倍数须以压测结论签审**，不自造“10 分钟”类指标。
 
-### 4.2 定义索引“全量比对 + 增量 Embedding”（Q4-14）
+### 4.2 本体定义索引：全量比对、差异 Embedding（Q4-14）
 
-TODO：下面的方案，保留SQL语句，按照本体实例增强数据分批增量Embedding独立临时表设计方案 刷新
+**与 Q4-17 的区别**：Q4-14 处理 OMS 的 ObjectType/Property/Relationship 定义语义索引（`t_oag_{ontologyId}` 等权威表）；Q4-17 处理真实 Instance Value（`t_oag_instance_{ontologyId}`）。二者共享数据库增量判定思想，但不能把 Instance 的 `(value, object_type_id, property_id)` 键硬套到定义索引，也不能删除定义索引后全量重算。如下版本化定义索引逻辑为**建议实现**，实际定义索引唯一键及表字段须核对现有 Mapper。
 
-验证结果：
+1. OMS 输出权威完整模型 revision，按 `(tenantId, ontologyId, definitionId, definitionType)` 锁定稳定实体键；嵌入输入需记录 `embeddingModelId/modelRevision` 和标准化文本摘要（name/description/可参与索引的 synonyms + lang）。将其与旧定义索引快照比对：`UNCHANGED`（直接复用 vector）、`INSERT`（新 embedding）、`TEXT_CHANGED`（重新 embedding）、`METADATA_ONLY`（不重嵌，仅更新元数据/词法索引）、`DELETE`（权威定义已删除）。
+2. **新记录和内容变化**只对该批差异计算 Embedding，已存在且内容散列不变的 Vector 保留；确保不同模型版本/维度不误用旧 Vector。参考 Q4-17 的 `TEMP B → SELECT NOT EXISTS/LEFT JOIN → Java Embedding → 幂等写 A`，但定义场景使用自己的定义主键和文本摘要列，不复用 Instance 的临时表 DDL。
+3. 全量定义快照只有在 **OMS revision 完整、所有分页加载结束并通过校验**后才识别旧定义缺失与合法删除；每批次增量到达只允许 INSERT/UPDATE，不执行“本批缺失则删除”。
+4. 重新生成的语义定义索引与内存图须以**同一模型 revision**验证/发布，失败保留旧 active 版本。EnumType 全量输出由 OMS 属性装配，不再建立单独 Enum 搜索索引。
+5. 记录 `definitions_total/unchanged/added/text_changed/deleted/embedded`、模型维度、Embedding 复用比与索引构建/回滚时间。验收：首次构建、相同模型二次全量对比、仅修改 display/description、关系删除、Embedding 模型升级、分页丢失、两个 Pod 同时执行等。
 
-GaussDB识别2张表增量差异的SQL语句：
-```Sql
-SELECT  
-	test."value",  
-	test.object_type_id,  
-	test.property_id  
-FROM test  
-WHERE NOT EXISTS (  
-	SELECT 1  
-	FROM "t_oag_instance_dtmi.ontology.65313863.1"  
-	WHERE "t_oag_instance_dtmi.ontology.65313863.1"."value" = test."value"  
-	AND "t_oag_instance_dtmi.ontology.65313863.1".object_type_id = test.object_type_id  
-	AND "t_oag_instance_dtmi.ontology.65313863.1".property_id = test.property_id  
-);  
+**SQL 保留说明**：源 TODO 的 GaussDB 实测 SQL 实际查询的是 `t_oag_instance_...`，属于**Instance 记录增量比对**而非定义索引。原 SQL 与其 `(2 rows)` 结果在 §4.3.1 **原样保留**，作为数据库 `NOT EXISTS` 可用性证据；不能因为原文把它放在 Q4-14 下就错误认定为“定义索引已验证”。
+
+### 4.3 Instance 值增量：每批独立 TEMP B、数据库差异、Embedding 与幂等写入（Q4-17）
+
+**方案依据**：[GitHub《本体实例增强数据分批增量Embedding独立临时表设计方案》](./本体实例增强数据分批增量Embedding独立临时表设计方案.md)。本节已纳入实现设计、表名规则、事务 SQL、并发与回退，**无需另生成文件**。目标为 **每批默认 4000 条可配置、到达时间不固定、每批独立 B、无额外差异表 C、不等待所有批次、不删除正式表 A、不重复对已有 A 组合键 Embedding**。
+
+#### 4.3.1 既有 GaussDB 实测 SQL（保留原始语句及输出）
+
+以下是当前文档 TODO 内提供的**两张表差异验证**；`test` 为测试输入临时/测试表名，`t_oag_instance_...` 是真实存量表。该证据说明 `NOT EXISTS` 可筛新增键，**不代表全部 TEMP/ON COMMIT DROP/LVQ 语法已在目标 GaussVector 版本验证**。
+
+```sql
+SELECT
+    test."value",
+    test.object_type_id,
+    test.property_id
+FROM test
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM "t_oag_instance_dtmi.ontology.65313863.1"
+    WHERE "t_oag_instance_dtmi.ontology.65313863.1"."value" = test."value"
+      AND "t_oag_instance_dtmi.ontology.65313863.1".object_type_id = test.object_type_id
+      AND "t_oag_instance_dtmi.ontology.65313863.1".property_id = test.property_id
+);
 ```
 
-```
-ontoretrievalvectordb2000=# SELECT  
-ontoretrievalvectordb2000-# test."value",  
-ontoretrievalvectordb2000-# test.object_type_id,  
-ontoretrievalvectordb2000-# test.property_id  
-ontoretrievalvectordb2000-# FROM test  
-ontoretrievalvectordb2000-# WHERE NOT EXISTS (  
-ontoretrievalvectordb2000(# SELECT 1  
-ontoretrievalvectordb2000(# FROM "t_oag_instance_dtmi.ontology.65313863.1"  
-ontoretrievalvectordb2000(# WHERE "t_oag_instance_dtmi.ontology.65313863.1"."value" = test."value"  
-ontoretrievalvectordb2000(# AND "t_oag_instance_dtmi.ontology.65313863.1".object_type_id = test.object_type_id  
-ontoretrievalvectordb2000(# AND "t_oag_instance_dtmi.ontology.65313863.1".property_id = test.property_id  
-ontoretrievalvectordb2000(# );  
-value | object_type_id | property_id  
---------------+---------------------------------------+-------------  
-温控器A | oag_instance_dtmi.ontology.65313863.1 | P1001  
-3号车间-东区 | oag_instance_dtmi.ontology.65313863.1 | P1002  
+源验证结果：
+
+```text
+value         | object_type_id                         | property_id
+温控器A        | oag_instance_dtmi.ontology.65313863.1 | P1001
+3号车间-东区   | oag_instance_dtmi.ontology.65313863.1 | P1002
 (2 rows)
 ```
 
-### 4.3 Incremental 和 FULL_REPLACE 的数据库差异比对（Q4-17）
-
-TODO：下面的方案，保留SQL语句，按照本体实例增强数据分批增量Embedding独立临时表设计方案 刷新
-
-**核心实现目标**：以数据库内组合键比较替代全量删表/全量重复 Embedding。稳定键为 `(object_type_id, property_id, normalized(value))`，并加 `tenantId/ontologyId` 物理隔离；源值归一化语义必须固定。
-
-**FULL_REPLACE**：
-1. 由于是首次全量入库，按照当前已有的索引入库流程，每一条数据均需要做embedding，然后批量copy入库。
-
-**INCREMENTAL（只有变更集）**：
-1. 按照批次新建临时表，建表结构同原有的向量表结构。
-TODO：补充临时表的表名命名，防止多并发表名冲突
+**正式 A 表结构（原有 SQL，保留供建表路径核查；不是 B 结构）**：
 
 ```sql
-create table if not exists "${tableName}"  
-(  
-    vector floatvector(${vectorDim}) not null,    value VARCHAR(4096),    synonyms text,    property_id VARCHAR(512) not null,    property_name VARCHAR(512),    object_type_id VARCHAR(256) not null,    object_type_name VARCHAR(512),    CONSTRAINT "uk_instance_${tableName}" PRIMARY KEY (object_type_id, property_id,value));  
-set maintenance_work_mem='4GB';  
+create table if not exists "${tableName}"
+(
+    vector floatvector(${vectorDim}) not null,
+    value VARCHAR(4096),
+    synonyms text,
+    property_id VARCHAR(512) not null,
+    property_name VARCHAR(512),
+    object_type_id VARCHAR(256) not null,
+    object_type_name VARCHAR(512),
+    CONSTRAINT "uk_instance_${tableName}"
+      PRIMARY KEY (object_type_id, property_id, value)
+);
 ```
 
-2. 将增量数据插入临时表，只写入value、property_id、object_type_id三个字段的值；
-3. 在Gauss库内比对和识别增量数据，然后针对增量数据进行embedding并入库。
-4. 
+注意 `${tableName}` 是 MyBatis 原有动态标识符用法，**不得由上游任意传入字符串**；必须将其映射为白名单 tenant/ontology 对应的服务端表名并正确引用，不能把模型 ID 原样拼接 SQL 以形成注入面。上例正式表的 `vector NOT NULL` 不允许直接用 `LIKE A` 而只导入 3 字段的 B。
+
+#### 4.3.2 独立临时表命名、防冲突与生命周期
+
+| 项目 | 规范与原因 |
+|---|---|
+| 推荐表名 | `tmp_oag_emb_b_<batch_uuid32>`，示例 `tmp_oag_emb_b_a81f62c0d93e4b728f614c039ae725bd` |
+| 生成规则 | 每批/每次重试由**服务端**生成独立 UUID v4、去连字符、转 32 位小写 hex；不使用毫秒时间戳/线程号/外部批次号直接拼表名 |
+| 长度/过滤 | 共 **46 个 ASCII 字节**（固定前缀14+UUID32），≤PostgreSQL 常见 63 字节限制；正则 `^tmp_oag_emb_b_[0-9a-f]{32}$`，SQL identifier 按白名单校验后引用 |
+| 两层隔离 | 命名 UUID + `pg_temp` 会话级独立 schema；不同 JDBC 连接不共享同一 TEMP；同连接禁止静默重用重名表 |
+| DDL/事务 | `CREATE TEMP TABLE ... ON COMMIT DROP`，同一**物理 JDBC Connection**完成建表、插入、SELECT，短事务提交后自动删除；不能由 ORM 在三步间切换连接 |
+| 数据类型 | B 只有 `value, object_type_id, property_id` 三列，按正式 A 类型（如 VARCHAR(4096)/VARCHAR(256)/VARCHAR(512)）定义，均 NOT NULL，不存 vector；默认一批约 4000 行，不建 B 索引 |
+| 并发 | 每批 B 独立、不同批次可交错到达；唯一键仍由 A 的非延迟唯一约束保障。临时表不会承担跨批次互斥 |
+
+**标识符示意（Java）**：
+
+```java
+private static final Pattern TEMP_NAME =
+    Pattern.compile("^tmp_oag_emb_b_[0-9a-f]{32}$");
+
+static String newTempTableName() {
+    String name = "tmp_oag_emb_b_" +
+        UUID.randomUUID().toString().replace("-", "");
+    if (!TEMP_NAME.matcher(name).matches()) {
+        throw new IllegalStateException("invalid temp name");
+    }
+    return name;
+}
+
+static String tempRef(String name) {
+    if (!TEMP_NAME.matcher(name).matches()) {
+        throw new IllegalArgumentException("unsafe temp identifier");
+    }
+    return "pg_temp.\"" + name + "\"";
+}
+```
+
+#### 4.3.3 一批新增数据的 SQL 与事务时序
+
+**阶段 I：短事务（创建 B、装载、找新键）**，B 的创建和查询绑定同一连接。在 PostgreSQL 兼容版本可采用：
+
+```sql
+BEGIN;
+CREATE TEMP TABLE "tmp_oag_emb_b_a81f62c0d93e4b728f614c039ae725bd" (
+    "value" VARCHAR(4096) NOT NULL,
+    object_type_id VARCHAR(256) NOT NULL,
+    property_id VARCHAR(512) NOT NULL
+) ON COMMIT DROP;
+
+-- 同一 JDBC 事务中的 PreparedStatement 批量 INSERT，参数严格绑定
+INSERT INTO pg_temp."tmp_oag_emb_b_a81f62c0d93e4b728f614c039ae725bd"
+    ("value", object_type_id, property_id) VALUES (?, ?, ?);
+
+-- A 为经白名单解析、加 schema 引用的本体实例正式表
+SELECT b."value", b.object_type_id, b.property_id
+FROM (
+    SELECT DISTINCT "value", object_type_id, property_id
+    FROM pg_temp."tmp_oag_emb_b_a81f62c0d93e4b728f614c039ae725bd"
+) b
+WHERE NOT EXISTS (
+    SELECT 1 FROM public."t_oag_instance_dtmi.ontology.65313863.1" a
+    WHERE a."value" = b."value"
+      AND a.object_type_id = b.object_type_id
+      AND a.property_id = b.property_id
+);
+COMMIT;
+```
+
+**必须将 `SELECT` ResultSet 完整读取到 Java List 再 COMMIT**；`ON COMMIT DROP` 后不再查询 B。实际 JDBC 使用 Spring TransactionTemplate+JdbcTemplate 同 DataSource 的事务管理器，禁止远程模型调用在数据库事务内。某些 GaussVector 兼容层可能不支持 `TEMP/ON COMMIT DROP` 或标准 PostgreSQL `ON CONFLICT`，**先在目标版本做 DDL/事务/驱动验收**，若不支持只可选受控的每批 staging 表并显式 DROP/恢复，不得悄悄按 PostgreSQL 语义上线。
+
+**阶段 II：Java 无事务的增量 Embedding**：只对阶段 I 的新增 DISTINCT 键计算向量；按照 BGE-M3 实际模型 embedding-request-size（参考 32）切片。一个 Batch 4,000 行、只新增 200 行时只需 200 次文本向量化输入，不是重新向量化 4,000；按每请求 32 个输入约需 7 次请求（不含重试）。校验返回数量/维度/非有限浮点数；**失败不允许以全零向量静默入库**。可选 SingleFlight 对跨批次相同完整键减少重复模型调用，但数据库 A 的唯一键才保证最终记录不重复。
+
+**阶段 III：独立短事务，将有效向量批量写入 A**（PG 兼容语义示意）：
+
+```sql
+INSERT INTO public."t_oag_instance_dtmi.ontology.65313863.1"
+    ("value", object_type_id, property_id, vector)
+VALUES (?, ?, ?, ?)
+ON CONFLICT (object_type_id, property_id, "value")
+DO NOTHING;
+```
+
+当前 GaussVector 资料也出现 `ON DUPLICATE KEY UPDATE ... EXCLUDED` 方言；**两个写法不能未经目标版本语法验证混用**。生产使用经实测支持的 mapper SQL 和唯一键冲突策略；增量语义要求已有业务键的旧 vector 不覆盖，新增时同时向 OpenSearch 以一致业务键幂等写入（受 §5.3 的检索模式控制）。
+
+| 事务段 | TEMP 存活 | 失败恢复 |
+|---|---|---|
+| I：CREATE B / JDBC BATCH / anti-join | 在短事务中 | ROLLBACK 后本事务创建表消失；重放同一原始批次 |
+| II：Java Embedding | B 已随 COMMIT 自动删除 | 不调用数据库事务；可靠文件/Task 重放，不能依赖内存 List |
+| III：向量写入 A / OpenSearch 补写 | 不依赖 B | A 主键冲突幂等跳过；OpenSearch 失败按 Task checkpoint 重试 |
+| 全部完成 | 无 TEMP | 标记可观测成功，跨批次无需等待全量结束 |
+
+**并发剩余风险**：两个 Pod 同时发现 A 缺相同键，可能都调用 Embedding，最终 A 唯一键只留一条；**不保证远程模型 exactly-once**。若该浪费成为瓶颈，按完整组合键加多实例可用的 SingleFlight/锁/租约（续租与 fencing）并二次检查 A，不能宣称仅靠临时表名解决重算。高频 4000 行物理建 DROP TEMP 也可能造成 PG 系统目录膨胀，持续监控 pg_class/pg_attribute/autovacuum。
+
+#### 4.3.4 FULL_REPLACE 与 INCREMENTAL/DELETE 的边界
+
+- **首次 FULL_REPLACE**：没有 A 的存量键时，按现有完整快照路径全部入库（每条有效记录必要时 Embedding、批量 COPY、按版本建/预建 LVQ）；每批数据文件可以独立处理，但**不得在缺少完整快照标志前做旧数据删除**。
+- **后续 FULL_REPLACE**：语义是**全量替换**而非普通“只插入”增量。建议对完整 Manifest 先创建新的 staging generation，按 `(fullSnapshotVersion)` 完整装载/校验再原子切换 active generation，确认成功后按保留窗口清理旧代；如希望复用老 vector，可在同 tenant/ontology/Property/modelVersion 下按稳定键拷贝、并对未出现旧键在**新代**中删除，不得将已到达的局部批次视为全量集合。
+- **INCREMENTAL**：每批 B 比对/INSERT，只添加不存在键；若有后续业务 `DELETE` 则以源事件顺序和完整键处理删除，不把“本批不存在”理解为要清理整个 A。
+- **CLEAR**：已在当前 Task API 中表示清理整个 Instance 索引，不等同一条记录的 `DELETE`。CLEAR/模型 revision 变化与运行中的 INCREMENTAL 必须串行化或有明确代际栅栏，防止旧 Task 回写。
+- **幂等与一致性**：源 Producer/Task 需记录快照版本、原始文件不可变 hash、模型 revision、batch/partition 序号和处理水位，先确认两类索引一致后发布；异常按文件/批次重试而不是丢失部分结果。
+
+#### 4.3.5 配置、负载边界与验收
+
+默认**单业务批 4000**（需从 DCC 注册映射到现有 `batchInstance.maxBatchSize` 并解决 1000/4000 代码默认差异），示例差异子批 JDBC 500、Embedding 请求 size32、插入 200、并发批 8 均为**压测起点非正式默认**。`copy-batch-size` 需与逻辑 Batch 区分并以 §4.5 为准。按租户限制连接池与查询线程，创建/建表频率、diff rows、Embedding HTTP in-flight、冲突跳过、写入总行数都可按 Task 查看。
+
+测试：0/10/100% 新键、单批/跨批去重、两 Pod 重叠批次、三阶段故障、长间隔到达、对象/属性 ID 有效性、TEMP ROLLBACK 自动释放、未验证 PG 方言阻断上线、不更新旧 A vector、OpenSearch 部分失败重试及 FULL 旧版本不误删。
 
 ### 4.5 LVQ 预建（Q4-15）
 
