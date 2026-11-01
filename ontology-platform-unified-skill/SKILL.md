@@ -21,28 +21,54 @@ metadata:
 
 ---
 
-## OAG 子图检索
+## OAG 子图检索（V2）
 
-用上层传入的 query 检索本体子图。先检索，不跳过检索直接假设子图。
+**统一接口**：`POST /v2/onto-retrieval/subgraph/semantic-search`（网关前缀继承原服务）。`query` 或 `entities` 至少一个非空；`entities` 非空时优先使用并跳过服务端实体提取。HTTP Body 的 `ontologyId` 必填，`entities` **必须是 JSON 字符串**，不能直接发送内部对象。
+
+**自然语言调用：保留原 Skill 命令**
 
 ```bash
-python scripts/semantic_subgraph_search.py --query "<问题/业务主题>" --ontology-id "<本体ID>"
+python scripts/semantic_subgraph_search.py --query "<问题/业务主题>"
 ```
-也可 `--query-json '<json>'` 传可选参数。
 
-- 必填：`query`。可选：`ontology-id`、`similarity-threshold`(0.6)、`include-functions`(0/1)、`seed-retrieval-mode`(hybrid)、`topK`(3)、`graph-expansion-strategy`(minimal)、`adaptive-retrieval`(1)、`hopLimit`(3)。
-- query 规范（按形态选模板，不混用）：单对象明细/过滤 `【对象】携带【属性1】、【属性2】…`；关系/路径 `从【对象1】到【对象2】之间的路径，其中[对象1]携带【属性1]，[对象2]携带【属性2】【属性3】`。
-- **输出：直接返回原始 `result.nodes`/`result.edges`/`result.functions`。调用方应直接消费原始子图生成 OQL，不得单独"摘要子图"或"生成 todo 任务清单"再规划。**
-- 检索为空/噪声大时明确说明结果不足，不虚构子图。
-- 边界：不当数据查询；无子图结果不给确定性路径结论；不直接执行函数或写数据。
+上述命令需配置环境变量 `ONTOLOGY_ID`；也可显式加 `--ontology-id "<本体ID>"`。服务还需 `SERVICE_NAMESPACE`、`TENANT_ID`。脚本复用 `trace_utils` 构造鉴权和会话追踪 Header。
+
+**软件场景结构化调用**（`entities.json` 可直接存储下列业务结构，脚本会包装为 V2 HTTP JSON 字符串）：
+
+```bash
+python scripts/semantic_subgraph_search.py --ontology-id "<本体ID>" --entities-file ./entities.json --adaptive-retrieval 0
+```
+
+```json
+{
+  "entities": {
+    "extractedEntities": [{"objectType": "Account"}],
+    "propertyValues": [
+      {"objectType": "Account", "propertyValues": [{"property": "paymentType", "value": "prepaid"}]}
+    ]
+  }
+}
+```
+
+还可 `--entities '<JSON>'` 或 `--query-json @request-v2.json`；后者是完整 HTTP Body JSON，可指定 `ontologyId`、`query`、JSON 字符串形式 `entities` 等。脚本将旧 `--topK` CLI 别名映射成 V2 Body **`topk`**，保留 `--hopLimit` 别名并发送 `hopLimit`；`ontologyId` 不再拼进 V1 路径。
+
+- **默认与兼容性**：为保持原 Skill 行为，脚本显式传 `seedRetrievalMode=hybrid`、`includeFunctions=1`（V2 服务接口本身默认 vector/0）；其余默认相似度 0.6、topk 3、minimal、hopLimit 3、includeActions 0。query-only 默认 `adaptiveRetrieval=1`，entities 模式默认 `0`，显式传入的 `0` 不得被覆盖。
+- **entities 业务规则**：`extractedEntities` 非空且至少一个 `objectType`；`properties` 可省略，软件场景约定无需传；`propertyValues` 可省略，内部每条 `value` 必填，`property` 省略或 `""` 代表不限定该对象的具体语义属性；`seedNodes` 的种子只有 ObjectType。
+- **V2 返回**：直接使用 `result.seedNodes/nodes/edges/propertyValuesLinks/functions/actions`。Property 节点的 `properties.dataType`、`properties.enumDataType` 描述类型；**枚举数组 `nodes[].propertyEnumValues` 和实例映射数组 `nodes[].propertyInstanceValues` 在节点顶层**，不在 `nodes[].properties` 下。枚举来自 OMS 全量定义，实例来自值检索，V2 不消费 `semanticExtensions`。
+- **空结果/异常**：脚本校验 HTTP 状态、业务 `resultCode` 和 JSON 格式；错误输出保留 `message_type=message_ontololgy_subgraph` 的历史包装结构并以非零退出。成功的 `nodes=[]` 是空子图而非 HTTP 失败；不能虚构事实。
+- **流程边界**：OAG 输出原始子图后直接用于 OQL/后续推理，不再独立执行“摘要子图”“生成 todo”等 LLM 轮次；不凭空选择业务枚举过滤条件。
 
 ### 子图 → OQL 直连映射（生成 OQL 时一次完成）
-| 子图元素 | OQL 对应 |
+
+| V2 返回元素 | OQL 对应 |
 |---|---|
-| node 的 `objectType` | `objects[].objectType` |
-| `property` + `has_property` 归属 | `conditions.field` / `returns.fields` |
-| edge / `defines_relation.properties.name` | `relationships[].relationshipType` |
-| `result.functions` | Function 候选（见「Function」） |
+| `nodes[].label="objectType"`、`nodes[].properties.name` | `objects[].objectType` |
+| `nodes[].label="property"` 与 `edges[].edgeType="has_property"` 的归属 | `conditions.field` / `returns.fields` |
+| `edges[].edgeType="defines_relation"`、`edges[].propertyMap.name` | `relationships[].relationshipType` |
+| `nodes[].propertyEnumValues` / `nodes[].propertyInstanceValues` | 作为业务值候选，需结合原始问题与物理 Binding 确认后再使用 |
+| `result.functions` | Function 候选 |
+
+**兼容性注意**：附件 query 响应示例1-2 仍使用旧的 `nodes[].type` 与 `edges[].name` 形态；entities 示例2-1 使用 `label/properties` 与 `edgeType/propertyMap`。在后端统一 DTO 前，消费方应检查实际版本并显式适配，不能混用两套形态。
 
 ---
 

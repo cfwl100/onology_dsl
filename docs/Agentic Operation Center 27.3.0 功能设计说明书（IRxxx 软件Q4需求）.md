@@ -1,14 +1,14 @@
 # Agentic Operation Center 27.3.0 功能设计说明书（IRxxx 软件Q4需求）
 
-> 版本：V1.0（功能设计评审稿）  
+> 版本：V1.1（2026-10-31 Q4 需求、DCC与性能规格修订稿）  
 > 日期：2026-10-31  
 > 范围：OMS、OAG、DFx、安全、语义索引构建/检索、DataSync/Spark 联调及内部 Skill  
-> 依据：本文件原始“需求范围与需求清单”20 项及参数清单；工作量合计 **7.9（原文未注明单位）**。  
+> 依据：本次最新 Q4 20 项需求；附件《新增Value参数统计_2026-10-31.md》《子图检索的查询性能规格(10-26).md》。原工作量 7.9 来源于旧版，**最新清单不含工作量，不再沿用**。  
 > 定位：本文件是 Q4 跨模块功能设计，**不是已实现清单或经过压测的性能报告**。
 
 **相关设计**：[软件场景准确性和性能优化增强需求设计说明书](./软件场景准确性和性能优化增强需求设计说明书.md) · [OAG 本体锚点语义检索与向量索引设计方案 V6.7](./OAG本体锚点语义检索与向量索引设计方案.md) · [本体维值建模与检索需求分析](./需求分析Spec_本体维值建模与检索.md) · [V2 请求 Schema](./schemas/oag-software-subgraph-request.schema.json) · [V2 响应 Schema](./schemas/oag-software-subgraph-response.schema.json)。
 
-**阅读规则**：第 1 章是原始需求与边界；第 2～6 章给出跨模块设计；第 7 章是配置基线；第 8 章是发布、性能和验收。既有方案与本轮 Q4 发生冲突时，**保留两套口径并列为待决策项**，不擅自认为配置、路由和数据库代码已完成迁移。接口名称、DDL 和状态机中标注“建议”的部分均需详细设计/联调冻结。
+**阅读规则**：第 1 章为最新 20 项需求，第 2～6 章为实现方案，第 7 章为 @Value 参数 DCC 分类与**租户资源池监听**，第 8 章为子图查询规格和验收。区分原需求、代码扫描默认值、有效 DCC 配置及正式测试规格；附件是本次输入，不代表已独立上传仓库。新增 API、配置键和状态仍须联调确认。
 
 ---
 
@@ -20,19 +20,20 @@ CBS 面向运营商问账、集团客户问账，以及经营、销售、运营�
 
 本期 Q4 的重点是让 OMS/OAG 具备**安全交付、接口统一、自动索引、多实例扩展、配置治理、可恢复的数据同步与可量化的检索性能**。
 
-### 1.2 目标、原则与交付边界
+### 1.2 最新目标与交付边界
 
-| 目标 | 要求 | 责任 |
+| 目标 | 最新要求 | 主责 |
 |---|---|---|
-| 安全治理 | OMS 本体模型加密；索引最小化明文字段；前端/日志敏感子图可控 | OMS/OAG/安全 |
-| 接口统一 | OAG V2 同时服务通用 query 与 CBS entities；Skill 迁移 V2，V1 标记 deprecated | OAG/Skill |
-| 自动化交付 | App 安装触发 OAG 定义索引构建、内存图刷新，具备版本一致性与恢复能力 | OMS/OAG |
-| DFx 扩展 | OMS、OAG 均支持多实例负载分担、配置分层、故障诊断与快速恢复 | OMS/OAG/运维 |
-| 高效数据同步 | 全量 1000 万行、增量 10 万行的实例索引建库/比对/Embedding 优化 | DataSync/Spark/OAG |
-| 性能规格 | OAG 单实例 10 QPS、3 s 作为**待验证的原始目标**，制定资源和横向扩展模型 | OAG/性能测试 |
-| 可控预研 | 允许部分语义属性只建 OpenSearch 倒排索引，不走向量链路 | OMS/OAG |
+| OMS 安全 / DFx | 模型加密参数拆分，详细方案跟随《本体模型文件支持加密》；OMS 分域/定义接口及 Agent/OMS 双级缓存 | OMS/GDE |
+| 公共 DFx | OMS/OAG 场景包分层与恢复指导书遵循 GDE 统一要求 | OMS/OAG/GDE |
+| OAG 统一 | V2 query/entities 双模式、Skill V1 → V2，枚举不建索引、Property 全量返回枚举 | OAG/Skill |
+| App 自动化 | **先修复手动创建索引偶现问题**，再自动触发建索引及图缓存刷新 | OMS/OAG |
+| 全量增量 | 1000 万行首次全量、10 万行增量；DataSync 异步生产通知、Spark 合并小文件及前置去重 | Spark/DataSync/OAG |
+| 租户资源 | **线程池、队列与并发配额按租户划分，线程池资源参数按租户 DCC 监听**；系统级参数不进入 DCC | OAG/配置底座 |
+| 子图查询 | 依照附件：**2U4G 单实例 10 QPS、平均 ≤5 s、极端限流拒绝率 <20%**；3U4G 为建议压测规格 | OAG/性能测试 |
+| 检索预研与安全 | 仅 OpenSearch 倒排检索及 ID-only 安全索引要共同评审 | OMS/OAG/安全 |
 
-**范围**：包括需求表的 20 项及其必要的接口、数据模型、任务状态、并发安全和验收方案。不在本文擅自确定：安全加密算法和密钥服务、DCC 真实接口、LVQ 的数据库版本能力、具体部署副本数、存量表物理删除时间、向量库采购规格。现网 V1 的退役须完成消费者盘点和回归。
+**边界**：保留 Q4-01～20 原编号；公共 GDE 和加密专项仅定义集成责任，不重复制定安全或运维底座规范。详细 Task API、DCC Watch 协议、数据库 LVQ 与索引删除时点属于待联调实现；不能把本文目标描述成已上线能力。
 
 ### 1.3 术语与主链路
 
@@ -62,32 +63,34 @@ flowchart LR
     B -->|子图与属性值| A
 ```
 
-### 1.4 原需求范围与工作量清单
+### 1.4 最新需求范围与需求清单（2026-10-31）
 
-原文件的部分行只有“分类、说明、工作量”三列。下表按照其前后 OMS/OAG 段落**推定模块归属，仅用于设计责任分解，须由计划负责人确认**。原工作量值逐项保留；**7.9 为数值求和，原文未说明单位及是否含联调/测试**。
+根据本次最新输入，保留原先 20 条的序号与基本能力边界。**最新清单没有工作量列**，不将旧版 7.9 视为当前预算。
 
-| ID | 归属（整理） | 分类 | 原需求要点 | 原工作量 |
-|---|---|---|---|---:|
-| Q4-01 | OMS | 安全 | 模型加密，多实例与参数拆分 | 0.5 |
-| Q4-02 | OMS | DFx | 分域/本体定义接口规范，Agent 与 OMS 双侧缓存 | 0.2 |
-| Q4-03 | OMS | DFx | 多实例水平扩展与负载分担 | 0.1 |
-| Q4-04 | OMS | DFx | 故障快速恢复指导书 | 0.5 |
-| Q4-05 | OMS | 配置 | App 安装参数分层分级 | 0.1 |
-| Q4-06 | OAG | 接口统一 | 服务/软件场景合一，枚举索引默认不入库、属性枚举全量返回 | 0.1 |
-| Q4-07 | OAG/Skill | 接口统一 | 开放 Skill V1 → V2，V1 标记 deprecated | 0.3 |
-| Q4-08 | OMS/OAG | DFx | App 安装时 OMS 自动触发 OAG 建索引、刷新内存图 | 0.5 |
-| Q4-09 | OAG | DFx | 多实例、内存图同步与负载分担 | 0.1 |
-| Q4-10 | OAG/底座 | 配置 | 场景包/配置中心/接口参数分层 | 0.5 |
-| Q4-11 | OAG | DFx | 故障快速恢复指导书 | 0.5 |
-| Q4-12 | OAG/DataSync/Spark | 性能 | 全量单表 1000 万行（100 万用户）、增量 10 万行，Embedding/向量库容量 | 1.0 |
-| Q4-13 | OAG | 性能 | 单实例 3 s / 10 QPS 与水平扩展 | 1.0 |
-| Q4-14 | OAG | 索引效率 | 本体定义索引全量对比、仅差异行 Embedding | 0.5 |
-| Q4-15 | OAG/向量库 | 索引效率 | LVQ 索引在建表时创建；COPY 后免二次 rebuild；DCC 批大小 | 0.2 |
-| Q4-16 | OAG/数据生产者 | 联调 | 语义索引 Delete 接口及删除动作 | 0.1 |
-| Q4-17 | OAG | 索引效率 | incremental 时数据库内比对，不存在才向量化插入 | 0.5 |
-| Q4-18 | OMS/OAG | 预研 | 语义字段只入 OpenSearch、不建向量 | 0.5 |
-| Q4-19 | OMS/OAG/安全 | 安全 | 向量/全文索引去名称描述、仅保留 ID，名称反查转内存图/NebulaGraph | 0.5 |
-| Q4-20 | OMS/OAG/前端 | 安全 | 后台子图明文日志和前台子图展示的可控屏蔽 | 0.2 |
+| 需求编号 | 模块与能力 | 本轮需求描述 | 详细设计 |
+|---|---|---|---|
+| Q4-01 | OMS / 本体加密 | 参数拆分；详细方案跟随《本体模型文件支持加密》 | §2.1、§6 |
+| Q4-02 | DFx / OMS 分域 | 分域/本体定义接口规范，Agent 缓存+OMS 内部缓存避免实时全量查询 | §2.2 |
+| Q4-03 | DFx / OMS 多实例 | 水平扩展及负载分担 | §2.3 |
+| Q4-04 | DFx / OMS 恢复 | 公共故障恢复指导书，跟随 GDE 统一要求 | §2.5 |
+| Q4-05 | DFx / OMS 配置 | 场景包参数分层，跟随 GDE 统一要求 | §2.4、§7 |
+| Q4-06 | OAG / 统一接口 | 服务/软件场景统一；默认不建枚举检索索引，子图属性全量返回枚举 | §3.1 |
+| Q4-07 | 接口统一 / Skill | V1 切换 V2，V1 标记 deprecated | §3.2 |
+| Q4-08 | DFx / 自动索引 | **先修复手动建索引偶现问题**，再由 OMS App 安装触发 OAG 建索引并刷新图 | §3.3 |
+| Q4-09 | DFx / 多实例 | OAG 多实例、内存图同步刷新及接口负载分担 | §3.4 |
+| Q4-10 | DFx / 配置分层 | 组网参数场景包、系统参数配置中心、任务参数 API；租户线程池/DCC Watch | §3.5、§7 |
+| Q4-11 | DFx / 恢复 | 公共故障恢复指导书，跟随 GDE 统一要求 | §3.5 |
+| Q4-12 | 性能 / 数据导入 | **1000 万行全量、10 万行增量**；DataSync 生产/消费异步通知、Spark 小文件合并、Spark 图/语义去重，Embedding/向量库评估 | §4.1、§4.7 |
+| Q4-13 | 性能 / 子图查询 | 单实例 10 QPS、水平扩展；最新附件为 2U4G 平均 ≤5 s、拒绝 <20% | §5.1、§8 |
+| Q4-14 | 性能 / 定义索引 | 数据库全量比对、差异 Embedding | §4.2 |
+| Q4-15 | 性能 / LVQ | LVQ 建表前置、COPY 后免 rebuild 的目标及 DCC COPY 大小调优 | §4.5 |
+| Q4-16 | 性能 / 删除 | Delete 语义索引删除接口联调 | §4.6 |
+| Q4-17 | 性能 / 增量 | Incremental 在向量库比对，缺失/变化才向量化插入 | §4.3 |
+| Q4-18 | 性能/准确率 / 预研 | 实例值只进 OpenSearch 不进向量库，OMS 配语义字段；关键词单路路由及覆盖范围评估 | §5.3 |
+| Q4-19 | 安全 / 索引字段 | 向量/OpenSearch 去名称描述、ID 反查内存图/NebulaGraph，详情跟随加密专项 | §6.1 |
+| Q4-20 | 安全 / 明文屏蔽 | 后台日志及前端子图明文脱敏，通过加密堆栈参数控制，详情跟随加密专项 | §6.2 |
+
+**核心依赖链**：Q4-08 的手动索引缺陷修复先于自动化；Q4-12 的 Spark→DataSync→MinIO→OAG 要明确异步生产/消费边界；Q4-10 必须有物理线程池/队列隔离，而不只是 DCC 字面配置；Q4-13 性能规格不能沿用旧 3 秒值；Q4-19 的 ID-only 与 Q4-18 的关键词模糊检索存在设计冲突。
 
 ### 1.5 需求到设计与验收追踪
 
@@ -103,10 +106,9 @@ flowchart LR
 
 ## 2. OMS 功能设计：本体加密、分域访问与高可用（Q4-01～05）
 
-### 2.1 本体模型加密及安全边界（Q4-01）
+### 2.1 本体模型加密与参数拆分（Q4-01）
 
-**原要求**：本体模型加密、多实例与参数拆分；给定场景包示意参数为 `onto_encrypt: "0"`。安全设计参见：《Agentic Operation Center 27.3.0 功能设计说明书（IR20260731000589 SR20260806887817本体模型文件支持加密）.md》。
-
+本项详细方案**跟随《本体模型文件支持加密》**，本文只要求 OMS 明确加密相关场景包/系统配置/请求参数边界，以及安装、升级、回滚、多实例加载时的参数传递、配置验证和集成测试。不得在此另行发明加密算法、密钥格式或 `onto_encrypt` 0/1 的含义。安全及模型文件兼容性验收由专项主导，OMS/OAG 承担接口和功能回归。
 
 ### 2.2 分域与本体定义查询（Q4-02）
 
@@ -128,103 +130,145 @@ flowchart LR
 
 OMS 保持服务无状态或将可恢复状态外置；在本体加密的需求中跟踪。
 
-### 2.4 OMS App 安装参数分层（Q4-05）
+### 2.4 OMS 场景包参数分层（Q4-05）
 
-OMS 读取的网络拓扑、加密模式等由场景包版本化配置；在本体加密需求中详细描述，包含本体加密参数、参数拆分。
+该项是 **GDE 公共需求**。OMS 提供场景包/系统参数与接口参数清单，适配 GDE 统一参数规范和配置校验、安装/升级/回滚机制，不单独设计一套 OMS 配置底座。OAG 的租户 DCC 资源池专项见第 7 章。
 
-### 2.5 OMS 快速恢复指导书（Q4-04）
+### 2.5 OMS 故障快速恢复（Q4-04）
 
-形成可执行 Runbook：① 判断 OMS Pod/网关、数据库、KMS 与缓存依赖；② 读取 traceId、任务 ID 和版本；③ 区分只读降级、模型写入失败、组缓存失效、密钥不可达；④ 恢复应用副本与外部依赖、重新装载指定 revision；⑤ 核验组成员、权限与多实例一致性。**不建议未经授权直接改数据库、清空所有租户缓存或临时关闭加密。** 灾备 RTO/RPO 在实际演练后冻结。
+**GDE 公共恢复指导书**为权威：OMS 补充模型 revision、分组缓存、多实例状态、加密依赖、App 安装与权限异常等专项章节，按公共模板输出症状、指标与命令、止损、恢复、校验和演练结果。RTO/RPO 以 GDE 统一标准为准，不自定新指标。
 
 ---
 
 ## 3. OAG 统一接口、自动交付与高可用（Q4-06～11）
 
-### 3.1 一个 V2 入口覆盖服务和软件场景（Q4-06）
+### 3.1 按附件最新 V2 接口统一服务与软件场景（Q4-06）
 
-统一使用 `POST /v2/onto-retrieval/subgraph/semantic-search`。
+**实际接口契约**：《1.子图检索接口设计v2.md》定义 `POST /v2/onto-retrieval/subgraph/semantic-search`、`Content-Type=application/json`。原 V1 中位于 Path 的 `ontologyId` 进入 V2 Body；`query`/`entities` 至少提供一个，**`entities` 在 HTTP Body 是 1～102400 字符的 JSON String**；两者均存在时优先 entities 并跳过实体提取。
 
-**Q4 默认行为**：不再建立或读写枚举值索引 `t_oag_enum_{ontology_id}`；值索引只检索 `t_oag_instance_{ontology_id}`。对于保留下来的 Enum Property，从 OMS 的 EnumType/values[] 同 revision **全量读取** `value/isDefault/defaultDataValue/description/synonyms`，装入 Property 节点 `propertyEnumValues`；实例命中装入 `propertyInstanceValues`；V2 结果不再输出 `semanticExtensions`。无有效实例索引命中不意味着“枚举不存在”，显式 `extractedEntities` 必须保留。
+| 参数 | 最新 V2 规则 | Skill 兼容性 |
+|---|---|---|
+| `ontologyId` | Body String，1～256 字符，必填 | CLI `--ontology-id` 或 `ONTOLOGY_ID` |
+| `query` | 可选，1～1024 字符 | 保留 `python scripts/semantic_subgraph_search.py --query "..."` |
+| `entities` | 可选，JSON 字符串，内含 `{"entities":{"extractedEntities":[...]}}` | Script 将 JSON 文件/对象序列化为 String；不发送嵌套的 `entities.entities` |
+| `adaptiveRetrieval` | API 默认 1；软件场景传 0 | Script query-only 默认 1、entities 默认 0；显式 0 不丢失 |
+| `seedRetrievalMode` | 接口默认 `vector`，可选 keyword/hybrid | Skill 为兼容旧调用**显式指定 hybrid** |
+| `similarityThreshold` | 默认 0.6，vector/hybrid 有效 | 支持 CLI/完整 Body 覆盖 |
+| `topk` | **小写 k**，默认 3 | 旧 CLI `--topK` 仍接收，Body 只发送 `topk` |
+| `graphExpansionStrategy` / `hopLimit` | minimal/khop/component，hopLimit 默认 3 | `--hopLimit` 别名保留 |
+| `includeFunctions` / `includeActions` | API 默认 0/0 | Skill 保留原 includeFunctions=1（显式传值） |
 
-**兼容关系**：返回结构体中增加了可选的propertyvalue等字段，排查上游业务（OWS、SEC、NIS）解析子图的代码逻辑。
+**entities 内容约束**：`extractedEntities` **非空**、各项必须有 `objectType`，`properties` 可省略（软件场景已约定不传）；`propertyValues` 可省略。每个值组的 `objectType` 非空、`value` 非空；`property` 可省略或使用 `""`，表示按该对象所有可检索语义字段链接。`seedNodes` 只包含对象，不构造 Property 种子。枚举不建立 `t_oag_enum_{ontology_id}` 检索索引，OMS 属性 EnumType 全量返回；实例值链接只使用 `t_oag_instance_{ontology_id}`。
 
-接口描述参见：
-ICT服务与软件/Agentic Operation Center/Docs/27/27.3.0/02.设计/02.设计文档/Agentic Operation Center 27.3.0 功能设计说明书(IR20260729001097_OAG子图检索能力增强)
-
-**接口样例（query-only）**：
-
-```json
-{
-  "ontologyId": "cbs-ontology-id",
-  "query": "查询账户及关联对象属性",
-  "seedRetrievalMode": "hybrid",
-  "graphExpansionStrategy": "minimal",
-  "topk": 3,
-  "includeFunctions": 1
-}
-```
-
-**Property 值结构示意（响应片段）**：
+**V2 结果关键差异（以附件响应示例 2-1 为准）**：
 
 ```json
 {
-  "label": "property",
-  "properties": {
-    "name": "paymentType",
-    "dataType": "enum",
-    "propertyEnumValues": [
+  "resultCode": 200,
+  "resultMessage": "success",
+  "result": {
+    "seedNodes": [],
+    "propertyValuesLinks": [],
+    "nodes": [
       {
-        "value": "Prepaid",
-        "isDefault": "true",
-        "defaultDataValue": "0",
-        "description": {"zh": "先付费再使用服务。", "en": "pay first and then use the service."}
-      },
-      {
-        "value": "Postpaid",
-        "isDefault": "false",
-        "defaultDataValue": "1"
+        "id": "payment-type-property-id",
+        "label": "property",
+        "properties": {"name": "paymentType", "dataType": "enum", "enumDataType": "string"},
+        "propertyEnumValues": [
+          {"value": "Prepaid", "isDefault": "true", "defaultDataValue": "0"},
+          {"value": "Postpaid", "isDefault": "false", "defaultDataValue": "1"},
+          {"value": "Hybrid", "isDefault": "false", "defaultDataValue": "2"}
+        ]
       }
     ],
-    "propertyInstanceValues": []
+    "edges": [],
+    "functions": [],
+    "actions": []
   }
 }
 ```
 
-示例只说明字段结构，**实际必须返回 OMS 定义的全部枚举项**，不能将这两条视为完整模型。`isDefault` 在现有 V2 响应设计中为 `"true"/"false"` 字符串；具体 DTO 遵循 Schema。仅有枚举信息不能自动构造业务 Cypher 过滤条件。
+这里 `propertyEnumValues` **在 `nodes[]` 节点顶层，不在 `nodes[].properties` 内部**；`propertyInstanceValues` 也位于节点顶层，且仅当 Property 支持语义检索、存在本次实例链接结果时返回。`properties.dataType=enum` 时另带 `enumDataType`。`propertyValuesLinks[].valuesLinks[].valuesMapping[]` 是独立的值链接证据，附件示例包含 `canonicalValue/defaultDataValue/score`；**不能混同 `propertyInstanceValues`**。`isDefault` 使用 `"true"/"false"` 字符串，枚举全量由 OMS 定义决定；不得把所有枚举自动作为 Cypher 过滤值。
 
-### 3.2 Skill V1 → V2 与 deprecated 管理（Q4-07）
+**附件示例与 Q4 实施要求的两项不一致**：① 附件 query 请求示例1 未填写 `ontologyId`，但参数表标记为必填；Skill 按参数表执行校验，不能以缺失字段的样例放宽必填项。② 附件示例2-1 的 `propertyValuesLinks.valuesMapping` 含枚举规范值候选（如 Prepaid），但最新 Q4 要求**不建立、不检索 Enum 索引**；此类旧例仅能说明 `valuesMapping` 的 DTO 结构，**不能推导新方案仍会通过 Enum 向量链接产生候选**。OMS 全量枚举位于 `propertyEnumValues`，真实 Instance 链接证据按线上新实现产生；必要时需业务/接口团队确认兼容策略。
 
-仓库中存在 `ontology-platform-unified-skill/scripts/semantic_subgraph_search.py` 及其他历史目录副本。当前所查脚本仍拼接 V1 URL，并使用 `topK`、默认 `hybrid`、`includeFunctions=1`。本期需要迁移**实际发布和运行**的 Python/Skill.md/前端等调用方，不仅修改某个文件路径。
+**尚未统一的两套结果形态**：附件 query 示例1-2 使用旧式 `nodes[].type` 与 `edges[].name`，而 entities 示例2-1 使用 `label/properties` 与 `edgeType/propertyMap`；本次 Schema 允许两套示例，Skill 不进行静默错误转换，后端统一 DTO 时需专门回归。旧 V2 Schema 曾把双数组放进 `properties` 的定义已修正；旧 V1 的独立响应结构在 deprecated 期间不变。
 
-迁移适配：
-1. URL 从 `/v1/onto-retrieval/{ontologyId}/subgraph/semantic-search` 改为 `/v2/onto-retrieval/subgraph/semantic-search`。
-2. 先发布 V2 兼容 Skill，再在 V1 返回响应头中**建议**加入 `Deprecation` 等公告（具体日期经评审，不自行设定）。
-3. **deprecated 不等于立即删除**：观测 V1 调用来源、服务端流量清零、兼容回归及灰度回退全部完成后另行审批下线。V1 保持原路径和返回结构直到正式退役。
+### 3.2 Skill 和脚本从 V1 迁移到 V2（Q4-07）
 
-### 3.3 App 安装触发定义索引与内存图刷新（Q4-08）
+**本次改造文件**：`ontology-platform-unified-skill/SKILL.md`、`ontology-platform-unified-skill/scripts/semantic_subgraph_search.py`。原脚本按 `/v1/onto-retrieval/{ontologyId}/subgraph/semantic-search` 拼接 URL、Body 使用 `topK`、强制 query，不支持 entities，并且 HTTP 失败可能被当成成功。迁移后的脚本改用 `/v2/onto-retrieval/subgraph/semantic-search`，`ontologyId` 入 Body、发送 `topk`，支持 query-only、entities-only 与混合输入，并进行本地参数校验。
 
-保持现有的调用通道，在内存图场景重点验证。
+**Skill 调用**：
+
+```bash
+python scripts/semantic_subgraph_search.py --query "<问题/业务主题>"
+python scripts/semantic_subgraph_search.py --ontology-id "<本体ID>" --entities-file ./entities.json --adaptive-retrieval 0
+python scripts/semantic_subgraph_search.py --query-json @request-v2.json
+```
+
+第一条需要环境变量 `ONTOLOGY_ID`；仍需 `SERVICE_NAMESPACE`、`TENANT_ID`。`--entities-file` 或 `--entities` 传入内部对象或 `{"entities":{...}}` 包装后自动转 HTTP JSON String。完整 Body 支持显式 0，不再通过 `or default` 覆盖。脚本正确识别 HTTP 非 2xx、`resultCode` 失败、`result=null`、非法 JSON 和网络超时，失败时输出结构化错误并返回非零退出；**保留原 `message_type=message_ontololgy_subgraph` 以避免上游包装契约突变**。
+
+**维护副本边界**：GitHub 仓库存在 `0713/...` 和 `onto-skill/platform-skill/...` 的历史脚本与 Skill 副本；本次实际修改的是根目录 `ontology-platform-unified-skill` 主版本。发布前必须确认部署入口是否引用其他副本，若是，应将同等 V2 适配同步到正式发布位置，不能误以为修改主版本就完成了所有运行节点的升级。
+
+**V1 deprecation**：迁移各调用方后可按正式评审添加 `Deprecation`/`Sunset` 公告，监控旧端点调用来源及流量；V1 不立即删除，需业务回归、灰度回退和退役批准。
+
+### 3.3 App 安装自动建索引：先修复手动问题（Q4-08）
+
+**前置 P0**：当前**手动创建本体索引偶现失败**，先建立故障复现场景并定位：任务并发/重试、数据和 revision 校验、定义索引写入、图缓存刷新、Verify/Publish、异常清理以及旧索引可用性。应回归重试、两个 Pod 同时构建、空数据、任务中断、失败后重建；没有通过手动建索引稳定性验收，**不得直接扩大自动触发范围**。
+
+**后续自动流程**：OMS 安装/升级 App 冻结 revision 后通知 OAG 创建异步索引任务并刷新内存图；建议 API（非现有已确认）：`POST /internal/v1/ontologies/{ontologyId}/index-sync`，携带 appId/revision/operation/idempotencyKey，从鉴权上下文确定租户。OAG 持久化 Task → 构建与缓存预热 → 校验同 revision → 发布 activeRevision；失败保留原可用版本。OMS 必须区分模型元数据安装成功与 OAG 索引/图可检索就绪，不将 HTTP 202 误当完成。
+
+| 阶段 | 交付/门禁 |
+|---|---|
+| 修复手动建索引 | 问题归因、故障恢复验证、重入/幂等、旧版本不中断 |
+| 开通 OMS 自动触发 | 安装事件不丢、重复通知幂等、任务状态可查 |
+| 图缓存与索引原子发布 | 每次请求 indexRevision == graphRevision；多实例切换不混版 |
 
 ### 3.4 OAG 多实例与图缓存同步（Q4-09）
 
 在《ICT服务与软件/Agentic Operation Center/Docs/27/27.3.0/02.设计/02.设计文档/Agentic Operation Center 27.3.0 功能设计说明书（IR20260731000589 SR20260806887975&SR20260806887798本体模型支持内存图管理和子图检索）.md》中详细描述。
 
-### 3.5 OAG 配置分层与故障恢复（Q4-10～11）
+### 3.5 OAG 参数分层与公共故障恢复（Q4-10～11）
 
-配置采用第 7 章的**场景包（网络/部署）、配置中心（租户/系统运行）、请求/任务（参数与幂等 Key）**三级；变更需校验类型、范围、版本并可审计回退。DCC 不可用时仅允许有明确、经过验证的配置基线回退；敏感安全参数不能因缺失而改为宽松设置。
+分层规则见 §7.1；**线程池资源按租户隔离，线程池参数按租户 DCC 监听**（详见 §7.3～§7.5），不能用全局 `@Value` 静态注入声称支持租户热更新。容器还须有全局资源上限。
 
-OAG Runbook 至少覆盖：V2 503 限流/排队、Embedding 服务 503/重置、OpenSearch/GaussVector 不可用、LVQ 索引异常、OOM、索引 Task 卡住/重试、图缓存 revision 分歧、OMS 事件丢失及安全脱敏配置错误。每类记录**症状 → 证据指标 → 影响范围 → 止损措施 → 恢复动作 → 发布后校验**；禁止简单通过删除生产索引或关闭权限/加密恢复服务。RTO/RPO 作为演练验收项，不在本文猜数。
+故障快速恢复**跟随 GDE 公共需求**，OAG 专项增加：Embedding 服务 503、Instance Task 卡住、MinIO READY/NOTICE 丢失、租户队列饥饿/配置 Watch 错误、图缓存 revision 不一致等场景。提交证据包括监控/日志、恢复动作与演练结果；RTO/RPO 仍按 GDE 统一要求执行。
 
 ---
 
 ## 4. 实例索引构建、差异同步与性能（Q4-12、Q4-14～17）
 
-### 4.1 全量/增量数据链路（Q4-12）
+### 4.1 DataSync/Spark 异步导入与去重前移（Q4-12）
 
-规模要求为：**单表首次全量 1000 万行（对应 100 万用户假设），增量 10 万行**；DataSync/Spark 按 `(tenantId, ontologyId, objectTypeId, propertyId)` 拆分读取、Normalize/Dedup 后形成分区文件和 Manifest，再通知 OAG 执行建库。
+**工作负载**：单表首次全量 1000 万行（对应 100 万用户场景），增量 10 万行。业务数据的生产、文件落地和 OAG 索引构建需异步解耦，按同一 `jobId/snapshotVersion/ontologyRevision` 固定完整快照边界。三项优化分别为：
 
-复用既有 OAG 的 MinIO CSV + 持久化 Task 体系。
+1. **DataSync 生产者/消费者异步拆分（需求指定：爱华）**：Producer 将 CSV 分区文件、checksum 和 Manifest 先写入 MinIO，全部对象写入成功后发布 **READY**；Consumer 独立消费 READY，调用 OAG notice 接口传 taskId/jobId/Manifest URI（实际参数以现有协议为准）。这样从 OAG“创建语义索引”同步调用路径中移除**上游 CSV 上传与等待**，但 OAG **仍须从 MinIO 读取已就绪 CSV**，不是删除 MinIO 读取过程。Consumer 在 OAG 接受并持久化任务后才确认消息；失败重试、死信与重放必须幂等。
+2. **Spark 合并小文件（需求指定：振鲁）**：上游 Spark 对图数据和语义索引数据按快照、租户/本体、Property 分区进行 coalesce/compaction，减少 DataSync 大量小文件请求、MinIO OPEN/LIST 与文件解析线程争用。目标文件大小、文件数阈值按 1000 万行压测确定；不得跨 snapshot/revision 或不同归属键任意合并。
+3. **Spark 前置数据去重（图和语义）**：图数据按完整实体/边主键和版本去重；语义值按 `(tenantId, ontologyId, objectTypeId, propertyId, normalized(value))` 去重并结合来源事件序号保证新写优先，减少 COPY 主键冲突。上游去重是性能优化，**OAG/向量库仍需唯一约束及幂等校验**，尤其是重传、跨分区和历史增量乱序场景。
 
+```mermaid
+sequenceDiagram
+    participant S as Spark
+    participant P as DataSync Producer
+    participant M as MinIO
+    participant C as DataSync Consumer
+    participant O as OAG Task
+    participant DB as Vector / OpenSearch
+    S->>S: 图与语义索引去重 + 小文件合并
+    S->>P: 上传准备完毕的分区数据
+    P->>M: 异步写入 CSV + checksum + Manifest
+    M-->>P: 写入成功
+    P->>C: READY(jobId, snapshotVersion, manifestUri)
+    C->>O: notice(jobId, manifestUri, idempotencyKey)
+    O-->>C: ACCEPTED(taskId)
+    O->>M: 流式读取就绪 CSV
+    O->>DB: Staging → Diff → 增量 Embedding → Verify/Publish
+    O-->>C: Published / Failed
+```
+
+**失败及背压边界**：只有 Manifest 表示预期分区全部 READY、checksum/行数核对通过时，FULL_REPLACE 才允许执行差异删除；不能每收到一个并发 CSV 批次就做全量 DELETE。Producer/Consumer/OAG 以 jobId + partitionId + 文件版本幂等；队列满时返回可重试错误，不可无限等待或丢消息。索引服务应将上传用时、READY→NOTICE 延迟、OAG MinIO 读时、COPY/Embedding/双写时分别统计，**异步转移不等于端到端耗时消失**。
+
+**联调交付**：Spark 端输出合并前/后文件数量、去重前/后行数与归属校验；DataSync 输出 READY/ACK/重放；OAG 输出 Task/Manifest/checksum/差异行数及双库存储一致性；在 1000 万全量、10 万增量、重复通知、乱序分区和中断恢复下共同验收。
 
 ### 4.2 定义索引“全量比对 + 增量 Embedding”（Q4-14）
 
@@ -285,19 +329,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_stage_job_key
 
 **幂等与隔离**：每个 ontology 只允许一个冲突的 FULL 发布；不同分区文件可并行 ingest，但发布/删除互斥。必要时使用租约、advisory lock 或 Task 行 CAS；不能用仅 JVM 内锁跨 Pod 协调。日志可记录 jobId、差异数量，不打印完整用户值。
 
-### 4.4 Embedding 并发与资源限流（Q4-12、14、17）
+### 4.4 Embedding 并发、线程池隔离与 DCC 管理（Q4-12、14、17）
 
-建议一层统一的有界执行器协调去重后 Embedding 批次，不在请求级/批次级反复创建子线程池。外层通过 semaphore 限制“同时在飞请求数”，内部服务端调用也要校验限流是否真的生效；CompletableFuture 任务必须完整汇聚等待，失败 batch 可重试且不会重复写已成功键。监控包含排队耗时、超时、in-flight、batch size、token、模型 GPU/CPU 利用率、向量写入水位及失败比例。
+**租户资源归属**：Embedding 外层提交线程池、模型内部执行线程池、实例索引解析/COPY/Flush、Task 通知队列均根据鉴权 `tenantId` 选用受控资源实例；跨租户不能互相挤占专属队列、错误地沿用 ThreadLocal 租户上下文或读取其他租户的配置。内部 embedding 服务如仍有独立并行任务/请求上限，必须额外校验，不能把外层 `embedding-thread-pool-size=1` 理解为上下游所有并发均为 1。
 
-对于 BGE-M3 1024 维，FP32 单条原始向量约 4096 字节（不含索引、复制与文本），**1000 万条的理论原始向量数据约 38.1 GiB**，但实际需按**去重后语义值条数**而非源业务记录总行数计算，并补充 LVQ/倒排索引、冗余、存储副本和备份空间。1024 维系既有方案，不代表所有模型均固定该维度。
+**统一执行模型**：`tenantId → TenantResourceRegistry → TenantExecutorBundle`，其中包含 Embedding、batchInstance、parseFile、parallelFlush、notice 与查询准入配额；ResourceRegistry 同时受 Pod 级总线程/CPU/内存/连接预算限制。实际可采用按租户懒创建的独立有界线程池或能保证租户队列隔离/配额的等效调度器；闲置租户池应安全退役，**不能为所有历史租户永久创建固定数量线程**。
 
-### 4.5 LVQ 建表前置与 COPY 批次调优（Q4-15）
+**嵌套并发控制**：从 DataSync Task → Embedding batch 只使用明确的一处任务编排和并发令牌；CompletableFuture 任务可以先提交到有界队列，但**执行中的请求数不能超过租户允许的 in-flight 限额**。同一轮 Task 的 Batch Future 全部 join/收敛状态；失败批次按稳定 Key 幂等重试，拒绝/超时区分可重试与业务失败。跨线程传递 tenantId、traceId 和任务上下文必须在执行前设置、执行结束清理，防止线程复用串租户。
 
-原需求希望 **LVQ 在建表阶段创建，COPY 后免 rebuildindex**。这应列为**需基于当前 GaussVector 版本实测验证的优化假设**，不能仅凭需求就保证预建索引一定比批量导入后再建更快：空表先建索引可能加大每批 COPY 的维护成本，并影响 WAL/IO、写放大及召回。
+**DCC 热更新**：参数动态监听、修改线程池 core/max、租户 Batch/Flush/Parse 配额与全局容量校验遵循 §7.4；排队中的老 Task 保持原 tenantId、任务版本和可恢复语义；若降低配额，不强制中断正在 Embedding 的请求，等待排空后逐步调整。在线修改 `batchInstance.maxBatchSize` 只对新建批次生效，避免一个正在 COPY 的分片中途改变切分边界。
 
-设计 A/B：A=先建表/COPY 后建立或 REBUILD LVQ；B=先建 LVQ 再 COPY，结束验证索引有效且无需二次 rebuild。在相同数据、并发和资源条件下比较总耗时、COPY rows/s、存储体积、峰值 CPU/IO、索引状态、Recall/Latency 和失败恢复。**只有数据库能力验证通过，才把 B 设置为默认**。
+**度量**：每租户 `activeThreads/queuedTasks/rejected/timeout/embeddingInFlight/batchSize`、模型端实际请求并发、向量写入水位、CPU/内存/GC、全局资源使用率；DCC 版本变化与前后配置快照需可追踪。测试必须包含 2+ 租户同时入库、大租户满队列、小租户正常完成及多 Pod 不同租户任务接管。
 
-`copy-batch-size` 建议纳入后续 DCC 租户/任务配置，但须明确参数边界和受控范围：一次 COPY 文件的记录数与 DataSync 的上传分区大小、Embedding 批大小是三个独立参数，不可混用。基于实际数据库版本校验有效取值与热修改语义。
+### 4.5 LVQ 预建与 COPY 批大小 DCC 调优（Q4-15）
+
+本需求要求在建表阶段尝试创建 LVQ，使数据 COPY 后无需 rebuild；必须在目标 GaussVector 版本通过 A/B 验证：A=COPY 后创建/REBUILD LVQ；B=预先创建 LVQ 再 COPY。对同一 1000 万行数据、同硬件/副本/任务并发比较**总耗时、COPY rows/s、索引状态、索引写放大、Recall、查询 P95 和失败恢复**。预建索引可能增加每行写入开销，**不得未经验证就认定 B 必然更优**。
+
+**租户级 DCC 参数**：附件统计列出 `batchInstance.maxBatchSize=1000/4000` 两种代码扫描默认值，与本需求新增的 `copy-batch-size` **不等价**。设计中分别定义：① Spark 合并后文件目标大小，② Instance 逻辑批大小，③ GaussVector COPY 分片大小，④ Embedding 请求 Batch 大小；不混为同一参数。新 `copy-batch-size` 若实现应按租户 DCC 注册，受 Pod 最大写入内存、数据库连接/事务和索引容量上限约束，**只对新任务或新 COPY 分片生效**。调参前后保存版本快照与测试数据，并提供按租户回退。
 
 ### 4.6 Delete 接口及索引删除联调（Q4-16）
 
@@ -313,168 +361,351 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_stage_job_key
 
 ## 5. 查询性能与分级索引预研（Q4-13、Q4-18）
 
-### 5.1 单实例 3 秒 / 10 QPS 与横向扩展（Q4-13）
+### 5.1 子图检索性能规格与横向扩展（Q4-13）
 
-原需求明确 **单实例“3s、10QPS”**。实现评测建议将 3 s 定义为**待评审 P95 候选**，明确它是否含 OMS EnumType 读取、网络与图库算法，且区分冷/热缓存。不能将“3s”未经评审自动当作 P99 或整个 CBS 端到端 SLA。
+**权威性能输入**：《子图检索的查询性能规格(10-26).md》。该指标专用于软件场景，Pipeline **只包含实体链接 → 实体裁剪 → 子图构建**；不计 CBS 业务分词、索引数据入库或 Cypher 执行。**本轮正式规格从旧草案“3 s”调整为附件给出的“2U4G 单实例、10 QPS、平均耗时 ≤5 s、极端拒绝比例 <20%”**。附件另建议**实际压测按 3U4G 开展**；二者须分开标注并各自测量，不能拿 3U4G 的成绩证明 2U4G 指标。
 
-建议同一版本/本体/索引快照分别测试 query/entities、低/中/高种子数、minimal/khop/component、实例值命中/未命中、Enum Property 数量和全量枚举基数；采集单实例稳态 10 QPS 时的 P50/P95/P99、错误率、GC、队列延迟、Embedding/向量库/图库 QPS。再测 2/3 实例伸缩，计算 `scaleEfficiency = aggregateQPS / (singleQPS × instanceCount)`，并区分共享数据库成为瓶颈的情形。
-
-### 5.2 语义检索信号量限流
-
-原始参数为 `semantic-search.max-pool-size=25`、`queue-capacity=50`、`timeout-seconds=300`，说明在 transport 线程就地等待并发许可、满队列返回 503。**这只是原配置草案，不是合理超时的实测证明**；transport 线程同步排队 300 秒可能放大入口线程阻塞，应优先评估异步排队、短等待或立即拒绝与客户端重试退避。限流须按实际 token/租户/实例预算，并监控 active、queued、wait、rejected、timeout。服务不可用 503 与限流 503 应可追踪区分。
-
-### 5.3 只入 OpenSearch 的语义字段预研（Q4-18）
-
-OMS Property 增加**建议**检索模式枚举：
-
-| 模式（建议） | 行为 | 边界 |
+| 约束类别 | 附件值 | 验收边界 |
 |---|---|---|
-| `HYBRID` | OpenSearch 关键词 + GaussVector 向量 | 保留既有混合检索及权重融合 |
-| `LEXICAL_ONLY` | 仅 OpenSearch（无需 Embedding/向量建库） | ID/编码/号码等精确或分词属性适合预研 |
-| `DISABLED` | 不参加 Instance 语义索引 | 不影响本体模型/业务真实数据 |
+| 本体模型 | ObjectType **≤150**，Property **≤3000**，Edge **≤400** | 当前 CBS 144/2896/370 在约束内，后续 revision 超限需重新评估 |
+| 单实例配置 | **2U4G** | 静态内存图预算 **1 GB（10 × 100 MB）**；该规格最多承载 **10 个本体** |
+| CPU 单核下限 | SHA-256 256B **≥280 万 ops/s、≥700 MB/s** | CPU 密集型基准；附件有 openssl 命令 |
+| 输入对象 | `entities` 对象数 **<20** | 超出范围不可直接按此性能基线承诺 |
+| `propertyValues` 数量分布 | **1–4：40%；4–8：50%；8–12：<10%** | 4/8 边界重合且占比未封闭为 100%，压测脚本需先冻结分桶含义，不自行修改附件 |
+| 流量与样本 | 每秒发 **10 个请求，连续 1000 次**，CXO 黄金测试集 L1 | 记录成功、拒绝、业务异常和超时；发送约 100 秒 |
+| 平均耗时 | **≤5 s** | 平均统计口径与未完成/拒绝请求处理须评审冻结；P95/P99 可观测但**不是附件硬阈值** |
+| 吞吐 | **最大 10 QPS** | 这是附件列出的输入/吞吐规格，需同时报告成功 QPS |
+| 流控拒绝 | 极端场景 **<20%** | 队列满的拒绝属正常但必须单独统计比例 |
+| 内存/资源变化 | 后续新增 CPU 密集任务 | 应下调性能基线或增加资源，不默认仍保持 2U4G 指标 |
+| 硬件 | ARM 鲲鹏 920C 物理机为标配，x86 Intel 2288 HV6/E9000 虚拟机为局点情况 | 记录架构、CPU 单核基准和虚拟化条件 |
 
-该模式属于 **Q4-18 预研**，不等同于已有 OMS 正式 Property 配置字段。业务属性统一由 OMS 定义模式，OAG 按同一 revision 读取并在索引/检索两端一致执行；不能建库只写 OpenSearch、查询却仍发 GaussVector 请求。
+**固定参数快照**（附件使用 `topK`，正式 V2 Body 字段可能为 `topk`，按 API DTO 联调适配）：
 
-评测须按属性值分层：纯数字/长 ID、中文/英文短值、多义名称、长描述、同义词、大小写和符号。比较 Recall@K/Precision@K、误召回率、索引体积、写入和查询资源；若安全脱敏导致 OpenSearch 无法存储名称描述，参照 §6.1 的兼容性风险处理。
+| 参数 | 本次测试条件 | 说明 |
+|---|---|---|
+| `seedRetrievalMode` | `hybrid` | 向量+关键词 |
+| `similarityThreshold` | **0.7** | 与 V2 接口缺省 0.6 不同 |
+| `topK` / V2 `topk` | **≤3** | >3 不在附件测试范围 |
+| `hopLimit` | **≤3** | khop 生效 |
+| `adaptiveRetrieval` | **1** | 小本体 ≤300 节点可全量；具体计数边界需核实 |
+| `includeFunctions` / `includeActions` | **0 / 0** | 不扩大关联对象 |
+| `graphExpansionStrategy` | **minimal** | 路径低冗余策略 |
+| `subgraph-retrieval-cache-switch` | **false** | **压测关闭问题缓存**，不能用缓存命中虚增指标 |
+
+**执行规则**：重启后预热 **3 分钟**，前 **3 次**压测结果不计；**查询高峰不得并行进行实例值向量化入库**，需错峰。测试在 2U4G 基准和 3U4G 建议资源分别运行，采集成功请求平均时延、P50/P95/P99、拒绝率、错误率、CPU/内存/GC、OMS EnumType 读取、Instance 检索和图算法耗时、每租户活跃线程及排队情况。扩到 2/3 Pod 时分别固定总入口 QPS 和每 Pod 压力，评估共享向量库/图库饱和，而非默认线性扩展。
+
+### 5.2 租户级查询准入与信号量流控
+
+《新增Value参数统计_2026-10-31.md》扫描值：`semantic-search.max-pool-size=30`、`semantic-search.queue-capacity=50`、`semantic-search.timeout-seconds=300`。**旧 Q4 草案 max-pool-size=25**，两者为不同来源而非同时生效的真值；必须读取运行配置并冻结基线。并发许可、队列容量与 ThreadPoolExecutor 核心线程数不是同一概念。
+
+**租户隔离**：每个 `(tenantId, query/entities 输入模式)` 按需建立准入控制器（或等效配额记录），独立统计 inflight/queued/rejected/timeout；所有租户共享宿主 Pod/后端全局上限与公平调度，拒绝不能转嫁给另一租户。按租户 DCC Watch 变更配额，不能只修改 Java `@Value` 字段；Watch 详细方案见 §7.3～§7.5。
+
+原草案设计在 transport 线程等待许可最长 300 秒，可能耗尽入口线程；建议在详细设计中评估异步短等待和快速拒绝。队列已满时返回可归因的限流响应（原设计 503），并与上游连接失败、Embedding 503 区分。附件 **<20% 拒绝比例**只适用于其指定负载与配置，不能为日常服务故障开脱。
+
+### 5.3 OMS Property `retrieval` 索引模式扩展设计（Q4-18，预研）
+
+**设计输入**：现有属性定义在 `retrieval` 下只有 `enabled`（样例 `accountId` 为 `false`）。新增**可选** `indexMode`（建议命名，需 OMS 模型 Schema 评审），支持 **仅关键词、仅向量、混合**三种取值；未填写 `indexMode` 且启用检索时默认**混合索引**，以兼容既有开启检索的属性。保留 `retrieval.enabled=false` 的优先级，**禁用属性不能因为省略 indexMode 被自动启用**。
+
+**OMS Property 最小改造示例**（保留原 `id/name/display/description/status/extensions/dataType/refSynonymTypeName/createdAt` 等属性字段不变）：完整检索子结构的建议 [JSON Schema](./schemas/oms-property-retrieval.schema.json) 已单独提交，**该 Schema 只校验 `retrieval` 字段，不替换 OMS 现有完整 Property Schema**。
+
+```json
+{
+  "id": "dtmi.65313863.property-type.38396236-3130393330653430.1",
+  "name": "accountId",
+  "dataType": "long",
+  "retrieval": {
+    "enabled": true,
+    "indexMode": "KEYWORD_ONLY"
+  }
+}
+```
+
+完整字段表：
+
+| 字段 | 类型 | 默认 / 取值 | 规则 |
+|---|---|---|---|
+| `retrieval.enabled` | boolean | 沿用模型既有值，如 `false` | **false=不构建实例语义索引，也不参与值召回**；属性仍可在 OMS 建模/Binding/子图属性补全出现 |
+| `retrieval.indexMode` | string（可省略） | `HYBRID`（当 enabled=true 且字段缺失时） | `KEYWORD_ONLY` / `VECTOR_ONLY` / `HYBRID`；建议仅 enabled=true 时生效 |
+| `retrieval` 整体缺失 | 继承既有模型规范 | 不在本文另行改变 enabled 的缺省 | 防止新字段引入对旧模型的隐式索引启用 |
+
+**四种有效运行状态**：
+
+| enabled / indexMode | OpenSearch | GaussVector | Embedding | 查询通道 |
+|---|---|---|---|---|
+| `false` / 任意（建议不填） | 不建 | 不建 | 不调用 | 无 |
+| `true` / 字段省略或 `HYBRID` | 建 | 建 | 调用 | Keyword + Vector，RRF 或既有融合 |
+| `true` / `KEYWORD_ONLY` | **建** | 不建 | 不调用 | **仅 Keyword** |
+| `true` / `VECTOR_ONLY` | 不建 | **建** | 调用 | **仅 Vector** |
+
+**OMS → OAG 建库闭环**：
+
+1. OMS 模型字段支持配置检索启用/模式，下发真实 Property ID、ObjectType ID、revision、enabled/indexMode；前端单选提供“混合/仅关键词/仅向量”，只有 enabled=true 时可编辑，默认混合。保存时校验枚举值并保证旧数据兼容。
+2. OAG 在索引任务启动时按同 revision 生成 `(ObjectTypeId, PropertyId, mode)` 构建计划；**只对可用通道写数据**。KEYWORD_ONLY 跳过 Embedding/GaussVector；VECTOR_ONLY 跳过 OpenSearch；HYBRID 双写。旧任务/模型 revision 不可混用不同模式。
+3. 模式变化应按**增删索引通道做增量迁移**：HYBRID→KEYWORD_ONLY 删除该属性原向量文档，KEYWORD_ONLY→HYBRID 补建向量（需要 Embedding），VECTOR_ONLY→HYBRID 补建词法，enabled=true→false 按安全策略清理两类索引；采用版本化发布/双库对账，不使一半迁移的模式对外可见。
+4. 对 `accountId` 这类长数字/标识串，词法建议采用 **keyword 精确索引**（必要时另设授权前缀匹配），不依赖 BGE-M3 Dense 相似度识别数字差一位的真实身份；是否支持模糊分词由安全与业务确认。
+
+**查询路由与融合**：进入 Instance Value Linking 时按 `objectType + propertyId` 确定其 indexMode，然后将请求全局 `seedRetrievalMode` 与 Property 支持通道做**交集**。全局 `hybrid` + KEYWORD_ONLY 只执行 Keyword，+VECTOR_ONLY 只执行 Vector；只有一个可用通道时不应以“缺少另一通道分数”进行惩罚；RRF 仅对实际执行的通道融合，`similarityThreshold` 仅约束 Vector。若全局请求为 `vector` 而属性只有 KEYWORD_ONLY，**不得偷偷改为 keyword**；应定义空候选/显式不兼容诊断（具体 API 行为待评审）。当 `property` 省略或 `""` 时，检索当前 ObjectType 下**所有 `retrieval.enabled=true` 的语义字段**，并按各属性模式分派查询，不无条件扫描所有非语义属性。
+
+**是否所有实例都入 OpenSearch？** 否。只有 `HYBRID`/`KEYWORD_ONLY` 的有效属性值进入 OpenSearch；`VECTOR_ONLY` 只入向量库；`enabled=false` 不入二者。**EnumType/values[] 永远来自 OMS 本体定义，不由 `indexMode` 启动枚举索引。**
+
+**与 Q4-19 安全方案的依赖**：如果最终要求 OpenSearch 严格 ID-only，基于 name/description/value 的 BM25/Keyword 检索能力将受限，须安全评审允许的受控词法字段或明确精确检索/召回降级，不得声称在严格 ID-only 下完整保留模糊召回。
+
+**预研验收**：验证四状态的实际索引内容与 Embedding 调用次数；全文/向量单通道路由、hybrid 的 RRF 与 topK；revision 模式切换/删除、跨租户隔离、无 property 过滤时的对象内字段路由；使用纯数字 AccountId、英文/中文短文本、同义词测试 Recall@K/Precision@K、磁盘量、入库/查询耗时。正式 DTO 字段名和值取值、模式变化是全量重建还是增量、禁用后索引删除授权等由 OMS/OAG/安全联评后冻结。
 
 ---
 
 ## 6. 数据安全与明文治理（Q4-19～20）
 
-### 6.1 向量与 OpenSearch 只保留 ID（Q4-19）
+### 6.1 向量与 OpenSearch 去名称描述、按 ID 回查（Q4-19）
 
-**原要求**：去除向量表和 OpenSearch 的名称、描述，尽可能只保留 ID；通过内存图或 NebulaGraph 按 name/id 获取本体定义。这一要求与既有方案的 **BM25/fuzziness、原文/同义词 Embedding** 有直接冲突，**不能把删除文本列描述为对召回毫无影响**。
+**详细方案跟随《本体模型文件支持加密》**。OMS/OAG 负责字段适配和权限回归：向量/全文索引尽量只持久化稳定 ID、归属和必要检索元数据，名称/描述查询通过 OMS/内存图/NebulaGraph 按 ID 或经授权的 name→id 方案补齐，不能跨租户读取其他模型数据。哪些明文字段允许保留、加密格式及密钥轮换由专项冻结。
 
-建议将数据分为两层：
+**功能冲突必须决策**：OpenSearch 若只存 ID，无法原样执行针对 name/description 的 BM25 与 fuzziness；Q4-18 的 lexical-only 在安全评审前不能同时承诺严格 ID-only 和完整模糊召回。需明确授权词法字段或接受能力降级，基于真实黄金集测试召回、ID 回查、索引迁移、旧客户端兼容和性能影响。固定哈希不等于模糊文本检索。
 
-| 层 | 允许的数据 | 设计建议 |
-|---|---|---|
-| OMS / 权威本体图 | name、description、synonyms、EnumType 等 | 按权限读取、授权时解密/审计 |
-| GaussVector | 稳定实体 ID、归属 ID、版本、向量及索引必需元数据 | 索引写入尽量不持久化明文 name/description；查 ID 后到内存图或 Nebula 获取定义 |
-| OpenSearch | 稳定 ID、归属 ID、配置允许的搜索字段 | 若严格“只存 ID”，**不再具备原始文本 BM25/fuzzy 索引能力**；必须重新设计受控 token 索引或降级为精确 ID 检索 |
+### 6.2 后台日志与前端子图明文脱敏（Q4-20）
 
-**两种待评审路线**：A（严格 ID-only）：取消敏感词法全文索引或仅存不可逆、可安全匹配的受控 token，明确牺牲模糊召回；B（保留检索语义）：对必要的最小化词法字段采用经安全批准的专用受控索引和访问边界，而不是声称“只存 ID”。**不能无安全评审自行以固定哈希代替 BM25**（哈希无法保持相似排序，还可能泄露低熵词）；最终实施需安全、业务、搜索团队共同冻结。
+**详细方案跟随《本体模型文件支持加密》**。原需求提出后台可打印子图明文、前端页面子图明文脱敏，开关由**加密堆栈参数**控制。何时允许后台明文、默认开关状态、授权角色与环境范围必须由加密/安全专项确认，**不意味着常规生产日志应默认打印完整子图**。
 
-**反查策略**：索引只输出 ID/版本，OMS/内存图/Nebula 负责受控 `getById`/批量 ID→name/description 映射；原 `name→id` 检索需转为授权图定义查询或重新批准的索引机制。ID 不是秘密，仍需认证、租户隔离与完整审计。
-
-### 6.2 后台日志与前端子图明文屏蔽（Q4-20）
-
-将“默认不打印完整子图、默认 UI 按权限屏蔽敏感字段”作为**建议的安全优先实现**。日志只记录 traceId、ontologyId 哈希/脱敏标识、revision、任务 ID、阶段耗时、节点/边数量及错误类别；调试明文开关需要 RBAC、过期时间、审计、受控环境，不能由任意用户通过请求参数开启。
-
-前端按照真实用户权限及数据分级显示或遮盖对象/属性名称、描述、枚举实例值；屏蔽必须在**服务端授权响应阶段**执行，CSS/前端隐藏不能作为唯一安全机制。运行时快照、页面下载、网络响应、异常堆栈和日志均不能绕过。开关启停后回归检索准确性与业务授权场景。
+建议仅在获授权、时效受控且可审计的调试场景允许后台子图明文；平时日志记录 traceId、revision、节点/边数量、任务 ID、错误码。前端遮盖应在服务端鉴权后执行相应字段/可见性策略，不能只依赖 CSS；导出、响应、异常栈、APM 也应一致。加密堆栈开关属于安全/部署级配置，**不纳入普通租户线程池 DCC 配置**。OMS/OAG 的验收仅覆盖专项方案的接口联调、日志/页面/导出回归。
 
 ---
 
-## 7. 参数分层与原始配置清单（Q4-05、Q4-10）
+## 7. 参数分层、DCC 租户监听与资源池隔离（Q4-05、Q4-10）
 
-### 7.1 分层原则
+### 7.1 参数统计口径与分级原则
 
-| 层级 | 来源 | 典型参数 | 约束 |
-|---|---|---|---|
-| 组网/场景包级 | App/场景包安装清单 | `onto_encrypt`、`oag.cache.type`、图数据库依赖和组网拓扑 | 与部署版本绑定，不能由租户请求随意覆盖 |
-| 系统/租户配置级 | 配置中心（DCC） | `semantic-search.*`、模型/实例阈值、topk、链接开关、索引 COPY 大小 | 明确 tenantId+输入模式，记录版本、审计及回退 |
-| 请求/任务级 | V2 API、索引 Task | ontologyId、query/entities、检索策略、jobId、mode、sourceVersion | 只允许已定义参数覆盖；不能越过安全/资源全局上限 |
+**附件依据**：《新增Value参数统计_2026-10-31.md》统计最近 3 个月 Java 新增 `@Value`：**115 处注解、83 个唯一配置 Key**，统计提交范围为 `git log --since=2026-07-31`、最新提交 `e5d4d74d`（2026-10-27）。**该统计只说明代码新增声明和默认值，不证明所有键已注册到 DCC、具备动态监听或已在本体服务运行时生效**。**统计一致性注意**：附件摘要写 83 个唯一 Key，但七类明细表实际逐行列出 **72 个不同 Key**（本轮 DCC 候选 38 个、系统级 34 个），有 **11 个 Key 未在附件分类明细中列出**；必须重新对照源码扫描结果补齐后才可宣称完成全部 83 项分类。同名 Key 的不同默认值按原表保留，不能未经检查选一个作为正式配置。
 
-**读取优先级（建议）**：显式合法请求字段遵守 API 契约；系统安全/容量上限始终约束执行；租户 + 模式覆盖仅适用于允许覆盖的参数，缺失时采用版本化系统预置。配置中心不可用时不允许把安全相关限制解释成无限制。
+| 分级 | 配置来源与示例 | 本次约束 |
+|---|---|---|
+| 场景包/部署组网 | `onto_encrypt`、`oag.cache.type`、图数据库依赖 | 跟随 GDE 公共参数分级；不能由租户 Body 越权修改 |
+| **租户级 DCC** | §7.2 的线程池、资源准入、检索/排序、功能开关、索引任务参数 | **按租户隔离资源/队列，按租户 Watch/推送更新，具备资源上限、审计和安全回退** |
+| 系统级非 DCC | 附件第 5/6/7 类：MinIO、Nebula、OpenSearch、证书与数据库、租户初始化/namespace、Pod/日志/探针 | **不放置在 DCC**，由部署底座/系统密钥或环境管理；租户不能随意覆盖基础设施连接参数 |
+| 请求/任务级 | V2 query/entities、topk、hopLimit、jobId、snapshotVersion、COPY 任务模式 | 原 API 参数不自动提升为 DCC；请求可覆盖项受安全/资源限额约束 |
 
-### 7.2 原文参数保留与建议解释
+**优先级（建议）**：实际执行以 `认证租户 → inputMode(query/entities) → DCC tenant/mode override → DCC 已登记基线 → 版本兼容预置` 解析，并受 Pod/集群硬上限约束。对于 Body 已定义的检索参数，先遵守接口规定的显式值与默认值优先级，DCC 仅对允许覆盖的资源/功能执行配置，不得悄然重写用户显式合法请求。DCC 读不到、键非法或 Watch 断线时不得把安全策略、队列上限解释成无限制。
 
-以下先**如实保留原 Q4 参数和值**；字段是否支持热更新、DCC 的真实命名空间、`-1` 的语义与运行范围需要代码/配置评审确认。不要将本表直接复制成已上线 YAML：
+### 7.2 需要纳入 DCC 的候选参数清单（按附件原 Key）
 
-| 级别 | 原配置键 | 原值 | 设计说明 |
-|---|---|---|---|
-| 场景包 | `onto_encrypt` | `"0"` | 加密开关原值；0/1 语义待安全评审 |
-| 场景包 | `oag.cache.type` | `CACHE_TYPE` 变量 | 内存图/图库依赖选择，合法值待查 |
-| DCC | `semantic-search.max-pool-size` | `25` | 最大并发请求数 |
-| DCC | `semantic-search.queue-capacity` | `50` | 等待队列上限 |
-| DCC | `semantic-search.timeout-seconds` | `300` | 等待并发许可的秒数 |
-| DCC | `include-all-properties` | `true` | 全量属性装配 |
-| DCC | `include-keys` | `false` | 是否输出键属性的原始配置值 |
-| DCC | `subgraph.undirected-filter` | **`false`** | **Q4 原文默认 false**；见 §7.3 与软件 V2 新默认冲突 |
-| DCC | `ontology-object-similarity-threshold` | `-1` | 原始哨兵值；必须确认是“继承默认”还是“禁用” |
-| DCC | `instance-similarity-threshold` | `-1` | 同上，不能按合法相似度负数直接参与计算 |
-| DCC | `instance-topk` | `-1` | 哨兵值，不可直接交给 TopK 检索 |
-| DCC | `rrf-topk` | `-1` | 哨兵值，实际融合排名数需校验 |
-| DCC | `enable-object-linking` | `false` | 软件 entities 模式跳过 Object 重复链接 |
-| DCC | `enable-property-linking` | `false` | 原备注称通用默认 true，软件场景覆盖 false |
-| DCC | `enable-property-value-linking` | `true` | 原备注称通用默认 false；**新 V2 仅 Instance**，不再启用 Enum 索引 |
-| 建议 DCC | `embedding-thread-pool-size` | 未给值 | Embedding 并发有界控制；原文只给了键名 |
-| 建议 DCC | `copy-batch-size` | 未给值 | 仅是原需求中的拟新增项，范围待性能评审 |
+以下四类为本轮**DCC 注册与分类候选**，默认值严格采用附件扫描值，`8/20`、`1000/4000`、`1/6` 是**源码多个位置不同默认值**，需先统一实际含义。实际名字、租户/模式作用域、热更新安全性、值域与 DCC 注册方式在联调时冻结。
 
-### 7.3 原文配置与既有软件设计冲突清单
+**A. 线程池/批处理/模型缓存（10 项，全部明确资源归属）**
 
-| 冲突 | Q4 原文 | 既有软件场景文档 | 处理原则与待决策 |
-|---|---|---|---|
-| 无向图开关 | `undirected-filter: false`，历史方向逻辑为默认 | V2 minimal 设计采用默认 `true`，10/30 先预置、后续再 DCC | **不得静默覆盖其中一方**；需要按实际发布版本 + query/entities 模式明确生效值，并形成升级回归/回退策略 |
-| 值链接语义 | 备注称“enum/instance 值召回” | 最新 V2 只使用 `t_oag_instance_{ontology_id}`，OMS 全量返回 Enum | `enable-property-value-linking=true` 仅启动 Instance 链接，Enum 链接分支应移除 |
-| DCC 时序 | Q4 直接列出租户级参数 | 软件专项把 10/30 定为服务端预置，后续 DCC 注册接管 | 先冻结运行有效值，再按租户/模式登记，防止升级漂移 |
-| 本体敏感字段 | “向量/全文索引只保留 ID” | 通用 OAG 设计使用 name/description/synonyms 和 BM25 | 在安全评审前不能同时保证严格 ID-only 和完整 fuzzy 召回 |
-| 检索阈值 | `-1` | V2 Body `similarityThreshold=0.6`（示例默认） | 先定义 -1 继承/禁用含义及 Body/DCC 优先级，不得将 -1 当真实相似度 |
+| 参数 Key | 附件默认值 | 资源属性与 DCC 生效要求 |
+|---|---|---|
+| `embedding-thread-core-pool-size` | `8` | 模型内部租户执行池 core；按 tenant 建配额，不能只建立一个全局池 |
+| `embedding-thread-max-pool-size` | `32` | 模型内部租户执行池 max，必须 `core ≤ max` 且受全局预算 |
+| `embedding-model-cache-size` | `10` | 模型对象缓存容量，**不是线程数**；按租户划分缓存占用和可见性、全局有界 |
+| `embedding-thread-pool-size` | `1` | Embedding 外层批任务并发；附件显示 5 处使用，不可假设它控制内层全部并发 |
+| `batchInstance.threadPoolSize` | `8 / 20` | Instance 批次执行资源，租户独立队列/配额，默认冲突待收敛 |
+| `batchInstance.maxBatchSize` | `1000 / 4000` | 批处理大小，按 tenant 配置，影响下一批次而非中途重切 |
+| `batchInstance.retry` | `3` | 任务失败重试次数，租户级重试节流防止雪崩 |
+| `parallelFlush.Size` | `8 / 20` | 向量库并行 Flush 额度；真实 Key 的大小写必须保持并核实实际读取 |
+| `parseFile.threadPoolSize` | `20` | CSV 解析资源；按租户限制文件并行处理数和排队 |
+| `notice.threadPoolSize` | `20` | Notice/任务消费资源；防止大租户挤占小租户的通知 |
 
-### 7.4 配置发布与回滚
+**B. 查询准入、排序/检索与 RRF（16 项）**
 
-配置更新先校验 Schema、上下限、权限和租户/模式作用域，记录 configVersion 与操作者；同一请求只读取一致快照。灰度可按租户或 OAG 实例进行，错误率和时延异常时回滚到上一个已知有效版本。安全/加密参数、向量维度和索引类型等需要重建或重启的参数必须标识 `restartRequired/reindexRequired`，不能直接宣称热生效。
+| 参数 Key | 附件默认值 | 建议作用域 |
+|---|---|---|
+| `semantic-search.max-pool-size` | `30` | 租户级查询并发许可（旧 Q4 25，仅历史草案） |
+| `semantic-search.queue-capacity` | `50` | 租户级等待队列长度 |
+| `semantic-search.timeout-seconds` | `300` | 租户级许可等待超时；300 s 风险需复评 |
+| `rrf.k` | `10` | 租户+query/entities 模式的融合平滑参数 |
+| `rrf.channel-weights.ontology-object-vector` | `0.5` | 对象 vector 通道权重，核实与 dense 是否为别名 |
+| `rrf.channel-weights.ontology-object-lexical` | `0.5` | 对象关键词权重 |
+| `rrf.channel-weights.ontology-object-dense` | `0.5` | 对象 dense 权重，注意同义 Key 重复 |
+| `rrf.channel-weights.instance-vector` | `0.5` | 实例 vector 通道权重，核实与 dense 是否为别名 |
+| `rrf.channel-weights.instance-lexical` | `0.5` | 实例关键词权重 |
+| `rrf.channel-weights.instance-dense` | `0.5` | 实例 dense 权重，检查双重加权 |
+| `ontology-object-similarity-threshold` | `-1` | 租户/模式覆盖；`-1` 哨兵含义待定义 |
+| `instance-similarity-threshold` | `-1` | 同上；不能以 -1 作为实际余弦阈值 |
+| `instance-topk` | `-1` | 实例候选 TopK，实际最大值需约束 |
+| `rrf-topk` | `-1` | RRF 输出 TopK，不能无限放大 |
+| `adjacency-cache-max-size` | `1000` | 租户级图邻接缓存额度，亦受总堆内存约束 |
+| `rule-config-path` | 无 | **文件系统路径属于特殊风险项**；建议系统级受控白名单路径或仅 DCC 发布可信 Rule 版本 ID，不允许租户任意指定本地路径，最终归属待安全评审 |
+
+**C. 检索开关 / 子图过滤（7 项）**
+
+| 参数 Key | 附件默认值 | 作用 |
+|---|---|---|
+| `subgraph.undirected-filter` | `false` | 附件源码默认 false；既有软件 V2 预置 true，需按版本+模式冻结 |
+| `enable-object-linking` | `false` | 软件 entities 关闭已对齐对象的二次链接 |
+| `enable-property-linking` | `false` | 软件 entities 关闭已对齐属性的二次链接；query 不得被误关闭 |
+| `enable-property-value-linking` | `true` | 当前软件 V2 仅 Instance Value Linking，不再构建 Enum 索引 |
+| `include-all-properties` | `true` | Property 属性补全，枚举全量另遵循 Schema |
+| `include-keys` | `false` | Key 属性返回控制，不能绕过必要模型完整性规则 |
+| `subgraph-retrieval-cache-switch` | `true` | 查询缓存开关；**性能压测必须覆盖为 false** |
+
+**D. 索引任务与任务保留（5 项）**
+
+| 参数 Key | 附件默认值 | 作用 |
+|---|---|---|
+| `index-build.max-retry` | `3` | 租户索引任务失败重试；结合全局重试洪峰控制 |
+| `index-task.max-concurrent-tasks` | `10` | 租户后台任务并发许可，另有全局上限 |
+| `index-task.queue-length` | `200` | 租户后台排队上限与公平性 |
+| `index-task.queue-timeout-hours` | `1 / 6` | 不同源码默认冲突；按任务类别核实实际 timeout |
+| `index-task.file-ttl-hours` | `168` | 文件有效期，不能短于可恢复任务处理窗口 |
+
+**系统级排除**：附件第 5/6/7 类标注无需进入 DCC：MinIO scheme/证书/实例名/bucket、GaussVector/OpenSearch 实例名、Nebula IP/port/space、Elasticsearch URI/证书、JDBC 连接、`support_new_tenants`/tenantId 初始化、namespace/镜像模板、`POD_NAME/NODE_NAME/HOST_IP/LOG_LEVEL_CONFIGMAP_PATH` 和探针端口。`server.ssl.trust-store-password` 等敏感信息须由密钥机制管理，**不复制真实密码到 DCC**。上述配置虽涉及环境/租户身份，也不因字段含 tenant 就自动成为租户 DCC 开关。
+
+**本轮参数差异收口**：10 + 16 + 7 + 5 = **38 个已列出的 DCC 候选**（其中 `rule-config-path` 尚需安全评审），另有 **34 个系统级明细 Key 明确不进入 DCC**。附件摘要与明细差 **11 个未列出 Key**，先追溯扫描源码再归类，不能默认这些缺失项属于 DCC。配置注册清单还须核对同 Key 不同默认值、权限和实际生效点。
+
+### 7.3 线程池资源按租户划分：实现架构
+
+**目标不只是“不同租户读取不同参数”，而是线程池/队列/并发资源真正隔离。**
+
+```mermaid
+flowchart TD
+    A[鉴权 tenantId] --> B[TenantResourceRegistry]
+    D[DCC tenant/mode 配置] --> W[Listener / Watch Manager]
+    W --> B
+    B --> E[Tenant-A ExecutorBundle]
+    B --> F[Tenant-B ExecutorBundle]
+    E --> E1[Embedding / Batch / Parse / Flush / Notice]
+    F --> F1[Embedding / Batch / Parse / Flush / Notice]
+    E --> G[Pod 级 CPU/线程/内存/连接全局配额]
+    F --> G
+    G --> H[Embedding / Storage 共享后端]
+```
+
+- 入口从认证上下文获取 `tenantId`，不能信任任意 Body 伪造；每个 TenantExecutorBundle 按租户持有独立的提交配额、执行队列、Worker 与缓存预算，或采用能证明等效隔离的有界虚拟队列调度器。
+- Bundle 可按活跃租户**懒创建、空闲回收**，不能为每个历史租户永久分配 core=8、max=32 导致线程数爆炸。保留已排队任务的 Tenant 所属信息，Pod 重启通过持久化 Task 恢复。
+- ThreadPoolExecutor 至少校验 `corePoolSize ≤ maxPoolSize`、queueCapacity/拒绝策略、keepAlive；租户专属并发许可还要受 Pod `maxTotalWorkers/maxConcurrentEmbeddings/maxConnections` 之类的**全局硬预算**约束（这些新名称只是待设计资源上限，不是当前配置 Key）。
+- 跨线程通过任务上下文明确设置/清理 tenantId、traceId、revision，不得因 ThreadLocal 复用串租户。Embedding 模型内部可能另起线程或 HTTP 请求；外层 `embedding-thread-pool-size=1` 不证明实际模型并发只有 1，须做真实请求 in-flight 观测。
+- 大租户满队列不能挤占小租户的队列；后端 GaussVector/Embedding 连接等共享依赖仍有全局限制和公平调度。不同 Pod 的租户 DCC 配置须统一；**仅按 Pod 设置 10 个并发配额不等于租户集群总配额是 10**。若需全局租户限额，应采用集中配额/一致性租约或将目标配额在副本间分配，最终选择需联调冻结。
+
+### 7.4 DCC 按租户监听、热变更及线程池安全迁移
+
+**推荐控制流程（设计建议，不宣称 DCC 现有 SDK 已支持）**：
+
+1. **配置登记**：将 §7.2 的候选 Key 逐项定义 `tenantId + inputMode/operationType + configKey + version + value + range + dynamic/restartRequired`；记录来源、默认值和审计，支持既有租户预置迁移。`@Value` 只是在 Bean 初始化时读取一次，**不具备自动 DCC 动态监听能力**。
+2. **订阅与初始化**：OAG 每 Pod 通过 DCC 官方 Listener/Watch SDK（或等价机制）订阅对应租户/键范围；首次加载和重连后获取**完整配置快照**并按版本检查，不能只消费增量事件而丢失中间更新。
+3. **校验后生效**：先对线程 `core ≤ max`、批大小/队列/超时合理区间、权限及 Pod 总预算做整套校验；通过则以不可变 `TenantConfigSnapshot` 原子发布。当前请求固定所用 `configVersion`；新请求使用新版本，不混用半组新旧字段。
+4. **线程池平滑调整**：增长时先调整最大容量再调整 core；缩小时先降低 core/限制入队，再安全降低 max（需按实际线程池合法 API 顺序）；旧 Worker 正在执行的任务允许自然完成，不强制中断 Embedding/COPY；不能把已排队的任务转到其他租户队列。
+5. **无法原地改变的配置**：队列容量、部分拒绝策略和资源池类型不一定支持在线调整；可在本租户创建新版本 ExecutorBundle，切换新任务入口，旧 Bundle **drain → shutdown**，超过恢复窗口则将持久化 Task 交给重试队列，不强制丢弃。
+6. **DCC 不可用/版本跳跃**：按同租户已校验的最后有效配置或发布预置继续运行，记录 `degraded/configStale` 并告警；越权/非法修改拒绝并保持旧值，任何失败**不得放宽安全或全局线程限制**。订阅恢复时做全量对账，防止 Pod 之间配置漂移。
+7. **可观测性**：配置回调记录 tenantId（可脱敏）、key、configVersion、来源、结果/原因和生效时间；资源面监控每租户 `active/queued/rejected/completed`, embedding 请求 in-flight、Batch/Flush 队列深度、内存/线程上限、DCC 监听延迟和失败次数。
+
+**示意伪代码**（不代表当前运行 API）：
+
+```java
+void onTenantConfigChanged(String tenantId, ConfigEvent event) {
+    TenantConfigSnapshot next = dcc.loadAndValidateSnapshot(tenantId, event.version());
+    budgetGuard.validate(tenantId, next); // 多个线程池/队列总配额一起验证
+    resourceRegistry.applyAtomically(tenantId, next); // 新任务见新快照，旧任务安全 drain
+}
+TenantExecutorBundle bundle = resourceRegistry.getOrCreate(authTenantId);
+bundle.submit(task.withTenant(authTenantId).withConfigVersion(bundle.configVersion()));
+```
+
+### 7.5 DCC 参数兼容、冲突和验收
+
+| 决策项 | 附件/旧草案情况 | 本轮规则 |
+|---|---|---|
+| 搜索并发 | 附件 `max-pool-size=30`，旧 Q4 为 25 | **记录版本差异**，以实际租户有效值冻结；不是性能附件证明了 30 最优 |
+| 批次线程数 | `batchInstance.threadPoolSize=8/20`、`parallelFlush.Size=8/20` | 查源码有效注入点、作用阶段和具体模式后再统一 DCC 默认 |
+| 批大小 | `batchInstance.maxBatchSize=1000/4000`，需求另有 COPY 批大小 | 区分逻辑 Batch、COPY 分片与 Spark 合并文件大小，不能复用同一 Key |
+| 任务队列超时 | `index-task.queue-timeout-hours=1/6` | 按任务类型/版本决定，确保不少于消息重放窗口 |
+| 无向图 | 统计显示 `undirected-filter=false`，软件 V2 设计 true | 明确租户 + query/entities + 发布版本的生效矩阵并回归，不静默修改 |
+| 缓存开关 | 统计 `subgraph-retrieval-cache-switch=true` | **性能压测强制 false**，并保存 DCC 快照与请求参数 |
+| RRF 权重 | `vector` 与 `dense` 两组同值、合计不能假设已归一 | 先核查是否同一通道别名，防止重复融合权重 |
+| 配置差异与多实例 | 静态 @Value + DCC 事件 | 完整回放、Watch 重连、Pod 重启和配置版本对账 |
+| 容量安全 | 每租户线程数可独立调节 | 一次修改需验证所有活跃租户和 Pod 全局预算，不能因租户数增长导致 OOM/线程耗尽 |
+
+**租户隔离测试矩阵**：T1=租户 A 满载 embedding、租户 B 仍可查询/写入；T2=更新 A 池 max/queue、B 无变化；T3=A 缩小 pool、旧请求自然完成且不丢任务；T4=Pod A/B Watch 事件乱序、断线重连后同版本；T5=异常值、过量配额、DCC 不可达时保留旧快照；T6=新租户首次创建/空闲回收；T7=多 Pod 受总配额/后端资源限制且不会跨租户泄漏。所有测试记录实际线程数、拒绝、Task 完成率和内存曲线。
 
 ---
 
-## 8. 验收、性能规格与发布实施
+## 8. 验收标准、发布门禁与技术决策
 
-### 8.1 验收矩阵（逐项覆盖原 20 条）
+### 8.1 最新 20 项需求验收矩阵
 
-| 用例组 | 需求 | 最低验收断言 |
+| 用例组 | 对应需求 | 最低验收断言/验证依据 |
 |---|---|---|
-| OMS-Q4-01 | Q4-01 | 加密旧包升级、密钥轮换、多实例重启、权限与密文访问不回退 |
-| OMS-Q4-02 | Q4-02 | 按域批量读取、同 revision、Agent/OMS 缓存命中和权限隔离 |
-| OMS-Q4-03 | Q4-03 | 双副本负载均衡与模型更新一致，无跨 Pod 脏数据 |
-| OMS-Q4-04 | Q4-04 | OMS 异常、密钥/数据库故障有 Runbook 和恢复演练记录 |
-| OMS-Q4-05 | Q4-05 | 场景包/配置中心/任务分层正确，越权参数被拒绝 |
-| OAG-Q4-06 | Q4-06 | V2 query/entities 兼容；仅 Instance 值链接；Property 返回完整枚举，两数组及旧扩展移除 |
-| OAG-Q4-07 | Q4-07 | 已部署 Skill V2、topK→topk，V1 deprecated 且未误删存量路由 |
-| OAG-Q4-08 | Q4-08 | App 安装触发任务，按 revision 建库/预热/发布；失败保留旧版本 |
-| OAG-Q4-09 | Q4-09 | 多 Pod 图缓存 version 一致；故障切换不返回新索引旧图 |
-| DFx-Q4-10 | Q4-10 | 配置类型/权限/层次/审计、灰度和回滚正确 |
-| DFx-Q4-11 | Q4-11 | OAG 故障、索引损坏与缓存错配可按 Runbook 恢复 |
-| IDX-Q4-12 | Q4-12 | 全量 1000 万、增量 10 万：成功率/rows/s/资源/向量调用数完整留痕 |
-| IDX-Q4-13 | Q4-13 | 单实例 10 QPS、3 s 的统计口径通过评审并测出 P50/P95/P99；2/3 副本扩展报告 |
-| IDX-Q4-14 | Q4-14 | 全量定义对比无变更时不重算向量；文本/模型变化正确触发 Embedding |
-| IDX-Q4-15 | Q4-15 | LVQ 先建/后建 A/B 对照，COPY 结束索引有效；批大小调参可回退 |
-| IDX-Q4-16 | Q4-16 | 指定键 Delete、CLEAR、重复请求与双库失败补偿一致 |
-| IDX-Q4-17 | Q4-17 | 增量只对缺失键/有效变化嵌入；分批并发不误删旧键、任务幂等 |
-| SEC-Q4-18 | Q4-18 | LEXICAL_ONLY 预研与 HYBRID 对照：索引量/准确率/耗时可解释 |
-| SEC-Q4-19 | Q4-19 | 不落敏感名称描述，ID→权威定义回查正确；BM25 功能降级/替代方案获评审 |
-| SEC-Q4-20 | Q4-20 | 后端日志、前端详情、导出、异常堆栈在非授权情况下不泄密 |
+| OMS-Q4-01 | Q4-01 | OMS 加密参数分层/透传与模型文件加密专项一致；加密算法/密钥与安全测试跟随专项 |
+| OMS-Q4-02 | Q4-02 | Agent 与 OMS 缓存减少实时全量取定义；同 tenant/revision/权限范围可见数据一致，缓存失效可重取 |
+| OMS-Q4-03 | Q4-03 | 2/3 实例负载均衡、OMS revision 与读写权限一致，不跨 Pod 泄漏 |
+| OMS-Q4-04 | Q4-04 | 按 GDE 公共恢复指导书交付 OMS 专项场景、诊断指标及演练记录 |
+| OMS-Q4-05 | Q4-05 | 参照 GDE 公共参数分级完成 OMS 场景包/系统/接口参数映射和安装回归 |
+| OAG-Q4-06 | Q4-06 | V2 query/entities 检索同入口；不建/不查 t_oag_enum；Property 完整枚举、真实 Instance 映射，移除旧 semanticExtensions |
+| OAG-Q4-07 | Q4-07 | 根目录 Skill/脚本迁移 V2，保留历史输出消息包装；7 项离线回归覆盖两种输入、topk/0 值、HTTP/业务失败；V1 deprecated 并盘点历史副本 |
+| OAG-Q4-08 | Q4-08 | **手动建索引偶现问题先闭环**；随后 OMS App 自动建索引、图/索引同 revision，失败保留旧 active |
+| OAG-Q4-09 | Q4-09 | 多 Pod 图缓存与索引 revision 一致、跨实例负载分担，滚动升级与任务接管可恢复 |
+| DFx-Q4-10 | Q4-10 | **租户线程池/队列真实隔离且按租户 DCC Watch 生效**；合法变更、缩容 drain、跨 Pod 对账和全局资源限制 |
+| DFx-Q4-11 | Q4-11 | OAG 专项故障纳入 GDE 公共 Runbook，有演练、证据和恢复结果 |
+| IDX-Q4-12 | Q4-12 | **1000 万行 FULL / 10 万行增量**；DataSync Producer/Consumer 异步通知与 MinIO READ；Spark 小文件合并、图/语义去重；COPY 无主键冲突、失败可恢复 |
+| IDX-Q4-13 | Q4-13 | 附件的 2U4G/10 QPS/平均 ≤5 s/拒绝 <20% 及全部固定条件可复现；**3U4G 建议压测单独出结果** |
+| IDX-Q4-14 | Q4-14 | 定义索引未变更的向量复用；模型/输入变化才触发增量 Embedding，元数据/词法索引仍正确更新 |
+| IDX-Q4-15 | Q4-15 | LVQ 先建/后建同环境 A/B；预建可用性与 COPY 总耗时、Recall 验证，COPY 批大小可按租户 DCC 调整/回退 |
+| IDX-Q4-16 | Q4-16 | Delete/CLEAR 与 DataSync 联调，双库成功对账、幂等、重试及冲突处理 |
+| IDX-Q4-17 | Q4-17 | FULL 与 incremental 的数据库差异对比准确；无新键不调用 Embedding、不误删已有键；分批并发安全 |
+| SEC-Q4-18 | Q4-18 | OMS retrieval.enabled + 可选 indexMode（HYBRID/KEYWORD_ONLY/VECTOR_ONLY），disabled 不建；混合/单路建库查询、模式迁移、无 property 路由与旧数据兼容 |
+| SEC-Q4-19 | Q4-19 | name/description 索引最小化、ID→定义回查与权限正确，严格 ID-only/BM25 矛盾完成加密专项安全评审 |
+| SEC-Q4-20 | Q4-20 | 加密堆栈参数控制后台日志明文和前端脱敏；专项认证与生产日志/导出/异常回归无泄露 |
 
-### 8.2 发布顺序与依赖
+### 8.2 子图查询性能规格专用验收（附件 10-26）
 
-| 阶段 | 优先工作 | 门禁 |
+| 测试编号 | 条件/数据集 | 验证与交付结果 |
 |---|---|---|
-| A — 契约与安全评审 | 完成 V2 DTO、配置冲突、加密模式、字段敏感级别、索引模式选择 | 正式接口、模型 revision、责任清单冻结 |
-| B — 可恢复索引路径 | OMS 安装事件、Task/Manifest、分批 staging、仅差异 Embedding、删除/对账 | 全量/增量/删除正确，失败不污染 active |
-| C — 接口与多实例 | Skill V2 迁移、图缓存版本同步、多实例并行与限流 | V1/V2 回归，跨 Pod 一致性和故障演练 |
-| D — 性能优化和预研 | 1000 万/10 万负载、10 QPS/3 s、LVQ A/B、LEXICAL_ONLY 安全评估 | 有测试报告、容量模型及风险决策 |
-| E — 灰度与交付 | Q4 特性开关、配置/密钥回滚、运维手册和安全测试 | 需求表 20 项逐项验收且遗留项备案 |
+| PERF-Q4-01 | **2U4G** 单实例；≤150 ObjectType、≤3000 Property、≤400 Edge，静态图 1 GB、≤10 本体 | 固定环境镜像、CPU 单核 SHA-256 ≥280 万 ops/s/700 MB/s、JVM、实例数与本体 revision |
+| PERF-Q4-02 | CXO L1 黄金集，entities 对象数 <20，propertyValues 分桶 40% / 50% / <10% | 冻结输入用例、随机种子及 **4/8 边界重叠的解释方式**；未冻结不得声称完全复现附件 |
+| PERF-Q4-03 | hybrid、0.7、topK≤3、hopLimit≤3、adaptive=1、minimal、Functions/Actions=0 | 快照并记录 V2 `topk` 实际绑定、无向开关与 DCC 租户配置；问题缓存 **false** |
+| PERF-Q4-04 | 重启后预热 ≥3 min，前 3 次结果剔除，查询高峰无实例向量化入库 | 记录预热时点与错峰窗口，不允许缓存命中/后台任务影响对照 |
+| PERF-Q4-05 | **10 请求/秒，连续 1000 请求**，2U4G 基准 | **平均成功耗时 ≤5 s**（均值统计口径需签审）、拒绝总比例 <20%；同时报告成功 QPS、P50/P95/P99、失败/超时 |
+| PERF-Q4-06 | **3U4G 建议压测**，同用例/参数并与 2U4G 对照 | 单独报告耗时与吞吐，不能作为 2U4G 达标替代证据 |
+| PERF-Q4-07 | 2/3 Pod 水平扩展 + 两个租户并行 | 在总入口 QPS 固定/每 Pod QPS 固定两种情形下验证扩展效率、租户池隔离和全局后端瓶颈 |
+| PERF-Q4-08 | CPU 单核达标与不达标、ARM/x86 混合、图数/Property 数/枚举值规模梯度 | 测试超出附件约束后的性能降级；正式规格只针对符合约束的环境 |
 
-**注意**：上述是建议技术顺序，**不是用户已确认的具体日期或组织承诺**；实际并行关系、发布范围和每项工作量单位仍须项目管理确认。
+**拒绝率和时延不得混算**：拒绝率建议按 `flowRejected / submitted`；平均耗时建议按成功完成响应统计，并同时给出失败/排队独立分位值，最终以压测评审冻结的测量口径为准。附件规定的是**平均 ≤5 秒**，没有给出 P95/P99 硬门槛；这些分位统计应采集，但不能用旧草案“3 s”偷偷替代正式验收指标。**3U4G 的结果必须独立标识。**
 
-### 8.3 统一可观测性与验收记录
+### 8.3 DataSync/Spark 与租户资源专项测试
 
-每个请求/任务至少记录（脱敏）：`traceId、tenantId(受控)、ontologyId、revision、operation/mode、jobId、sourceVersion、configVersion、indexVersion、cacheVersion、stageLatency、rowsScanned、rowsInserted、rowsDeleted、embeddingCount、retryCount、errorCategory`。按 OMS/OAG 多实例、DataSync/Spark、OpenSearch/GaussVector、图库和 Embedding 模型维度建立看板。正式验收保存数据集、脚本、配置、压测报告、故障注入和恢复证据。
-
-对“单实例 3 s / 10 QPS”至少列出成功率、响应大小、P50/P95/P99、CPU/内存/GC、图库和底层检索负载；对 1000 万/10 万同步分别给出批次完成率、恢复时间和向量复用率。模型/硬件和数据规模不一致时，禁止直接比较吞吐。
-
-### 8.4 待决策事项与评审输出
-
-| 编号 | 待确认事项 | 建议牵头 |
+| 编号 | 场景 | 准入断言 |
 |---|---|---|
-| D-01 | 原工作量 7.9 的单位、20 行模块归属和最终优先级 | 项目管理/OMS/OAG |
-| D-02 | `onto_encrypt` 0/1、加密范围、KMS、密钥轮换与恢复 | OMS/安全 |
-| D-03 | 组查询正式 API、分页、revision 与缓存失效协议 | OMS/CBS |
-| D-04 | Q4 `undirected-filter=false` 与软件 V2 预置 true 的版本/模式生效矩阵 | OAG/版本管理 |
-| D-05 | V2 entities String/Object、Skill topk、V1 deprecated 响应与下线条件 | OAG/Skill/前端 |
-| D-06 | OMS→OAG App 事件/任务 API、发布一致性、重试/补偿策略 | OMS/OAG |
-| D-07 | LVQ 当前数据库版本是否允许预建且 COPY 后无需 rebuild，COPY 批大小范围 | GaussVector/OAG |
-| D-08 | `-1` 语义、DCC 配置作用域及服务不可达时的回退 | OAG/配置底座 |
-| D-09 | 严格 ID-only 与 OpenSearch BM25 模糊检索之间的安全/能力权衡 | 安全/OAG/业务 |
-| D-10 | 3 s 的 P95/P99 口径、10 QPS 稳态条件、CPU/内存与副本规模 | OAG/性能测试 |
+| ING-Q4-01 | DataSync Producer 上传完成→Consumer 通知 OAG；重复 READY、Notice 重放、网络短断 | OAG 不等上游 MinIO 上传，仍按 Manifest 读取；Task 只创建一次有效任务，无丢消息 |
+| ING-Q4-02 | Spark 小文件多/少对照，保持相同输入行数和 revision | DataSync 请求数与 MinIO 文件数下降，CPU/线程等待和索引总耗时可量化 |
+| ING-Q4-03 | Spark 图与语义索引数据跨分区重复，COPY 压测 | 图主键/语义组合键去重正确，COPY 无主键冲突；OAG 保留幂等校验 |
+| ING-Q4-04 | FULL 1000 万行的部分分区滞后，增量 10 万行乱序和重试 | FULL 不因单分片到达误删，增量只有真正新增键调用 Embedding，版本旧消息不覆盖新值 |
+| DCC-Q4-01 | 租户 A 池满、租户 B 保持轻载 | 租户间队列/Worker/配额隔离，A 满不会拖垮 B |
+| DCC-Q4-02 | 线程池 core/max、Batch/Flush/Parse 和查询队列配置变更 | 各 Tenant Watch 并稳定生效；在线缩容不丢已执行/排队任务 |
+| DCC-Q4-03 | DCC Listener 断线、重连、版本跳跃、非法值/超出总预算 | 老配置继续可用且告警；非法值拒绝生效；多 Pod configVersion 一致 |
+| DCC-Q4-04 | 大量闲置租户、2/3 Pod 同时创建资源池 | 懒创建/回收，系统总线程数与连接数不超限；隔离和副本级预算正确 |
+| DCC-Q4-05 | `25/30`、`8/20`、`1000/4000`、`1/6`、`undirected-filter` 差异 | 所有冲突 Key 的生效版本与模式有回归证据，不能任意取较大/较小值 |
 
-**设计结论**：本 Q4 方案以保留 OMS/OAG 权威边界和版本一致性为前提，将 20 项需求串成“模型与 App 安装 → 版本化索引构建/差异同步 → V2 统一检索 → 多实例可用 → 安全与性能验收”的闭环。所有原始数量级和配置原值均保留；新提议的 API、状态、参数名和安全替代方案只作为**待评审设计**，以实现联调及验收结果为准。
+### 8.4 发布顺序与依赖关系
+
+| 阶段 | 实施重点 | 准入门禁 |
+|---|---|---|
+| A—接口与配置基线 | 20 项责任冻结、加密专项/GDE 公共依赖、V2 DTO、DCC 38 项候选审查 | 参数默认冲突、系统级排除和租户监听接口明确 |
+| B—基础稳定性 | **手动索引偶现问题修复**、Task/Manifest、图/索引同 revision | 手动构建可恢复、旧 active 不污染；才可进入自动化 |
+| C—DataSync/Spark 流水线 | Producer/Consumer 异步、Spark 合并小文件/图与语义去重、差异 Embedding | 1000 万/10 万、重试/乱序/故障联调通过 |
+| D—OAG 多实例/DCC | 自动索引、租户池和 Watch、V2 Skill、公共恢复手册 | 多 Pod/多租户隔离回归，DCC 断线有安全回退 |
+| E—检索规格与安全预研 | 2U4G 指标、3U4G 对照、LVQ A/B、Keyword-only 与 ID-only 评审 | 性能报告、资源评估、加密专项决策、未决项留档 |
+
+**仅表示建议技术依赖顺序**；正式版本、需求优先级、工作量和每项资源预算需项目管理确认。分层配置公共需求和故障 Runbook 不在本文件重复独立建设。Q4-18 为预研，不宜在安全/搜索方案未冻结前承诺全部局点上线。
+
+### 8.5 统一可观测性与验收证据
+
+检索与建库日志按安全策略脱敏记录：`traceId、tenantId（授权或脱敏）、ontologyId/revision、queryMode、jobId、partitionId、sourceVersion、configVersion、indexVersion、graphCacheVersion、submitted/accepted/rejected、activeThreads、queuedTasks、embeddingInFlight、rowCount/duplicateCount/rowDiff、copyDuration、indexBuildDuration、pipelineLatency、responseBytes、errorCategory`。按 Tenant / Pod / 输入模式分别展示 DCC Watch 状态、查询拒绝率、平均/P95/P99、模型实例数和图缓存预算；敏感名字/枚举实例原值只在授权路径可见。
+
+测试报告必须包含：2U4G/3U4G 两套环境清单、CPU 单核 openssl 检测结果、模型版本与内存图数量、10 QPS/1000 次发送记录、3 分钟预热、缓存关闭、后台 Embedding 错峰、拒绝和超时分母、Spark/MinIO 文件数变化、Embedding 复用比例，以及各租户线程资源配置版本。无硬件/样本同一性时不得直接比较资源或性能。
+
+### 8.6 待决策事项与评审责任
+
+| 编号 | 必须冻结的议题 | 建议牵头 |
+|---|---|---|
+| D-01 | 最新 20 条需求的最终 owner、优先级与工作量；旧版 7.9 不沿用 | 项目管理/OMS/OAG |
+| D-02 | OMS 加密、索引 ID-only 与后台明文/前台脱敏参数，统一跟随《本体模型文件支持加密》 | OMS/安全 |
+| D-03 | GDE 公共场景包分层与故障恢复规范、OMS 分域接口/缓存 revision | GDE/OMS/CBS |
+| D-04 | 手动建索引偶现根因、修复验收后 OMS 自动通知/发布流程 | OMS/OAG |
+| D-05 | DataSync READY/NOTICE/ACK、Spark 文件合并与图/语义去重稳定 Key、快照水位 | Spark/DataSync/OAG |
+| D-06 | **DCC 已列 38 项候选注册**、34 项系统级排除；核对附件摘要 83 与明细 72 差的 **11 个未列出 Key**，再定最终注册清单；包括默认冲突、Rule 路径与租户 Watch API | OAG/配置底座 |
+| D-07 | Pod 与集群层面租户线程/队列/Embedding/连接池的总资源预算和副本间分配 | OAG/架构/资源管理 |
+| D-08 | 2U4G 与 3U4G 的测试职责、平均延迟的统计分母、propertyValues 分桶边界 | OAG/测试/CBS |
+| D-09 | V2 `topk`/附件 `topK`、`undirected-filter=false/true` 以及 25/30 并发默认 | OAG/Skill/配置底座 |
+| D-10 | LVQ 提前建索引的数据库版本支持、COPY Batch 值域和回退 | OAG/GaussVector |
+| D-11 | OMS `retrieval.indexMode` 值域、默认、迁移/旧数据兼容；Keyword/Vector 单路入库与 ID-only 的 BM25 安全冲突 | OMS/OAG/安全 |
+| D-12 | 10 QPS 压测是否需要集群级租户配额服务，DCC Watch 失效时如何保护查询资源 | OAG/平台底座 |
+
+**设计收口**：本轮方案将 Q4 最新 20 项需求聚焦为“公共加密/GDE 依赖 → 手动索引稳定性 → 异步索引全量/增量 → 租户级 DCC 资源隔离 → OAG V2 统一查询 → 精确的性能与安全验收”。所有原始配置键与新附件的规模、约束、测试条件均分别标明；**没有把代码扫描的默认值当成运行配置，也没有把 3U4G 建议压测当成 2U4G 已验收。**
