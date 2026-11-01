@@ -732,7 +732,7 @@ Q_{\mathrm{cluster}}\ \le\ \min(n\cdot Q_{\mathrm{OAG}}, Q_{\mathrm{embedding}}(
 
 **系统级排除**：附件第 5/6/7 类标注无需进入 DCC：MinIO scheme/证书/实例名/bucket、GaussVector/OpenSearch 实例名、Nebula IP/port/space、Elasticsearch URI/证书、JDBC 连接、`support_new_tenants`/tenantId 初始化、namespace/镜像模板、`POD_NAME/NODE_NAME/HOST_IP/LOG_LEVEL_CONFIGMAP_PATH` 和探针端口。`server.ssl.trust-store-password` 等敏感信息须由密钥机制管理，**不复制真实密码到 DCC**。上述配置虽涉及环境/租户身份，也不因字段含 tenant 就自动成为租户 DCC 开关。
 
-**本轮参数差异收口**：10 + 16 + 7 + 5 = **38 个已列出的 DCC 候选**（其中 `rule-config-path` 尚需安全评审），另有 **34 个系统级明细 Key 明确不进入 DCC**。附件摘要与明细差 **11 个未列出 Key**，先追溯扫描源码再归类，不能默认这些缺失项属于 DCC。配置注册清单还须核对同 Key 不同默认值、权限和实际生效点。
+**本轮参数差异收口**：10 + 16 + 7 + 5 = **38 个附件已列出的 DCC 候选**（其中 `rule-config-path` 尚需安全评审），**另外新增 `copy-batch-size` 候选 1 项（尚未注册，不计入原 38）**；34 个系统级明细 Key 不进入租户 DCC。附件摘要与明细差 11 个未列出 Key，先追溯扫描源码再归类。系统级参数进入系统配置中心或 Secret 管理，不等于迁入按租户 DCC。
 
 ### 7.3 按租户独立资源池、`x-gde-tenant-id` 与索引管理四接口（Q4-10）
 
@@ -827,18 +827,44 @@ flowchart TD
 
 **接口级验收**：Notice/Query/Retry/Cancel 缺 Header、无权限、Body 伪造 tenant、跨本体 taskIds、两租户同 requestId、Task 部分成功、Cancel/Retry 竞态、DCC Watch 变更/Pod 重启、新租户首访和队列饥饿均应有可重复测试。
 
-### 7.4 DCC 按租户监听、热变更及线程池安全迁移
+### 7.4 DCC 按租户监听、线程池热更新与资源安全迁移
 
-**推荐控制流程（设计建议，不宣称 DCC 现有 SDK 已支持）**：
+**复用原则**：可参考“本体加密内存图”的现有 DCC 注册/监听风格，但该专项的实际 SDK 方法名及字段未在本文件核验，因此只复用**控制模式**（注册→订阅→配置快照→生效→失效回退），**不是已经确认可直接复制的代码**。`@Value` 是启动时值注入，不能自动完成按租户监听；运行期必须使用配置底座官方 Listener/Watch。
 
-1. **配置登记**：将 §7.2 的候选 Key 逐项定义 `tenantId + inputMode/operationType + configKey + version + value + range + dynamic/restartRequired`；记录来源、默认值和审计，支持既有租户预置迁移。`@Value` 只是在 Bean 初始化时读取一次，**不具备自动 DCC 动态监听能力**。
-2. **订阅与初始化**：OAG 每 Pod 通过 DCC 官方 Listener/Watch SDK（或等价机制）订阅对应租户/键范围；首次加载和重连后获取**完整配置快照**并按版本检查。
-3. **校验后生效**：DCC参数校验规则，线程 `core ≤ max`、批大小/队列/超时合理区间等需要做整套校验；
-4. **线程池等资源平滑调整**：监听到DCC回调后，自动重建线程池、连接池等资源，采用单例模式管理线程池或连接池资源。
-5. **可观测性**：审计日志借助DCC的审计能力，同时OAG配置回调记录 tenantId、key、configVersion、来源、结果/原因和生效时间。
+1. **配置注册与归属**：基于 §7.2 已分类的**38 个附件明细 DCC 候选**登记租户作用域、operationType/输入模式、`min/max/default`、校验器和热更新类型；另将本次新增 `copy-batch-size` 作为**新增候选 1 项**评审（不计入附件既有 38 个，也不能凭空认为已注册）。原附件摘要 83 与明细 72 差 11 项仍需逐项核源码，不将未知项自动分类。系统级数据库连接、MinIO 地址、证书、Pod 环境等不允许普通租户 DCC 覆盖；需收编到**系统级配置中心/Secret/部署设置**，区别于**租户级 DCC**。
+2. **懒初始化/租户首次访问**：以可信鉴权 tenantId 初始化该租户完整、**带版本号**的 `TenantConfigSnapshot`，先对同租户 DCC 注册/版本/授权做全量读取，再发布资源包。每 Pod 以单例 Registry 维护多个租户资源包，定期对闲置租户进行 drain/回收；不永久按每租户 max=32 提前分配线程。
+3. **监听事件**：按 tenantId+scope 订阅 DCC 官方事件；Watch 中断/事件乱序、重复/版本跳跃时以**重新拉取完整快照**校准，而不是只累加变更字段。事件回调线程不得直接做长时间 Embedding、JDBC、线程池 shutdown；先排入受控配置执行队列。
+4. **整套校验**：验证 `corePoolSize ≤ maxPoolSize`，queue 非负、batch/copy size 为正、重试/Timeout/Flush 限制与资源内存上限相容、权限/路径白名单合法、各租户配额总和不超过 Pod/节点硬限额。校验失败保留上一版有效配置，给出字段/版本/原因审计和告警。`25/30`、`8/20`、`1000/4000`、`1/6` 均为历史不同默认值，先核准有效注入点。
+5. **安全原子切换**：先构造新配置快照与所需租户 ExecutorBundle，完整校验通过后 CAS/锁切换 `(tenantId, configVersion)` 的新任务入口；正在运行的查询/Batch 绑定旧版本，不能中途改变分片/向量维度。若只是线程 core/max 调整，按 Java ThreadPoolExecutor 约束设置（扩容先增 max 再增 core；缩容先降 core 再降 max）。**ArrayBlockingQueue 容量不可原地改**，要用新租户队列并安全迁移新任务，旧队列 drain→shutdown；不能跨租户迁移任务。
+6. **连接与缓存**：租户依赖的 HTTP/模型连接、SQL 并发许可按资源预算热调整；共享物理数据库连接池不意味着为每租户无限创建独立连接池，允许共享总池+tenant 令牌配额。连接池确实需重建时，旧连接随在途任务释放，再关闭旧版本；禁止硬断连接导致半批提交。
+7. **异常保护与对账**：DCC 故障保留最后有效已校验版本 + 系统硬上限，不“放开所有并发”；每 Pod 定时比较 tenant+configVersion，失配可阻止新任务/回源修复。缩容不强杀执行中的 Embedding/COPY；Task 必须可从数据库 Checkpoint/MinIO 重放，旧线程池最终有界退役。跨 Pod 的**租户集群总额度**需集中租约/配额分配或网关统一控制，不能把每 Pod 许可当集群额度。
+8. **监控与审计**：DCC 审计 + OAG 自身 metrics 记录租户（脱敏）、参数键/旧新版本、生效结果、Pool active/core/max、队列深度、任务拒绝/超时、Embedding in-flight、连接占用、Watch 延迟/重连与配置回滚次数，不记录密钥或完整业务值。
 
-**示意代码**：
-可以参考本体加密内存图的DCC注册和监听逻辑
+**伪代码（仅示意，不代表现有 SDK 名称）**：
+
+```java
+void onTenantConfigEvent(String tenantId, long eventVersion) {
+    configExecutor.execute(() -> {
+        TenantConfigSnapshot current = registry.snapshot(tenantId);
+        TenantConfigSnapshot next = dccClient.fetchFull(tenantId);
+        if (next.version() <= current.version()) {
+            return; // 重复/过期事件
+        }
+        validator.validateAll(next, podGlobalLimits, authorizedScopes);
+        TenantExecutorBundle nextBundle =
+            registry.prepareBundleOrResize(tenantId, next);
+        registry.swapForNewTasks(tenantId, next, nextBundle);
+        registry.drainOldBundleAsync(tenantId, current.version());
+    });
+}
+
+// Task 入队时固定租户与配置版本；执行完成清理线程上下文
+TenantExecutorBundle bundle = registry.getOrCreate(verifiedTenantId);
+bundle.submit(task.withTenant(verifiedTenantId)
+                  .withConfigVersion(bundle.configVersion()));
+```
+
+**异常/退回**：配置值不合法、模型线程池无法分配、部分 Pod 收到旧版/版本跳跃、DCC 离线、租户池达到内存上限、旧连接未释放以及线程任务取消，均需有确定性回退或拒绝，不能“回调成功但线程池仍使用老值”。验收见 §7.5、§8.3。
 
 ### 7.5 DCC 参数兼容、冲突和验收
 
@@ -846,7 +872,7 @@ flowchart TD
 |---|---|---|
 | 搜索并发 | 附件 `max-pool-size=30`，旧 Q4 为 25 | **记录版本差异**，以实际租户有效值冻结；不是性能附件证明了 30 最优 |
 | 批次线程数 | `batchInstance.threadPoolSize=8/20`、`parallelFlush.Size=8/20` | 查源码有效注入点、作用阶段和具体模式后再统一 DCC 默认 |
-| 批大小 | `batchInstance.maxBatchSize=1000/4000`，需求另有 COPY 批大小 | 区分逻辑 Batch、COPY 分片与 Spark 合并文件大小，不能复用同一 Key |
+| 批大小 | `batchInstance.maxBatchSize=1000/4000`，需求另有 COPY 批大小 | 区分逻辑 Batch、COPY 分片与 Spark 合并文件大小；`copy-batch-size` 为**额外待注册 DCC 候选** |
 | 任务队列超时 | `index-task.queue-timeout-hours=1/6` | 按任务类型/版本决定，确保不少于消息重放窗口 |
 | 无向图 | 统计显示 `undirected-filter=false`，软件 V2 设计 true | 明确租户 + query/entities + 发布版本的生效矩阵并回归，不静默修改 |
 | 缓存开关 | 统计 `subgraph-retrieval-cache-switch=true` | **性能压测强制 false**，并保存 DCC 快照与请求参数 |
