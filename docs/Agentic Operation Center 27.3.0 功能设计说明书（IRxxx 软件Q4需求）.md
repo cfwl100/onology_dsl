@@ -148,6 +148,9 @@ OMS 保持服务无状态或将可恢复状态外置；在本体加密的需求�
 
 ### 3.1 按最新 V2 接口统一服务与软件场景（Q4-06）
 
+TODO: 按照最新的接口规范刷新：https://github.com/cfwl100/onology_dsl/blob/main/docs/%E6%9C%AC%E4%BD%93%E5%AD%90%E5%9B%BE%E8%AF%AD%E4%B9%89%E6%A3%80%E7%B4%A2%E6%8E%A5%E5%8F%A3v2.md
+
+
 **实际接口契约**：《1.子图检索接口设计v2.md》定义 `POST /v2/onto-retrieval/subgraph/semantic-search`、`Content-Type=application/json`。原 V1 中位于 Path 的 `ontologyId` 进入 V2 Body；`query`/`entities` 至少提供一个，**`entities` 在 HTTP Body 是 1～102400 字符的 JSON String**；两者均存在时优先 entities 并跳过实体提取。
 TODO：增加参见：ICT服务与软件/Agentic Operation Center/Docs/27/27.3.0/02.设计/02.设计文档/Agentic Operation Center 27.3.0 功能设计说明书(IR20260729001097_OAG子图检索能力增强)/1.子图检索接口设计v2.md
 接口规范：本体子图语义检索接口v2 > 字段说明: https://wiki.huawei.com/wiki/WIKI2026101013239851?title=%E5%AD%97%E6%AE%B5%E8%AF%B4%E6%98%8E
@@ -164,6 +167,7 @@ TODO：增加参见：ICT服务与软件/Agentic Operation Center/Docs/27/27.3.0
 | `topk` | **小写 k**，默认 3 | 旧 CLI `--topK` 仍接收，Body 只发送 `topk` |
 | `graphExpansionStrategy` / `hopLimit` | minimal/khop/component，hopLimit 默认 3 | `--hopLimit` 别名保留 |
 | `includeFunctions` / `includeActions` | API 默认 0/0 | Skill 保留原 includeFunctions=1（显式传值） |
+
 
 
 ### 3.2 Skill 和脚本从 V1 迁移到 V2（Q4-07）
@@ -249,6 +253,7 @@ https://github.com/cfwl100/onology_dsl/blob/main/docs/%E6%9C%AC%E4%BD%93%E5%AE%9
 
 ### 4.2 定义索引“全量比对 + 增量 Embedding”（Q4-14）
 
+TODO：下面的方案，保留SQL语句，按照本体实例增强数据分批增量Embedding独立临时表设计方案 刷新
 
 验证结果：
 
@@ -290,6 +295,8 @@ value | object_type_id | property_id
 
 ### 4.3 Incremental 和 FULL_REPLACE 的数据库差异比对（Q4-17）
 
+TODO：下面的方案，保留SQL语句，按照本体实例增强数据分批增量Embedding独立临时表设计方案 刷新
+
 **核心实现目标**：以数据库内组合键比较替代全量删表/全量重复 Embedding。稳定键为 `(object_type_id, property_id, normalized(value))`，并加 `tenantId/ontologyId` 物理隔离；源值归一化语义必须固定。
 
 **FULL_REPLACE**：
@@ -326,12 +333,13 @@ CREATE Index tablename_idx_lvq on tablename using gsdiskann (vector L2/Cosine) w
       build_with_quantized_vector = true
     );
 ```
+TODO: 去除原有代码逻辑中的重建索引的逻辑，可以参考：https://github.com/cfwl100/onology_dsl/blob/main/docs/notice%E6%8E%A5%E5%8F%A3%E5%88%B0%E5%90%91%E9%87%8F%E5%85%A5%E5%BA%93%E5%AE%8C%E6%95%B4%E6%B5%81%E7%A8%8B.md
 
 ### 4.6 Delete 接口及索引删除联调（Q4-16）
 
 参见《ICT服务与软件/Agentic Operation Center/Docs/27/27.3.0/02.设计/02.设计文档/Agentic Operation Center 27.3.0 功能设计说明书（IR20260731000589 SR20260804861012&SR20260804861215&SR20260804861015&SR20260804861454 OAG语义检索）.md》
 
-notice接口delete字段，代表删除对应的记录
+TODO: notice接口delete字段，代表删除对应的记录
 **INSTANCE_VALUE CSV 字段：**
 
 | CSV 字段 | UPSERT | DELETE | 说明 |
@@ -352,6 +360,9 @@ notice接口delete字段，代表删除对应的记录
 ---
 
 ## 5. 查询性能与分级索引预研（Q4-13、Q4-18）
+
+TODO：需要考虑OAG多实例时，可以水平扩展，并发数翻倍，同时依赖embedding模型的水平扩展能力。
+embedding模型120条/s向量。
 
 ### 5.1 子图检索性能规格与横向扩展（Q4-13）
 
