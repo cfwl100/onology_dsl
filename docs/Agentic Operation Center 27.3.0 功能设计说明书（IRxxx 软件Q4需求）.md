@@ -455,47 +455,92 @@ DO NOTHING;
 
 测试：0/10/100% 新键、单批/跨批去重、两 Pod 重叠批次、三阶段故障、长间隔到达、对象/属性 ID 有效性、TEMP ROLLBACK 自动释放、未验证 PG 方言阻断上线、不更新旧 A vector、OpenSearch 部分失败重试及 FULL 旧版本不误删。
 
-### 4.5 LVQ 预建（Q4-15）
+### 4.4 Embedding 并发与批量入库资源控制（Q4-12、14、17）
 
-LVQ索引:支持空表建索引
-https://3ms.huawei.com/km/blogs/details/17820657?l=zh-cn
+**主链路**：`Notice → Task → CSV Parse → Batch De-dup → Diff → Embedding → GaussVector COPY/Upsert → OpenSearch Bulk → Verify/Publish`；以 [GitHub《notice 接口到向量入库完整流程》](./notice接口到向量入库完整流程.md) 记录的当前 Java 实现作为改造点定位参考：`IndexTaskService`、`InstanceIndexServiceImpl.processFilesInParallelWithStats`、`submitBatch/batchCreateInstanceIndex`、`buildInstanceIndexFull`、`InstanceVectorServiceImpl.upsertInstanceData`、`InstanceVectorBaseMapper.xml` 和 `ElasticSearchRestRepository`。参考文档记录的**旧 EnumIndexServiceImpl** 路径在 Q4-06 的“默认不建 Enum 索引”要求下应停止调用，不误删兼容回退用的旧代码。
 
-``` sql
-CREATE Index tablename_idx_lvq on tablename using gsdiskann (vector L2/Cosine) with (
-      enable_pq = true, 
-      lvq_nclus = 128, 
-      subgraph_count = 1, 
-      quantization_type = 'lvq', 
-      num_parallels = xx, 
-      enable_vector_copy = false, 
-      build_with_quantized_vector = true
-    );
+- **租户线程资源**：Notice、Parse、Instance Batch、Flush、Embedding 的 Worker/队列按认证 tenant 隔离，DCC 按 tenant 监听（§7.3～7.4）；每 Pod 仍有全局 CPU、线程、HTTP 连接、GaussVector 连接池、内存的硬限额，不可因为多个租户分别 20 worker 而突破 4G 上限。
+- **实际并发**：历史 `parseFile.threadPoolSize=20`、`batchInstance.threadPoolSize=8/20`、`parallelFlush.Size=8/20`、`notice.threadPoolSize=20` 存在源码默认差异；内部 `ConfiguredEmbeddingModel.embedAll` 还可能自行并发，必须限制**实际 HTTP in-flight**，不能仅靠 `CompletableFuture` 数量或单个外层池配置推断真实 Embedding 并发。`embedding-thread-core-pool-size=8`、`max=32` 也须按租户/系统总预算验证。
+- **失败与上下文**：执行任务前设置 tenantId/traceId/revision、执行后清理 ThreadLocal，不能跨租户串值。模型输出数量、维度、NaN/Inf 校验失败要中止相关 batch、标记可恢复错误并持久化 checkpoint；**原实现“错误时降级零向量”应改为失败重试，不允许将 1024 维全零向量作为正确语义索引静默写库**。OpenSearch bulk 部分失败按失败文档重试，GaussVector 成功不代表全 Task 成功。
+- **DCC 调优**：区分 `batchInstance.maxBatchSize`（逻辑分批）、模型文本每请求数量、`parallelFlush.Size`（写入并发）、`copy-batch-size`（COPY 分片，新增待注册），不能把所有参数都叫 COPY Batch；缩容先停止新任务/排空旧连接，新配额仅影响后续批次。新增 `copy-batch-size` 的实际配置键和值域需由配置底座冻结。
+
+### 4.5 LVQ 建表前置、取消无条件 rebuildindex 与 COPY 调优（Q4-15）
+
+**原始目标**：实例语义索引在建向量表阶段预建 LVQ，COPY 完成**不再重复执行 rebuildindex**；COPY 分片大小通过**按租户 DCC**调优。参考现有实现资料：`InstanceVectorBaseMapper.xml` 目前 `createOntologyNoIndexTable` 先建**无索引表**，在 FULL_REPLACE 成功导入后补建 `gsdiskann`；`InstanceVectorBaseMapper.java` 有补建索引调用。该流程须按目标数据库版本做兼容验证后变更，不能只删 Mapper 中 SQL 而使索引缺失。
+
+**原 TODO 给出的 LVQ 参数保留如下**，其中 `num_parallels=xx` 和 `vector L2/Cosine` 是示意占位，正式 SQL 必须选目标版本支持的距离算子（例如 `vector COSINE`）并用可执行数值：
+
+```sql
+-- 建表及校验后、第一批 COPY 之前执行；需要先确认目标 GaussVector 语法
+CREATE INDEX tablename_idx_lvq ON tablename
+USING gsdiskann (vector COSINE)
+WITH (
+  enable_pq = true,
+  lvq_nclus = 128,
+  subgraph_count = 1,
+  quantization_type = 'lvq',
+  num_parallels = 5,
+  enable_vector_copy = false,
+  build_with_quantized_vector = true
+);
 ```
-TODO: 去除原有代码逻辑中的重建索引的逻辑，可以参考：https://github.com/cfwl100/onology_dsl/blob/main/docs/notice%E6%8E%A5%E5%8F%A3%E5%88%B0%E5%90%91%E9%87%8F%E5%85%A5%E5%BA%93%E5%AE%8C%E6%95%B4%E6%B5%81%E7%A8%8B.md
 
-### 4.6 Delete 接口及索引删除联调（Q4-16）
+**改造后的流程建议**：
 
-参见《ICT服务与软件/Agentic Operation Center/Docs/27/27.3.0/02.设计/02.设计文档/Agentic Operation Center 27.3.0 功能设计说明书（IR20260731000589 SR20260804861012&SR20260804861215&SR20260804861015&SR20260804861454 OAG语义检索）.md》
+1. `createOntologyNoIndexTable`/建表服务明确分支“预建 LVQ”开关，实际先创建与物理 `floatvector(${vectorDim})` 匹配的表和唯一键，再执行目标方言支持的 LVQ DDL，校验索引存在/可用；DDL 失败则将 Task 标记失败，不继续假装准备完毕。
+2. 按 DCC 租户 `copy-batch-size` 选择 COPY 分片，建议由已测量的 1000/4000 分批大小向上下探索，但 `COPY` 批大小、JDBC load 批大小与模型嵌入批次严格分开。按 batch 的 checkpoint 支持失败重试，同一 revision 避免与旧的建索引 Task 并发抢占。
+3. `COPY` 全批完成后校验行数、唯一键、LVQ 索引状态、Recall/查询样本，再标记 Task VERIFYING→SUCCESS；**成功路径删除/跳过原 `rebuildindex/create index after COPY` 的无条件调用**。若 GaussVector 版本实际不支持空表建 LVQ 或 COPY 后索引失效，按显式配置回退到**原后建流程**，记录原因和版本；不允许静默吞掉错误。
+4. `SET maintenance_work_mem='4GB'` 是旧 SQL 的**数据库会话**建议值而不是 OAG Pod 堆内存，需在 GaussVector 集群侧核算并配置合规权限，不能单实例多个 DDL 同时无限叠加内存。
 
-TODO: notice接口delete字段，代表删除对应的记录
-**INSTANCE_VALUE CSV 字段：**
+**A/B 回归**：A=原无索引表→COPY→建/重建 LVQ；B=建表→LVQ→COPY→无需 rebuild；同一模型、1000 万行、数据库版本与副本数下对比建表+导入+索引总耗时、rows/s、IO/CPU/写放大、向量 Recall@K、P95 查询、任务重试以及数据库恢复。**预建索引可能导致 COPY 更慢；只有 B 的端到端收益和 Recall 均经测试证实才能切主路径。** DCC 改动需提供版本快照、租户维度的生效/回退验证。
 
-| CSV 字段 | UPSERT | DELETE | 说明 |
-|---|---:|---:|---|
-| `property_id` | 必选 | 必选 | 所属 Property.id；作为稳定归属键的一部分 |
-| `property_name` | 必选 | 必选 | Property 的规范 `name`；由生产者提供，必须与 `property_id` 在当前 ontology generation 中一致 |
-| `object_type_id` | 必选 | 必选 | 所属 ObjectType.id；作为稳定归属键的一部分 |
-| `object_type_name` | 必选 | 必选 | ObjectType 的规范 `name`；由生产者提供，必须与 `object_type_id` 在当前 ontology generation 中一致 |
-| `value` | 必选 | 必选 | 去重后的真实 Instance Value；与归属 ID 一起确定业务键 |
-| `synonyms` | 可选 | 忽略 | 实例值同义词；CSV 中使用 `\n` 转义分隔 |
-| `op` | 必选 | 必选 | `UPSERT / DELETE`；`FULL_REPLACE` 中只允许 `UPSERT` |
+### 4.6 Delete 操作、Notice `delete` 字段与 CLEAR 的语义隔离（Q4-16）
 
+**参考现有接口**：`POST /v1/onto-retrieval/{ontologyId}/index-data/notice`，Body `IndexFileImportRequest` 的 `requestId`、`triggerTaskId`、`dataType`、`importMode`、`files`；现存 CSV 已有 `op ∈ {UPSERT,DELETE}`，`importMode ∈ {FULL_REPLACE,INCREMENTAL,CLEAR}`。当前支持 `dataType=INSTANCE_VALUE` 为实际主线，历史 DTO 文档中尚有 `METADATA_ENUM` 备选值，Q4 默认取消枚举索引后**不能把 Enum 通道重新作为主路径启用**。
 
-### 4.7 联调与容量测算（Q4-12）
+**源 TODO 要求“notice 接口增加 delete 字段，代表删除对应的记录”**。建议先采用兼容的**请求级 `delete` 可选 boolean** 并联调确认其语义，不能将“删除某些记录”误执行为删除整张本体表：
 
-压测分为：① 1000 万行首次 FULL；② 10 万行增量中分别注入 0%、10%、100% 新值（用于观测嵌入重用）；③ 批次乱序、重试、断连、分区缺失；④ 双库存储故障；⑤ 多实例故障接管与任务恢复。明确模型 ID、去重率、值平均长度、Embedding 模型和限流参数、数据源快照版本、COPY 方式、数据库副本和资源规格；输出全链路瓶颈与建议配置，而非仅给单线程 rows/s。
+| 字段/模式 | 语义 | 兼容与校验 |
+|---|---|---|
+| `importMode=INCREMENTAL, delete=true, files=[...]`（新增建议） | 文件所包含每条完整业务键都是 **DELETE 操作**，应从对应实例向量库/倒排库删除 | files 非空；需字段 `(object_type_id, property_id, value)`；与 CSV `op=UPSERT` 冲突则拒绝；不得删除同本体其他键 |
+| `importMode=INCREMENTAL, delete=false/省略` | 继续兼容 CSV 各行 `op=UPSERT/DELETE`，表示混合事件流 | 默认 false；逐行读取 op 处理，支持 legacy 生产者 |
+| `importMode=FULL_REPLACE` | 按完整快照替换 generation | 不接受 `delete=true`；文件内逐行 DELETE 也应拒绝 |
+| `importMode=CLEAR` | 清理**整个本体的 INSTANCE_VALUE** 索引 | 与逐条 delete 严格不同；必须高权限与显式确认，仅在现有 CLEAR 事务防护流程下执行 |
 
----
+`delete` 放在 `IndexFileImportRequest` 根（Boolean，缺省 false）只是当前**建议**，现有 DTO **未证明实现该字段**；若业务实际需要逐文件标识，可将其下沉到 `MinioCsvFile.delete`，但不能两种解释同时上线。旧 CSV `op=DELETE` 已提供逐条删除能力；新增字段只为明确整个文件批次的删除意图，**实际字段位置/默认行为待 API 评审冻结**。
+
+**消息顺序和幂等**：Delete 必须携带 tenant/ontology、可信版本/Task、文件 checksum 与完整键；按 EventVersion / jobId/partitionId 建顺序栅栏，后到的旧 UPSERT 不能复活已删除键。GaussVector 与 OpenSearch 按相同稳定键删除，逐库失败要持久化并重试/对账，不能只在其中一库删成功就发布该 generation；同步返回 202 表示受理不表示两库物理删除完成。
+
+**请求例（建议新增字段，非当前已上线协议）**：
+
+```json
+{
+  "requestId": "delete-cbs-20261101-0001",
+  "dataType": "INSTANCE_VALUE",
+  "importMode": "INCREMENTAL",
+  "delete": true,
+  "files": [
+    {
+      "bucket": "oag-retrieval-import",
+      "objectKey": "tenant-a/cbs/delete-0001.csv",
+      "fileFormat": "CSV",
+      "encoding": "UTF-8",
+      "hasHeader": true,
+      "sha256": "<sha256-64-hex>"
+    }
+  ]
+}
+```
+
+该文件每行仅表示要删除的稳定业务键（也可带一致的 `op=DELETE`），**不得靠 `delete=true` 配合空 `files` 推断删除全部数据**。CSV 老规范 `property_name/object_type_name` 可继续保留用于归属校验，真正执行删除以 ID+value 及授权归属为准。验收：单条/批量/重复 Delete、DELETE 后迟到 UPSERT、双库失败恢复、跨 tenant 误删、CLEAR 权限与 FULL/INCREMENTAL 互斥。
+
+### 4.7 全链路联调、故障回滚与容量报告（Q4-12、14～17）
+
+联调执行顺序：① 10 万样本验证 Producer READY/Consumer ACK/Task 受理；② 200 万历史数据环境复测；③ 1000 万首次 FULL；④ 10 万 INCREMENTAL 且 0/10/100% 新值；⑤ Delete/CLEAR；⑥ 1/2/3 Pod 和 1/2/3 Embedding 副本。一次只改变一组关键变量，固定模型与数据、`DCC configVersion`、CPU/Pod/DB 版本和索引策略。
+
+错误矩阵要求：上传失败/Manifest 缺分片、Checksum 不匹配、NOTICE 重放、TEMP 事务回滚、模型连接 503/限流、JDBC 连接断开、COPY 唯一键冲突、OpenSearch bulk 部分失败、LVQ DDL 不支持、任务 Cancel 中断、Pod 重启、新旧 snapshot 并发。所有可恢复错误有稳定 errorCode 和 checkpoint；旧 activeRevision 在未验证成功前保持读可用。输出文件数、总用时/各阶段耗时、行数对账、重复 Embedding、任务结果、CPU/内存/IO/网络、资源建议与未解决瓶颈，不把 1000 万推算值冒充实测。
+
+**容量报表建议格式**：`tenantId（脱敏）/ontologyId/modelRevision/jobId/sourceRowCount/afterSparkDistinct/inputFiles/manifestBytes/taskCount/aExisting/aNew/embeddedRows/vectorInserted/lexicalInserted/deletedRows/lvqBuilt/totalWallTime/activePods/embeddingReplicas/actualEmbeddingTPS/gaussIOPS/opensearchBulkTPS/minioReadMBps`。首次全量必须拿完整 Manifest 作为删除/切换依据；不以单批临时表实现所谓全量删旧。
 
 ## 5. 查询性能与分级索引预研（Q4-13、Q4-18）
 
