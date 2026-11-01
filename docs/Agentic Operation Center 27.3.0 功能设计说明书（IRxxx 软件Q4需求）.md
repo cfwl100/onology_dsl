@@ -233,51 +233,59 @@ python scripts/semantic_subgraph_search.py --query-json @request-v2.json
 
 ## 4. 实例索引构建、差异同步与性能（Q4-12、Q4-14～17）
 
-### 4.1 DataSync/Spark 异步导入与去重前移（Q4-12）
+### 4.1 Spark/DataSync 全量与增量数据入库、1000 万行验收（Q4-12）
 
-**工作负载**：单表首次全量 1000 万行（对应 100 万用户场景），增量 10 万行。业务数据的生产、文件落地和 OAG 索引构建需异步解耦。三项优化分别为：
+**原始规格**：单表首次全量 **1000 万行 / 100 万用户**，增量 **10 万行**。输入按 tenant/ontology/modelRevision/snapshotVersion 定义同一版本快照，OAG 不直接等待 Spark/MinIO 文件生成完成。源需求的三项措施及责任不合并：
 
-1. **DataSync 生产者/消费者异步拆分（需求指定：爱华）**：Producer 将 CSV 分区文件、checksum 和 Manifest 先写入 MinIO，全部对象写入成功后发布 **READY**；Consumer 独立消费 READY，调用 OAG notice 接口传 taskId/jobId/Manifest URI（实际参数以现有协议为准）。这样从 OAG“创建语义索引”同步调用路径中移除**上游 CSV 上传与等待**，但 OAG **仍须从 MinIO 读取已就绪 CSV**。Consumer 在 OAG 接受并持久化任务后才确认消息；失败重试、死信与重放必须幂等。
-2. **Spark 合并小文件（需求指定：振鲁）**：上游 Spark 对图数据和语义索引数据按快照、租户/本体、Property 分区进行 coalesce/compaction，减少 DataSync 大量小文件请求、MinIO OPEN/LIST 与文件解析线程争用。目标文件大小256M进行合并，压测1000W行索引记录。
-3. **Spark 前置数据去重（图和语义）**：图数据按完整实体/边主键和版本去重；语义值按 `(tenantId, ontologyId, objectTypeId, propertyId, normalized(value))` 去重并结合来源事件序号保证新写优先，减少 COPY 主键冲突。上游去重是性能优化，**OAG/向量库仍需唯一约束及幂等校验**，尤其是重传、跨分区和历史增量乱序场景。Spark生成独立的语义索引文件，DataSync直接将csv文件上传的minio。
+1. **DataSync 生产者—消费者异步（爱华）**：Producer 接收 Spark 已生成的独立语义索引 CSV（不重复生成），写入 MinIO **不可变文件**，完成 checksum/rowCount/Manifest 后发布 READY；Consumer 只有收到完整 READY 才调用 `index-data/notice`，OAG 返回任务 `ACCEPTED` 并持久化后 Consumer ACK。这样去掉**接口同步等待 CSV 上传 MinIO**，但 OAG 必须仍读取 CSV、做真实入库、异步更新任务状态；READY 丢失通过 outbox/重放重试，不允许仅凭“文件存在”判定快照完成。实际 Notice DTO 暂只有 files 列表，Manifest/READY/ACK 为 DataSync 协议演进建议，**不能当作现有必填字段**。
+2. **Spark 合并小文件（振鲁）**：计算侧按租户、ontology、revision、快照和分区归属合并图数据/语义索引小文件，**目标单文件 256M（原 TODO 写法，按 MB/MiB 单位需压测冻结）**。不可跨 snapshot/version/tenant 混合，合并后重算文件 hash/rowCount；测试前后 OAG Notice 次数、MinIO 对象数、DataSync 请求 CPU 和排队时间。
+3. **Spark 图/语义去重前移**：图按完整顶点/边复合键及事件版本去重；语义按 `(tenantId, ontologyId, objectTypeId, propertyId, normalized(value))` 去重。新的语义索引文件由 Spark 单独生成，DataSync 直接上传 MinIO；**后端仍保留唯一索引与幂等**，避免跨批、回放和乱序导致 COPY 主键冲突。
 
 ```mermaid
 sequenceDiagram
-    participant S as Spark
-    participant P as DataSync Producer
-    participant M as MinIO
-    participant C as DataSync Consumer
-    participant O as OAG Task
-    participant DB as Vector / OpenSearch
-    S->>S: 图与语义索引去重 + 小文件合并
-    S->>P: 上传准备完毕的分区数据
-    P->>M: 异步写入 CSV + checksum + Manifest
-    M-->>P: 写入成功
-    P->>C: READY(jobId, snapshotVersion, manifestUri)
-    C->>O: notice(jobId, manifestUri, idempotencyKey)
-    O-->>C: ACCEPTED(taskId)
-    O->>M: 读取就绪 CSV
-    O->>DB: Staging → Diff → 增量 Embedding → Verify/Publish
-    O-->>C: Published / Failed
+  participant S as Spark
+  participant P as DataSync Producer
+  participant M as MinIO
+  participant C as DataSync Consumer
+  participant O as OAG Task
+  participant V as Vector / OpenSearch
+  S->>S: 图/语义去重 + 256M目标文件合并
+  S->>P: 独立语义CSV分片/快照版本
+  P->>M: 上传分片 + sha256 + Manifest
+  M-->>P: 分片全部可读
+  P->>C: READY(jobId/snapshotVersion/manifestUri)
+  C->>O: POST notice(租户header, requestId, files)
+  O-->>C: accepted taskId(s), 任务已落库
+  C->>C: ACK READY（支持重放）
+  O->>M: 流式读取CSV并校验hash/rowCount
+  O->>V: 差异识别/Embedding/写入/Verify
+  O-->>C: 由query查询最终SUCCESS/FAILED
 ```
 
-TODO：增加章节，用于验证100W用户 1000W索引数据全量同步，参考之前的验证结果：
-|   |   |   |   |   |   |   |   |   |
-|---|---|---|---|---|---|---|---|---|
-       
-|测试模型|服务器类型|OAG规格|数据规格|测试场景|速率(条/s)|   |   |总耗时(s)|
-|OAG接口同步实例化数据|embedding读数据|向量入库|
-|单文件 全量|920C+物理机|3U4G|10w|8并发|345.01|526.73|814.71|289.85|
-|单文件 全量|HV6+虚拟机|3U4G|18w|8并发|340.74|463.32|706.09|528.26|
-|多文件 10并发 全量|920C+物理机|3U4G|200w|8并发|262.81|215.18|316.83|7,610.10|
-|多文件 10并发 增量|920C+物理机|3U4G|20w|8并发|403.8|859.52|770.90|505.20|
-|多文件 10并发 全量|920C+物理机|3U4G|20w|16并发|387.32|1,550.39|556.49|526.70|
-|多文件 10并发 增量|920C+物理机|3U4G|20w|16并发|451.32|1,252.11|826.45|452.00|
+#### 4.1.1 历史实测数据（源 TODO 完整保留并修复原表格合并表头）
 
+原 TODO 提供的实验条件为 **OAG 3U4G、8/16 并发、不同服务器及文件数**；以下速率来自该表，**不是 1000 万全量的已达标数据**。
 
-TODO: 将github docs/本体实例增强数据分批增量Embedding独立临时表设计方案.md 补充到4. 实例索引构建、差异同步与性能中
-https://github.com/cfwl100/onology_dsl/blob/main/docs/%E6%9C%AC%E4%BD%93%E5%AE%9E%E4%BE%8B%E5%A2%9E%E5%BC%BA%E6%95%B0%E6%8D%AE%E5%88%86%E6%89%B9%E5%A2%9E%E9%87%8FEmbedding%E7%8B%AC%E7%AB%8B%E4%B8%B4%E6%97%B6%E8%A1%A8%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88.md?utm_source=chatgpt.com
+| 测试模型 | 服务器类型 | OAG规格 | 数据量 | 测试场景 | OAG接口同步（条/s） | Embedding读数据（条/s） | 向量入库（条/s） | 总耗时（s） |
+|---|---|---|---|---|---:|---:|---:|---:|
+| 单文件全量 | 920C 物理机 | 3U4G | 10万 | 8并发 | 345.01 | 526.73 | 814.71 | 289.85 |
+| 单文件全量 | HV6 虚拟机 | 3U4G | 18万 | 8并发 | 340.74 | 463.32 | 706.09 | 528.26 |
+| 多文件10并发全量 | 920C 物理机 | 3U4G | 200万 | 8并发 | 262.81 | 215.18 | 316.83 | 7610.10 |
+| 多文件10并发增量 | 920C 物理机 | 3U4G | 20万 | 8并发 | 403.80 | 859.52 | 770.90 | 505.20 |
+| 多文件10并发全量 | 920C 物理机 | 3U4G | 20万 | 16并发 | 387.32 | 1550.39 | 556.49 | 526.70 |
+| 多文件10并发增量 | 920C 物理机 | 3U4G | 20万 | 16并发 | 451.32 | 1252.11 | 826.45 | 452.00 |
 
+**证据级别与风险**：上表中“Embedding读数据速率”是原实验列名，**不能直接断言等于模型推理吞吐**；每个阶段统计窗口可能不同，不相加为总吞吐。20万数据、16并发的某些阶段反而变慢，应检查存储瓶颈、上下游并发与文件数。另据本次 TODO，**Embedding 模型约 120 条/s 向量**，这属于另外一个已提供的观察值，未标明模型副本数、文本长度或批次，请独立复核。
+
+#### 4.1.2 100 万用户/1000 万行验证与资源模型
+
+1. **固定数据和工作负载**：100 万用户、单表 1000 万 **去重前/后两种行数均记录**，ObjectType/Property 分布、纯数字 ID 占比、平均文本长度、每用户十条的示例关系需验证。分别压测首次 FULL（全新键）与 10 万增量（新增键比例 0/10/100%），不能把全部已存量的 INCREMENTAL 当成全量。
+2. **串联全链路**：Spark 计算/合并→DataSync Producer→MinIO READY→Consumer Notice→OAG CSV 读取与验证→数据库差异→Embedding→COPY/LVQ→OpenSearch→任务 Publish；分别统计总耗时和各阶段 wall-time，包含失败重试与资源峰值。每种工作负载做 1/2/3 OAG Pod 和 1/2/3 Embedding 模型副本矩阵。
+3. **容量初算，不是验收结论**：仅按历史 200 万全量/7610.10s 等比例外推，1000 万全量约 **38050.5s ≈10.57 小时**（等效端到端 262.81 条/s）；如 1000 万条全部要推理、且一个模型服务持续 120 条/s，则模型单副本理论下限约 **83333s ≈23.15 小时**，2 副本理想下限约 11.57h，尚未加上 IO/数据库与下游争用。**两个估算来自不同测试口径，不能同时视为可实现吞吐**；实际耗时至少受真正的 Embedding 在途能力和最慢流水段约束。
+4. **多实例受限场景**：当 OAG 从 1 Pod 扩至 2 Pod，理论并发/吞吐可增加，但若 Embedding 固定 120 条/s、GaussVector COPY/IO 或 MinIO 带宽不扩，**不能承诺 2 倍吞吐**。先算 `min(OAG可调度行速率, embedding实例数×可用120条/s, 向量库可持续写速率, OpenSearch/网络瓶颈)`，再用实测确认扩展效率；模型副本横扩需检查实际负载均衡和 Istio 503 UC。
+5. **资源预算**：OAG CPU/堆/线程/连接（3U4G历史与 2U4G查询档位不得混淆）、Embedding 模型容器 GPU/CPU 与实例数、GaussVector LVQ/COPY 内存及磁盘/IOPS、OpenSearch bulk/thread pool、MinIO 文件空间和暂存峰值分别报价，给出新增数据率变化的资源斜率。结果按 N 实例、N 模型副本和各 stage rows/s 发布，不以固定资源值代替容量测算。
+
+**通过条件**：1000 万全量和 10 万增量均记录数据完整数/去重数、源 Manifest checksum、任务最终状态、重复 Embedding 率、向量/倒排计数一致性、无主键冲突、错误恢复。**最新原始需求只给了规模没有给全量入库总时长硬阈值；最终总耗时、资源预算、可扩倍数须以压测结论签审**，不自造“10 分钟”类指标。
 
 ### 4.2 定义索引“全量比对 + 增量 Embedding”（Q4-14）
 
