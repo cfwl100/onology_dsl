@@ -734,58 +734,98 @@ Q_{\mathrm{cluster}}\ \le\ \min(n\cdot Q_{\mathrm{OAG}}, Q_{\mathrm{embedding}}(
 
 **本轮参数差异收口**：10 + 16 + 7 + 5 = **38 个已列出的 DCC 候选**（其中 `rule-config-path` 尚需安全评审），另有 **34 个系统级明细 Key 明确不进入 DCC**。附件摘要与明细差 **11 个未列出 Key**，先追溯扫描源码再归类，不能默认这些缺失项属于 DCC。配置注册清单还须核对同 Key 不同默认值、权限和实际生效点。
 
-### 7.3 线程池资源按租户划分：实现架构
+### 7.3 按租户独立资源池、`x-gde-tenant-id` 与索引管理四接口（Q4-10）
 
-**目标不只是“不同租户读取不同参数”，而是线程池/队列/并发资源真正隔离。**
+**源 TODO 要求**：索引入库相关的 Notice、Task Query/Retry/Cancel 四类入口都增加租户 ID 请求头，客户端形式 `headers.add("x-gde-tenant-id", tenantId)`。`x-gde-tenant-id` 是**Header 而不是 Body 中任意可修改的 tenantId**；服务端必须校验 Header 与鉴权主体授权的租户一致。原有 V1 索引任务路径与 V2 **子图语义检索**路径属于不同 API，不应因为统一 OAG V2 就擅自把 Notice 管理接口全部换成 V2 URL。
+
+#### 7.3.1 入口、请求头与认证约束
+
+| API | 方法和路径（按现有索引管理参考规范） | 本次新增/统一 Header 与语义 |
+|---|---|---|
+| 文件导入通知 | `POST /v1/onto-retrieval/{ontologyId}/index-data/notice` | `x-gde-tenant-id` 必填，用于模型归属、任务幂等及租户资源池 |
+| 批量查询 | `POST /v1/onto-retrieval/{ontologyId}/index-tasks/query` | Header 必填；仅返回本租户、本 ontology 的任务 |
+| 批量重试 | `POST /v1/onto-retrieval/{ontologyId}/index-tasks/retry` | Header 必填；只允许操作本租户失败且具备恢复条件的任务 |
+| 批量取消 | `POST /v1/onto-retrieval/{ontologyId}/index-tasks/cancel` | Header 必填；只允许操作本租户非终态任务 |
+
+网关真实转发路径参考既有 `OntologyIndexTaskRest` 类级映射：`/onto-retrieval-api/v1/onto-retrieval` + 方法级 `/{ontologyId}/...`；上表为 API 相对路径，不另重复加 v1。`x-gde-tenant-id` 在参考 API 中要求 String、长度不超过 256；增加空白/格式校验、鉴权/授权与审计。`Content-Type: application/json`、`Accept: application/json` 为通用头，追踪沿用服务平台 Trace/Header 规范。
+
+**Java 客户端**：
+
+```java
+HttpHeaders headers = new HttpHeaders();
+headers.setContentType(MediaType.APPLICATION_JSON);
+headers.setAccept(List.of(MediaType.APPLICATION_JSON));
+headers.add("x-gde-tenant-id", tenantId); // 从可信会话或鉴权上下文获取
+headers.add("X-Request-Id", requestId);
+```
+
+**Controller 适配示意**（方法名沿用既有风格；原有 DTO 与任务逻辑保留）：
+
+```java
+@RequestMapping("/onto-retrieval-api/v1/onto-retrieval")
+public class OntologyIndexTaskRest {
+    @PostMapping("/{ontologyId}/index-data/notice")
+    public NewBaseRespone<List<AsyncTaskAcceptedResponse>> noticeIndexData(
+        @RequestHeader("x-gde-tenant-id") String tenantId,
+        @PathVariable("ontologyId") String ontologyId,
+        @Valid @RequestBody IndexFileImportRequest request) {
+        authorization.checkTenantOntology(tenantId, ontologyId);
+        return indexTaskService.createTaskAndExecute(tenantId, ontologyId, request);
+    }
+}
+```
+
+`authorization` 为示意模块，**不是已确认项目 Java 类名**。Task 创建、查询、重试和取消**都要在查询数据库条件中加租户归属**，不仅在 Header 处判断，防止猜 taskId 跨租户访问。缺失 Header、租户不匹配、无权限等必须返回标准稳定错误码（具体 400/401/403 与网关规范联调），不返回任何其他租户对象详情。
+
+#### 7.3.2 Notice 请求与当前任务 DTO
+
+| Body 字段 | 现行约束/作用 | Q4 变更 |
+|---|---|---|
+| `requestId` | 必填 1~256，参考正则 `^[A-Za-z0-9_-]+$`；幂等键 | Task 唯一性加 tenant+ontology 作用域；同键不同内容应 409 |
+| `triggerTaskId` | 可选，≤256 | 绑定既有构建 Task 时再校验 tenant/ontology |
+| `dataType` | 当前 INSTANCE_VALUE 主路径；历史资料还提到 METADATA_ENUM | 默认不启用枚举索引；新链路只允许已发布支持的值 |
+| `importMode` | `FULL_REPLACE / INCREMENTAL / CLEAR` | FULL 的完整快照与 INCREMENTAL 的逐批处理不同，CLEAR 需权限防护 |
+| `files` | FULL/INCREMENTAL 非空 `MinioCsvFile[]` | 每项校验允许 bucket、objectKey、sha256/rowCount 和源版本 |
+| `delete`（新增**建议**） | 原 DTO 尚未证明存在 | §4.6 建议 boolean，`INCREMENTAL + true` 表示 files 的行全部按 DELETE，非 CLEAR；正式字段位置待冻结 |
+
+MinioCsvFile 核心字段：`bucket`（3~63）、`objectKey`（≤1024 且安全字符集）、`fileFormat=CSV`、`encoding=UTF-8`、`hasHeader=true`、`sha256`（64 位 hex），`rowCount/size` 可选非负。真实 CSV 每行按 `object_type_id/property_id/value` 定位，`op=UPSERT/DELETE` 已在现有路径出现；这与新增建议 `delete` 标志须按规则处理冲突。`requestId` 的原参考幂等域为 `(ontologyId,requestId)`，多租户升级应改为 `(tenantId,ontologyId,requestId)` 且保留已有任务迁移与数据库唯一键兼容处理。
+
+**索引任务状态**：现有参考 `status=0 BUILDING、1 SUCCESS、2 FAILED、3 CANCELLED`；`stage` 反映 Created/Validating/Embedding/Writing/Finished 等细阶段。`notice` 受理 HTTP 202 返回一个或多个 `taskId/requestId/dataType/sourceType/status/stage`，**任务未到 SUCCESS 之前不得将文件导入当作完成**。多文件参考一次最多约 20 文件一 Task 并拆分；不同文件归属同一 Manifest，不能子任务独立成功就切换整个 FULL revision。
+
+#### 7.3.3 Query/Retry/Cancel 请求与恢复语义
+
+三接口均使用如下批量请求结构（现有参考 `BatchTaskIdsRequest`）：
+
+```json
+{"taskIds": ["idx-task-001", "idx-task-002"]}
+```
+
+`taskIds` 为非空、去重的 String 数组，最大项数由 `maxTaskIdsPerRequest` 运行限制（参考建议从 100 起步，非已确定默认）；网关、控制器、存储查询均校验 tenant+ontology。
+
+| 方法 | 返回/状态 | 校验与恢复动作 |
+|---|---|---|
+| `/index-tasks/query` | HTTP 200，建议 DTO `ontologyId/requestedCount/foundCount/tasks[]/notFoundTaskIds[]` | 每 Task 返回 status、stage、total/success/failed/skipped、retryCount、errorCodes、fileList、errFileList、fileRetentionUntil、start/endTime 等；不属于当前租户的 Task 不泄露 |
+| `/index-tasks/retry` | HTTP 202，逐任务 `accepted/reasonCode`，允许部分成功 | 只对 `status=2 FAILED`、未超重试次数、源文件仍在 TTL 内且 checksum 一致、Checkpoint 可恢复的 Task 重新执行；优先失败文件 `errFileList`，无需重做成功文件 |
+| `/index-tasks/cancel` | HTTP 202，逐任务 `accepted/reasonCode`，允许部分成功 | `status=0` 可置 `stage=CANCEL_REQUESTED`，Worker 安全检查点退出后转 `status=3`；已取消重复调用幂等，成功/失败终态不得误取消 |
+
+批量操作响应参考 `operation(RETRY/CANCEL), requestedCount, acceptedCount, rejectedCount, results[]`，单项 `taskId/accepted/status/stage/reasonCode/message`。建议稳定错误码：`TASK_NOT_FOUND/TASK_STATE_CONFLICT/RETRY_LIMIT_EXCEEDED/SOURCE_FILE_EXPIRED/SOURCE_FILE_MISSING/SOURCE_UNRECOVERABLE/IDEMPOTENCY_CONFLICT`；状态码与已有实现联调确认，**不能解析可变 errorMessage 文本决定自动重试**。RequestId 重放和 Task retry 不是同一操作：重放返回旧任务，retry 由客户端显式请求。
+
+#### 7.3.4 TenantResourceRegistry 与独立执行资源
 
 ```mermaid
 flowchart TD
-    A[鉴权 tenantId] --> B[TenantResourceRegistry]
-    D[DCC tenant/mode 配置] --> W[Listener / Watch Manager]
-    W --> B
-    B --> E[Tenant-A ExecutorBundle]
-    B --> F[Tenant-B ExecutorBundle]
-    E --> E1[Embedding / Batch / Parse / Flush / Notice]
-    F --> F1[Embedding / Batch / Parse / Flush / Notice]
-    E --> G[Pod 级 CPU/线程/内存/连接全局配额]
-    F --> G
-    G --> H[Embedding / Storage 共享后端]
+  H[鉴权并校验 x-gde-tenant-id] --> R[TenantResourceRegistry 单例管理器]
+  D[DCC 按租户 Watch 版本化配置] --> R
+  R --> A[tenant-A: 查询/Notice/Batch/Parse/Flush/Embedding]
+  R --> B[tenant-B: 查询/Notice/Batch/Parse/Flush/Embedding]
+  A --> G[Pod 全局 CPU/线程/内存/连接和远端限额]
+  B --> G
+  G --> DB[模型服务 / GaussVector / OpenSearch]
 ```
 
-- 入口从认证上下文获取 `tenantId`，不能信任任意 Body 伪造；每个 TenantExecutorBundle 按租户持有独立的提交配额、执行队列、Worker 与缓存预算，或采用能证明等效隔离的有界虚拟队列调度器。
-- **索引入库相关接口，增加租户id字段，用于控制不同租户的线程池资源，包括notice、query等接口增加tenantID**。
+**单例是 Registry 管理器，不是所有租户公用一个无隔离线程池**：按 `(tenantId,operationType,configVersion)` 有界懒创建 ExecutorBundle，线程名带脱敏 tenant，队列/Worker/配额独立，闲置安全回收；DB 和模型端连接可共享物理池但必须有租户配额、归属校验和公平排队。线程任务明确传 `TenantContext`，执行结束清理 ThreadLocal。若业务要求**租户集群级**并发限制，仅各 Pod 创建同值 10 个许可会产生 N×10 总额度，必须采用集中租约/额度分配或在网关协调；确认后选一种，不谎称当前已有分布式信号量。
 
-TODO：在接口的请求头中增加 `x-gde-tenant-id`, 客户端调用时 headers.add("x-gde-tenant-id", tenantId); 比如如下的notice接口，增加header参数：
-##### 调用方法
-
-POST
-
-##### URI
-
-```text
-/v1/onto-retrieval/{ontologyId}/index-data/notice
-```
-
-对应 Spring 接口：
-
-```java
-@PostMapping("/v1/onto-retrieval/{ontologyId}/index-data/notice")
-```
-
-##### 请求参数
-
-**IndexFileImportRequest 参数列表**
-
-| 参数名称            | 类型                  | 是否必选 | 默认值 | OpenAPI 约束                                 | 说明                                                                 |
-| :-------------- | :------------------ | :--- | :-- | :----------------------------------------- | :----------------------------------------------------------------- |
-| `requestId`     | String              | 是    | -   | `minLength: 1`，`maxLength: 256`            | 调用方幂等键；文件直接导入时用于创建任务，关联任务时用于通知幂等                                   |
-| `triggerTaskId` | String              | 否    | -   | `maxLength: 256`                           | OAC 交付文件时关联手动构建产生的原任务；直接文件导入不传                                     |
-| `dataType`      | String              | 是    | -   | `enum: [METADATA_ENUM, INSTANCE_VALUE]`    | 当前文件批次的数据类型                                                        |
-| `importMode`    | String              | 是    | -   | `enum: [FULL_REPLACE, INCREMENTAL, CLEAR]` | 全量替换、增量导入或全量清理索引；`CLEAR` 仅允许 `dataType=INSTANCE_VALUE`             |
-| `files`         | Array[MinioCsvFile] | 条件必选 | -   | `minItems: 1`                           
-
-TODO: 同样的，接口还包括：/{ontologyId}/index-tasks/query，/{ontologyId}/index-tasks/retry，/{ontologyId}/index-tasks/cancel，
-
+**接口级验收**：Notice/Query/Retry/Cancel 缺 Header、无权限、Body 伪造 tenant、跨本体 taskIds、两租户同 requestId、Task 部分成功、Cancel/Retry 竞态、DCC Watch 变更/Pod 重启、新租户首访和队列饥饿均应有可重复测试。
 
 ### 7.4 DCC 按租户监听、热变更及线程池安全迁移
 
