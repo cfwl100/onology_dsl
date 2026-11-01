@@ -542,47 +542,54 @@ WITH (
 
 **容量报表建议格式**：`tenantId（脱敏）/ontologyId/modelRevision/jobId/sourceRowCount/afterSparkDistinct/inputFiles/manifestBytes/taskCount/aExisting/aNew/embeddedRows/vectorInserted/lexicalInserted/deletedRows/lvqBuilt/totalWallTime/activePods/embeddingReplicas/actualEmbeddingTPS/gaussIOPS/opensearchBulkTPS/minioReadMBps`。首次全量必须拿完整 Manifest 作为删除/切换依据；不以单批临时表实现所谓全量删旧。
 
-## 5. 查询性能与分级索引预研（Q4-13、Q4-18）
+## 5. 查询性能、OAG 横扩与分级索引预研（Q4-13、Q4-18）
 
-TODO：需要考虑OAG多实例时，可以水平扩展，并发数翻倍，同时依赖embedding模型的水平扩展能力。
-embedding模型120条/s向量。
+### 5.1 子图检索：原始 3 秒目标、10-26 附件 5 秒指标与横扩（Q4-13）
 
-### 5.1 子图检索性能规格与横向扩展（Q4-13）
+**双口径不得丢失**：原始 Q4-13 **单实例 10 QPS / 3 秒并可水平扩展**；《子图检索的查询性能规格(10-26).md》规定测试基准为 **2U4G 单实例、10 QPS、平均耗时 ≤5 秒、极端限流拒绝率 <20%**，并建议以 **3U4G** 规格压测。这不是已经完成 3s 交付。建议验收分两层：**A 阶段复现附件条件（平均 ≤5s）**、**B 阶段验证原始 3s 目标（统计口径需项目评审明确，是平均/P95/单请求时延）**。如 B 不达标，记录差距/优化/决策，不可只把 5s 替换成原始 3s 且声称无遗漏。
 
-**权威性能输入**：《子图检索的查询性能规格(10-26).md》。该指标专用于软件场景，Pipeline **只包含实体链接 → 实体裁剪 → 子图构建**；不计 CBS 业务分词、索引数据入库或 Cypher 执行。**本轮正式规格从旧草案“3 s”调整为附件给出的“2U4G 单实例、10 QPS、平均耗时 ≤5 s、极端拒绝比例 <20%”**。附件另建议**实际压测按 3U4G 开展**；二者须分开标注并各自测量，不能拿 3U4G 的成绩证明 2U4G 指标。
+**范围**：此指标只覆盖软件本体子图检索中的“实体链接→实体裁剪→子图构建”，**不**包含 CBS 原始问题切词、实例索引构建、OQL/Cypher 执行、业务数据读取或 Agent 端到端 5 分钟。§2.2 OMS 10 并发/3 秒是另一场景指标。
 
-| 约束类别 | 附件值 | 验收边界 |
+| 约束 | 10-26 附件参数 | 测试说明 |
 |---|---|---|
-| 本体模型 | ObjectType **≤150**，Property **≤3000**，Edge **≤400** | 当前 CBS 144/2896/370 在约束内，后续超限需重新评估 |
-| 单实例配置 | **2U4G** | 静态内存图预算 **1 GB（10 × 100 MB）**；该规格最多承载 **10 个本体** |
-| CPU 单核下限 | SHA-256 256B **≥280 万 ops/s、≥700 MB/s** | CPU 密集型基准；附件有 openssl 命令 |
-| 输入对象 | `entities` 对象数 **<20** | 超出范围不可直接按此性能基线承诺 |
-| `propertyValues` 数量分布 | **1–4：40%；4–8：50%；8–12：<10%** | 4/8 边界重合且占比未封闭为 100%，压测脚本需先冻结分桶含义，不自行修改附件 |
-| 流量与样本 | 每秒发 **10 个请求，连续 1000 次**，CXO 黄金测试集 L1 | 记录成功、拒绝、业务异常和超时；发送约 100 秒 |
-| 平均耗时 | **≤5 s** | 平均统计口径与未完成/拒绝请求处理须评审冻结；P95/P99 可观测但**不是附件硬阈值** |
-| 吞吐 | **最大 10 QPS** | 这是附件列出的输入/吞吐规格，需同时报告成功 QPS |
-| 流控拒绝 | 极端场景 **<20%** | 队列满的拒绝属正常但必须单独统计比例 |
-| 内存/资源变化 | 后续新增 CPU 密集任务 | 应下调性能基线或增加资源，不默认仍保持 2U4G 指标 |
-| 硬件 | ARM 鲲鹏 920C 物理机为标配，x86 Intel 2288 HV6/E9000 虚拟机为局点情况 | 记录架构、CPU 单核基准和虚拟化条件 |
+| 本体规模 | ObjectType ≤150 / Property ≤3000 / Edge ≤400 | CBS 原参考 144/2896/370，超上限需新基线 |
+| 单 Pod 资源 | **2U4G**，图缓存预算 1GB ≈ 10×100MB、≤10 本体 | 另用 **3U4G** 做独立对照；不能用其成绩代替 2U4G |
+| CPU 单核 | SHA-256 256B ≥280万 ops/s、≥700MB/s | 同 VM/物理机/架构记录 |
+| 输入规模 | extractedEntities 对象 <20；propertyValues 1-4 约40%、4-8 约50%、8-12 <10% | 4/8 边界重合、总概率未严格闭合，压测数据生成规则须签认 |
+| 请求 | 10 请求/秒，连续 1000 请求，CXO 黄金测试集 L1 | 记录真实发送时间与完成响应时间 |
+| 语义参数 | hybrid、similarityThreshold=0.7、V2 `topk≤3`、`hopLimit≤3`、minimal | includeFunctions=0、includeActions=0 |
+| 自适应 | adaptiveRetrieval=1 | 小本体 ≤300 节点全量；软件生产通常 entities+adaptive=0，**两模式分别评估** |
+| 缓存 / 预热 | 关闭 `subgraph-retrieval-cache-switch`，重启后预热 ≥3min，前 3 次测试结果剔除 | 查询高峰与实例向量化入库错峰 |
+| 指标 | **10 QPS、平均 ≤5s、极端拒绝率 <20%** | 成功 QPS、失败/超时、P50/P95/P99 一并提供，但附件未给分位硬阈值 |
+| 基准硬件 | 鲲鹏 920C 物理机；HV6/E9000 等 x86/虚拟机局点另列 | 架构不可混报 |
 
+**多实例 + Embedding 同步扩展**（源 TODO 要求“并发数翻倍，并考虑 Embedding 模型水平扩展”）：
 
-| 参数 | 本次测试条件 | 说明 |
-|---|---|---|
-| `seedRetrievalMode` | `hybrid` | 向量+关键词 |
-| `similarityThreshold` | **0.7** | 与 V2 接口缺省 0.6 不同 |
-| `topK` / V2 `topk` | **≤3** | >3 不在附件测试范围 |
-| `hopLimit` | **≤3** | khop 生效 |
-| `adaptiveRetrieval` | **1** | 小本体 ≤300 节点可全量；具体计数边界需核实 |
-| `includeFunctions` / `includeActions` | **0 / 0** | 不扩大关联对象 |
-| `graphExpansionStrategy` | **minimal** | 路径低冗余策略 |
-| `subgraph-retrieval-cache-switch` | **false** | **压测关闭问题缓存**，不能用缓存命中虚增指标 |
+令 `n` 为 OAG Pod 数、`m` 为 Embedding 服务实际可用模型副本数，单 Pod 实测 Query 吞吐约 10 QPS 的前提下，集群成功吞吐的物理上界可粗略写为：
 
-**执行规则**：重启后预热 **3 分钟**，前 **3 次**压测结果不计；**查询高峰不得并行进行实例值向量化入库**，需错峰。测试在 2U4G 基准和 3U4G 建议资源分别运行，采集成功请求平均时延、P50/P95/P99、拒绝率、错误率、CPU/内存/GC、OMS EnumType 读取、Instance 检索和图算法耗时、每租户活跃线程及排队情况。扩到 2/3 Pod 时分别固定总入口 QPS 和每 Pod 压力，评估共享向量库/图库饱和，而非默认线性扩展。
+\[
+Q_{\mathrm{cluster}}\ \le\ \min(n\cdot Q_{\mathrm{OAG}}, Q_{\mathrm{embedding}}(m), Q_{\mathrm{Gauss/OS}}, Q_{\mathrm{gateway}})
+\]
 
-### 5.2 租户级查询准入与信号量流控
+这只是容量分析表达式：**仅 OAG 从 1→2 Pod 不保证 10→20 QPS**，`semantic-search.max-pool-size=30` 也只是代码扫描值，不能等同于 30QPS。Embedding 原 TODO 约 **120 条/s 向量**是待同模型、同文本大小、同并发测量的基线，查询 Embedding 和批量建库可能共用该服务；2 副本理论 240 条/s 仅是零损耗上界，必须验证网关负载分配、后端饱和、CPU/GPU 与连接 503 UC。高峰错峰是基准测试约束，混合负载是另一个容量场景，不能混用报告。
 
-《新增Value参数统计_2026-10-31.md》扫描值：`semantic-search.max-pool-size=30`、`semantic-search.queue-capacity=50`、`semantic-search.timeout-seconds=300`。
+| 测试矩阵 | OAG Pod | Embedding 副本 | 入口目标 | 要回答的问题 |
+|---|---:|---:|---|---|
+| 基线 | 1 | 1 | 10 QPS | 2U4G/3U4G 两套单实例基线 |
+| 仅 OAG 扩容 | 2 | 1 | 20 QPS（目标） | 下游模型是否先饱和，是否真正翻倍 |
+| 联动扩容 | 2 | 2 | 20 QPS（目标） | 模型吞吐、数据库/检索引擎是否成为瓶颈 |
+| 可扩展性 | 3 | 3 | 30 QPS（探索） | 同租户全局限流、租户公平与效率曲线 |
+| 故障降级 | 2 | 2→1 | 10/20 QPS 梯度 | 模型副本丢失、OAG 重路由与 503/429 比例 |
 
+每组按**入口固定总 QPS**与**每 Pod 固定 QPS**分别测试；统计 `QPS_success/QPS_offered`、Pod 负载方差、模型实际 in-flight、Gauss/OS 延迟、网关重试和响应时延。不满足原始 3s 目标应追踪多实例/资源扩容是否改善，而非只调高排队超时。具体硬件 2U/3U 资源定义、各类请求均值统计分母和 3s 归属仍是评审事项。
+
+### 5.2 按租户的查询准入、信号量与过载保护（Q4-10、13）
+
+`semantic-search.max-pool-size=30`、`semantic-search.queue-capacity=50`、`semantic-search.timeout-seconds=300` 是《新增Value参数统计_2026-10-31.md》的源码默认扫描值，旧草案 25 属历史候选；**并发许可、工作线程和实际 QPS 不等价**。入口从鉴权确认租户，`TenantResourceRegistry` 为每个租户建立有界查询额度和队列，读取按租户 DCC Watch 发布的已校验配置，另受 Pod/集群全局预算约束。
+
+准入步骤：`authTenant → resource/version lookup → tryAcquire(tenant semaphore) → 有界入队/快速拒绝 → 执行 OAG → finally 释放许可`。请求计数、排队时间、执行耗时、拒绝、超时按租户/POD分开。高峰不可在 HTTP IO/servlet 线程最长同步阻塞 300 秒，应评审短等待/异步排队并返回稳定可归因的限流错误（示意 HTTP 429/503）；不可与 Istio 上游连接失败 503 混为同一故障。缩容不取消在途执行，请求绑定 `configVersion` 后排空；B 租户不因 A 排满而饥饿。
+
+压测区分：① 10QPS 稳定供给（检验 5s/3s）、② 超量突发（附件极端拒绝率 <20% 的指定工作负载）、③ 2/3 Pod 相同租户并行（判定“租户集群配额”与每 Pod 配额的差异）、④ embedding 延迟/断流和 DCC 不可用。整个压测保留有效 DCC 快照、拒绝分母及入口上游重试次数，**不能在负载未知时许诺所有极端流量都 <20% 拒绝**。
 
 ### 5.3 OMS Property `retrieval` 索引模式扩展设计（Q4-18，预研）
 
