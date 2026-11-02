@@ -130,21 +130,51 @@ OMS 使用 LB/网关统一接入，基于健康实例与连接负载将分域和
 
 OMS 多实例内存图刷新、模型加密加载和变更通知按《本体模型文件支持加密》统一机制实施。新实例完成内存图加载与健康检查后加入服务池；实例退出后由网关将请求分配至其他健康节点。验证 1U2G 单实例基准、双实例并发能力、负载均衡比例、实例故障接管及扩容后的查询耗时。
 
-### 2.4 OMS 场景包参数分层（Q4-05）
+### 2.4 OMS 场景包参数分层与交付参数治理（Q4-05）
 
-OMS 场景包参数遵循 GDE 统一分级规范：组网级参数随场景包交付，系统级参数纳入配置中心，单次任务参数由接口传递。安装阶段校验参数完整性及合法范围，升级与回滚阶段延续配置兼容规则。配置治理涵盖模型加密、内存图加载、分域查询与服务实例资源。
+OMS、OAG 的场景包参数统一执行 GDE 参数分级规范，通过**业务定制范围、交付填写范围、内置参数范围**三级分类控制安装表单规模。场景包中声明模型加密、内存图、实例副本、资源配额及服务依赖等安装参数，系统级运行参数进入配置中心，单次任务参数由 API 传递。
 
-TODO：按照《ICT服务与软件/Agentic Operation Center/Docs/27/27.3.0/02.设计/02.设计文档/Agentic Operation Center 27.3.0 系统需求分析说明书（Agent框架与本体能力支撑软件业务）.docx》中的描述
-当前GDE安装数据域服务时场景包参数填写过多，需要控制交付感知的参数个数。满足如下规范：
+**场景包参数规范**：
 
-1)        不允许在values.yaml中配置GDE版本号参数
-2)        每个参数需要区分是否需要业务定制，即是否在solution中呈现，对应传统的internal参数，部分不需要业务定制修改但需要在场景包中声明的需继续在solution中保留
-3)        每个参数需要区分业务定制和交付填写参数，通过invisible区分
-	a)         invisible=true对应传统的customized
-	b)        invisible=false，或者不声明该参数，对应传统的productize
-	c)         readonly类型参数，需默认配置invisible=true
-4)        每个参数需要提供国际化参数配置
-特别的CBS明确要求副本数、资源配置等参数需要开放给交付填写。
+| 规则 | 设计与实现要求 |
+|---|---|
+| GDE 版本管理 | GDE 版本信息由部署版本清单与发布制品管理，`values.yaml` 只保存安装运行配置 |
+| Solution 参数选取 | 每个参数具有业务定制标识和 Solution 纳管标识；业务需要定制的参数进入 Solution。依赖场景包声明的只读或内置参数根据安装协议继续保留在 Solution |
+| 交付填写分类 | `invisible=true` 对应传统 `customized`，由业务定制及后台自动填充；`invisible=false` 或省略对应传统 `productize`，在交付表单中呈现 |
+| 只读参数 | `readonly=true` 默认配置 `invisible=true`，由交付模板或系统生成有效值 |
+| 国际化 | Solution 中所有参数提供中、英文展示名称、描述、单位、取值范围及错误提示；按交付语言呈现 |
+| CBS 交付开放项 | **副本数、CPU/内存等资源配置**按 CBS 交付要求向交付人员开放填写，采用 `invisible=false` 并提供边界校验 |
+| 参数分级 | 组网参数由场景包声明，系统参数由配置中心管理，租户资源参数由 DCC 按租户监听，任务参数由接口传递 |
+
+**参数分类示例**（字段表达参数语义，具体 Solution Schema 名称与 GDE 安装规范对齐）：
+
+```yaml
+parameters:
+  - name: replicaCount
+    inSolution: true
+    invisible: false
+    readonly: false
+    default: 2
+    i18n:
+      zh: {name: "服务副本数", description: "部署的 OMS/OAG 服务实例数量"}
+      en: {name: "Service replicas", description: "Number of OMS/OAG instances"}
+  - name: cpuLimit
+    inSolution: true
+    invisible: false
+    readonly: false
+    i18n:
+      zh: {name: "CPU资源上限", description: "单实例CPU资源配置"}
+      en: {name: "CPU limit", description: "CPU resources per instance"}
+  - name: modelKeyReference
+    inSolution: true
+    invisible: true
+    readonly: true
+    i18n:
+      zh: {name: "模型密钥引用", description: "系统自动注入的密钥引用"}
+      en: {name: "Model key reference", description: "System-provided key reference"}
+```
+
+**实现流程**：梳理现有 `values.yaml` 与 Solution 参数清单 → 标记业务定制/交付填写/内置参数 → 设置 `invisible`、`readonly` 和国际化信息 → 校验 CBS 副本与资源参数的开放范围 → 执行首次安装、升级、回滚及多语言场景包回归。安装页面统计交付可见参数数量，形成交付配置清单和默认值清单。
 
 ### 2.5 OMS 故障快速恢复（Q4-04）
 
@@ -297,19 +327,39 @@ sequenceDiagram
 | 多实例同步 | OAG 1/2/3 实例，Embedding 1/2/3 副本 | 验证批处理并发、模型副本扩容、GaussVector 写入能力及水平扩容效率 |
 | 异常恢复 | 文件重传、任务重试、Pod 退出、模型超时、数据库连接异常 | 验证任务幂等、续处理与完整性校验 |
 
-**性能估算**：基于已有增量同步测试的 **451.32 条/秒**作为端到端估算基准：
-TODO：刷新计算公式
-\[
-T_{\mathrm{full}} = \frac{10{,}000{,}000}{451.32} \approx 22{,}157\ \mathrm{s} \approx 6.16\ \mathrm{h}
-\]
+**性能容量计算**：选用已测 **20 万条、多文件 10 并发、16 线程、增量同步**场景的 OAG 接口同步速率 `R_base=451.32 条/s` 作为容量估算基线。设 `N` 为待同步索引行数、`R` 为相同环境下的持续有效入库吞吐，则预计耗时：
 
 \[
-T_{\mathrm{incremental}} = \frac{100{,}000}{451.32} \approx 222\ \mathrm{s} \approx 3.69\ \mathrm{min}
+T_{\mathrm{sec}}(N,R) = \frac{N}{R}
 \]
 
-以上为**451.32 条/秒基准下的容量规划估算值**；生产验收依据 1000 万全量与 10 万增量实际测量值。通过压测进一步获取不同新增率的 Embedding TPS、向量库 COPY TPS、OpenSearch Bulk TPS、CPU、内存和存储 IO，并以各环节实测吞吐确定资源配置。
+**1000 万条首次全量**：
 
-**验收**：全量索引行数与源数据对账一致、同一组合键幂等写入、增量差异识别准确、模型/向量库资源可稳定支撑业务同步周期；压测记录单实例吞吐及多实例扩容系数。
+\[
+T_{\mathrm{full}} = \frac{10{,}000{,}000}{451.32}
+\approx 22{,}157.23\ \mathrm{s}
+\approx 6.15\ \mathrm{h}
+\]
+
+**10 万条增量**：
+
+\[
+T_{\mathrm{incremental}} = \frac{100{,}000}{451.32}
+\approx 221.57\ \mathrm{s}
+\approx 3.69\ \mathrm{min}
+\]
+
+| 计算参数 | 数值与用途 |
+|---|---|
+| 基准吞吐 | `451.32 条/s`，来自既有增量场景实测 |
+| 首次全量规模 | `10,000,000` 条，预计 **6.15 小时** |
+| 增量规模 | `100,000` 条，预计 **3.69 分钟** |
+| 实测条件 | 920C、OAG 3U4G、多文件 10 并发、16 线程 |
+| 复测重点 | 全量与增量分别采集真实端到端 TPS、Embedding TPS、COPY TPS、OpenSearch Bulk TPS、CPU/内存和磁盘 IO |
+
+以上耗时作为单实例容量规划基准。首次全量与已有增量测试的执行路径和数据新增率分别评测，并在同一软硬件条件下记录**实测耗时与预测耗时的偏差**；多实例按实际吞吐与瓶颈测算扩展效率。
+
+**验收标准**：完成 94 万条业务数据扩充至单表 1000 万条的可复现样本、10 万条独立增量样本及源/目标行数对账；生成全量、增量实际 TPS 和资源报告，核对增量 Embedding 仅处理新增键，记录容量估算偏差与扩容收益。
 
 ### 4.2 本体定义索引：全量比对、差异 Embedding（Q4-14）
 
@@ -514,46 +564,37 @@ WITH (
 
 **A/B 回归**：A=原无索引表→COPY→建/重建 LVQ；B=建表→LVQ→COPY→无需 rebuild；同一模型、1000 万行、数据库版本与副本数下对比建表+导入+索引总耗时、rows/s、IO/CPU/写放大、向量 Recall@K、P95 查询、任务重试以及数据库恢复。**预建索引可能导致 COPY 更慢；只有 B 的端到端收益和 Recall 均经测试证实才能切主路径。** DCC 改动需提供版本快照、租户维度的生效/回退验证。
 
-### 4.6 Delete 操作、Notice `delete` 字段与 CLEAR 的语义隔离（Q4-16）
+### 4.6 CSV `op=DELETE` 语义索引删除及 CLEAR 管理（Q4-16）
 
-**Notice 接口**：`POST /v1/onto-retrieval/{ontologyId}/index-data/notice`，Body `IndexFileImportRequest` 使用 `requestId/triggerTaskId/dataType/importMode/files`；CSV 记录以 `op=UPSERT/DELETE` 表达操作，任务 `importMode` 使用 `FULL_REPLACE/INCREMENTAL/CLEAR`。
+**删除接口**：`POST /v1/onto-retrieval/{ontologyId}/index-data/notice`，沿用 `IndexFileImportRequest` 的 `requestId/triggerTaskId/dataType/importMode/files`。逐行操作由 **INSTANCE_VALUE CSV 的 `op` 字段**指定，取值为 `UPSERT` 或 `DELETE`；`importMode` 控制 `INCREMENTAL/FULL_REPLACE/CLEAR` 任务级处理模式。
 
-TODO: CSV中已经有了delete字段了，如下表，请按照下面的delete方案进行刷新
-**INSTANCE_VALUE CSV 字段：**
+**INSTANCE_VALUE CSV 字段规范**：
 
 | CSV 字段 | UPSERT | DELETE | 说明 |
-|---|---:|---:|---|
-| `property_id` | 必选 | 必选 | 所属 Property.id；作为稳定归属键的一部分 |
-| `property_name` | 必选 | 必选 | Property 的规范 `name`；由生产者提供，必须与 `property_id` 在当前 ontology generation 中一致 |
-| `object_type_id` | 必选 | 必选 | 所属 ObjectType.id；作为稳定归属键的一部分 |
-| `object_type_name` | 必选 | 必选 | ObjectType 的规范 `name`；由生产者提供，必须与 `object_type_id` 在当前 ontology generation 中一致 |
-| `value` | 必选 | 必选 | 去重后的真实 Instance Value；与归属 ID 一起确定业务键 |
-| `synonyms` | 可选 | 忽略 | 实例值同义词；CSV 中使用 `\n` 转义分隔 |
-| `op` | 必选 | 必选 | `UPSERT / DELETE`；`FULL_REPLACE` 中只允许 `UPSERT` |
+|---|---|---|---|
+| `property_id` | 必填 | 必填 | Property.id，参与业务组合键 |
+| `property_name` | 必填 | 必填 | Property 名称，按当前本体属性定义校验 |
+| `object_type_id` | 必填 | 必填 | ObjectType.id，参与业务组合键 |
+| `object_type_name` | 必填 | 必填 | ObjectType 名称，按当前本体定义校验 |
+| `value` | 必填 | 必填 | 实际实例值，参与业务组合键 |
+| `synonyms` | 可选 | 解析时忽略 | UPSERT 时保留同义词，CSV 内以 `\\n` 转义分隔 |
+| `op` | `UPSERT` | `DELETE` | 逐行操作类型，`FULL_REPLACE` 文件统一使用 `UPSERT` |
 
+**删除执行流程**：
 
+1. DataSync/Spark 按业务变更事件生成 CSV，删除记录设置 `op=DELETE`，文件通过 MinIO 传递 OAG。
+2. OAG 读取 `INCREMENTAL` 文件并校验 tenant、ontology、ObjectType、Property 及稳定业务键 `(object_type_id,property_id,value)`；原值归一化采用索引入库时的同一规则。
+3. `op=UPSERT` 按新增键差异 Embedding 入库；`op=DELETE` 按组合键删除 GaussVector 对应记录以及 OpenSearch 相同逻辑文档，并记录受理/成功/失败条数。
+4. 依据 EventVersion、jobId 和 partition 水位保证业务事件顺序，幂等处理重复 DELETE；向量库和倒排库均对账成功后更新 Task 为 SUCCESS，部分失败由任务 Checkpoint 重试。
+5. `FULL_REPLACE` 使用完整 UPSERT 快照建立新索引，完整校验后生效；`CLEAR` 通过独立的高权限任务清理当前本体 INSTANCE_VALUE 索引，并审计操作者、范围及任务 ID。
 
-**Notice 删除能力**：增加请求级可选 `delete` 字段，按业务组合键删除当前文件列出的实例记录；`CLEAR` 执行整份实例索引清理。新增字段作为兼容扩展，按下表定义处理语义：
-
-| 字段/模式 | 语义 | 兼容与校验 |
-|---|---|---|
-| `importMode=INCREMENTAL, delete=true, files=[...]` | 对文件中每行完整业务键执行 DELETE | files 提供 `(object_type_id, property_id, value)`；与 CSV `op` 校验一致，按完整组合键限定删除范围 |
-| `importMode=INCREMENTAL, delete=false/省略` | 继续兼容 CSV 各行 `op=UPSERT/DELETE`，表示混合事件流 | 默认 false；逐行读取 op 处理，支持 legacy 生产者 |
-| `importMode=FULL_REPLACE` | 按完整快照替换 generation | 不接受 `delete=true`；文件内逐行 DELETE 也应拒绝 |
-| `importMode=CLEAR` | 清理**整个本体的 INSTANCE_VALUE** 索引 | 与逐条 delete 严格不同；必须高权限与显式确认，仅在现有 CLEAR 事务防护流程下执行 |
-
-**接口字段**：`IndexFileImportRequest.delete` 使用 Boolean，缺省 false；`INCREMENTAL+true` 表示当前文件批次全部执行 DELETE。CSV 的 `op=DELETE` 继续支持逐行删除。业务按接口级 delete 与 CSV op 一致性校验，具体字段定义由接口评审确认。
-
-**消息顺序和幂等**：Delete 携带租户、本体、事件版本、Task、文件校验值及完整业务键，按 EventVersion/jobId/partitionId 维护顺序水位。GaussVector 与 OpenSearch 分别执行删除并对账，完成后更新任务最终状态；受理 HTTP 202 后由 Task Query 获取实际完成结果。
-
-**请求例（建议新增字段，非当前已上线协议）**：
+**Notice 请求示例**（DELETE 由文件中 `op` 控制）：
 
 ```json
 {
-  "requestId": "delete-cbs-20261101-0001",
+  "requestId": "delete-cbs-20261102-0001",
   "dataType": "INSTANCE_VALUE",
   "importMode": "INCREMENTAL",
-  "delete": true,
   "files": [
     {
       "bucket": "oag-retrieval-import",
@@ -567,7 +608,15 @@ TODO: CSV中已经有了delete字段了，如下表，请按照下面的delete�
 }
 ```
 
-文件中的各行提供业务稳定组合键 `(object_type_id,property_id,value)`，并可显式设置 `op=DELETE`；CSV 的对象/属性名称用于归属校验，执行删除依据 ID+value 及租户授权。验收覆盖单条/批量/重复 Delete、乱序 UPSERT、双库失败恢复、跨租户访问及 CLEAR 权限。
+**CSV 删除样例**：
+
+```csv
+property_id,property_name,object_type_id,object_type_name,value,synonyms,op
+P1001,paymentType,O1001,Account,Prepaid,,DELETE
+P1002,accountId,O1001,Account,100000000000006990,,DELETE
+```
+
+**验收标准**：`INCREMENTAL` CSV 混合 UPSERT/DELETE 均按行执行；双库存量按相同业务键增删一致，重复删除保持幂等；EventVersion 顺序校验覆盖迟到 UPSERT；跨租户键校验、CSV 字段错误和 CLEAR 权限测试返回明确状态，故障重试后任务与索引结果一致。
 
 ### 4.7 全链路联调、故障回滚与容量报告（Q4-12、14～17）
 
@@ -832,25 +881,9 @@ public class OntologyIndexTaskRest {
 
 Controller 通过统一鉴权服务校验 tenantId/ontologyId，索引任务创建、查询、重试及取消均按租户条件查询数据库。缺失 Header、租户无权限和跨租户 taskId 返回统一错误码，保护其他租户任务详情。
 
-#### 7.3.2 Notice 请求与当前任务 DTO
-
-TODO：删除本小节
 
 
-| Body 字段 | 现行约束/作用 | Q4 变更 |
-|---|---|---|
-| `requestId` | 必填 1~256，参考正则 `^[A-Za-z0-9_-]+$`；幂等键 | Task 唯一性加 tenant+ontology 作用域；同键不同内容应 409 |
-| `triggerTaskId` | 可选，≤256 | 绑定既有构建 Task 时再校验 tenant/ontology |
-| `dataType` | INSTANCE_VALUE 为当前实例值主路径 | 根据已发布数据类型执行，枚举值由 OMS 全量返回 |
-| `importMode` | `FULL_REPLACE / INCREMENTAL / CLEAR` | FULL 的完整快照与 INCREMENTAL 的逐批处理不同，CLEAR 需权限防护 |
-| `files` | FULL/INCREMENTAL 非空 `MinioCsvFile[]` | 每项校验允许 bucket、objectKey、sha256/rowCount 和源版本 |
-| `delete`（新增建议） | Boolean，缺省 false | `INCREMENTAL+true` 按文件批次执行 DELETE，字段位置按接口评审固化 |
-
-MinioCsvFile 核心字段：`bucket`（3~63）、`objectKey`（≤1024 且安全字符集）、`fileFormat=CSV`、`encoding=UTF-8`、`hasHeader=true`、`sha256`（64 位 hex），`rowCount/size` 可选非负。真实 CSV 每行按 `object_type_id/property_id/value` 定位，`op=UPSERT/DELETE` 已在现有路径出现；这与新增建议 `delete` 标志须按规则处理冲突。`requestId` 的原参考幂等域为 `(ontologyId,requestId)`，多租户升级应改为 `(tenantId,ontologyId,requestId)` 且保留已有任务迁移与数据库唯一键兼容处理。
-
-**索引任务状态**：`status=0 BUILDING、1 SUCCESS、2 FAILED、3 CANCELLED`；`stage` 记录 Created、Validating、Writing 等处理阶段。Notice 受理 HTTP 202 后通过 Task Query 查询成功状态，完整 FULL 的所有子任务校验通过后发布索引。
-
-#### 7.3.3 Query/Retry/Cancel 请求与恢复语义
+#### 7.3.2 Query/Retry/Cancel 请求与恢复语义
 
 三接口复用 `BatchTaskIdsRequest` 批量请求：
 
@@ -868,7 +901,7 @@ MinioCsvFile 核心字段：`bucket`（3~63）、`objectKey`（≤1024 且安全
 
 批量操作返回 operation、requestedCount、acceptedCount、rejectedCount、results[]，单项包含 taskId、accepted、status、stage、reasonCode、message。客户端依据稳定错误码执行恢复，包括 TASK_NOT_FOUND、TASK_STATE_CONFLICT、RETRY_LIMIT_EXCEEDED、SOURCE_FILE_EXPIRED、SOURCE_FILE_MISSING 和 SOURCE_UNRECOVERABLE。
 
-#### 7.3.4 TenantResourceRegistry 与独立执行资源
+#### 7.3.3 TenantResourceRegistry 与独立执行资源
 
 ```mermaid
 flowchart TD
@@ -963,7 +996,7 @@ bundle.submit(task.withTenant(verifiedTenantId)
 | IDX-Q4-13 | Q4-13 | **原始单实例 10 QPS/3s** 有单独目标和缺口记录；附件 2U4G/10 QPS/平均 ≤5s/拒绝 <20% 可复现，3U4G 压测独立出报告 |
 | IDX-Q4-14 | Q4-14 | 相同定义复用既有向量，定义变化时增量 Embedding，并同步词法元数据 |
 | IDX-Q4-15 | Q4-15 | 建表时预建 LVQ，COPY 后完成校验与发布；对照测试 Recall/总耗时，COPY 分片由 DCC 调优 |
-| IDX-Q4-16 | Q4-16 | CSV `op=DELETE`、新增建议 Notice `delete=true` 与 `CLEAR` 三种语义分离；双库删除对账、幂等、迟到 UPSERT 防复活及联调 |
+| IDX-Q4-16 | Q4-16 | CSV `op=UPSERT/DELETE` 逐行处理，`INCREMENTAL/FULL_REPLACE/CLEAR` 任务模式独立；双库删除对账、幂等及迟到 UPSERT 顺序控制 |
 | IDX-Q4-17 | Q4-17 | 已有存量不重 Embedding；每批 UUID TEMP B/NOT EXISTS/短事务/唯一键幂等入库；FULL_COMPLETE 与 INCREMENTAL 不混淆，批次独立无误删 |
 | SEC-Q4-18 | Q4-18 | OMS retrieval.enabled + 可选 indexMode（HYBRID/KEYWORD_ONLY/VECTOR_ONLY），disabled 不建；混合/单路建库查询、模式迁移、无 property 路由与旧数据兼容 |
 | SEC-Q4-19 | Q4-19 | name/description 索引最小化、ID→定义回查与权限正确，严格 ID-only/BM25 矛盾完成加密专项安全评审 |
@@ -1003,7 +1036,7 @@ bundle.submit(task.withTenant(verifiedTenantId)
 | ING-Q4-05 | 1000 万行完整快照、200 万基线及 1/2/3 副本 | 输出总耗时、任务状态、实际 TPS 和资源预算 |
 | INC-Q4-01 | 4000 行批次 UUID TEMP 名称冲突/回滚/跨 Pod 竞态 | TEMP 每批独立、A 唯一键幂等、失败重放仅新键计算向量 |
 | INDEX-Q4-01 | LVQ 原 COPY 后建索引 vs 预建 LVQ 后 COPY | 两版本可回退，按同库/同输入对比端到端耗时、Recall 与 rebuildindex 是否被跳过 |
-| DEL-Q4-01 | `INCREMENTAL/delete=true`、旧 CSV DELETE、CLEAR 三种操作 | 只删目标键、Clear 需权限、双库对账、旧 UPSERT 不复活 |
+| DEL-Q4-01 | INCREMENTAL CSV 混合 `op=UPSERT/DELETE`、FULL_REPLACE 和 CLEAR 场景 | 按组合键删除、双库对账、重复 DELETE 幂等、事件顺序控制及 CLEAR 权限验证 |
 | API-TENANT-01 | Notice/Query/Retry/Cancel 的租户 Header、鉴权及越权用例 | 各入口进行授权校验、任务归属验证和标准错误处理 |
 | CAP-Q4-01 | OAG 1→2 Pod、Embedding 1→2 副本 | 记录 10→20QPS 的扩展效率、吞吐及模型瓶颈 |
 
