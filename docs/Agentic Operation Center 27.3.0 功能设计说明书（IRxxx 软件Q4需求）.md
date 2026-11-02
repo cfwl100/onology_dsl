@@ -142,6 +142,8 @@ OMS 基于现有内存图提供本体分域查询和定义查询能力。业务 
 
 ### 2.3 OMS 多实例水平扩展（Q4-03）
 
+待确认：DSP mesh istogateway 增加配置？
+
 OMS 使用 LB/网关统一接入，基于健康实例与连接负载将分域和定义查询请求**均匀路由至多个 OMS 实例**。每个实例加载本体内存图并提供独立查询能力，支持 1→2→3 实例水平扩容、负载分担和故障实例自动摘流。
 
 OMS 多实例内存图刷新、模型加密加载和变更通知按《本体模型文件支持加密》统一机制实施。新实例完成内存图加载与健康检查后加入服务池；实例退出后由网关将请求分配至其他健康节点。验证 1U2G 单实例基准、双实例并发能力、负载均衡比例、实例故障接管及扩容后的查询耗时。
@@ -160,7 +162,7 @@ OMS、OAG 的场景包参数统一执行 GDE 参数分级规范，通过**业务
 | Solution 参数选取 | 每个参数具有业务定制标识和 Solution 纳管标识；业务需要定制的参数进入 Solution。依赖场景包声明的只读或内置参数根据安装协议继续保留在 Solution |
 | 交付填写分类 | `invisible=true` 对应传统 `customized`，由业务定制及后台自动填充；`invisible=false` 或省略对应传统 `productize`，在交付表单中呈现 |
 | 只读参数 | `readonly=true` 默认配置 `invisible=true`，由交付模板或系统生成有效值 |
-| 国际化 | Solution 中所有参数提供中、英文展示名称、描述、单位、取值范围及错误提示；按交付语言呈现 |
+| **国际化** | Solution 中所有参数提供中、英文展示名称、描述、单位、取值范围及错误提示；按交付语言呈现 |
 | CBS 交付开放项 | **副本数、CPU/内存等资源配置**按 CBS 交付要求向交付人员开放填写，采用 `invisible=false` 并提供边界校验 |
 | 参数分级 | 组网参数由场景包声明，系统参数由配置中心管理，租户资源参数由 DCC 按租户监听，任务参数由接口传递 |
 
@@ -285,6 +287,8 @@ python scripts/semantic_subgraph_search.py --query-json @request-v2.json
 
 ### 3.4 OAG 多实例水平扩展、内存图刷新与负载分担（Q4-09）
 
+待确认：DSP mesh istogateway，阮潇潇
+
 OAG 经 LB/网关将检索请求均匀路由至健康实例，支持多实例水平扩容和租户流量分担。每个实例在本地内存中**仅维护当前最新本体图版本**，服务启动或模型发生更新时从 OMS/图存储加载最新定义并整体刷新内存图。模型变更完成后通知各 OAG 实例同步刷新；遗漏通知的实例通过定期版本检查恢复一致。
 
 本体图缓存采用按租户和本体隔离的内存管理方式，刷新后清理旧图占用，保障每个实例的内存预算。索引后台任务由持久化任务状态与租约机制协调执行，故障实例的任务根据 Checkpoint 恢复。
@@ -305,6 +309,10 @@ OAG 经 LB/网关将检索请求均匀路由至健康实例，支持多实例水
 ---
 
 ## 4. 实例索引构建、差异同步与性能（Q4-12、Q4-14～17）
+
+索引构建端到端流程：
+[索引数据入库流程](https://clouddragon.huawei.com/cloudmodeling/myspace/diagram?diagramId=cd0f1a95f5c1401fbb74e2b62f488570)
+![索引数据入库流程](https://cloudmodelingapi.tools.huawei.com/cloudmodelingdrawiosvr/d/db016ec4f5814ee58e04a8fcb6ccc819?t=1793635634023)
 
 
 ### 4.1 Spark/DataSync 全量与增量数据入库、1000 万行验收（Q4-12）
@@ -361,32 +369,12 @@ sequenceDiagram
 
 | 场景 | 数据规模 | 验证内容 |
 |---|---|---|
-| 首次全量同步 | 单表 1000 万条 | Spark/MinIO/Notice/Embedding/向量库完整流水线，统计总耗时和资源消耗 |
-| 增量同步 | 10 万条 | 0%、10%、100% 新增值比例，对比 Embedding 调用数与差异入库耗时 |
+| 首次全量同步 | 单表 1000 万条 | 端到端：Spark/MinIO/Notice/Embedding/向量库完整流水线，统计总耗时和资源消耗，服务级：通过压测脚本调用notice和query接口 |
+| 增量同步 | 10 万条 | 端到端：Spark/MinIO/Notice/Embedding/向量库完整流水线，统计总耗时和资源消耗，服务级：通过压测脚本调用notice和query接口 |
 | 多实例同步 | OAG 1/2/3 实例，Embedding 1/2/3 副本 | 验证批处理并发、模型副本扩容、GaussVector 写入能力及水平扩容效率 |
 | 异常恢复 | 文件重传、任务重试、Pod 退出、模型超时、数据库连接异常 | 验证任务幂等、续处理与完整性校验 |
 
-**性能容量计算**：选用已测 **20 万条、多文件 10 并发、16 线程、增量同步**场景的 OAG 接口同步速率 `R_base=451.32 条/s` 作为容量估算基线。设 `N` 为待同步索引行数、`R` 为相同环境下的持续有效入库吞吐，则预计耗时：
-
-\[
-T_{\mathrm{sec}}(N,R) = \frac{N}{R}
-\]
-
-**1000 万条首次全量**：
-
-\[
-T_{\mathrm{full}} = \frac{10{,}000{,}000}{451.32}
-\approx 22{,}157.23\ \mathrm{s}
-\approx 6.15\ \mathrm{h}
-\]
-
-**10 万条增量**：
-
-\[
-T_{\mathrm{incremental}} = \frac{100{,}000}{451.32}
-\approx 221.57\ \mathrm{s}
-\approx 3.69\ \mathrm{min}
-\]
+**性能容量计算**：选用已测 **20 万条、多文件 10 并发、16 线程、增量同步**场景的 OAG 接口同步速率 `R_base=451.32 条/s` 作为容量估算基线。
 
 | 计算参数 | 数值与用途 |
 |---|---|
@@ -547,7 +535,6 @@ ON CONFLICT (object_type_id, property_id, "value")
 DO NOTHING;
 ```
 
-**GaussVector 方言适配**：SQL 可使用 `ON DUPLICATE KEY UPDATE ... EXCLUDED` 或标准 `ON CONFLICT` 中经版本验证的实现。增量采用已有键跳过、缺失键插入的策略，向量库及 OpenSearch 按同一稳定业务键幂等写入。
 
 | 事务段 | TEMP 存活 | 失败恢复 |
 |---|---|---|
@@ -563,10 +550,9 @@ DO NOTHING;
 #### 4.3.4 FULL_REPLACE 与 INCREMENTAL/DELETE 的边界
 
 - **首次 FULL_REPLACE**：完整快照按现有建库路径执行 Embedding、COPY 与 LVQ 建索引，全部分片处理并校验后切换生效索引。
-- **后续 FULL_REPLACE**：收到完整 Manifest 后创建新 staging generation，复用相同模型的已有向量并补齐新增键，完成全部分片验证后原子发布，随后按保留期限清理旧 generation。
-- **INCREMENTAL**：每批 B 比对/INSERT，只添加不存在键；若有后续业务 `DELETE` 则以源事件顺序和完整键处理删除，不把“本批不存在”理解为要清理整个 A。
+- **后续 FULL_REPLACE**：需要业务侧先调用clear接口，再进行全量导入，OAG入库流程同首次全量导入。
+- **INCREMENTAL**：每批 B 比对/INSERT，只添加不存在键；后续业务 `DELETE` 则以源事件顺序和完整键处理删除。
 - **CLEAR**：已在当前 Task API 中表示清理整个 Instance 索引，不等同一条记录的 `DELETE`。CLEAR/模型 本体版本 变化与运行中的 INCREMENTAL 必须串行化或有明确代际栅栏，防止旧 Task 回写。
-- **幂等与一致性**：Producer/Task 记录快照版本、源文件 hash、模型版本、batch/partition 序号和处理水位，向量库及全文索引对账完成后发布；异常按文件和批次可重放执行。
 
 **验收标准**：FULL_REPLACE 依完整 Manifest 校验后切换生效索引；INCREMENTAL 按批次新增/删除事件处理，CLEAR 按授权整库清理；乱序和重放场景保留正确的当前版本。
 
@@ -622,6 +608,8 @@ WITH (
 **验收标准**：空表预建 LVQ 后完成 COPY，校验索引可查询、行数一致和 Recall@K；与后建 LVQ 的 A/B 数据一致，报告端到端总耗时、IO、P95 与数据库方言兼容结果，COPY Batch DCC 变更可回退。
 
 ### 4.6 CSV `op=DELETE` 语义索引删除及 CLEAR 管理（Q4-16）
+
+TODO：这个章节是联调需求，是现有能力，只保留delete相关的方案描述。
 
 **删除接口**：`POST /v1/onto-retrieval/{ontologyId}/index-data/notice`，沿用 `IndexFileImportRequest` 的 `requestId/triggerTaskId/dataType/importMode/files`。逐行操作由 **INSTANCE_VALUE CSV 的 `op` 字段**指定，取值为 `UPSERT` 或 `DELETE`；`importMode` 控制 `INCREMENTAL/FULL_REPLACE/CLEAR` 任务级处理模式。
 
@@ -709,12 +697,6 @@ P1002,accountId,O1001,Account,100000000000006990,,DELETE
 | 基准硬件 | 920C 物理机、HV6/E9000 等局点 | 按硬件架构分别测试和报告 |
 
 **OAG 与 Embedding 联动扩容**：
-
-令 `n` 为 OAG Pod 数、`m` 为 Embedding 服务实际可用模型副本数，单 Pod 实测 Query 吞吐约 10 QPS 的前提下，集群成功吞吐的物理上界可粗略写为：
-
-\[
-Q_{\mathrm{cluster}}\ \le\ \min(n\cdot Q_{\mathrm{OAG}}, Q_{\mathrm{embedding}}(m), Q_{\mathrm{Gauss/OS}}, Q_{\mathrm{gateway}})
-\]
 
 **扩容能力评估**：OAG 1→2 Pod 的吞吐目标为 10→20 QPS，Embedding 模型服务以 **120 条/s** 的单副本观察值作为压测起点，2 副本理论为 240 条/s。扩容结果由网关负载均衡、模型真实请求速率、GaussVector/OpenSearch 容量及网络性能共同决定；按模型副本数输出实测吞吐与服务降级指标。
 
