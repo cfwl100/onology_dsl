@@ -1,11 +1,8 @@
 # Agentic Operation Center 27.3.0 功能设计说明书（IRxxx 软件Q4需求）
 
-> 版本：V1.2（2026-11-01 原待办 闭环、需求追溯与研发评审稿）  
-> 日期：2026-11-01  
-
-**相关设计**：[软件场景准确性和性能优化增强需求设计说明书](./软件场景准确性和性能优化增强需求设计说明书.md) · [OAG 本体锚点语义检索与向量索引设计方案 V6.7](./OAG本体锚点语义检索与向量索引设计方案.md) · [本体维值建模与检索需求分析](./需求分析Spec_本体维值建模与检索.md) · [V2 请求 Schema](./schemas/oag-software-subgraph-request.schema.json) · [V2 响应 Schema](./schemas/oag-software-subgraph-response.schema.json)。
-
-**阅读与证据规则**：第 1 章保留全部 20 条原始要求及差异；第 2～7 章按“需求→设计→数据/接口→异常→验收”说明；第 8 章按需求编号闭环。**来源分级**：原始需求（不可遗漏）、GitHub V2/临时表/Notice 现有参考文档、旧实验实测数据、方案设计建议、待评审项互不等同。与 GDE 公共恢复/模型加密专项相关的详细实现不在本文重新定义。全文仅维护本文件，不新增其他文件。
+> 版本：V1.3（2026-11-02）  
+> 范围：OMS、OAG、DFx、语义索引构建与检索、DataSync/Spark 联调、本体安全及 Skill 接口  
+> 设计目标：面向 CBS 软件上车场景，统一本体模型访问与子图检索能力，实现索引自动化构建、增量同步、水平扩展、租户资源隔离和性能规格化管理。
 
 ---
 
@@ -13,7 +10,7 @@
 
 ### 1.1 业务背景与目标
 
-CBS 面向运营商问账、集团客户问账，以及经营、销售、运营、运维人员的问计、问因和辅助决策。例如预付费账户数量、优惠余额、套餐月活 TOP3、账单风险等。业务 IRB 目标为**准确率 90%、业务端到端 5 分钟**；这不是 OAG 单接口 SLA。当前 CBS 本体参考规模为 **144 个 ObjectType、2896 个 Property、370 个 Relationship、11 个业务域**，模型仍在迭代。
+CBS 面向运营商问账、集团客户问账，以及经营、销售、运营、运维人员的问计、问因和辅助决策。例如预付费账户数量、优惠余额、套餐月活 TOP3、账单风险等。业务 IRB 目标为**准确率 90%、业务端到端 5 分钟**；OAG 单接口按照独立检索性能规格验收。当前 CBS 本体参考规模为 **144 个 ObjectType、2896 个 Property、370 个 Relationship、11 个业务域**，模型仍在迭代。
 模型参考：[CBS 场景的本体模型](https://clouddragon.huawei.com/cloudmodeling/myspace/diagram?diagramId=f46394eae0ec49d8a4693ebd93f0665c)；
 
 ![CBS场景的本体模型](https://cloudmodelingapi.tools.huawei.com/cloudmodelingdrawiosvr/d/1aa8934bdd27478cb45c4f5b06237c77?t=1792382890116)
@@ -46,9 +43,7 @@ CBS 面向运营商问账、集团客户问账，以及经营、销售、运营�
 | DataSync Producer/Consumer | 写 MinIO 不可变分片/Manifest → READY → 消费通知并调用 OAG Notice；不代替 OAG 的索引构建 |
 | GaussVector / OpenSearch / NebulaGraph | 实例 Vector、词法倒排、图数据/内存图回源的不同存储依赖；故障与版本发布分别管理 |
 | DCC | 租户线程池与配额等候选运行参数的动态配置来源，真实 SDK/命名空间需与平台底座核实 |
-| TODO: 删除该行 `revision/generation` | 同一 ontology/tenant 下发布的一致模型版本；不同索引、图缓存不得跨 revision 混用 |
 | 稳定业务键 | 实例值逻辑键 `(tenantId, ontologyId, objectTypeId, propertyId, normalized(value))`；若按租户/本体物理隔离，可在单表内使用后三项，**原值归一化规则必须冻结** |
-| TODO: 删除该行 `U` 与 `U4G` | 早期成本估算中 `U` 的物理定义未给出；性能附件 `2U4G/3U4G` 为具体部署档位，需用部署单独确认 CPU/内存映射 |
 
 ```mermaid
 flowchart LR
@@ -70,7 +65,7 @@ flowchart LR
 
 ### 1.4 最新需求范围与需求清单（2026-10-31）
 
-根据本次最新输入，保留原先 20 条的序号与基本能力边界。**最新清单没有工作量列**，不将旧版 7.9 视为当前预算。TODO：将“不将”否定语句删除
+本期建设范围包含 OMS、OAG、DFx、性能与安全共 20 项需求，按 Q4-01～Q4-20 建立设计和验收对应关系。
 
 | 需求编号 | 模块与能力 | 本轮需求描述 | 详细设计 |
 |---|---|---|---|
@@ -113,86 +108,59 @@ flowchart LR
 
 ### 2.1 本体模型加密与参数拆分（Q4-01）
 
-本项详细方案**跟随《本体模型文件支持加密》**，本文只要求 OMS 明确加密相关场景包/系统配置/请求参数边界，以及安装、升级、回滚、多实例加载时的参数传递、配置验证和集成测试。不得在此另行发明加密算法、密钥格式或 `onto_encrypt` 0/1 的含义。安全及模型文件兼容性验收由专项主导，OMS/OAG 承担接口和功能回归。
+OMS 完成本体加密相关参数拆分，实现组网级参数、系统级参数和接口级参数的分层配置。模型安装、升级、回滚及多实例加载过程传递统一加密参数，并完成模型权限、密钥依赖和配置校验。加密算法、密钥格式与堆栈开关遵循《本体模型文件支持加密》的统一设计。OMS、OAG 完成加密模型的索引构建、查询及权限联调。
 
 ### 2.2 分域查询与定义接口、Agent/OMS 双级缓存（Q4-02）
 
-**目标**：CBS 不在每轮 Agent 调用中实时拉取整本体；OMS 提供按域与按定义范围访问，Agent 按会话复用已验证定义。OMS 缓存加速仅对同一租户/ontology/revision 生效，不因跨会话内存缓存泄漏模型权限。
+OMS 基于现有内存图提供本体分域查询和定义查询能力。业务 Agent 在会话开始或分域切换时加载相关本体定义，并缓存对象、属性和关系信息；后续轮次优先读取 Agent 缓存。OMS 使用内存图完成服务端查询与缓存，实现业务 Agent 与 OMS 两级查询加速。
 
-| 能力 | 既有/建议入口 | 请求与返回（需同 OMS 现行 DTO 对齐） | 缓存策略 |
-|---|---|---|---|
-| 分组列表 | `GET /api/v1/ontologies/{ontologyId}/list`（既有参考） | tenant 鉴权、本体 ID；返回组 ID/名称/可见性及 revision | Agent 每会话首次/失效后取；OMS 本地 LRU/TTL |
-| 组成员与定义 | `POST /api/v1/ontologies/{ontologyId}/group/members`（既有参考） | Body 为 groupId(s) 等筛选参数；响应 ObjectType/Property/Relation 定义与 revision，**实际字段待 DTO 冻结** | Agent 只缓存当前分域使用的定义 |
-| 本体定义批量查询 | 复用已有 OMS 定义查询接口（具体路径待 OMS 核对） | 按对象/属性 ID 列表 + revision 批量取；不逐属性 N+1 查询 | 同 revision 批量回源与 OMS 本地缓存 |
+| 功能 | 接口 | 处理说明 |
+|---|---|---|
+| 分域列表查询 | `GET /api/v1/ontologies/{ontologyId}/list` | 根据租户、本体 ID 和权限返回可见分组 |
+| 分域成员查询 | `POST /api/v1/ontologies/{ontologyId}/group/members` | 根据分组 ID 获取 ObjectType、Property 和 Relation 成员定义 |
+| 本体定义查询 | OMS 既有本体定义查询接口 | 批量获取对象、属性及关系定义，复用服务端内存图 |
 
-**缓存约束**：OMS Key 至少 `(tenantId, ontologyId, revision, groupId / definitionIds, authScope)`；Agent Key 含租户、session、revision 和分域选择，返回使用 ETag/版本号或显式 revision；OMS App 安装/模型 revision 切换后发布失效事件，Agent 订阅或下次调用检测版本，不以仅 TTL 保证强一致。命中率、回源数、过期数、首次/热缓存耗时、缓存内存及租户隔离可观测。失败时最多回退到**仍有效且已授权**的同 revision 定义，不能用旧模型冒充当前模型。
+**缓存策略**：Agent 缓存按 `(tenantId, ontologyId, groupId, 会话/授权范围)` 管理，模型发生变更时更新对应缓存；OMS 内存图统一提供当前有效本体定义。对话流内复用已加载分域，减少 OMS 远程调用与网络消耗。缓存命中率、加载耗时、OMS 请求量及堆内存按会话和租户统计。
 
-**新增场景与验收**（对应源 原待办，尚未有实测结果）：**10 个在线会话、10 路并发调用 OMS 分域/定义查询，3 秒内响应**。需要冻结：每个会话 1 次/多次请求、冷/热缓存、每次返回的分组及定义规模、网络和 JVM 环境、成功率统计口径。按 `10 个会话 × 每会话至少 1 个并发请求` 建议分别跑冷启动和预热后场景，记录端到端从 Agent 发起至 OMS 完整响应的延迟、P50/P95/最大值、OOM/GC 与回源次数；**默认按每请求 ≤3s 判定，不能以平均值掩盖单请求超时**，最终口径需业务测试签认。OMS 内部压测及 Agent 缓存复用测试分别报告，不把 OAG 子图的 5s 规格用在 OMS 接口上。
-
-TODO: 优先让agent缓存，OMS当前已经是内存图，需要结合1U2G的资源，给出可以支撑的并发数。
-
+**性能规格与资源评估**：OMS 单实例按 **1U2G** 部署配置开展分域接口服务级压测，测试场景为 **10 个在线会话、10 路并发，单次分域/定义查询 3 秒内完成**。基于业务真实分域模型，同时设置 Agent 缓存命中与首次加载两组负载，记录 1U2G 条件下的成功 QPS、平均/P95/最大时延、CPU/内存、图缓存占用和 GC。预期能力为在 Agent 复用缓存的常态下支撑 10 会话并发访问；**最终单实例可承载并发数按 1U2G 压测结果确认**，并据此配置服务限流和容量扩展阈值。
 
 ### 2.3 OMS 多实例水平扩展（Q4-03）
 
-TODO: 删除如下段落的冗余内容。增加LB和网关均匀负载路由到多个实例上，同时水平扩容后内存图刷新能力跟随本体加密需求。
-OMS API 由网关按健康 Pod 均衡，服务端缓存可各 Pod 自建但必须以**数据库模型 revision 作为事实源**。安装/升级成功后先发布模型 revision 变更事件，Pod 原子切换可见定义；未刷新或校验失败的 Pod 从就绪探针/路由池暂时摘除或回源，并保留旧有效版本只读。建议 1→2→3 Pod 回归：10 并发分域查询、单 Pod 故障、滚动升级、跨实例数据版本一致、CPU/堆缓存线性占用、认证 tenant 隔离和负载偏斜；会话状态不能保存在固定单 Pod 上。
+OMS 使用 LB/网关统一接入，基于健康实例与连接负载将分域和定义查询请求**均匀路由至多个 OMS 实例**。每个实例加载本体内存图并提供独立查询能力，支持 1→2→3 实例水平扩容、负载分担和故障实例自动摘流。
 
-**与加密依赖**：模型密钥生命周期、加密模型落盘/内存策略跟随专项；多实例只定义缓存重建、版本切换和安全访问的集成职责，不新增另一套安全协议。
+OMS 多实例内存图刷新、模型加密加载和变更通知按《本体模型文件支持加密》统一机制实施。新实例完成内存图加载与健康检查后加入服务池；实例退出后由网关将请求分配至其他健康节点。验证 1U2G 单实例基准、双实例并发能力、负载均衡比例、实例故障接管及扩容后的查询耗时。
 
 ### 2.4 OMS 场景包参数分层（Q4-05）
 
-TODO: 去除“不是”等否定句的描述，描述使用肯定的语气
-该项是 **GDE 公共需求**。OMS 提供场景包/系统参数与接口参数清单，适配 GDE 统一参数规范和配置校验、安装/升级/回滚机制，不单独设计一套 OMS 配置底座。
-参见：《ICT服务与软件/Agentic Operation Center/Docs/27/27.3.0/02.设计/02.设计文档/Agentic Operation Center 27.3.0 系统需求分析说明书（Agent框架与本体能力支撑软件业务）.docx》
-
-当前GDE安装数据域服务时场景包参数填写过多，需要控制交付感知的参数个数。满足如下规范：
-
-1)        不允许在values.yaml中配置GDE版本号参数
-
-2)        每个参数需要区分是否需要业务定制，即是否在solution中呈现，对应传统的internal参数，部分不需要业务定制修改但需要在场景包中声明的需继续在solution中保留
-
-3)        每个参数需要区分业务定制和交付填写参数，通过invisible区分
-
-	a)         invisible=true对应传统的customized
-	
-	b)        invisible=false，或者不声明该参数，对应传统的productize
-	
-	c)         readonly类型参数，需默认配置invisible=true
-
-4)        每个参数需要提供国际化参数配置
-
-特别的CBS明确要求副本数、资源配置等参数需要开放给交付填写。
-
+OMS 场景包参数遵循 GDE 统一分级规范：组网级参数随场景包交付，系统级参数纳入配置中心，单次任务参数由接口传递。安装阶段校验参数完整性及合法范围，升级与回滚阶段延续配置兼容规则。配置治理涵盖模型加密、内存图加载、分域查询与服务实例资源。
 
 ### 2.5 OMS 故障快速恢复（Q4-04）
 
-TODO: 去除“不是”等否定句的描述，描述使用肯定的语气，去除模型 revision 字样，其他段落也同步排查 revision 字样。
-**GDE 公共恢复指导书**为权威：OMS 补充模型 revision、分组缓存、多实例状态、加密依赖、App 安装与权限异常等专项章节，按公共模板输出症状、指标与命令、止损、恢复、校验和演练结果。RTO/RPO 以 GDE 统一标准为准，不自定新指标。
-
----
+OMS 按 GDE 公共故障恢复规范补充本体模型加载失败、分域查询超时、缓存异常、加密参数异常、实例退出及 App 安装失败等场景的操作指导。每个场景包含故障现象、诊断指标、恢复步骤、恢复后的业务校验和演练记录。RTO、RPO 与恢复入口执行 GDE 统一标准。
 
 ## 3. OAG 统一接口、自动交付与高可用（Q4-06～11）
 
 ### 3.1 服务/软件场景统一 V2 本体子图接口（Q4-06）
 
-**现有规范与链接**：[GitHub《本体子图语义检索接口v2》](./本体子图语义检索接口v2.md)；历史设计参见 `ICT服务与软件/Agentic Operation Center/Docs/27/27.3.0/02.设计/02.设计文档/Agentic Operation Center 27.3.0 功能设计说明书(IR20260729001097_OAG子图检索能力增强)/1.子图检索接口设计v2.md`；[内部 Wiki 字段说明](https://wiki.huawei.com/wiki/WIKI2026101013239851?title=%E5%AD%97%E6%AE%B5%E8%AF%B4%E6%98%8E)。以 GitHub 已核验的正式 V2 参数表为接口设计依据；历史路径和 Wiki 属参考，不凭不可读取材料改写协议。
+OAG 提供统一的本体语义子图检索接口，支持自然语言问题和业务已抽取实体两种输入。服务场景使用 `query`，软件场景使用 `entities` 并关闭重复的对象/属性链接处理。子图返回对象、属性、关系、Function 与 Action 的模型信息，并按属性类型装配枚举和实例值。
 
-**统一 API**：`POST /v2/onto-retrieval/subgraph/semantic-search`，`Content-Type: application/json`。同一个入口根据 `query` / `entities` 参数组合运行，无独立软件 URL；Body 中传必填 `ontologyId`（1～256 字符），`query` 可选（1～1024），`entities` 可选（**JSON String，1～102400 字符**）；至少一个非空，两者都传则 **entities 优先**、服务端不再执行原始 query 的实体提取。
+**接口**：`POST /v2/onto-retrieval/subgraph/semantic-search`，`Content-Type: application/json`。
 
-| Body 参数 | 接口默认 / 约束 | 设计说明 |
+| 参数 | 类型与默认值 | 功能说明 |
 |---|---|---|
-| `ontologyId` | 必填，1～256 字符 | 从 tenant 权限校验归属，不再拼入 V1 路径 |
-| `query` / `entities` | 二选一非空，entities 优先 | entities 字符串解码后根为 `{"entities":{"extractedEntities":[...]}}` |
-| `adaptiveRetrieval` | 默认 1 | =1 时 ObjectType+Property ≤300 节点默认返回全量；软件建议 **0** |
-| `seedRetrievalMode` | `vector` / `keyword` / `hybrid`，服务端默认 `vector` | Skill 为延续旧调用可**显式传 hybrid** |
-| `similarityThreshold` | 0.6，vector/hybrid 生效 | 关键词模式不由 dense 阈值直接过滤 |
-| `topk` | 默认 3（小写 k） | CLI `--topK` 仅作兼容，向服务端发送 `topk` |
-| `graphExpansionStrategy` | `minimal`（另有 khop/component） | `hopLimit=3`，khop 策略时生效 |
-| `includeFunctions / includeActions` | 0 / 0 | Skill 可以为保持原行为显式传 includeFunctions=1 |
+| `ontologyId` | String，必填，1～256 字符 | 指定当前检索本体 |
+| `query` | String，可选，1～1024 字符 | 输入自然语言业务问题 |
+| `entities` | String，可选，1～102400 字符 | 输入 JSON String 形式的结构化实体，优先执行此模式 |
+| `adaptiveRetrieval` | int，默认 1 | 软件实体检索时设置 0 |
+| `seedRetrievalMode` | `vector/keyword/hybrid`，默认 `vector` | 设置种子检索通道；Skill 使用 `hybrid` |
+| `similarityThreshold` | 默认 0.6 | 向量检索相似度阈值 |
+| `topk` | 默认 3 | 设置每阶段候选数量 |
+| `graphExpansionStrategy` / `hopLimit` | 默认 minimal / 3 | 设置子图构建策略及跳数 |
+| `includeFunctions` / `includeActions` | 默认 0 / 0 | 控制模型附加信息返回 |
 
-**软件配置组合**：entities 非空 + adaptiveRetrieval=0 + DCC/配置中心 `enableObjectLinking=false`、`enablePropertyLinking=false`、`enablePropertyValueLinking=true`、`includeAllProperties=true`，**开关不是请求 Body 参数**。`entities.extractedEntities[]` 至少 1 个对象，objectType 必填，properties 可省略（本期软件约定不传）；`propertyValues[].propertyValues[].value` 必填；`property` 可省略或空串，表示在该 ObjectType 全部启用的实例值语义属性中链接。种子仅为 ObjectType，实例 value 命中对象归并种子；枚举不用索引检索，Property 装配全量 OMS EnumType/values[]。
+**软件场景组合**：`entities` 非空，`adaptiveRetrieval=0`，配置 `enableObjectLinking=false`、`enablePropertyLinking=false`、`enablePropertyValueLinking=true`、`includeAllProperties=true`。`extractedEntities` 至少包含一个 `objectType`；每个 `propertyValues` 项携带实例 `value`，`property` 支持空串或省略，用于按对象下全部可检索实例字段进行链接。对象种子经裁剪后连接成最小连通子图，属性通过 `has_property` 边补齐。
 
-**请求示例**（entities 是 JSON 字符串，而非直接嵌套对象）：
+**请求示例**：
 
 ```json
 {
@@ -209,8 +177,7 @@ TODO: 去除“不是”等否定句的描述，描述使用肯定的语气，�
 }
 ```
 
-**返回结构与可选扩展**：`resultCode / resultMessage / result`，后者包含 `seedNodes`（只有对象种子）、`nodes`、`edges`、`functions`、`actions`，可含 `propertyValuesLinks`（值链接诊断，包含 `valuesMapping[]`）；`result=null` 为失败。entities 响应示例2-1 采用 `nodes[].label/properties` 与 `edges[].edgeType/propertyMap`；**Property 节点顶层**可有 `propertyEnumValues`（仅枚举型、OMS 全量）及 `propertyInstanceValues`（仅支持实例链接且有命中），`properties.dataType=enum` 时带 `enumDataType`。`propertyEnumValues[].isDefault` 为 `"true"/"false"` 字符串。
-
+**响应**：`resultCode/resultMessage/result`；`result` 下返回 `seedNodes/nodes/edges/functions/actions/propertyValuesLinks`。`seedNodes` 存储 ObjectType 种子；Property 节点顶层根据属性类别返回 `propertyEnumValues`（OMS EnumType 全量枚举）和 `propertyInstanceValues`（实例属性命中值），`properties` 存储 name、dataType、enumDataType 等属性元数据。`propertyValuesLinks` 保存值链接候选、规范值及分数。兼容期同时支持 query 模式的 `nodes[].type` 和 entities 模式的 `nodes[].label/properties` 两种结构，统一接口 DTO 逐步收敛。枚举值采用 OMS 权威定义并随属性全量返回，实例值检索访问 `t_oag_instance_{ontologyId}`。
 
 ### 3.2 Skill 和脚本从 V1 迁移到 V2（Q4-07）
 
@@ -230,21 +197,27 @@ python scripts/semantic_subgraph_search.py --query-json @request-v2.json
 
 ### 3.3 App 安装自动创建索引、刷新内存图（Q4-08）
 
-TODO：按照初始安装完成后，手动创建索引，索引创建成功后，调用子图检索接口，查看返回结果是否为空 这样的步骤进行操作复现。删除下面段落无用的信息
-**P0 前置门禁：修复手动索引偶现失败。** 复现同 tenant/ontology/revision 的重复点击、异步任务排队、异常重试、图模型刷新失败、半成品向量表和两 Pod 并发构建；收集任务阶段、错误码、线程队列、数据库 DDL、缓存版本日志定位，修复后做批跑和断点恢复，原 activeRevision 未受影响才进入自动流程。
+**第一阶段：修复手动创建索引异常。**
 
-**设计事件**：OMS 安装/升级 App 完成模型落库→记录 `tenantId, appId, ontologyId, modelRevision, operation, requestId`→通过可靠投递/outbox 通知 OAG（推荐内部 API，具体路径待冻结）→OAG 以 `(tenantId,ontologyId,modelRevision,operation,requestId)` 任务级幂等；先创建持久 Task，再异步构建定义索引与图缓存影子版本→校验数据完整性及 schema→提交发布标记/activeRevision→所有 Pod 检测 revision 后加载，不同 revision 不混用。HTTP 202 只代表受理，不代表就绪；OMS 面向上层应提供安装成功与“检索就绪”两种可观察状态。
+故障复现步骤：
 
-**状态转移建议**：`ACCEPTED → VALIDATING → BUILDING → VERIFYING → PUBLISHING → SUCCESS`，任何可恢复阶段可进入 `FAILED_RETRYABLE`，不可恢复变为 `FAILED_FINAL`，取消需有安全检查点；这是建议 Task 内部状态，不替代当前数据库的 status=0/1/2/3 状态编码。失败保留旧 active revision，修复后可按相同 requestId 重试，避免重复索引。发布或回滚前须确保缓存与索引同一 modelRevision，不能从未验证的 `PUBLISHING` 暴露结果。
+1. 完成环境与本体 App 初始安装，确认 OMS 本体定义可查询。
+2. 在管理页面手动执行创建本体索引，等待任务状态显示创建成功。
+3. 调用 V2 本体子图检索接口，使用可命中的对象或业务问题进行查询。
+4. 检查返回的 `result.nodes/result.edges` 是否为空，并核对索引表记录数、内存图节点数及检索日志。
+5. 在相同安装环境重复执行上述流程，定位“索引任务成功、子图检索返回空结果”的偶发场景。
 
-### 3.4 OAG 多实例水平扩展、内存图一致性与负载分担（Q4-09）
+修复索引创建成功状态与实际检索可用状态的联动，建立索引数据、内存图加载和检索返回的统一校验。验证检索可用后完成手动建索引验收。
 
-**参考既有专项**：`ICT服务与软件/Agentic Operation Center/Docs/27/27.3.0/02.设计/02.设计文档/Agentic Operation Center 27.3.0 功能设计说明书（IR20260731000589 SR20260806887975&SR20260806887798 本体模型支持内存图管理和子图检索）.md`。本文定义 Q4 集成闭环，具体缓存 SDK/内部协议以该专项联调确认。
+**第二阶段：App 安装自动化。** OMS 在本体 App 安装或更新完成后调用 OAG 创建索引接口；OAG 依次执行创建索引任务、构建定义索引、刷新内存图和检索验证，任务成功后对外提供新模型检索能力。重复安装按租户、本体和任务标识幂等处理，失败任务按可恢复阶段重试；安装、建索引及子图检索完成状态在 OMS/OAG 管理界面可查询。
 
-- **计算/流量**：OAG 2/3 Pod 经网关负载分担，各 Pod 查询本地只读、按 tenant/ontology 隔离的内存图；索引构建 Task 使用数据库持久状态和抢占租约/心跳选主，不能多 Pod 重复执行同一 Task；Worker 接管按任务 Checkpoint 重放。
-- **缓存版本**：OMS revision 为源，OAG 在本地影子图加载/校验后原子切换；发布记录只包含已验证 revision，热切换时旧查询绑定旧版本直到完成，避免 nodes/edges 与向量索引错版。Pod 漏通知应轮询/重连后对账，迟到通知不得回滚到旧版本。TODO: 缓存中只维护最新的版本，刷新描述
-- **负载与内存**：每 Pod 图对象数、100MB/本体的附件估算及实际存储占用单独计量；图缓存采用有界/租户隔离的预热和淘汰。构建任务、Embedding、查询可采用分离线程池，避免模型入库阻塞实时检索。TODO: 缓存中只维护最新的版本，刷新描述
-- **故障恢复/验收**：N=1/2/3 的成功 QPS、延迟与分布；杀死一个 Pod、换新 Pod、修正 DCC、重放 Notice、模型更新时全局查询可用和 revision 一致性，保留每 Pod CPU/内存/线程/网络和下游向量服务负载证据。下游瓶颈不能通过增加 OAG Pod 数自动消失（详见 §5.1）。
+### 3.4 OAG 多实例水平扩展、内存图刷新与负载分担（Q4-09）
+
+OAG 经 LB/网关将检索请求均匀路由至健康实例，支持多实例水平扩容和租户流量分担。每个实例在本地内存中**仅维护当前最新本体图版本**，服务启动或模型发生更新时从 OMS/图存储加载最新定义并整体刷新内存图。模型变更完成后通知各 OAG 实例同步刷新；遗漏通知的实例通过定期版本检查恢复一致。
+
+本体图缓存采用按租户和本体隔离的内存管理方式，刷新后清理旧图占用，保障每个实例的内存预算。索引后台任务由持久化任务状态与租约机制协调执行，故障实例的任务根据 Checkpoint 恢复。
+
+多实例验收覆盖 1/2/3 Pod 负载分担、网关路由均匀度、最新内存图刷新、一台 Pod 退出、Pod 重启后的图加载、租户隔离和检索结果一致性。按单实例与双实例的吞吐及下游依赖利用率评估横向扩容收益。
 
 ### 3.5 OAG 参数分层与公共故障恢复（Q4-10～11）
 
@@ -299,17 +272,32 @@ sequenceDiagram
 | 多文件10并发增量 | 920C 物理机 | 3U4G | 20万 | 16并发 | 451.32 | 1252.11 | 826.45 | 452.00 |
 
 
-#### 4.1.2 100 万用户/1000 万行验证与资源模型
-TODO: 服务级测试用例，采用业务测试构造的94w数据作为基础，进行扩充。精简如下段落的描述。描述采用肯定语气尽可能简洁有条理。
+#### 4.1.2 100 万用户/1000 万行验证与容量评估
 
+**服务级测试数据**：以业务测试构造的 **94 万条实例值数据**为基线，按业务对象、属性、值长度及数据分布扩展至 **100 万用户、单表 1000 万行实例值索引数据**。生成数据保持原有属性分布与合法对象归属，增量样本单独构建 10 万行；记录原始条数、扩充条数和去重后条数。
 
-1. **固定数据和工作负载**：100 万用户、单表 1000 万 **去重前/后两种行数均记录**，ObjectType/Property 分布、纯数字 ID 占比、平均文本长度、每用户十条的示例关系需验证。分别压测首次 FULL（全新键）与 10 万增量（新增键比例 0/10/100%），不能把全部已存量的 INCREMENTAL 当成全量。
-2. **串联全链路**：Spark 计算/合并→DataSync Producer→MinIO READY→Consumer Notice→OAG CSV 读取与验证→数据库差异→Embedding→COPY/LVQ→OpenSearch→任务 Publish；分别统计总耗时和各阶段 wall-time，包含失败重试与资源峰值。每种工作负载做 1/2/3 OAG Pod 和 1/2/3 Embedding 模型副本矩阵。
-3. **容量初算，不是验收结论**：仅按历史 200 万全量/7610.10s 等比例外推，1000 万全量约 **38050.5s ≈10.57 小时**（等效端到端 262.81 条/s）；如 1000 万条全部要推理、且一个模型服务持续 120 条/s，则模型单副本理论下限约 **83333s ≈23.15 小时**，2 副本理想下限约 11.57h，尚未加上 IO/数据库与下游争用。**两个估算来自不同测试口径，不能同时视为可实现吞吐**；实际耗时至少受真正的 Embedding 在途能力和最慢流水段约束。TODO: 刷新评估公式，只按照 451.32 速率 计算。
-4. **多实例受限场景**：当 OAG 从 1 Pod 扩至 2 Pod，理论并发/吞吐可增加，但若 Embedding 固定 120 条/s、GaussVector COPY/IO 或 MinIO 带宽不扩，**不能承诺 2 倍吞吐**。先算 `min(OAG可调度行速率, embedding实例数×可用120条/s, 向量库可持续写速率, OpenSearch/网络瓶颈)`，再用实测确认扩展效率；模型副本横扩需检查实际负载均衡和 Istio 503 UC。
-5. **资源预算**：OAG CPU/堆/线程/连接（3U4G历史与 2U4G查询档位不得混淆）、Embedding 模型容器 GPU/CPU 与实例数、GaussVector LVQ/COPY 内存及磁盘/IOPS、OpenSearch bulk/thread pool、MinIO 文件空间和暂存峰值分别报价，给出新增数据率变化的资源斜率。结果按 N 实例、N 模型副本和各 stage rows/s 发布，不以固定资源值代替容量测算。
+**测试场景**：
 
-**通过条件**：1000 万全量和 10 万增量均记录数据完整数/去重数、源 Manifest checksum、任务最终状态、重复 Embedding 率、向量/倒排计数一致性、无主键冲突、错误恢复。**最新原始需求只给了规模没有给全量入库总时长硬阈值；最终总耗时、资源预算、可扩倍数须以压测结论签审**，不自造“10 分钟”类指标。
+| 场景 | 数据规模 | 验证内容 |
+|---|---|---|
+| 首次全量同步 | 单表 1000 万条 | Spark/MinIO/Notice/Embedding/向量库完整流水线，统计总耗时和资源消耗 |
+| 增量同步 | 10 万条 | 0%、10%、100% 新增值比例，对比 Embedding 调用数与差异入库耗时 |
+| 多实例同步 | OAG 1/2/3 实例，Embedding 1/2/3 副本 | 验证批处理并发、模型副本扩容、GaussVector 写入能力及水平扩容效率 |
+| 异常恢复 | 文件重传、任务重试、Pod 退出、模型超时、数据库连接异常 | 验证任务幂等、续处理与完整性校验 |
+
+**性能估算**：基于已有增量同步测试的 **451.32 条/秒**作为端到端估算基准：
+
+\[
+T_{\mathrm{full}} = \frac{10{,}000{,}000}{451.32} \approx 22{,}157\ \mathrm{s} \approx 6.16\ \mathrm{h}
+\]
+
+\[
+T_{\mathrm{incremental}} = \frac{100{,}000}{451.32} \approx 222\ \mathrm{s} \approx 3.69\ \mathrm{min}
+\]
+
+以上为**451.32 条/秒基准下的容量规划估算值**；生产验收依据 1000 万全量与 10 万增量实际测量值。通过压测进一步获取不同新增率的 Embedding TPS、向量库 COPY TPS、OpenSearch Bulk TPS、CPU、内存和存储 IO，并以各环节实测吞吐确定资源配置。
+
+**验收**：全量索引行数与源数据对账一致、同一组合键幂等写入、增量差异识别准确、模型/向量库资源可稳定支撑业务同步周期；压测记录单实例吞吐及多实例扩容系数。
 
 ### 4.2 本体定义索引：全量比对、差异 Embedding（Q4-14）
 
