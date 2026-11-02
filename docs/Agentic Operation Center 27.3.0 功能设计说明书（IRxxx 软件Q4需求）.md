@@ -17,6 +17,8 @@ CBS 面向运营商问账、集团客户问账，以及经营、销售、运营�
 
 本期 Q4 的重点是让 OMS/OAG 具备**安全交付、接口统一、自动索引、多实例扩展、配置治理、可恢复的数据同步与可量化的检索性能**。
 
+**验收标准**：CBS 问账、问计、问因用例覆盖预付费账户、优惠余额、套餐月活及账单风险等场景；业务准确率 90% 和端到端 5 分钟由 CBS 业务验收，OMS/OAG 独立记录各自接口指标。
+
 ### 1.2 最新目标与交付边界
 
 | 目标 | 最新要求 | 主责 |
@@ -31,6 +33,8 @@ CBS 面向运营商问账、集团客户问账，以及经营、销售、运营�
 | 检索预研与安全 | 仅 OpenSearch 倒排检索及 ID-only 安全索引要共同评审 | OMS/OAG/安全 |
 
 **实施范围**：按 Q4-01～Q4-20 组织模块交付。OMS/OAG 实现与 GDE 公共能力及模型加密专项集成；Task API、DCC Watch、LVQ 与 Delete 能力按方案完成开发、联调及验收。
+
+**验收标准**：Q4-01～Q4-20 均有对应的功能模块、建设内容和责任边界；接口统一、自动索引、多实例、数据同步、配置治理、安全能力分别具备对应验收入口。
 
 ### 1.3 术语、责任边界与主链路
 
@@ -63,6 +67,8 @@ flowchart LR
 
 **数据一致性**：Notice 请求由持久化 Task 记录受理状态；索引完成后发布成功状态。OMS/OAG 在同租户、同本体下读取当前生效模型及索引版本，按鉴权结果隔离敏感数据。
 
+**验收标准**：OMS/OAG/CBS/Spark/DataSync/DCC 的数据与操作责任能够逐跳定位；使用同租户同本体执行查询、索引通知和数据加载时，业务键、任务标识与权限范围一致。
+
 ### 1.4 最新需求范围与需求清单（2026-10-31）
 
 本期建设范围包含 OMS、OAG、DFx、性能与安全共 20 项需求，按 Q4-01～Q4-20 建立设计和验收对应关系。
@@ -92,6 +98,8 @@ flowchart LR
 
 **实施顺序**：首先修复手动建索引偶现问题，再完成 Spark→DataSync→MinIO→OAG 全量/增量入库，落地按租户 DCC 的线程池与队列隔离。子图检索按 **10 QPS/3s 业务目标**和 **2U4G、10 QPS、平均 5s 测试规格**分别验收；Q4-18 关键词单路检索与 Q4-19 安全索引规范联合设计。
 
+**验收标准**：20 项原始需求编号连续且唯一，每项均指向具体设计章节；1000 万全量、10 万增量、10 QPS/3s、附件 5s、GDE 参数和安全专项要求均可追溯。
+
 ### 1.5 需求到设计与验收追踪
 
 | 设计专题 | 需求项 | 主要交付 | 验收用例组 |
@@ -106,9 +114,13 @@ flowchart LR
 
 ## 2. OMS 功能设计：本体加密、分域访问与高可用（Q4-01～05）
 
+**验收标准**：20 项需求与设计章节、§8.1 验收用例完成一一对应；业务与平台联合评审按编号定位设计、测试证据和责任模块。
+
 ### 2.1 本体模型加密与参数拆分（Q4-01）
 
 OMS 完成本体加密相关参数拆分，实现组网级参数、系统级参数和接口级参数的分层配置。模型安装、升级、回滚及多实例加载过程传递统一加密参数，并完成模型权限、密钥依赖和配置校验。加密算法、密钥格式与堆栈开关遵循《本体模型文件支持加密》的统一设计。OMS、OAG 完成加密模型的索引构建、查询及权限联调。
+
+**验收标准**：加密参数在场景包、系统配置及任务入口按级别生效；加密本体完成首次安装、升级、回滚和多实例加载，OMS 定义查询与 OAG 子图检索按授权规则获得一致模型。
 
 ### 2.2 分域查询与定义接口、Agent/OMS 双级缓存（Q4-02）
 
@@ -124,11 +136,15 @@ OMS 基于现有内存图提供本体分域查询和定义查询能力。业务 
 
 **性能规格与资源评估**：OMS 单实例按 **1U2G** 部署配置开展分域接口服务级压测，测试场景为 **10 个在线会话、10 路并发，单次分域/定义查询 3 秒内完成**。基于业务真实分域模型，同时设置 Agent 缓存命中与首次加载两组负载，记录 1U2G 条件下的成功 QPS、平均/P95/最大时延、CPU/内存、图缓存占用和 GC。预期能力为在 Agent 复用缓存的常态下支撑 10 会话并发访问；**最终单实例可承载并发数按 1U2G 压测结果确认**，并据此配置服务限流和容量扩展阈值。
 
+**验收标准**：采用 1U2G OMS 单实例，10 在线会话、10 路并发，单次分域/定义请求 3 秒内完成；冷缓存、Agent 缓存命中和模型变更后刷新分别有请求耗时、命中率、CPU、内存和 GC 测试记录。
+
 ### 2.3 OMS 多实例水平扩展（Q4-03）
 
 OMS 使用 LB/网关统一接入，基于健康实例与连接负载将分域和定义查询请求**均匀路由至多个 OMS 实例**。每个实例加载本体内存图并提供独立查询能力，支持 1→2→3 实例水平扩容、负载分担和故障实例自动摘流。
 
 OMS 多实例内存图刷新、模型加密加载和变更通知按《本体模型文件支持加密》统一机制实施。新实例完成内存图加载与健康检查后加入服务池；实例退出后由网关将请求分配至其他健康节点。验证 1U2G 单实例基准、双实例并发能力、负载均衡比例、实例故障接管及扩容后的查询耗时。
+
+**验收标准**：完成 OMS 1/2/3 实例负载测试，网关对健康实例分担流量；滚动升级、实例退出和新实例接入后，分域查询成功率、内存图一致性与服务可用性符合测试方案。
 
 ### 2.4 OMS 场景包参数分层与交付参数治理（Q4-05）
 
@@ -176,11 +192,15 @@ parameters:
 
 **实现流程**：梳理现有 `values.yaml` 与 Solution 参数清单 → 标记业务定制/交付填写/内置参数 → 设置 `invisible`、`readonly` 和国际化信息 → 校验 CBS 副本与资源参数的开放范围 → 执行首次安装、升级、回滚及多语言场景包回归。安装页面统计交付可见参数数量，形成交付配置清单和默认值清单。
 
+**验收标准**：检查 values.yaml 中的 GDE 版本信息由发布清单管理；所有 Solution 参数具备业务定制与交付填写分类，readonly 参数默认 invisible=true、交付填写参数按 invisible=false 呈现；CBS 副本、CPU/内存可填写，中英文提示完整，首次安装/升级/回滚均验证配置有效。
+
 ### 2.5 OMS 故障快速恢复（Q4-04）
 
 OMS 按 GDE 公共故障恢复规范补充本体模型加载失败、分域查询超时、缓存异常、加密参数异常、实例退出及 App 安装失败等场景的操作指导。每个场景包含故障现象、诊断指标、恢复步骤、恢复后的业务校验和演练记录。RTO、RPO 与恢复入口执行 GDE 统一标准。
 
 ## 3. OAG 统一接口、自动交付与高可用（Q4-06～11）
+
+**验收标准**：本体加载、缓存、加密配置、分域查询、实例故障及安装失败均有 Runbook；逐场景完成故障注入、操作恢复、健康检查、业务回归和 GDE RTO/RPO 记录。
 
 ### 3.1 服务/软件场景统一 V2 本体子图接口（Q4-06）
 
@@ -221,6 +241,8 @@ OAG 提供统一的本体语义子图检索接口，支持自然语言问题和�
 
 **响应**：`resultCode/resultMessage/result`；`result` 下返回 `seedNodes/nodes/edges/functions/actions/propertyValuesLinks`。`seedNodes` 存储 ObjectType 种子；Property 节点顶层根据属性类别返回 `propertyEnumValues`（OMS EnumType 全量枚举）和 `propertyInstanceValues`（实例属性命中值），`properties` 存储 name、dataType、enumDataType 等属性元数据。`propertyValuesLinks` 保存值链接候选、规范值及分数。兼容期同时支持 query 模式的 `nodes[].type` 和 entities 模式的 `nodes[].label/properties` 两种结构，统一接口 DTO 逐步收敛。枚举值采用 OMS 权威定义并随属性全量返回，实例值检索访问 `t_oag_instance_{ontologyId}`。
 
+**验收标准**：V2 query-only、entities-only、双输入各自返回符合 DTO 的有效子图；实体值检索访问 Instance 索引，Property 装配全量 Enum；topk、adaptiveRetrieval=0、空属性字段及非法参数具备稳定结果与错误码。
+
 ### 3.2 Skill 和脚本从 V1 迁移到 V2（Q4-07）
 
 **Skill 改造文件**：`ontology-platform-unified-skill/SKILL.md`、`ontology-platform-unified-skill/scripts/semantic_subgraph_search.py`。原脚本按 `/v1/onto-retrieval/{ontologyId}/subgraph/semantic-search` 拼接 URL、Body 使用 `topK`、强制 query，不支持 entities，并且 HTTP 失败可能被当成成功。迁移后的脚本改用 `/v2/onto-retrieval/subgraph/semantic-search`，`ontologyId` 入 Body、发送 `topk`，支持 query-only、entities-only 与混合输入，并进行本地参数校验。
@@ -236,6 +258,8 @@ python scripts/semantic_subgraph_search.py --query-json @request-v2.json
 自然语言调用通过环境变量 `ONTOLOGY_ID` 指定本体，同时配置 `SERVICE_NAMESPACE`、`TENANT_ID`。`--entities-file`、`--entities` 支持结构化实体输入并序列化为 HTTP JSON String；完整 Body 保留用户显式 0 值。脚本对 HTTP、业务响应和网络错误进行分类处理，失败时返回稳定错误结构及非零退出码，保留 `message_type=message_ontololgy_subgraph` 兼容包装。
 
 **V1 deprecation**：迁移各调用方后可按正式评审添加 `Deprecation` 公告，监控旧端点调用来源及流量；V1 不立即删除，需业务回归、灰度回退和退役批准。
+
+**验收标准**：Skill 默认请求 V2；query、entities、JSON 文件和混合输入可运行，零值参数按输入保留；HTTP 异常、业务失败和超时返回非零退出码及诊断信息，V1 调用监控与兼容回退可用。
 
 ### 3.3 App 安装自动创建索引、刷新内存图（Q4-08）
 
@@ -253,6 +277,8 @@ python scripts/semantic_subgraph_search.py --query-json @request-v2.json
 
 **第二阶段（后续规划）：App 安装自动化。** OMS 在本体 App 安装或更新完成后调用 OAG 创建索引接口；OAG 依次执行创建索引任务、构建定义索引、刷新内存图和检索验证，任务成功后对外提供新模型检索能力。重复安装按租户、本体和任务标识幂等处理，失败任务按可恢复阶段重试；安装、建索引及子图检索完成状态在 OMS/OAG 管理界面可查询。
 
+**验收标准**：按初始安装→手动建索引→子图检索复现路径验证修复，Task SUCCESS 对应可命中子图；自动化阶段 OMS App 安装触发 OAG 索引创建、图刷新和结果校验，重复安装幂等、失败可重试。
+
 ### 3.4 OAG 多实例水平扩展、内存图刷新与负载分担（Q4-09）
 
 OAG 经 LB/网关将检索请求均匀路由至健康实例，支持多实例水平扩容和租户流量分担。每个实例在本地内存中**仅维护当前最新本体图版本**，服务启动或模型发生更新时从 OMS/图存储加载最新定义并整体刷新内存图。模型变更完成后通知各 OAG 实例同步刷新；遗漏通知的实例通过定期版本检查恢复一致。
@@ -260,6 +286,8 @@ OAG 经 LB/网关将检索请求均匀路由至健康实例，支持多实例水
 本体图缓存采用按租户和本体隔离的内存管理方式，刷新后清理旧图占用，保障每个实例的内存预算。索引后台任务由持久化任务状态与租约机制协调执行，故障实例的任务根据 Checkpoint 恢复。
 
 多实例验收覆盖 1/2/3 Pod 负载分担、网关路由均匀度、最新内存图刷新、一台 Pod 退出、Pod 重启后的图加载、租户隔离和检索结果一致性。按单实例与双实例的吞吐及下游依赖利用率评估横向扩容收益。
+
+**验收标准**：1/2/3 Pod 在网关负载分担下获得一致的最新内存图；模型更新、Pod 重启及通知重放后各实例图数据和检索结果一致，旧图缓存完成释放并记录内存占用。
 
 ### 3.5 OAG 参数分层与公共故障恢复（Q4-10～11）
 
@@ -270,6 +298,8 @@ OAG 经 LB/网关将检索请求均匀路由至健康实例，支持多实例水
 ---
 
 ## 4. 实例索引构建、差异同步与性能（Q4-12、Q4-14～17）
+
+**验收标准**：场景包、系统级、DCC 租户级和任务级配置各自按规定来源生效；Embedding 503、Notice 丢失、租户队列异常及图缓存异常完成恢复演练与告警验证。
 
 ### 4.1 Spark/DataSync 全量与增量数据入库、1000 万行验收（Q4-12）
 
@@ -300,6 +330,8 @@ sequenceDiagram
   O-->>C: 由query查询最终SUCCESS/FAILED
 ```
 
+**验收标准**：Spark 完成图/语义去重和目标文件合并，DataSync READY/Notice 可靠投递；按 Manifest 核对源文件、Task 状态和目标数据，异常重试后成功记录一致。
+
 #### 4.1.1 全量与增量同步性能测试结果
 
 入库测试采用 **OAG 3U4G、8/16 并发**及两类服务器，统计各阶段的处理速率与总耗时。
@@ -313,6 +345,7 @@ sequenceDiagram
 | 多文件10并发全量 | 920C 物理机 | 3U4G | 20万 | 16并发 | 387.32 | 1550.39 | 556.49 | 526.70 |
 | 多文件10并发增量 | 920C 物理机 | 3U4G | 20万 | 16并发 | 451.32 | 1252.11 | 826.45 | 452.00 |
 
+**验收标准**：六组测试样本的环境、并发数、数据量、各阶段 rows/s 和总耗时完整保留；复测按相同输入与资源条件报告阶段瓶颈和结果差异。
 
 #### 4.1.2 100 万用户/1000 万行验证与容量评估
 
@@ -369,9 +402,13 @@ T_{\mathrm{incremental}} = \frac{100{,}000}{451.32}
 
 **SQL 保留说明**：GaussDB 实测 SQL 实际查询的是 `t_oag_instance_...`，属于**Instance 记录增量比对**而非定义索引。
 
+**验收标准**：相同 DefinitionId、同文本摘要及同模型版本复用既有向量；新增与定义文本变化触发 Embedding，元数据变化更新相应索引；完整模型快照发布前后查询结果与生效版本一致。
+
 ### 4.3 Instance 值增量：每批独立 TEMP B、数据库差异、Embedding 与幂等写入（Q4-17）
 
 **增量索引方案**：每批默认 **4000 条**，每个批次创建独立 TEMP B，执行数据库差异识别、对新增组合键计算 Embedding，并将新数据幂等写入正式表 A。批次独立到达、独立处理，存量向量按组合键直接复用。
+
+**验收标准**：每批默认 4000 条创建独立 TEMP B，稳定组合键差异识别后仅新增记录进入 Embedding；正式表 A 唯一键保证跨批次及重复 Notice 的幂等结果，任务保留可恢复 Checkpoint。
 
 #### 4.3.1 既有 GaussDB 实测 SQL（保留原始语句及输出）
 
@@ -420,6 +457,8 @@ create table if not exists "${tableName}"
 
 动态表名 `${tableName}` 由服务端根据租户/本体白名单生成并按 SQL 标识符规则引用。临时表 B 单独定义三个业务键字段，正式表 A 使用带向量列的完整结构，确保批量差异识别与向量写入职责分离。
 
+**验收标准**：GaussDB NOT EXISTS 对比查询返回新增完整业务键，验证原有两条差异样例；在目标数据库版本执行 TEMP/ON COMMIT DROP 和冲突写入语法测试。
+
 #### 4.3.2 独立临时表命名、防冲突与生命周期
 
 | 项目 | 规范与原因 |
@@ -454,6 +493,8 @@ static String tempRef(String name) {
     return "pg_temp.\"" + name + "\"";
 }
 ```
+
+**验收标准**：并行批次生成的 UUID32 TEMP 表名唯一、符合长度与白名单格式，JDBC 同一连接内完成表生命周期；事务 COMMIT/ROLLBACK 后 TEMP 释放，并发连接间数据相互隔离。
 
 #### 4.3.3 一批新增数据的 SQL 与事务时序
 
@@ -511,6 +552,8 @@ DO NOTHING;
 
 **并发去重控制**：两个 Pod 同时识别相同新增键时，A 唯一索引执行最终防重；根据重复模型调用比例选配跨实例 SingleFlight/分布式租约（续租与 fencing），取得许可后再次检查 A。持续监控高频 TEMP 建表产生的系统目录和 Autovacuum 开销。
 
+**验收标准**：同一物理连接完成 B 装载与差异查询，提交后才进入 Java Embedding；重复键跳过向量化，新增向量维度正确并幂等插入 A，三阶段故障可恢复。
+
 #### 4.3.4 FULL_REPLACE 与 INCREMENTAL/DELETE 的边界
 
 - **首次 FULL_REPLACE**：完整快照按现有建库路径执行 Embedding、COPY 与 LVQ 建索引，全部分片处理并校验后切换生效索引。
@@ -519,11 +562,15 @@ DO NOTHING;
 - **CLEAR**：已在当前 Task API 中表示清理整个 Instance 索引，不等同一条记录的 `DELETE`。CLEAR/模型 本体版本 变化与运行中的 INCREMENTAL 必须串行化或有明确代际栅栏，防止旧 Task 回写。
 - **幂等与一致性**：Producer/Task 记录快照版本、源文件 hash、模型版本、batch/partition 序号和处理水位，向量库及全文索引对账完成后发布；异常按文件和批次可重放执行。
 
+**验收标准**：FULL_REPLACE 依完整 Manifest 校验后切换生效索引；INCREMENTAL 按批次新增/删除事件处理，CLEAR 按授权整库清理；乱序和重放场景保留正确的当前版本。
+
 #### 4.3.5 配置、负载边界与验收
 
 默认**单业务批 4000**（需从 DCC 注册映射到现有 `batchInstance.maxBatchSize` 并解决 1000/4000 代码默认差异），示例差异子批 JDBC 500、Embedding 请求 size32、插入 200、并发批 8 均为**压测起点非正式默认**。`copy-batch-size` 需与逻辑 Batch 区分并以 §4.5 为准。按租户限制连接池与查询线程，创建/建表频率、diff rows、Embedding HTTP in-flight、冲突跳过、写入总行数都可按 Task 查看。
 
 测试：覆盖 0/10/100% 新键、批内与跨批去重、双 Pod 并发、事务回滚、任务恢复、Property ID 校验、正式表旧向量复用、OpenSearch 部分失败补写及 FULL 快照隔离。
+
+**验收标准**：0%/10%/100% 新键、多 Pod 重叠、跨批复用、数据库失败与模型失败全部通过；按租户输出 Batch、COPY、Embedding 配额和耗时，记录系统目录占用及恢复成功率。
 
 ### 4.4 Embedding 并发与批量入库资源控制（Q4-12、14、17）
 
@@ -533,6 +580,8 @@ DO NOTHING;
 - **实际并发**：`parseFile.threadPoolSize=20`、`batchInstance.threadPoolSize=8/20`、`parallelFlush.Size=8/20`、`notice.threadPoolSize=20` 按真实执行阶段核准默认值；`ConfiguredEmbeddingModel.embedAll` 通过模型 HTTP in-flight 信号量实施最终并发控制。
 - **失败与上下文**：每个任务设置 tenantId/traceId/本体版本并在完成后清理 ThreadLocal；校验模型输出数量、维度及 NaN/Inf，失败任务写入稳定错误码与 Checkpoint 并重试。OpenSearch Bulk 对失败文档补写，两库校验一致后完成任务。
 - **DCC 调优**：分别管理 `batchInstance.maxBatchSize`（逻辑批次）、Embedding 请求大小、`parallelFlush.Size`（写入并发）和 `copy-batch-size`（COPY 分片）。在线缩容先控制新任务准入，随后排空旧连接并切换配额。
+
+**验收标准**：对租户线程池、HTTP in-flight、COPY 批量、数据库连接及队列实施资源上限；模型输出数量与维度校验、503 重试、OpenSearch Bulk 部分失败恢复均有 Task 日志和最终双库对账结果。
 
 ### 4.5 LVQ 建表预建与 COPY 入库优化（Q4-15）
 
@@ -563,6 +612,8 @@ WITH (
 4. `SET maintenance_work_mem='4GB'` 作为 GaussVector 数据库会话级建索引参数评估，结合数据库内存与并行 DDL 数量配置资源上限。
 
 **A/B 回归**：A=原无索引表→COPY→建/重建 LVQ；B=建表→LVQ→COPY→无需 rebuild；同一模型、1000 万行、数据库版本与副本数下对比建表+导入+索引总耗时、rows/s、IO/CPU/写放大、向量 Recall@K、P95 查询、任务重试以及数据库恢复。**预建索引可能导致 COPY 更慢；只有 B 的端到端收益和 Recall 均经测试证实才能切主路径。** DCC 改动需提供版本快照、租户维度的生效/回退验证。
+
+**验收标准**：空表预建 LVQ 后完成 COPY，校验索引可查询、行数一致和 Recall@K；与后建 LVQ 的 A/B 数据一致，报告端到端总耗时、IO、P95 与数据库方言兼容结果，COPY Batch DCC 变更可回退。
 
 ### 4.6 CSV `op=DELETE` 语义索引删除及 CLEAR 管理（Q4-16）
 
@@ -628,6 +679,8 @@ P1002,accountId,O1001,Account,100000000000006990,,DELETE
 
 ## 5. 查询性能、OAG 横扩与分级索引预研（Q4-13、Q4-18）
 
+**验收标准**：完整执行 10 万、200 万、1000 万及多实例联调，报告源数据数、去重数、嵌入数、向量与倒排写入数、失败/恢复数和各阶段时长；异常注入后现有有效索引持续可查询。
+
 ### 5.1 子图检索性能规格与水平扩容（Q4-13）
 
 **查询性能规格**：业务需求单实例 **10 QPS / 3 秒**，软件场景基准为 **2U4G、10 QPS、平均耗时 ≤5 秒、极端场景限流拒绝率 <20%**，建议使用 **3U4G** 开展对照压测。先验证基准平均 ≤5s，再按业务 3s 目标评估优化效果，统计口径由性能评审统一定义。
@@ -667,6 +720,8 @@ Q_{\mathrm{cluster}}\ \le\ \min(n\cdot Q_{\mathrm{OAG}}, Q_{\mathrm{embedding}}(
 
 每组按**入口固定总 QPS**与**每 Pod 固定 QPS**分别测试；统计 `QPS_success/QPS_offered`、Pod 负载方差、模型实际 in-flight、Gauss/OS 延迟、网关重试和响应时延。不满足原始 3s 目标应追踪多实例/资源扩容是否改善，而非只调高排队超时。具体硬件 2U/3U 资源定义、各类请求均值统计分母和 3s 归属仍是评审事项。
 
+**验收标准**：2U4G 单实例按 10 QPS、1000 连续请求复现平均 ≤5 秒与约束工作负载拒绝率 <20%；单独记录原始 3 秒优化目标的实测差距，3U4G、2/3 Pod 与 Embedding 多副本按相同数据报告扩展效率。
+
 ### 5.2 按租户的查询准入、信号量与过载保护（Q4-10、13）
 
 `semantic-search.max-pool-size=30`、`semantic-search.queue-capacity=50`、`semantic-search.timeout-seconds=300` 为资源参数候选值；查询并发许可、工作线程与实际 QPS 分别计量。根据 tenantId 分配租户队列、许可与 Pod 全局配额。
@@ -674,6 +729,8 @@ Q_{\mathrm{cluster}}\ \le\ \min(n\cdot Q_{\mathrm{OAG}}, Q_{\mathrm{embedding}}(
 准入步骤：`authTenant → resource lookup → tryAcquire(tenant semaphore) → 有界入队/按规则拒绝 → 执行 OAG → finally 释放许可`。查询入口按租户记录排队、执行、拒绝和超时；采用异步排队与短等待保护 HTTP 工作线程，按标准错误码区分限流与 Istio 上游 503。在线缩容保留运行中的请求并排空旧队列。
 
 压测覆盖稳定 10QPS、超量突发、2/3 Pod 同租户并发、Embedding 模型延迟和 DCC 断连；保存租户配置快照、拒绝分母及入口重试次数，并按实际负载定义目标拒绝比例。
+
+**验收标准**：认证租户拥有独立查询许可与队列，全局资源限制生效；10 QPS 稳态、突发限流、两个租户并行、DCC Watch 异常及 Pod 扩容场景均输出成功 QPS、排队时长、拒绝率和隔离结果。
 
 ### 5.3 OMS Property `retrieval` 索引模式扩展设计（Q4-18，预研）
 
@@ -743,11 +800,15 @@ Q_{\mathrm{cluster}}\ \le\ \min(n\cdot Q_{\mathrm{OAG}}, Q_{\mathrm{embedding}}(
 
 ## 6. 数据安全与明文治理（Q4-19～20）
 
+**验收标准**：retrieval.enabled 和 indexMode 的停用、关键词、向量、混合状态分别生成对应索引；单/双检索通道路由及 RRF 满足配置，AccountId 数值、中文/英文、同义词黄金集有 Recall@K、Precision@K、资源与兼容性报告。
+
 ### 6.1 向量与 OpenSearch 去名称描述、按 ID 回查（Q4-19）
 
 **本体索引字段治理**：向量与全文索引以稳定 ID、归属和必要元数据存储，名称、描述经 OMS 内存图或 NebulaGraph 按 ID 回查，严格实施租户授权。保留字段范围、加密格式及密钥轮换执行《本体模型文件支持加密》。
 
 **关键词检索安全策略**：在 ID-only 模式下支持基于授权 ID 的精确检索；需要 BM25 与模糊匹配的属性按安全策略保留受控词法字段，并对两种配置分别测试 Recall@K、字段泄露风险、回查耗时与兼容性。
+
+**验收标准**：向量与 OpenSearch 字段清单按加密专项审核，ID 回查的对象、属性和租户权限正确；ID-only 精确检索和授权词法字段两种策略分别完成安全、Recall 和性能测试。
 
 ### 6.2 后台日志与前端子图明文脱敏（Q4-20）
 
@@ -758,6 +819,8 @@ Q_{\mathrm{cluster}}\ \le\ \min(n\cdot Q_{\mathrm{OAG}}, Q_{\mathrm{embedding}}(
 ---
 
 ## 7. 参数分层、DCC 租户监听与资源池隔离（Q4-05、Q4-10）
+
+**验收标准**：授权调试与常态环境按加密堆栈配置呈现相应日志字段；前端子图、服务端响应、导出及异常记录按角色脱敏，记录审计证据与跨租户权限回归结果。
 
 ### 7.1 参数统计口径与分级原则
 
@@ -771,6 +834,8 @@ Q_{\mathrm{cluster}}\ \le\ \min(n\cdot Q_{\mathrm{OAG}}, Q_{\mathrm{embedding}}(
 | 请求/任务级 | V2 query/entities、topk、hopLimit、jobId、snapshotVersion、COPY 任务模式 | 原 API 参数不自动提升为 DCC；请求可覆盖项受安全/资源限额约束 |
 
 **参数优先级**：配置读取顺序为 `认证租户 → inputMode(query/entities) → DCC tenant/mode override → DCC 基线 → 版本兼容预置`；Body 明确参数执行接口合法值及默认值，DCC 管理资源/功能级覆盖，Pod 与集群硬上限提供最终保护。Watch 异常时持续使用最近一次有效配置。
+
+**验收标准**：83 个 Key 的统计与 72 个已分类明细及其余 11 个待核对项对账；场景包/系统配置/租户 DCC/任务级的归属表与生效顺序清晰，非法配置按最近有效快照恢复。
 
 ### 7.2 DCC 参数清单与分类
 
@@ -838,9 +903,13 @@ DCC 分为四类配置候选，初始值采用服务现有有效配置；对 8/2
 
 **配置管理范围**：10 + 16 + 7 + 5 = **38 个租户 DCC 配置候选**，新增 `copy-batch-size` 作为独立的待注册参数；34 个系统级参数由配置中心或 Secret 管理，其余 11 个 Key 按代码实际使用场景归类。
 
+**验收标准**：38 个租户候选与 34 个系统参数逐项确认归属，copy-batch-size 独立登记；各 Key 在租户和输入模式下的默认值、校验范围、修改生效时点与审计信息可检查。
+
 ### 7.3 按租户独立资源池、`x-gde-tenant-id` 与索引管理四接口（Q4-10）
 
 **租户识别**：索引任务 Notice、Query、Retry、Cancel 四类接口统一通过 `x-gde-tenant-id` Header 获取已授权租户，并选择对应的资源池；客户端通过 `headers.add("x-gde-tenant-id", tenantId)` 传递租户标识。索引任务管理沿用 V1 API 路径，V2 用于本体子图语义检索。
+
+**验收标准**：Notice、Query、Retry、Cancel 全部使用经过授权的 x-gde-tenant-id，按租户定位任务和资源池；跨租户 taskId、重复 requestId、Pod 故障及 Watch 变更均通过接口与数据隔离测试。
 
 #### 7.3.1 入口、请求头与认证约束
 
@@ -881,7 +950,7 @@ public class OntologyIndexTaskRest {
 
 Controller 通过统一鉴权服务校验 tenantId/ontologyId，索引任务创建、查询、重试及取消均按租户条件查询数据库。缺失 Header、租户无权限和跨租户 taskId 返回统一错误码，保护其他租户任务详情。
 
-
+**验收标准**：四接口的 x-gde-tenant-id Header、JSON Body、租户鉴权、缺失或无权限错误码已完成联调；接口请求返回本租户任务状态，其他租户数据保持隔离。
 
 #### 7.3.2 Query/Retry/Cancel 请求与恢复语义
 
@@ -901,6 +970,8 @@ Controller 通过统一鉴权服务校验 tenantId/ontologyId，索引任务创�
 
 批量操作返回 operation、requestedCount、acceptedCount、rejectedCount、results[]，单项包含 taskId、accepted、status、stage、reasonCode、message。客户端依据稳定错误码执行恢复，包括 TASK_NOT_FOUND、TASK_STATE_CONFLICT、RETRY_LIMIT_EXCEEDED、SOURCE_FILE_EXPIRED、SOURCE_FILE_MISSING 和 SOURCE_UNRECOVERABLE。
 
+**验收标准**：Query 按 taskIds 返回真实状态与失败原因，Retry 仅恢复符合条件的失败任务，Cancel 在安全检查点结束运行任务；批量部分成功、任务缺失、重复调用与文件过期返回稳定状态。
+
 #### 7.3.3 TenantResourceRegistry 与独立执行资源
 
 ```mermaid
@@ -917,6 +988,8 @@ flowchart TD
 **租户资源注册器**：单例 `TenantResourceRegistry` 按 `(tenantId,operationType,configVersion)` 懒创建独立 ExecutorBundle，维护有界队列、Worker 与配额，并支持空闲回收。数据库/模型共享物理连接池通过租户令牌分配容量；ThreadLocal 在执行完毕后清理。集群级额度通过集中配额或网关配额管理。
 
 **接口级验收**：Notice/Query/Retry/Cancel 缺 Header、无权限、Body 伪造 tenant、跨本体 taskIds、两租户同 requestId、Task 部分成功、Cancel/Retry 竞态、DCC Watch 变更/Pod 重启、新租户首访和队列饥饿均应有可重复测试。
+
+**验收标准**：TenantResourceRegistry 为每个活跃租户建立独立 ExecutorBundle；A 租户队列满载时 B 租户仍可正常操作，新租户创建/空闲回收后线程与连接占用符合 Pod 总预算。
 
 ### 7.4 DCC 按租户监听、线程池热更新与资源安全迁移
 
@@ -957,6 +1030,8 @@ bundle.submit(task.withTenant(verifiedTenantId)
 
 **配置异常恢复**：校验失败、线程池资源分配失败、Watch 断连或旧连接释放延迟时，继续使用最近一次有效配置快照，并记录失败原因；通过完整配置回源与资源重新建立恢复当前租户执行能力。验收见 §7.5、§8.3。
 
+**验收标准**：租户 DCC Watch 的增量事件触发完整配置版本校验并原子更新新任务资源；扩容/缩容期间在途任务完成，事件乱序/断线/非法值场景回退至最近有效配置，多 Pod 版本对账通过。
+
 ### 7.5 DCC 参数兼容、冲突和验收
 
 | 决策项 | 配置现状 | 配置策略 |
@@ -976,6 +1051,8 @@ bundle.submit(task.withTenant(verifiedTenantId)
 ---
 
 ## 8. 验收标准、发布门禁与技术决策
+
+**验收标准**：T1～T7 租户隔离测试均有运行日志、线程/队列/内存指标与预期状态；历史默认冲突按代码生效点签审，CPU/连接/线程上限在并发负载下保持有效。
 
 ### 8.1 最新 20 项需求验收矩阵
 
@@ -1002,6 +1079,8 @@ bundle.submit(task.withTenant(verifiedTenantId)
 | SEC-Q4-19 | Q4-19 | name/description 索引最小化、ID→定义回查与权限正确，严格 ID-only/BM25 矛盾完成加密专项安全评审 |
 | SEC-Q4-20 | Q4-20 | 加密堆栈参数控制后台日志明文和前端脱敏；专项认证与生产日志/导出/异常回归无泄露 |
 
+**验收标准**：20 项 Q4 需求分别具有唯一验收行及对应功能证据；测试报告包含通过状态、问题单与责任人，所有上线范围条目经项目评审确认。
+
 ### 8.2 子图查询性能专项验收
 
 | 测试编号 | 条件/数据集 | 验证与交付结果 |
@@ -1016,6 +1095,8 @@ bundle.submit(task.withTenant(verifiedTenantId)
 | PERF-Q4-08 | CPU 单核达标与不达标、ARM/x86 混合、图数/Property 数/枚举值规模梯度 | 测试超出附件约束后的性能降级；正式规格只针对符合约束的环境 |
 
 **统计规则**：拒绝率按 `flowRejected/submitted`，平均耗时按成功完成响应计算，同时采集失败请求、排队时延及 P50/P95/P99。2U4G 平均 ≤5s 为基线，业务 3s 作为优化目标独立评估；3U4G 对照单独报告。
+
+**验收标准**：2U4G 10QPS/1000 请求、缓存关闭、3min 预热等压测条件可复现；记录平均 ≤5s、极端拒绝率 <20% 和原始 3s 优化目标差距，完整采集 P50/P95/P99。
 
 ### 8.3 DataSync/Spark 与租户资源专项测试
 
@@ -1040,6 +1121,8 @@ bundle.submit(task.withTenant(verifiedTenantId)
 | API-TENANT-01 | Notice/Query/Retry/Cancel 的租户 Header、鉴权及越权用例 | 各入口进行授权校验、任务归属验证和标准错误处理 |
 | CAP-Q4-01 | OAG 1→2 Pod、Embedding 1→2 副本 | 记录 10→20QPS 的扩展效率、吞吐及模型瓶颈 |
 
+**验收标准**：Spark/DataSync、DCC、OMS、API V2、LVQ、Delete 和多实例各用例组均有输入数据、实际输出、日志/任务记录及通过情况，跨租户隔离与异常重试可复现。
+
 ### 8.4 发布顺序与依赖关系
 
 | 阶段 | 实施重点 | 准入门禁 |
@@ -1052,11 +1135,15 @@ bundle.submit(task.withTenant(verifiedTenantId)
 
 **实施顺序**：按接口/配置基线、手动建索引修复、Spark/DataSync 数据流水线、多实例与 DCC、查询规格及安全预研依次实施。正式工作量、资源配额和发版里程碑由项目评审确认，Q4-18 预研结果完成安全与搜索专项评审后推广。
 
+**验收标准**：A～E 阶段各自提交验收材料和依赖条件；手动索引稳定性、全量/增量数据链路、租户资源隔离及检索规格分别完成准入评审后进入下一阶段。
+
 ### 8.5 统一可观测性与验收证据
 
 检索与建库日志按安全策略脱敏记录：`traceId、tenantId（授权或脱敏）、ontologyId/本体版本、queryMode、jobId、partitionId、sourceVersion、configVersion、indexVersion、graphCacheVersion、submitted/accepted/rejected、activeThreads、queuedTasks、embeddingInFlight、rowCount/duplicateCount/rowDiff、copyDuration、indexBuildDuration、pipelineLatency、responseBytes、errorCategory`。按 Tenant / Pod / 输入模式分别展示 DCC Watch 状态、查询拒绝率、平均/P95/P99、模型实例数和图缓存预算；敏感名字/枚举实例原值只在授权路径可见。
 
 测试报告包含 2U4G/3U4G 两套环境清单、CPU 单核 openssl 检测结果、模型版本与内存图数量、10 QPS/1000 次发送记录、3 分钟预热、缓存关闭、后台 Embedding 错峰、拒绝和超时分母、Spark/MinIO 文件数变化、Embedding 复用比例及各租户线程资源配置版本。性能对比采用相同硬件条件、固定样本和统一测量口径。
+
+**验收标准**：每次性能和功能测试均可通过 traceId/jobId/tenantId/本体版本定位接口、Worker、索引与图缓存；报告完整提供 CPU/内存/IO、QPS、错误率和 DCC 配置版本，敏感数据按权限保护。
 
 ### 8.6 技术评审确认项与责任
 
@@ -1074,3 +1161,6 @@ bundle.submit(task.withTenant(verifiedTenantId)
 | D-10 | LVQ 预建数据库版本支持、成功路径删除 rebuildindex、COPY Batch 新租户 DCC 键及回退 | OAG/GaussVector/配置底座 |
 | D-11 | OMS `retrieval.indexMode` 值域、默认、迁移/旧数据兼容；Keyword/Vector 单路入库与 ID-only 的 BM25 安全冲突 | OMS/OAG/安全 |
 | D-12 | 10 QPS 压测及多 Pod 是否需要集群级租户配额、模型 120 条/s 扩容验证、DCC Watch 故障保护 | OAG/平台底座 |
+
+**验收标准**：D-01～D-12 每个技术决策记录选定方案、适用范围、责任人、评审时间与验证证据；未决事项列入后续里程碑并持续跟踪。
+
