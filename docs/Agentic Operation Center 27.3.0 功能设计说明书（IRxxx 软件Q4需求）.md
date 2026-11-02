@@ -42,7 +42,7 @@ CBS 面向运营商问账、集团客户问账，以及经营、销售、运营�
 |---|---|
 | OMS | 本体定义、EnumType、分域分组、模型版本、App 安装状态与元数据权限的权威来源 |
 | OAG | 定义索引和 Instance 值索引、V2 子图检索、内存图、异步任务生命周期、索引发布与租户资源隔离 |
-| CBS/业务 Agent | 分域本体定义缓存；query 或提前抽取的 entities；对子图与业务知识进一步使用，不把 OAG 当业务推理引擎 |
+| CBS/业务 Agent | 缓存分域本体定义，提供 query 或提前抽取的 entities，并结合 OAG 返回子图和业务知识完成业务推理 |
 | Spark | 计算侧生成图与语义索引数据、合并小文件、两类数据按完整业务键去重 |
 | DataSync Producer/Consumer | 负责 MinIO 不可变文件、Manifest 和 READY 消息的生产及通知，调用 OAG Notice 触发异步索引任务 |
 | GaussVector / OpenSearch / NebulaGraph | 实例 Vector、词法倒排、图数据/内存图回源的不同存储依赖；故障与版本发布分别管理 |
@@ -251,7 +251,7 @@ OAG 提供统一的本体语义子图检索接口，支持自然语言问题和�
 
 ### 3.2 Skill 和脚本从 V1 迁移到 V2（Q4-07）
 
-**Skill 改造文件**：`ontology-platform-unified-skill/SKILL.md`、`ontology-platform-unified-skill/scripts/semantic_subgraph_search.py`。原脚本按 `/v1/onto-retrieval/{ontologyId}/subgraph/semantic-search` 拼接 URL、Body 使用 `topK`、强制 query，不支持 entities，并且 HTTP 失败可能被当成成功。迁移后的脚本改用 `/v2/onto-retrieval/subgraph/semantic-search`，`ontologyId` 入 Body、发送 `topk`，支持 query-only、entities-only 与混合输入，并进行本地参数校验。
+**Skill 改造范围**：`ontology-platform-unified-skill/SKILL.md` 与 `ontology-platform-unified-skill/scripts/semantic_subgraph_search.py` 统一调用 `/v2/onto-retrieval/subgraph/semantic-search`；Body 使用 `ontologyId` 与 `topk`，支持 query-only、entities-only 及双输入模式，加入请求参数校验、HTTP 错误检查、业务响应校验和稳定错误返回。
 
 **Skill 调用**：
 
@@ -263,7 +263,7 @@ python scripts/semantic_subgraph_search.py --query-json @request-v2.json
 
 自然语言调用通过环境变量 `ONTOLOGY_ID` 指定本体，同时配置 `SERVICE_NAMESPACE`、`TENANT_ID`。`--entities-file`、`--entities` 支持结构化实体输入并序列化为 HTTP JSON String；完整 Body 保留用户显式 0 值。脚本对 HTTP、业务响应和网络错误进行分类处理，失败时返回稳定错误结构及非零退出码，保留 `message_type=message_ontololgy_subgraph` 兼容包装。
 
-**V1 deprecation**：迁移各调用方后可按正式评审添加 `Deprecation` 公告，监控旧端点调用来源及流量；V1 不立即删除，需业务回归、灰度回退和退役批准。
+**V1 兼容与退役**：V1 端点进入 deprecated 管理，Skill 与调用方逐步切换 V2。运行期记录 V1 流量和调用来源，完成业务回归与灰度回退验证后依据正式退役审批实施下线。
 
 **验收标准**：Skill 默认请求 V2；query、entities、JSON 文件和混合输入可运行，零值参数按输入保留；HTTP 异常、业务失败和超时返回非零退出码及诊断信息，V1 调用监控与兼容回退可用。
 
@@ -757,7 +757,7 @@ P1002,accountId,O1001,Account,100000000000006990,,DELETE
 
 **索引安全与召回协同**：Q4-19 按 ID 管理名称和描述，Q4-18 的 Keyword-only 模式采用经安全评审授权的词法字段，结合精确检索和业务召回要求确定字段保留范围。
 
-**预研验收**：验证四状态的实际索引内容与 Embedding 调用次数；全文/向量单通道路由、hybrid 的 RRF 与 topK；本体版本 模式切换/删除、跨租户隔离、无 property 过滤时的对象内字段路由；使用纯数字 AccountId、英文/中文短文本、同义词测试 Recall@K/Precision@K、磁盘量、入库/查询耗时。正式 DTO 字段名和值取值、模式变化是全量重建还是增量、禁用后索引删除授权等由 OMS/OAG/安全联评后冻结。
+**预研验收**：验证四状态的实际索引内容与 Embedding 调用次数；全文/向量单通道路由、hybrid 的 RRF 与 topK；本体版本更新、检索模式切换与删除、跨租户隔离、无 property 过滤时的对象内字段路由；使用纯数字 AccountId、英文/中文短文本、同义词测试 Recall@K/Precision@K、磁盘量、入库/查询耗时。正式 DTO 字段名和值取值、模式变化是全量重建还是增量、禁用后索引删除授权等由 OMS/OAG/安全联评后冻结。
 
 **验收标准**：retrieval.enabled 和 indexMode 的停用、关键词、向量、混合状态分别生成对应索引；单/双检索通道路由及 RRF 满足配置，AccountId 数值、中文/英文、同义词黄金集有 Recall@K、Precision@K、资源与兼容性报告。
 
@@ -1029,21 +1029,21 @@ bundle.submit(task.withTenant(verifiedTenantId)
 |---|---|---|
 | OMS-Q4-01 | Q4-01 | OMS 加密参数分层/透传与模型文件加密专项一致；加密算法/密钥与安全测试跟随专项 |
 | OMS-Q4-02 | Q4-02 | Agent 与 OMS 双层缓存、同 tenant/模型版本/权限一致；**10 个在线会话/10 并发/3 秒内 OMS 响应**分冷/热缓存测试 |
-| OMS-Q4-03 | Q4-03 | 2/3 实例负载均衡、OMS 本体版本 与读写权限一致，不跨 Pod 泄漏 |
+| OMS-Q4-03 | Q4-03 | 2/3 实例负载均衡，OMS 本体版本与读写权限在各 Pod 一致，租户访问符合授权范围 |
 | OMS-Q4-04 | Q4-04 | 按 GDE 公共恢复指导书交付 OMS 专项场景、诊断指标及演练记录 |
 | OMS-Q4-05 | Q4-05 | 参照 GDE 公共参数分级完成 OMS 场景包/系统/接口参数映射和安装回归 |
 | OAG-Q4-06 | Q4-06 | V2 query/entities 检索同入口；不建/不查 t_oag_enum；Property 完整枚举、真实 Instance 映射，移除旧 semanticExtensions |
 | OAG-Q4-07 | Q4-07 | 根目录 Skill/脚本迁移 V2，保留历史输出消息包装；7 项离线回归覆盖两种输入、topk/0 值、HTTP/业务失败；V1 deprecated 并盘点历史副本 |
-| OAG-Q4-08 | Q4-08 | **手动建索引偶现问题先闭环**；随后 OMS App 自动建索引、图/索引同一模型版本，失败保留旧 active |
+| OAG-Q4-08 | Q4-08 | 完成手动定义索引创建与子图查询判空问题修复；OMS App 自动触发定义索引与内存图刷新，发布版本一致，异常任务保留已生效定义模型 |
 | OAG-Q4-09 | Q4-09 | 多 Pod 图缓存与索引本体版本一致、跨实例负载分担，滚动升级与任务接管可恢复 |
 | DFx-Q4-10 | Q4-10 | **租户线程池/队列真实隔离且按租户 DCC Watch 生效**；合法变更、缩容 drain、跨 Pod 对账和全局资源限制 |
 | DFx-Q4-11 | Q4-11 | OAG 专项故障纳入 GDE 公共 Runbook，有演练、证据和恢复结果 |
-| IDX-Q4-12 | Q4-12 | **1000 万行 FULL / 10 万行增量**；DataSync Producer/Consumer 异步通知与 MinIO READ；Spark 小文件合并、图/语义去重；COPY 无主键冲突、失败可恢复 |
+| IDX-Q4-12 | Q4-12 | **1000 万行首次全量 / 10 万行增量**；DataSync Producer/Consumer 异步 Notice、Spark 文件合并及图/语义去重；后续全量按 CLEAR→FULL_REPLACE 顺序执行，任务行数对账与故障恢复通过 |
 | IDX-Q4-13 | Q4-13 | **原始单实例 10 QPS/3s** 有单独目标和缺口记录；附件 2U4G/10 QPS/平均 ≤5s/拒绝 <20% 可复现，3U4G 压测独立出报告 |
 | IDX-Q4-14 | Q4-14 | 相同定义复用既有向量，定义变化时增量 Embedding，并同步词法元数据 |
 | IDX-Q4-15 | Q4-15 | 建表时预建 LVQ，COPY 后完成校验与发布；对照测试 Recall/总耗时，COPY 分片由 DCC 调优 |
-| IDX-Q4-16 | Q4-16 | 现有 `INCREMENTAL` CSV `op=DELETE` 接口联调完成，GaussVector/OpenSearch 删除结果一致，Task Query/Retry、重复删除、事件顺序和租户授权回归通过 |
-| IDX-Q4-17 | Q4-17 | 已有存量不重 Embedding；每批 UUID TEMP B/NOT EXISTS/短事务/唯一键幂等入库；FULL_COMPLETE 与 INCREMENTAL 不混淆，批次独立无误删 |
+| IDX-Q4-16 | Q4-16 | 复用现有 `INCREMENTAL` CSV `op=DELETE` 能力完成联调；GaussVector/OpenSearch 数据对账一致，Notice 幂等、Task Query/Retry、重复删除、事件顺序及租户授权回归通过 |
+| IDX-Q4-17 | Q4-17 | 已有实例向量按稳定键复用；每批 UUID TEMP B/NOT EXISTS/短事务/唯一键幂等入库；FULL_REPLACE 按 CLEAR 成功后导入的顺序执行，INCREMENTAL 按批次新增/删除生效 |
 | SEC-Q4-18 | Q4-18 | OMS retrieval.enabled + 可选 indexMode（HYBRID/KEYWORD_ONLY/VECTOR_ONLY），disabled 不建；混合/单路建库查询、模式迁移、无 property 路由与旧数据兼容 |
 | SEC-Q4-19 | Q4-19 | name/description 索引最小化、ID→定义回查与权限正确，严格 ID-only/BM25 矛盾完成加密专项安全评审 |
 | SEC-Q4-20 | Q4-20 | 加密堆栈参数控制后台日志明文和前端脱敏；专项认证与生产日志/导出/异常回归无泄露 |
@@ -1071,8 +1071,8 @@ bundle.submit(task.withTenant(verifiedTenantId)
 
 | 编号 | 场景 | 准入断言 |
 |---|---|---|
-| ING-Q4-01 | DataSync Producer 上传完成→Consumer 通知 OAG；重复 READY、Notice 重放、网络短断 | OAG 不等上游 MinIO 上传，仍按 Manifest 读取；Task 只创建一次有效任务，无丢消息 |
-| ING-Q4-02 | Spark 小文件多/少对照，保持相同输入行数和 本体版本 | DataSync 请求数与 MinIO 文件数下降，CPU/线程等待和索引总耗时可量化 |
+| ING-Q4-01 | DataSync Producer 上传完成→Consumer 通知 OAG；重复 READY、Notice 重放、网络短断 | OAG 根据 READY Manifest 异步读取 MinIO 文件，重复通知由 requestId 幂等归并，Task 按持久化状态完成恢复 |
+| ING-Q4-02 | Spark 小文件合并前后对照，固定输入行数与本体版本 | 记录 DataSync 请求数、MinIO 文件数、CPU/线程等待及索引总耗时变化 |
 | ING-Q4-03 | Spark 图与语义索引数据跨分区重复，COPY 压测 | 图主键/语义组合键去重正确，COPY 无主键冲突；OAG 保留幂等校验 |
 | ING-Q4-04 | FULL 1000 万行的部分分区滞后，增量 10 万行乱序和重试 | FULL 不因单分片到达误删，增量只有真正新增键调用 Embedding，版本旧消息不覆盖新值 |
 | DCC-Q4-01 | 租户 A 池满、租户 B 保持轻载 | 租户间队列/Worker/配额隔离，A 满不会拖垮 B |
@@ -1097,7 +1097,7 @@ bundle.submit(task.withTenant(verifiedTenantId)
 | 阶段 | 实施重点 | 准入门禁 |
 |---|---|---|
 | A—接口与配置基线 | 20 项责任冻结、加密专项/GDE 公共依赖、V2 DTO、DCC 38 项候选审查 | 参数默认冲突、系统级排除和租户监听接口明确 |
-| B—基础稳定性 | **手动索引偶现问题修复**、Task/Manifest、图/索引同一模型版本 | 手动构建可恢复、旧 active 不污染；才可进入自动化 |
+| B—基础稳定性 | 手动定义索引偶现问题修复、Task/Manifest、图/定义索引版本一致 | 手动构建及异常恢复验收完成后进入自动化流程 |
 | C—DataSync/Spark 流水线 | Producer/Consumer 异步、Spark 合并小文件/图与语义去重、差异 Embedding | 1000 万/10 万、重试/乱序/故障联调通过 |
 | D—OAG 多实例/DCC | 自动索引、租户池和 Watch、V2 Skill、公共恢复手册 | 多 Pod/多租户隔离回归，DCC 断线有安全回退 |
 | E—检索规格与安全预研 | 2U4G 指标、3U4G 对照、LVQ A/B、Keyword-only 与 ID-only 评审 | 性能报告、资源评估、安全方案和技术决策记录 |
@@ -1120,7 +1120,7 @@ bundle.submit(task.withTenant(verifiedTenantId)
 |---|---|---|
 | D-01 | 最新 20 条需求的最终 owner、优先级与工作量；旧版 7.9 不沿用 | 项目管理/OMS/OAG |
 | D-02 | OMS 加密、索引 ID-only 与后台明文/前台脱敏参数，统一跟随《本体模型文件支持加密》 | OMS/安全 |
-| D-03 | GDE 公共场景包分层与故障恢复规范、OMS 分域接口/缓存 本体版本 | GDE/OMS/CBS |
+| D-03 | GDE 公共场景包分层与故障恢复规范、OMS 分域接口及本体缓存版本管理 | GDE/OMS/CBS |
 | D-04 | 手动建索引偶现根因、修复验收后 OMS 自动通知/发布流程 | OMS/OAG |
 | D-05 | DataSync READY/NOTICE/ACK、Spark 文件合并与图/语义去重稳定 Key、快照水位 | Spark/DataSync/OAG |
 | D-06 | DCC 注册 38 项租户候选、34 项系统级参数，补齐 **11 个待核对 Key** 的归属，统一默认值、Rule 路径及租户 Watch API | OAG/配置底座 |
