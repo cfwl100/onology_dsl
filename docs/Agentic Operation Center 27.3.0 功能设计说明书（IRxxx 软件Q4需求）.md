@@ -472,7 +472,7 @@ DO NOTHING;
 - **失败与上下文**：每个任务设置 tenantId/traceId/本体版本并在完成后清理 ThreadLocal；校验模型输出数量、维度及 NaN/Inf，失败任务写入稳定错误码与 Checkpoint 并重试。OpenSearch Bulk 对失败文档补写，两库校验一致后完成任务。
 - **DCC 调优**：分别管理 `batchInstance.maxBatchSize`（逻辑批次）、Embedding 请求大小、`parallelFlush.Size`（写入并发）和 `copy-batch-size`（COPY 分片）。在线缩容先控制新任务准入，随后排空旧连接并切换配额。
 
-### 4.5 LVQ 建表前置、取消无条件 rebuildindex 与 COPY 调优（Q4-15）
+### 4.5 LVQ 建表预建与 COPY 入库优化（Q4-15）
 
 **设计流程**：实例数据建表时创建 LVQ 索引，COPY 完成并校验后直接发布；`InstanceVectorBaseMapper.xml` 的建表分支集成空表建索引过程，成功路径跳过 COPY 后的 `rebuildindex`，并通过配置支持数据库兼容回退。COPY 分片大小由租户 DCC 管理。
 
@@ -552,7 +552,7 @@ WITH (
 
 ## 5. 查询性能、OAG 横扩与分级索引预研（Q4-13、Q4-18）
 
-### 5.1 子图检索：原始 3 秒目标、10-26 附件 5 秒指标与横扩（Q4-13）
+### 5.1 子图检索性能规格与水平扩容（Q4-13）
 
 **查询性能规格**：业务需求单实例 **10 QPS / 3 秒**，软件场景基准为 **2U4G、10 QPS、平均耗时 ≤5 秒、极端场景限流拒绝率 <20%**，建议使用 **3U4G** 开展对照压测。先验证基准平均 ≤5s，再按业务 3s 目标评估优化效果，统计口径由性能评审统一定义。
 
@@ -597,7 +597,7 @@ Q_{\mathrm{cluster}}\ \le\ \min(n\cdot Q_{\mathrm{OAG}}, Q_{\mathrm{embedding}}(
 
 准入步骤：`authTenant → resource lookup → tryAcquire(tenant semaphore) → 有界入队/按规则拒绝 → 执行 OAG → finally 释放许可`。查询入口按租户记录排队、执行、拒绝和超时；采用异步排队与短等待保护 HTTP 工作线程，按标准错误码区分限流与 Istio 上游 503。在线缩容保留运行中的请求并排空旧队列。
 
-压测覆盖稳定 10QPS、超量突发、2/3 Pod 同租户并发、Embedding 模型延迟和 DCC 不可用；保存租户配置快照、拒绝分母及入口重试次数，并按实际负载定义目标拒绝比例。
+压测覆盖稳定 10QPS、超量突发、2/3 Pod 同租户并发、Embedding 模型延迟和 DCC 断连；保存租户配置快照、拒绝分母及入口重试次数，并按实际负载定义目标拒绝比例。
 
 ### 5.3 OMS Property `retrieval` 索引模式扩展设计（Q4-18，预研）
 
@@ -696,7 +696,7 @@ Q_{\mathrm{cluster}}\ \le\ \min(n\cdot Q_{\mathrm{OAG}}, Q_{\mathrm{embedding}}(
 
 **参数优先级**：配置读取顺序为 `认证租户 → inputMode(query/entities) → DCC tenant/mode override → DCC 基线 → 版本兼容预置`；Body 明确参数执行接口合法值及默认值，DCC 管理资源/功能级覆盖，Pod 与集群硬上限提供最终保护。Watch 异常时持续使用最近一次有效配置。
 
-### 7.2 需要纳入 DCC 的候选参数清单（按附件原 Key）
+### 7.2 DCC 参数清单与分类
 
 DCC 分为四类配置候选，初始值采用服务现有有效配置；对 8/20、1000/4000、1/6 等不同默认值核查代码执行入口，统一租户作用域、参数值域与热更新策略。
 
@@ -939,7 +939,7 @@ bundle.submit(task.withTenant(verifiedTenantId)
 | SEC-Q4-19 | Q4-19 | name/description 索引最小化、ID→定义回查与权限正确，严格 ID-only/BM25 矛盾完成加密专项安全评审 |
 | SEC-Q4-20 | Q4-20 | 加密堆栈参数控制后台日志明文和前端脱敏；专项认证与生产日志/导出/异常回归无泄露 |
 
-### 8.2 子图查询性能规格专用验收（附件 10-26）
+### 8.2 子图查询性能专项验收
 
 | 测试编号 | 条件/数据集 | 验证与交付结果 |
 |---|---|---|
@@ -985,7 +985,7 @@ bundle.submit(task.withTenant(verifiedTenantId)
 | B—基础稳定性 | **手动索引偶现问题修复**、Task/Manifest、图/索引同 本体版本 | 手动构建可恢复、旧 active 不污染；才可进入自动化 |
 | C—DataSync/Spark 流水线 | Producer/Consumer 异步、Spark 合并小文件/图与语义去重、差异 Embedding | 1000 万/10 万、重试/乱序/故障联调通过 |
 | D—OAG 多实例/DCC | 自动索引、租户池和 Watch、V2 Skill、公共恢复手册 | 多 Pod/多租户隔离回归，DCC 断线有安全回退 |
-| E—检索规格与安全预研 | 2U4G 指标、3U4G 对照、LVQ A/B、Keyword-only 与 ID-only 评审 | 性能报告、资源评估、加密专项决策、未决项留档 |
+| E—检索规格与安全预研 | 2U4G 指标、3U4G 对照、LVQ A/B、Keyword-only 与 ID-only 评审 | 性能报告、资源评估、安全方案和技术决策记录 |
 
 **实施顺序**：按接口/配置基线、手动建索引修复、Spark/DataSync 数据流水线、多实例与 DCC、查询规格及安全预研依次实施。正式工作量、资源配额和发版里程碑由项目评审确认，Q4-18 预研结果完成安全与搜索专项评审后推广。
 
@@ -993,9 +993,9 @@ bundle.submit(task.withTenant(verifiedTenantId)
 
 检索与建库日志按安全策略脱敏记录：`traceId、tenantId（授权或脱敏）、ontologyId/本体版本、queryMode、jobId、partitionId、sourceVersion、configVersion、indexVersion、graphCacheVersion、submitted/accepted/rejected、activeThreads、queuedTasks、embeddingInFlight、rowCount/duplicateCount/rowDiff、copyDuration、indexBuildDuration、pipelineLatency、responseBytes、errorCategory`。按 Tenant / Pod / 输入模式分别展示 DCC Watch 状态、查询拒绝率、平均/P95/P99、模型实例数和图缓存预算；敏感名字/枚举实例原值只在授权路径可见。
 
-测试报告必须包含：2U4G/3U4G 两套环境清单、CPU 单核 openssl 检测结果、模型版本与内存图数量、10 QPS/1000 次发送记录、3 分钟预热、缓存关闭、后台 Embedding 错峰、拒绝和超时分母、Spark/MinIO 文件数变化、Embedding 复用比例，以及各租户线程资源配置版本。无硬件/样本同一性时不得直接比较资源或性能。
+测试报告包含 2U4G/3U4G 两套环境清单、CPU 单核 openssl 检测结果、模型版本与内存图数量、10 QPS/1000 次发送记录、3 分钟预热、缓存关闭、后台 Embedding 错峰、拒绝和超时分母、Spark/MinIO 文件数变化、Embedding 复用比例及各租户线程资源配置版本。性能对比采用相同硬件条件、固定样本和统一测量口径。
 
-### 8.6 待决策事项与评审责任
+### 8.6 技术评审确认项与责任
 
 | 编号 | 必须冻结的议题 | 建议牵头 |
 |---|---|---|
@@ -1004,7 +1004,7 @@ bundle.submit(task.withTenant(verifiedTenantId)
 | D-03 | GDE 公共场景包分层与故障恢复规范、OMS 分域接口/缓存 本体版本 | GDE/OMS/CBS |
 | D-04 | 手动建索引偶现根因、修复验收后 OMS 自动通知/发布流程 | OMS/OAG |
 | D-05 | DataSync READY/NOTICE/ACK、Spark 文件合并与图/语义去重稳定 Key、快照水位 | Spark/DataSync/OAG |
-| D-06 | **DCC 已列 38 项候选注册**、34 项系统级排除；核对附件摘要 83 与明细 72 差的 **11 个未列出 Key**，再定最终注册清单；包括默认冲突、Rule 路径与租户 Watch API | OAG/配置底座 |
+| D-06 | DCC 注册 38 项租户候选、34 项系统级参数，补齐 **11 个待核对 Key** 的归属，统一默认值、Rule 路径及租户 Watch API | OAG/配置底座 |
 | D-07 | Pod 与集群层面租户线程/队列/Embedding/连接池的总资源预算和副本间分配 | OAG/架构/资源管理 |
 | D-08 | **原始 10 QPS/3s vs 附件 2U4G/平均 ≤5s** 的达标优先级与时延口径；3U4G 的对照、propertyValues 分桶边界 | OAG/测试/CBS |
 | D-09 | V2 `topk`/附件 `topK`、`undirected-filter=false/true` 以及 25/30 并发默认 | OAG/Skill/配置底座 |
