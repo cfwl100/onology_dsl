@@ -134,6 +134,18 @@ OMS 多实例内存图刷新、模型加密加载和变更通知按《本体模�
 
 OMS 场景包参数遵循 GDE 统一分级规范：组网级参数随场景包交付，系统级参数纳入配置中心，单次任务参数由接口传递。安装阶段校验参数完整性及合法范围，升级与回滚阶段延续配置兼容规则。配置治理涵盖模型加密、内存图加载、分域查询与服务实例资源。
 
+TODO：按照《ICT服务与软件/Agentic Operation Center/Docs/27/27.3.0/02.设计/02.设计文档/Agentic Operation Center 27.3.0 系统需求分析说明书（Agent框架与本体能力支撑软件业务）.docx》中的描述
+当前GDE安装数据域服务时场景包参数填写过多，需要控制交付感知的参数个数。满足如下规范：
+
+1)        不允许在values.yaml中配置GDE版本号参数
+2)        每个参数需要区分是否需要业务定制，即是否在solution中呈现，对应传统的internal参数，部分不需要业务定制修改但需要在场景包中声明的需继续在solution中保留
+3)        每个参数需要区分业务定制和交付填写参数，通过invisible区分
+	a)         invisible=true对应传统的customized
+	b)        invisible=false，或者不声明该参数，对应传统的productize
+	c)         readonly类型参数，需默认配置invisible=true
+4)        每个参数需要提供国际化参数配置
+特别的CBS明确要求副本数、资源配置等参数需要开放给交付填写。
+
 ### 2.5 OMS 故障快速恢复（Q4-04）
 
 OMS 按 GDE 公共故障恢复规范补充本体模型加载失败、分域查询超时、缓存异常、加密参数异常、实例退出及 App 安装失败等场景的操作指导。每个场景包含故障现象、诊断指标、恢复步骤、恢复后的业务校验和演练记录。RTO、RPO 与恢复入口执行 GDE 统一标准。
@@ -209,7 +221,7 @@ python scripts/semantic_subgraph_search.py --query-json @request-v2.json
 
 修复索引创建成功状态与实际检索可用状态的联动，建立索引数据、内存图加载和检索返回的统一校验。验证检索可用后完成手动建索引验收。
 
-**第二阶段：App 安装自动化。** OMS 在本体 App 安装或更新完成后调用 OAG 创建索引接口；OAG 依次执行创建索引任务、构建定义索引、刷新内存图和检索验证，任务成功后对外提供新模型检索能力。重复安装按租户、本体和任务标识幂等处理，失败任务按可恢复阶段重试；安装、建索引及子图检索完成状态在 OMS/OAG 管理界面可查询。
+**第二阶段（后续规划）：App 安装自动化。** OMS 在本体 App 安装或更新完成后调用 OAG 创建索引接口；OAG 依次执行创建索引任务、构建定义索引、刷新内存图和检索验证，任务成功后对外提供新模型检索能力。重复安装按租户、本体和任务标识幂等处理，失败任务按可恢复阶段重试；安装、建索引及子图检索完成状态在 OMS/OAG 管理界面可查询。
 
 ### 3.4 OAG 多实例水平扩展、内存图刷新与负载分担（Q4-09）
 
@@ -286,7 +298,7 @@ sequenceDiagram
 | 异常恢复 | 文件重传、任务重试、Pod 退出、模型超时、数据库连接异常 | 验证任务幂等、续处理与完整性校验 |
 
 **性能估算**：基于已有增量同步测试的 **451.32 条/秒**作为端到端估算基准：
-
+TODO：刷新计算公式
 \[
 T_{\mathrm{full}} = \frac{10{,}000{,}000}{451.32} \approx 22{,}157\ \mathrm{s} \approx 6.16\ \mathrm{h}
 \]
@@ -505,6 +517,21 @@ WITH (
 ### 4.6 Delete 操作、Notice `delete` 字段与 CLEAR 的语义隔离（Q4-16）
 
 **Notice 接口**：`POST /v1/onto-retrieval/{ontologyId}/index-data/notice`，Body `IndexFileImportRequest` 使用 `requestId/triggerTaskId/dataType/importMode/files`；CSV 记录以 `op=UPSERT/DELETE` 表达操作，任务 `importMode` 使用 `FULL_REPLACE/INCREMENTAL/CLEAR`。
+
+TODO: CSV中已经有了delete字段了，如下表，请按照下面的delete方案进行刷新
+**INSTANCE_VALUE CSV 字段：**
+
+| CSV 字段 | UPSERT | DELETE | 说明 |
+|---|---:|---:|---|
+| `property_id` | 必选 | 必选 | 所属 Property.id；作为稳定归属键的一部分 |
+| `property_name` | 必选 | 必选 | Property 的规范 `name`；由生产者提供，必须与 `property_id` 在当前 ontology generation 中一致 |
+| `object_type_id` | 必选 | 必选 | 所属 ObjectType.id；作为稳定归属键的一部分 |
+| `object_type_name` | 必选 | 必选 | ObjectType 的规范 `name`；由生产者提供，必须与 `object_type_id` 在当前 ontology generation 中一致 |
+| `value` | 必选 | 必选 | 去重后的真实 Instance Value；与归属 ID 一起确定业务键 |
+| `synonyms` | 可选 | 忽略 | 实例值同义词；CSV 中使用 `\n` 转义分隔 |
+| `op` | 必选 | 必选 | `UPSERT / DELETE`；`FULL_REPLACE` 中只允许 `UPSERT` |
+
+
 
 **Notice 删除能力**：增加请求级可选 `delete` 字段，按业务组合键删除当前文件列出的实例记录；`CLEAR` 执行整份实例索引清理。新增字段作为兼容扩展，按下表定义处理语义：
 
@@ -806,6 +833,9 @@ public class OntologyIndexTaskRest {
 Controller 通过统一鉴权服务校验 tenantId/ontologyId，索引任务创建、查询、重试及取消均按租户条件查询数据库。缺失 Header、租户无权限和跨租户 taskId 返回统一错误码，保护其他租户任务详情。
 
 #### 7.3.2 Notice 请求与当前任务 DTO
+
+TODO：删除本小节
+
 
 | Body 字段 | 现行约束/作用 | Q4 变更 |
 |---|---|---|
