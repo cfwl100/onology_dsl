@@ -67,7 +67,7 @@ flowchart LR
 
 本期建设范围包含 OMS、OAG、DFx、性能与安全共 20 项需求，按 Q4-01～Q4-20 建立设计和验收对应关系。
 
-| 需求编号 | 模块与能力 | 本轮需求描述 | 详细设计 |
+| 需求编号 | 模块与能力 | 需求描述 | 详细设计 |
 |---|---|---|---|
 | Q4-01 | OMS / 本体加密 | 参数拆分；详细方案跟随《本体模型文件支持加密》 | §2.1、§6 |
 | Q4-02 | DFx / OMS 分域 | 分域/本体定义接口规范，Agent 缓存+OMS 内部缓存避免实时全量查询 | §2.2 |
@@ -510,7 +510,7 @@ WITH (
 
 | 字段/模式 | 语义 | 兼容与校验 |
 |---|---|---|
-| `importMode=INCREMENTAL, delete=true, files=[...]`（新增建议） | 文件所包含每条完整业务键都是 **DELETE 操作**，应从对应实例向量库/倒排库删除 | files 非空；需字段 `(object_type_id, property_id, value)`；与 CSV `op=UPSERT` 冲突则拒绝；不得删除同本体其他键 |
+| `importMode=INCREMENTAL, delete=true, files=[...]` | 对文件中每行完整业务键执行 DELETE | files 提供 `(object_type_id, property_id, value)`；与 CSV `op` 校验一致，按完整组合键限定删除范围 |
 | `importMode=INCREMENTAL, delete=false/省略` | 继续兼容 CSV 各行 `op=UPSERT/DELETE`，表示混合事件流 | 默认 false；逐行读取 op 处理，支持 legacy 生产者 |
 | `importMode=FULL_REPLACE` | 按完整快照替换 generation | 不接受 `delete=true`；文件内逐行 DELETE 也应拒绝 |
 | `importMode=CLEAR` | 清理**整个本体的 INSTANCE_VALUE** 索引 | 与逐条 delete 严格不同；必须高权限与显式确认，仅在现有 CLEAR 事务防护流程下执行 |
@@ -561,15 +561,15 @@ WITH (
 | 约束 | 10-26 附件参数 | 测试说明 |
 |---|---|---|
 | 本体规模 | ObjectType ≤150 / Property ≤3000 / Edge ≤400 | CBS 原参考 144/2896/370，超上限需新基线 |
-| 单 Pod 资源 | **2U4G**，图缓存预算 1GB ≈ 10×100MB、≤10 本体 | 另用 **3U4G** 做独立对照；不能用其成绩代替 2U4G |
+| 单 Pod 资源 | 2U4G，图缓存预算 1GB、≤10 本体 | 2U4G 作为基准，3U4G 独立测试并记录资源差异 |
 | CPU 单核 | SHA-256 256B ≥280万 ops/s、≥700MB/s | 同 VM/物理机/架构记录 |
-| 输入规模 | extractedEntities 对象 <20；propertyValues 1-4 约40%、4-8 约50%、8-12 <10% | 4/8 边界重合、总概率未严格闭合，压测数据生成规则须签认 |
+| 输入规模 | extractedEntities <20；propertyValues 1-4:40%、4-8:50%、8-12:<10% | 对 4/8 分桶边界与数据比例完成签认 |
 | 请求 | 10 请求/秒，连续 1000 请求，CXO 黄金测试集 L1 | 记录真实发送时间与完成响应时间 |
 | 语义参数 | hybrid、similarityThreshold=0.7、V2 `topk≤3`、`hopLimit≤3`、minimal | includeFunctions=0、includeActions=0 |
 | 自适应 | adaptiveRetrieval=1 | 小本体 ≤300 节点全量；软件生产通常 entities+adaptive=0，**两模式分别评估** |
 | 缓存 / 预热 | 关闭 `subgraph-retrieval-cache-switch`，重启后预热 ≥3min，前 3 次测试结果剔除 | 查询高峰与实例向量化入库错峰 |
-| 指标 | **10 QPS、平均 ≤5s、极端拒绝率 <20%** | 成功 QPS、失败/超时、P50/P95/P99 一并提供，但附件未给分位硬阈值 |
-| 基准硬件 | 鲲鹏 920C 物理机；HV6/E9000 等 x86/虚拟机局点另列 | 架构不可混报 |
+| 指标 | 10 QPS、平均 ≤5s、极端拒绝率 <20% | 同步报告成功 QPS、超时、错误、P50/P95/P99 |
+| 基准硬件 | 920C 物理机、HV6/E9000 等局点 | 按硬件架构分别测试和报告 |
 
 **OAG 与 Embedding 联动扩容**：
 
@@ -593,7 +593,7 @@ Q_{\mathrm{cluster}}\ \le\ \min(n\cdot Q_{\mathrm{OAG}}, Q_{\mathrm{embedding}}(
 
 ### 5.2 按租户的查询准入、信号量与过载保护（Q4-10、13）
 
-`semantic-search.max-pool-size=30`、`semantic-search.queue-capacity=50`、`semantic-search.timeout-seconds=300` 是《新增Value参数统计_2026-10-31.md》的源码默认扫描值，旧草案 25 属历史候选；**并发许可、工作线程和实际 QPS 不等价**。入口从鉴权确认租户，`TenantResourceRegistry` 为每个租户建立有界查询额度和队列，读取按租户 DCC Watch 发布的已校验配置，另受 Pod/集群全局预算约束。
+`semantic-search.max-pool-size=30`、`semantic-search.queue-capacity=50`、`semantic-search.timeout-seconds=300` 为资源参数候选值；查询并发许可、工作线程与实际 QPS 分别计量。根据 tenantId 分配租户队列、许可与 Pod 全局配额。
 
 准入步骤：`authTenant → resource lookup → tryAcquire(tenant semaphore) → 有界入队/按规则拒绝 → 执行 OAG → finally 释放许可`。查询入口按租户记录排队、执行、拒绝和超时；采用异步排队与短等待保护 HTTP 工作线程，按标准错误码区分限流与 Istio 上游 503。在线缩容保留运行中的请求并排空旧队列。
 
@@ -655,7 +655,7 @@ Q_{\mathrm{cluster}}\ \le\ \min(n\cdot Q_{\mathrm{OAG}}, Q_{\mathrm{embedding}}(
 | `true` / `VECTOR_ONLY` | 不建 | **建** | 调用 | **仅 Vector** |
 
 
-**查询路由与融合**：进入 Instance Value Linking 时按 `objectType + propertyId` 确定其 indexMode，然后将请求全局 `seedRetrievalMode` 与 Property 支持通道做**交集**。全局 `hybrid` + KEYWORD_ONLY 只执行 Keyword，+VECTOR_ONLY 只执行 Vector；只有一个可用通道时不应以“缺少另一通道分数”进行惩罚；RRF 仅对实际执行的通道融合，`similarityThreshold` 仅约束 Vector。若全局请求为 `vector` 而属性只有 KEYWORD_ONLY，**不得偷偷改为 keyword**；应定义空候选/显式不兼容诊断（具体 API 行为待评审）。当 `property` 省略或 `""` 时，检索当前 ObjectType 下**所有 `retrieval.enabled=true` 的语义字段**，并按各属性模式分派查询，不无条件扫描所有非语义属性。
+**查询路由与融合**：Instance Value Linking 按 `objectType+propertyId` 加载 indexMode，并与 seedRetrievalMode 交集。hybrid+KEYWORD_ONLY 执行 Keyword，hybrid+VECTOR_ONLY 执行 Vector；单通道以实际结果计分，双通道用 RRF 融合。similarityThreshold 作用于 Vector。vector+KEYWORD_ONLY 返回空候选和模式诊断。property 省略/空串时遍历本 ObjectType 中 enabled=true 的语义字段。
 
 **是否所有实例都入 OpenSearch？** 否。只有 `HYBRID`/`KEYWORD_ONLY` 的有效属性值进入 OpenSearch；`VECTOR_ONLY` 只入向量库；`enabled=false` 不入二者。**EnumType/values[] 永远来自 OMS 本体定义，不由 `indexMode` 启动枚举索引。**
 
@@ -669,7 +669,7 @@ Q_{\mathrm{cluster}}\ \le\ \min(n\cdot Q_{\mathrm{OAG}}, Q_{\mathrm{embedding}}(
 
 ### 6.1 向量与 OpenSearch 去名称描述、按 ID 回查（Q4-19）
 
-**详细方案跟随《本体模型文件支持加密》**。OMS/OAG 负责字段适配和权限回归：向量/全文索引尽量只持久化稳定 ID、归属和必要检索元数据，名称/描述查询通过 OMS/内存图/NebulaGraph 按 ID 或经授权的 name→id 方案补齐，不能跨租户读取其他模型数据。哪些明文字段允许保留、加密格式及密钥轮换由专项冻结。
+**本体索引字段治理**：向量与全文索引以稳定 ID、归属和必要元数据存储，名称、描述经 OMS 内存图或 NebulaGraph 按 ID 回查，严格实施租户授权。保留字段范围、加密格式及密钥轮换执行《本体模型文件支持加密》。
 
 **关键词检索安全策略**：在 ID-only 模式下支持基于授权 ID 的精确检索；需要 BM25 与模糊匹配的属性按安全策略保留受控词法字段，并对两种配置分别测试 Recall@K、字段泄露风险、回查耗时与兼容性。
 
@@ -687,27 +687,27 @@ Q_{\mathrm{cluster}}\ \le\ \min(n\cdot Q_{\mathrm{OAG}}, Q_{\mathrm{embedding}}(
 
 **参数清单**：新增 `@Value` 声明 115 处、83 个唯一 Key，其中已分类的 72 项包含 38 个租户 DCC 配置候选和 34 个系统级参数；剩余 11 项完成源码归属核查并补齐配置清单。
 
-| 分级 | 配置来源与示例 | 本次约束 |
+| 分级 | 配置来源与示例 | 配置原则 |
 |---|---|---|
-| 场景包/部署组网 | `onto_encrypt`、`oag.cache.type`、图数据库依赖 | 跟随 GDE 公共参数分级；不能由租户 Body 越权修改 |
+| 场景包/部署组网 | `onto_encrypt`、`oag.cache.type`、图数据库依赖 | 由场景包和 GDE 组网参数管理 |
 | **租户级 DCC** | §7.2 的线程池、资源准入、检索/排序、功能开关、索引任务参数 | **按租户隔离资源/队列，按租户 Watch/推送更新，具备资源上限、审计和安全回退** |
-| 系统级非 DCC | 附件第 5/6/7 类：MinIO、Nebula、OpenSearch、证书与数据库、租户初始化/namespace、Pod/日志/探针 | **不放置在 DCC**，由部署底座/系统密钥或环境管理；租户不能随意覆盖基础设施连接参数 |
+| 系统级配置 | MinIO、Nebula、OpenSearch、数据库、证书、namespace、Pod/日志/探针 | 系统配置中心、Secret、部署底座统一管理 |
 | 请求/任务级 | V2 query/entities、topk、hopLimit、jobId、snapshotVersion、COPY 任务模式 | 原 API 参数不自动提升为 DCC；请求可覆盖项受安全/资源限额约束 |
 
 **参数优先级**：配置读取顺序为 `认证租户 → inputMode(query/entities) → DCC tenant/mode override → DCC 基线 → 版本兼容预置`；Body 明确参数执行接口合法值及默认值，DCC 管理资源/功能级覆盖，Pod 与集群硬上限提供最终保护。Watch 异常时持续使用最近一次有效配置。
 
 ### 7.2 需要纳入 DCC 的候选参数清单（按附件原 Key）
 
-以下四类为本轮**DCC 注册与分类候选**，默认值严格采用附件扫描值，`8/20`、`1000/4000`、`1/6` 是**源码多个位置不同默认值**，需先统一实际含义。实际名字、租户/模式作用域、热更新安全性、值域与 DCC 注册方式在联调时冻结。
+DCC 分为四类配置候选，初始值采用服务现有有效配置；对 8/20、1000/4000、1/6 等不同默认值核查代码执行入口，统一租户作用域、参数值域与热更新策略。
 
 **A. 线程池/批处理/模型缓存（10 项，全部明确资源归属）**
 
 | 参数 Key | 附件默认值 | 资源属性与 DCC 生效要求 |
 |---|---|---|
-| `embedding-thread-core-pool-size` | `8` | 模型内部租户执行池 core；按 tenant 建配额，不能只建立一个全局池 |
+| `embedding-thread-core-pool-size` | `8` | 按租户分配 Embedding 执行池 core 线程与全局配额 |
 | `embedding-thread-max-pool-size` | `32` | 模型内部租户执行池 max，必须 `core ≤ max` 且受全局预算 |
-| `embedding-model-cache-size` | `10` | 模型对象缓存容量，**不是线程数**；按租户划分缓存占用和可见性、全局有界 |
-| `embedding-thread-pool-size` | `1` | Embedding 外层批任务并发；附件显示 5 处使用，不可假设它控制内层全部并发 |
+| `embedding-model-cache-size` | `10` | 按租户管理模型对象缓存容量和内存占用 |
+| `embedding-thread-pool-size` | `1` | 控制 Embedding 外层批任务并发，内层 HTTP 并发由独立许可控制 |
 | `batchInstance.threadPoolSize` | `8 / 20` | Instance 批次执行资源，租户独立队列/配额，默认冲突待收敛 |
 | `batchInstance.maxBatchSize` | `1000 / 4000` | 批处理大小，按 tenant 配置，影响下一批次而非中途重切 |
 | `batchInstance.retry` | `3` | 任务失败重试次数，租户级重试节流防止雪崩 |
@@ -730,11 +730,11 @@ Q_{\mathrm{cluster}}\ \le\ \min(n\cdot Q_{\mathrm{OAG}}, Q_{\mathrm{embedding}}(
 | `rrf.channel-weights.instance-lexical` | `0.5` | 实例关键词权重 |
 | `rrf.channel-weights.instance-dense` | `0.5` | 实例 dense 权重，检查双重加权 |
 | `ontology-object-similarity-threshold` | `-1` | 租户/模式覆盖；`-1` 哨兵含义待定义 |
-| `instance-similarity-threshold` | `-1` | 同上；不能以 -1 作为实际余弦阈值 |
+| `instance-similarity-threshold` | `-1` | -1 作为阈值继承标识，由运行时规则解析为有效阈值 |
 | `instance-topk` | `-1` | 实例候选 TopK，实际最大值需约束 |
-| `rrf-topk` | `-1` | RRF 输出 TopK，不能无限放大 |
+| `rrf-topk` | `-1` | -1 作为继承标识，实际输出按接口 TopK 和全局上限配置 |
 | `adjacency-cache-max-size` | `1000` | 租户级图邻接缓存额度，亦受总堆内存约束 |
-| `rule-config-path` | 无 | **文件系统路径属于特殊风险项**；建议系统级受控白名单路径或仅 DCC 发布可信 Rule 版本 ID，不允许租户任意指定本地路径，最终归属待安全评审 |
+| `rule-config-path` | 无 | 使用可信 Rule 版本 ID 或系统级白名单路径，并执行安全校验 |
 
 **C. 检索开关 / 子图过滤（7 项）**
 
@@ -742,10 +742,10 @@ Q_{\mathrm{cluster}}\ \le\ \min(n\cdot Q_{\mathrm{OAG}}, Q_{\mathrm{embedding}}(
 |---|---|---|
 | `subgraph.undirected-filter` | `false` | 附件源码默认 false；既有软件 V2 预置 true，需按版本+模式冻结 |
 | `enable-object-linking` | `false` | 软件 entities 关闭已对齐对象的二次链接 |
-| `enable-property-linking` | `false` | 软件 entities 关闭已对齐属性的二次链接；query 不得被误关闭 |
-| `enable-property-value-linking` | `true` | 当前软件 V2 仅 Instance Value Linking，不再构建 Enum 索引 |
+| `enable-property-linking` | `false` | entities 模式复用已对齐属性，query 模式按属性链接策略处理 |
+| `enable-property-value-linking` | `true` | 实例值链接访问 Instance 索引，枚举由 OMS 定义全量装配 |
 | `include-all-properties` | `true` | Property 属性补全，枚举全量另遵循 Schema |
-| `include-keys` | `false` | Key 属性返回控制，不能绕过必要模型完整性规则 |
+| `include-keys` | `false` | 控制 Key 属性输出并保持模型归属完整 |
 | `subgraph-retrieval-cache-switch` | `true` | 查询缓存开关；**性能压测必须覆盖为 false** |
 
 **D. 索引任务与任务保留（5 项）**
@@ -756,7 +756,7 @@ Q_{\mathrm{cluster}}\ \le\ \min(n\cdot Q_{\mathrm{OAG}}, Q_{\mathrm{embedding}}(
 | `index-task.max-concurrent-tasks` | `10` | 租户后台任务并发许可，另有全局上限 |
 | `index-task.queue-length` | `200` | 租户后台排队上限与公平性 |
 | `index-task.queue-timeout-hours` | `1 / 6` | 不同源码默认冲突；按任务类别核实实际 timeout |
-| `index-task.file-ttl-hours` | `168` | 文件有效期，不能短于可恢复任务处理窗口 |
+| `index-task.file-ttl-hours` | `168` | 源文件有效期覆盖任务恢复窗口 |
 
 **系统级排除**：附件第 5/6/7 类标注无需进入 DCC：MinIO scheme/证书/实例名/bucket、GaussVector/OpenSearch 实例名、Nebula IP/port/space、Elasticsearch URI/证书、JDBC 连接、`support_new_tenants`/tenantId 初始化、namespace/镜像模板、`POD_NAME/NODE_NAME/HOST_IP/LOG_LEVEL_CONFIGMAP_PATH` 和探针端口。`server.ssl.trust-store-password` 等敏感信息须由密钥机制管理，**不复制真实密码到 DCC**。上述配置虽涉及环境/租户身份，也不因字段含 tenant 就自动成为租户 DCC 开关。
 
@@ -811,14 +811,14 @@ Controller 通过统一鉴权服务校验 tenantId/ontologyId，索引任务创�
 |---|---|---|
 | `requestId` | 必填 1~256，参考正则 `^[A-Za-z0-9_-]+$`；幂等键 | Task 唯一性加 tenant+ontology 作用域；同键不同内容应 409 |
 | `triggerTaskId` | 可选，≤256 | 绑定既有构建 Task 时再校验 tenant/ontology |
-| `dataType` | 当前 INSTANCE_VALUE 主路径；历史资料还提到 METADATA_ENUM | 默认不启用枚举索引；新链路只允许已发布支持的值 |
+| `dataType` | INSTANCE_VALUE 为当前实例值主路径 | 根据已发布数据类型执行，枚举值由 OMS 全量返回 |
 | `importMode` | `FULL_REPLACE / INCREMENTAL / CLEAR` | FULL 的完整快照与 INCREMENTAL 的逐批处理不同，CLEAR 需权限防护 |
 | `files` | FULL/INCREMENTAL 非空 `MinioCsvFile[]` | 每项校验允许 bucket、objectKey、sha256/rowCount 和源版本 |
-| `delete`（新增**建议**） | 原 DTO 尚未证明存在 | §4.6 建议 boolean，`INCREMENTAL + true` 表示 files 的行全部按 DELETE，非 CLEAR；正式字段位置待冻结 |
+| `delete`（新增建议） | Boolean，缺省 false | `INCREMENTAL+true` 按文件批次执行 DELETE，字段位置按接口评审固化 |
 
 MinioCsvFile 核心字段：`bucket`（3~63）、`objectKey`（≤1024 且安全字符集）、`fileFormat=CSV`、`encoding=UTF-8`、`hasHeader=true`、`sha256`（64 位 hex），`rowCount/size` 可选非负。真实 CSV 每行按 `object_type_id/property_id/value` 定位，`op=UPSERT/DELETE` 已在现有路径出现；这与新增建议 `delete` 标志须按规则处理冲突。`requestId` 的原参考幂等域为 `(ontologyId,requestId)`，多租户升级应改为 `(tenantId,ontologyId,requestId)` 且保留已有任务迁移与数据库唯一键兼容处理。
 
-**索引任务状态**： `status=0 BUILDING、1 SUCCESS、2 FAILED、3 CANCELLED`；`stage` 反映 Created/Validating/Embedding/Writing/Finished 等细阶段。`notice` 受理 HTTP 202 返回一个或多个 `taskId/requestId/dataType/sourceType/status/stage`，**任务未到 SUCCESS 之前不得将文件导入当作完成**。多文件参考一次最多约 20 文件一 Task 并拆分；不同文件归属同一 Manifest，不能子任务独立成功就切换整个 FULL 本体版本。
+**索引任务状态**：`status=0 BUILDING、1 SUCCESS、2 FAILED、3 CANCELLED`；`stage` 记录 Created、Validating、Writing 等处理阶段。Notice 受理 HTTP 202 后通过 Task Query 查询成功状态，完整 FULL 的所有子任务校验通过后发布索引。
 
 #### 7.3.3 Query/Retry/Cancel 请求与恢复语义
 
@@ -833,10 +833,10 @@ MinioCsvFile 核心字段：`bucket`（3~63）、`objectKey`（≤1024 且安全
 | 方法 | 返回/状态 | 校验与恢复动作 |
 |---|---|---|
 | `/index-tasks/query` | HTTP 200，建议 DTO `ontologyId/requestedCount/foundCount/tasks[]/notFoundTaskIds[]` | 每 Task 返回 status、stage、total/success/failed/skipped、retryCount、errorCodes、fileList、errFileList、fileRetentionUntil、start/endTime 等；不属于当前租户的 Task 不泄露 |
-| `/index-tasks/retry` | HTTP 202，逐任务 `accepted/reasonCode`，允许部分成功 | 只对 `status=2 FAILED`、未超重试次数、源文件仍在 TTL 内且 checksum 一致、Checkpoint 可恢复的 Task 重新执行；优先失败文件 `errFileList`，无需重做成功文件 |
-| `/index-tasks/cancel` | HTTP 202，逐任务 `accepted/reasonCode`，允许部分成功 | `status=0` 可置 `stage=CANCEL_REQUESTED`，Worker 安全检查点退出后转 `status=3`；已取消重复调用幂等，成功/失败终态不得误取消 |
+| `/index-tasks/retry` | HTTP 202，逐任务 accepted/reasonCode | 对失败、重试次数在限额内、文件 TTL 有效且 Checkpoint 可恢复的任务重试，优先处理 errFileList |
+| `/index-tasks/cancel` | HTTP 202，逐任务 accepted/reasonCode | 对运行中的任务设置 CANCEL_REQUESTED，Worker 安全退出后置 CANCELLED；重复调用返回幂等结果 |
 
-批量操作响应参考 `operation(RETRY/CANCEL), requestedCount, acceptedCount, rejectedCount, results[]`，单项 `taskId/accepted/status/stage/reasonCode/message`。建议稳定错误码：`TASK_NOT_FOUND/TASK_STATE_CONFLICT/RETRY_LIMIT_EXCEEDED/SOURCE_FILE_EXPIRED/SOURCE_FILE_MISSING/SOURCE_UNRECOVERABLE/IDEMPOTENCY_CONFLICT`；状态码与已有实现联调确认，**不能解析可变 errorMessage 文本决定自动重试**。RequestId 重放和 Task retry 不是同一操作：重放返回旧任务，retry 由客户端显式请求。
+批量操作返回 operation、requestedCount、acceptedCount、rejectedCount、results[]，单项包含 taskId、accepted、status、stage、reasonCode、message。客户端依据稳定错误码执行恢复，包括 TASK_NOT_FOUND、TASK_STATE_CONFLICT、RETRY_LIMIT_EXCEEDED、SOURCE_FILE_EXPIRED、SOURCE_FILE_MISSING 和 SOURCE_UNRECOVERABLE。
 
 #### 7.3.4 TenantResourceRegistry 与独立执行资源
 
@@ -859,13 +859,13 @@ flowchart TD
 
 **DCC 配置监听**：采用“注册→租户订阅→加载完整配置→参数校验→热更新资源池→故障回退”的流程。`@Value` 用于初始化静态基线，运行期由配置底座 Listener/Watch 提供租户级配置变更事件。
 
-1. **配置注册与归属**：基于 §7.2 已分类的**38 个附件明细 DCC 候选**登记租户作用域、operationType/输入模式、`min/max/default`、校验器和热更新类型；另将本次新增 `copy-batch-size` 作为**新增候选 1 项**评审（不计入附件既有 38 个，也不能凭空认为已注册）。原附件摘要 83 与明细 72 差 11 项仍需逐项核源码，不将未知项自动分类。系统级数据库连接、MinIO 地址、证书、Pod 环境等不允许普通租户 DCC 覆盖；需收编到**系统级配置中心/Secret/部署设置**，区别于**租户级 DCC**。
+1. **配置注册与归属**：对 38 个租户 DCC 候选登记 tenantId、operationType、min/max/default 及校验器；新增 copy-batch-size 单独登记。34 个系统级参数进入系统配置中心，其他 11 个 Key 根据源码归属补齐。
 2. **懒初始化/租户首次访问**：以可信鉴权 tenantId 初始化该租户完整、**带版本号**的 `TenantConfigSnapshot`，先对同租户 DCC 注册/版本/授权做全量读取，再发布资源包。每 Pod 以单例 Registry 维护多个租户资源包，定期对闲置租户进行 drain/回收；不永久按每租户 max=32 提前分配线程。
-3. **监听事件**：按 tenantId+scope 订阅 DCC 官方事件；Watch 中断/事件乱序、重复/版本跳跃时以**重新拉取完整快照**校准，而不是只累加变更字段。事件回调线程不得直接做长时间 Embedding、JDBC、线程池 shutdown；先排入受控配置执行队列。
-4. **整套校验**：验证 `corePoolSize ≤ maxPoolSize`，queue 非负、batch/copy size 为正、重试/Timeout/Flush 限制与资源内存上限相容、权限/路径白名单合法、各租户配额总和不超过 Pod/节点硬限额。校验失败保留上一版有效配置，给出字段/版本/原因审计和告警。`25/30`、`8/20`、`1000/4000`、`1/6` 均为历史不同默认值，先核准有效注入点。
-5. **安全原子切换**：先构造新配置快照与所需租户 ExecutorBundle，完整校验通过后 CAS/锁切换 `(tenantId, configVersion)` 的新任务入口；正在运行的查询/Batch 绑定旧版本，不能中途改变分片/向量维度。若只是线程 core/max 调整，按 Java ThreadPoolExecutor 约束设置（扩容先增 max 再增 core；缩容先降 core 再降 max）。**ArrayBlockingQueue 容量不可原地改**，要用新租户队列并安全迁移新任务，旧队列 drain→shutdown；不能跨租户迁移任务。
-6. **连接与缓存**：租户依赖的 HTTP/模型连接、SQL 并发许可按资源预算热调整；共享物理数据库连接池不意味着为每租户无限创建独立连接池，允许共享总池+tenant 令牌配额。连接池确实需重建时，旧连接随在途任务释放，再关闭旧版本；禁止硬断连接导致半批提交。
-7. **异常保护与对账**：DCC 故障保留最后有效已校验版本 + 系统硬上限，不“放开所有并发”；每 Pod 定时比较 tenant+configVersion，失配可阻止新任务/回源修复。缩容不强杀执行中的 Embedding/COPY；Task 必须可从数据库 Checkpoint/MinIO 重放，旧线程池最终有界退役。跨 Pod 的**租户集群总额度**需集中租约/配额分配或网关统一控制，不能把每 Pod 许可当集群额度。
+3. **监听事件**：按 tenantId+scope 订阅 DCC，通过版本拉取完整配置快照；事件提交受控配置队列后执行线程池调整。
+4. **整套校验**：校验 core≤max、队列/批次/超时合法区间、权限白名单及租户/Pod 资源总预算；非法配置保持上次有效值并告警，多个默认值按生效点核准。
+5. **安全原子切换**：构建新 TenantConfigSnapshot 与 ExecutorBundle，校验完成后 CAS 切换新任务入口。在途任务继续持有原 configVersion。线程池扩容先 max 后 core，缩容先 core 后 max；队列容量变化使用新队列、旧队列 drain/shutdown。
+6. **连接与缓存**：HTTP/模型连接与数据库许可随租户配置热调整，共享连接池按租户配额管理；资源重建时等在途连接归还后关闭旧版本。
+7. **异常保护与对账**：DCC 异常采用上次有效配置与系统总预算；Pod 定期按 tenant+configVersion 对账，缩容时保留在途 Embedding/COPY，任务通过 Checkpoint/MinIO 恢复。集群级租户总配额由集中额度或网关管理。
 8. **监控与审计**：DCC 审计 + OAG 自身 metrics 记录租户（脱敏）、参数键/旧新版本、生效结果、Pool active/core/max、队列深度、任务拒绝/超时、Embedding in-flight、连接占用、Watch 延迟/重连与配置回滚次数，不记录密钥或完整业务值。
 
 **租户配置监听与资源切换实现示例**：
@@ -896,17 +896,17 @@ bundle.submit(task.withTenant(verifiedTenantId)
 
 ### 7.5 DCC 参数兼容、冲突和验收
 
-| 决策项 | 附件/旧草案情况 | 本轮规则 |
+| 决策项 | 配置现状 | 配置策略 |
 |---|---|---|
-| 搜索并发 | 附件 `max-pool-size=30`，旧 Q4 为 25 | **记录版本差异**，以实际租户有效值冻结；不是性能附件证明了 30 最优 |
+| 搜索并发 | max-pool-size 候选 30/25 | 依据实际可持续并发性能与租户资源预算确认有效值 |
 | 批次线程数 | `batchInstance.threadPoolSize=8/20`、`parallelFlush.Size=8/20` | 查源码有效注入点、作用阶段和具体模式后再统一 DCC 默认 |
 | 批大小 | `batchInstance.maxBatchSize=1000/4000`，需求另有 COPY 批大小 | 区分逻辑 Batch、COPY 分片与 Spark 合并文件大小；`copy-batch-size` 为**额外待注册 DCC 候选** |
 | 任务队列超时 | `index-task.queue-timeout-hours=1/6` | 按任务类型/版本决定，确保不少于消息重放窗口 |
 | 无向图 | 统计显示 `undirected-filter=false`，软件 V2 设计 true | 明确租户 + query/entities + 发布版本的生效矩阵并回归，不静默修改 |
 | 缓存开关 | 统计 `subgraph-retrieval-cache-switch=true` | **性能压测强制 false**，并保存 DCC 快照与请求参数 |
-| RRF 权重 | `vector` 与 `dense` 两组同值、合计不能假设已归一 | 先核查是否同一通道别名，防止重复融合权重 |
+| RRF 权重 | vector/dense 参数存在同类定义 | 统一融合通道与归一化权重 |
 | 配置差异与多实例 | 静态 @Value + DCC 事件 | 完整回放、Watch 重连、Pod 重启和配置版本对账 |
-| 容量安全 | 每租户线程数可独立调节 | 一次修改需验证所有活跃租户和 Pod 全局预算，不能因租户数增长导致 OOM/线程耗尽 |
+| 容量安全 | 各租户独立线程池 | 校验租户配额总量满足 Pod/节点全局限制 |
 
 **租户隔离验收**：T1 租户 A 高负载时 B 持续查询；T2 A 配额更新后 B 保持原值；T3 A 在线缩容并完成旧任务；T4 多 Pod Watch 断线重连统一版本；T5 异常配置触发旧版回退；T6 租户首次访问与空闲回收；T7 多 Pod 总资源受控。记录线程数、拒绝率、Task 完成率和内存曲线。
 
@@ -931,8 +931,8 @@ bundle.submit(task.withTenant(verifiedTenantId)
 | DFx-Q4-11 | Q4-11 | OAG 专项故障纳入 GDE 公共 Runbook，有演练、证据和恢复结果 |
 | IDX-Q4-12 | Q4-12 | **1000 万行 FULL / 10 万行增量**；DataSync Producer/Consumer 异步通知与 MinIO READ；Spark 小文件合并、图/语义去重；COPY 无主键冲突、失败可恢复 |
 | IDX-Q4-13 | Q4-13 | **原始单实例 10 QPS/3s** 有单独目标和缺口记录；附件 2U4G/10 QPS/平均 ≤5s/拒绝 <20% 可复现，3U4G 压测独立出报告 |
-| IDX-Q4-14 | Q4-14 | 定义索引未变更的向量复用；模型/输入变化才触发增量 Embedding，元数据/词法索引仍正确更新 |
-| IDX-Q4-15 | Q4-15 | LVQ 先建/后建同环境 A/B；**通过后不再无条件 rebuildindex**；Recall/COPY 总耗时验证，新增 COPY 分片大小按租户 DCC 调优 |
+| IDX-Q4-14 | Q4-14 | 相同定义复用既有向量，定义变化时增量 Embedding，并同步词法元数据 |
+| IDX-Q4-15 | Q4-15 | 建表时预建 LVQ，COPY 后完成校验与发布；对照测试 Recall/总耗时，COPY 分片由 DCC 调优 |
 | IDX-Q4-16 | Q4-16 | CSV `op=DELETE`、新增建议 Notice `delete=true` 与 `CLEAR` 三种语义分离；双库删除对账、幂等、迟到 UPSERT 防复活及联调 |
 | IDX-Q4-17 | Q4-17 | 已有存量不重 Embedding；每批 UUID TEMP B/NOT EXISTS/短事务/唯一键幂等入库；FULL_COMPLETE 与 INCREMENTAL 不混淆，批次独立无误删 |
 | SEC-Q4-18 | Q4-18 | OMS retrieval.enabled + 可选 indexMode（HYBRID/KEYWORD_ONLY/VECTOR_ONLY），disabled 不建；混合/单路建库查询、模式迁移、无 property 路由与旧数据兼容 |
@@ -944,11 +944,11 @@ bundle.submit(task.withTenant(verifiedTenantId)
 | 测试编号 | 条件/数据集 | 验证与交付结果 |
 |---|---|---|
 | PERF-Q4-01 | **2U4G** 单实例；≤150 ObjectType、≤3000 Property、≤400 Edge，静态图 1 GB、≤10 本体 | 固定环境镜像、CPU 单核 SHA-256 ≥280 万 ops/s/700 MB/s、JVM、实例数与本体 本体版本 |
-| PERF-Q4-02 | CXO L1 黄金集，entities 对象数 <20，propertyValues 分桶 40% / 50% / <10% | 冻结输入用例、随机种子及 **4/8 边界重叠的解释方式**；未冻结不得声称完全复现附件 |
+| PERF-Q4-02 | CXO L1 黄金集，entities<20，propertyValues 按 40%/50%/<10% 构造 | 固化 4/8 分桶边界、测试种子和分布 |
 | PERF-Q4-03 | hybrid、0.7、topK≤3、hopLimit≤3、adaptive=1、minimal、Functions/Actions=0 | 快照并记录 V2 `topk` 实际绑定、无向开关与 DCC 租户配置；问题缓存 **false** |
-| PERF-Q4-04 | 重启后预热 ≥3 min，前 3 次结果剔除，查询高峰无实例向量化入库 | 记录预热时点与错峰窗口，不允许缓存命中/后台任务影响对照 |
+| PERF-Q4-04 | 重启预热 3min，前 3 次剔除，查询与后台 Embedding 错峰 | 记录预热时间、缓存开关及测试时间窗口 |
 | PERF-Q4-05 | **10 请求/秒，连续 1000 请求**，2U4G 基准 | **平均成功耗时 ≤5 s**（均值统计口径需签审）、拒绝总比例 <20%；同时报告成功 QPS、P50/P95/P99、失败/超时 |
-| PERF-Q4-06 | **3U4G 建议压测**，同用例/参数并与 2U4G 对照 | 单独报告耗时与吞吐，不能作为 2U4G 达标替代证据 |
+| PERF-Q4-06 | 3U4G 对照压测 | 单独统计 3U4G 吞吐和耗时并与 2U4G 基准对照 |
 | PERF-Q4-07 | 2/3 Pod 水平扩展 + 两个租户并行 | 在总入口 QPS 固定/每 Pod QPS 固定两种情形下验证扩展效率、租户池隔离和全局后端瓶颈 |
 | PERF-Q4-08 | CPU 单核达标与不达标、ARM/x86 混合、图数/Property 数/枚举值规模梯度 | 测试超出附件约束后的性能降级；正式规格只针对符合约束的环境 |
 
@@ -966,16 +966,16 @@ bundle.submit(task.withTenant(verifiedTenantId)
 | DCC-Q4-02 | 线程池 core/max、Batch/Flush/Parse 和查询队列配置变更 | 各 Tenant Watch 并稳定生效；在线缩容不丢已执行/排队任务 |
 | DCC-Q4-03 | DCC Listener 断线、重连、版本跳跃、非法值/超出总预算 | 老配置继续可用且告警；非法值拒绝生效；多 Pod configVersion 一致 |
 | DCC-Q4-04 | 大量闲置租户、2/3 Pod 同时创建资源池 | 懒创建/回收，系统总线程数与连接数不超限；隔离和副本级预算正确 |
-| DCC-Q4-05 | `25/30`、`8/20`、`1000/4000`、`1/6`、`undirected-filter` 差异 | 所有冲突 Key 的生效版本与模式有回归证据，不能任意取较大/较小值 |
+| DCC-Q4-05 | 25/30、8/20、1000/4000、1/6、undirected-filter 等参数差异 | 输出生效参数表及版本一致性验证 |
 
 | OMS-DFX-01 | 10 在线会话、10 并发调用 OMS 组列表/定义，分别冷/热缓存 | 每请求 3s 内响应的目标记录成功率/长尾；本体版本 变更后 Agent/OMS 缓存正确失效 |
 | API-V2-01 | query-only、entities-only、双输入、V2 JSON String、topk/adaptive=0 | Body 规范与 GraphNode 属性双值字段正确；V1 deprecated 不破坏既有消费者 |
-| ING-Q4-05 | 1000 万行完整快照，原历史 200 万对照，OAG 与模型 1/2/3 副本 | 完整流水线记录 actual rows/s、任务最终结果、资源预算，未达规模不得写“已达标” |
+| ING-Q4-05 | 1000 万行完整快照、200 万基线及 1/2/3 副本 | 输出总耗时、任务状态、实际 TPS 和资源预算 |
 | INC-Q4-01 | 4000 行批次 UUID TEMP 名称冲突/回滚/跨 Pod 竞态 | TEMP 每批独立、A 唯一键幂等、失败重放仅新键计算向量 |
 | INDEX-Q4-01 | LVQ 原 COPY 后建索引 vs 预建 LVQ 后 COPY | 两版本可回退，按同库/同输入对比端到端耗时、Recall 与 rebuildindex 是否被跳过 |
 | DEL-Q4-01 | `INCREMENTAL/delete=true`、旧 CSV DELETE、CLEAR 三种操作 | 只删目标键、Clear 需权限、双库对账、旧 UPSERT 不复活 |
-| API-TENANT-01 | Notice + Query + Retry + Cancel 四接口缺 Header/错租户/跨租户 Task | 服务端拒绝无授权请求，不能查询或影响其他租户任务 |
-| CAP-Q4-01 | 1→2 Pod、Embedding 1→2 副本并保留源 120 条/s 观察值 | 提供 10→20QPS 实测/未达成原因；向量服务未扩时不承诺线性增速 |
+| API-TENANT-01 | Notice/Query/Retry/Cancel 的租户 Header、鉴权及越权用例 | 各入口进行授权校验、任务归属验证和标准错误处理 |
+| CAP-Q4-01 | OAG 1→2 Pod、Embedding 1→2 副本 | 记录 10→20QPS 的扩展效率、吞吐及模型瓶颈 |
 
 ### 8.4 发布顺序与依赖关系
 
