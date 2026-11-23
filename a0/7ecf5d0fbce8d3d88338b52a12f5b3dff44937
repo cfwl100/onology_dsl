@@ -1,0 +1,16 @@
+"docs/Agentic Operation Center 27.3.0 功能设计说明书（IRxxx 软件Q4需求）.md"
+  h_fd253d5427eef7 13,26,50,127,129,138,144-145,157-161,182-185,277-279,283-291,308,356-357,379-381,401,458,484,560-562,605,652,691,911-912,956,1024
+docs/OAG本体锚点语义检索与向量索引设计方案.md
+  h_fd253d5427eef7 570
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6+huawei.4",
+  "base_commit_sha": "a07ecf5d0fbce8d3d88338b52a12f5b3dff44937",
+  "prompts": {},
+  "humans": {
+    "h_fd253d5427eef7": {
+      "author": "l00931835 <liuxudong6@huawei.com>"
+    }
+  }
+}
