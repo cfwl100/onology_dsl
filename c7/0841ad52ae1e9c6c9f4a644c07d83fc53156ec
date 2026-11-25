@@ -1,0 +1,14 @@
+docs/ses.txt
+  h_fd253d5427eef7 1-1500
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.6+huawei.4",
+  "base_commit_sha": "c70841ad52ae1e9c6c9f4a644c07d83fc53156ec",
+  "prompts": {},
+  "humans": {
+    "h_fd253d5427eef7": {
+      "author": "l00931835 <liuxudong6@huawei.com>"
+    }
+  }
+}
