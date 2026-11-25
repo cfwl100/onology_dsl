@@ -1,0 +1,1499 @@
+ {
+ "WARNING_BANNER": "!!!!!!!!!!!!!!!!!!!! DO NOT SHARE ANY PART OF THE INFORMATION YOU SEE HERE. THIS INFORMATION IS SENSITIVE AND CAN GRANT ACCESS TO YOUR ACCOUNT. SHARING THIS INFORMATION IS LIKE SHARING YOUR PASSWORD. !!!!!!!!!!!!!!!!!!!!",
+ "accessToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImtBSjg5WUlpQmk5Qkk1bzdzZlBFR2tGb0h5cGk5M0JHb2pLeWpRVW81akEiLCJ0eXAiOiJKV1QifQ.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfWDh6WTZ2VzJwUTl0UjNkRTduSzFqTDVnSCIsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6eyJhbXIiOlsidXJuOm9wZW5haTphbXI6Z29vZ2xlIl0sImNoYXRncHRfbG9naW5fZmluYWxpemVyX2F1dGhfc2Vzc2lvbl9pZCI6ImF1dGhzZXNzX1NzV2FDUU4wdVhKYWdnZ2pmT29LcjBZSCIsImNoYXRncHRfbG9naW5fZmluYWxpemVyX2ludml0ZV9pbnRlbnRfYm91bmQiOnRydWUsInVzZXJfaWQiOiJ1c2VyLW1hY1FaS0duV0ZCOWQ0WFZjOWp5U2huWSIsImNoYXRncHRfYWNjb3VudF91c2VyX2lkIjoidXNlci1tYWNRWktHbldGQjlkNFhWYzlqeVNobllfX2EyYTZmZWU2LWE1MzQtNGJlNC05MjA2LTExYzBkZDAwN2UzYiIsImNoYXRncHRfYWNjb3VudF9pZCI6ImEyYTZmZWU2LWE1MzQtNGJlNC05MjA2LTExYzBkZDAwN2UzYiIsImNoYXRncHRfdXNlcl9pZCI6InVzZXItbWFjUVpLR25XRkI5ZDRYVmM5anlTaG5ZIiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJmcmVlIiwiY2hhdGdwdF9kYXRhX3Jlc2lkZW5jeSI6Im5vX2NvbnN0cmFpbnQiLCJjaGF0Z3B0X2NvbXB1dGVfcmVzaWRlbmN5Ijoibm9fY29uc3RyYWludCJ9LCJodHRwczovL2FwaS5vcGVuYWkuY29tL3Byb2ZpbGUiOnsiZW1haWwiOiJsaXV4dWRvbmc5ODY4QGdtYWlsLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlLCJmYW1pbHlfbmFtZSI6ImxpdSIsImdpdmVuX25hbWUiOiJ4dWRvbmciLCJuYW1lIjoieHVkb25nIGxpdSIsInBpY3R1cmUiOiJodHRwczovL2xoMy5nb29nbGV1c2VyY29udGVudC5jb20vYS9BQ2c4b2NJSHRDOEwxM0JYZ0xKaW92VVpTbVBUejlkY1VWWTZPcm14Z21VS0lnYVh4LUpoWmc9czk2LWMifSwiaXNzIjoiaHR0cHM6Ly9hdXRoLm9wZW5haS5jb20iLCJwd2RfYXV0aF90aW1lIjoxNzkxMjU0NTMzMzkyLCJzY3AiOlsib3BlbmlkIiwiZW1haWwiLCJwcm9maWxlIiwib2ZmbGluZV9hY2Nlc3MiLCJtb2RlbC5yZXF1ZXN0IiwibW9kZWwucmVhZCIsIm9yZ2FuaXphdGlvbi5yZWFkIiwib3JnYW5pemF0aW9uLndyaXRlIl0sInNlc3Npb25faWQiOiJhdXRoc2Vzc19Tc1dhQ1FOMHVYSmFnZ2dqZk9vS3IwWUgiLCJzbCI6dHJ1ZSwic3ViIjoiZ29vZ2xlLW9hdXRoMnwxMDIwMTM3MTAyMTE2Mzc2OTUzMTkiLCJpYXQiOjE3OTU1OTgzMTAsImV4cCI6MTc5NjQ2MjMxMCwianRpIjoiMzFjMmQ2MTA4ZDM4NGRkNTkyOTA0ZjVhYTY0YmIxZmQiLCJuYmYiOjE3OTU1OTgzMTB9.afTLoKhUTgNUvpZatS3uYHbpUK9MT1falqqEGLQEeDyncjwkcsc0GfZ0nB6aegCLiPdh9A6ZnaRa336l3Uf00s33S18Kt1upb-E5GfZ31lwQiisB54j_XeKhM-uFCbYFdjXjCUUgPGgYCrVhK9RBKCvGt8hZGbs8EYNztXe3b56WaQFOiC6vCm22bVaQeEoRCFuzL73FRHAoldOo1zI7O7-Cq5mbn3MPFeOeJMs7o_z-F-pdccDJMZQOmCBy1TbjZ2nB86JLBW3E_JkePwkybD1y0i2Vk2SvLglftOWzMlQuP1_Zl1DuP9JDD1yoxXPpuhOhRsuCdsXGJJc6mrWqgg",
+ "account": {
+ "id": "a2a6fee6-a534-4be4-9206-11c0dd007e3b",
+ "planType": "free",
+ "createdTime": 1684570927.736,
+ "isDelinquent": false,
+ "structure": "personal",
+ "residencyRegion": "no_constraint",
+ "computeResidency": "no_constraint",
+ "isFedrampCompliantWorkspace": false,
+ "isUsageBasedSeatEnabled": false,
+ "isConversationClassifierEnabledForWorkspace": true,
+ "hasFloraFeature": false,
+ "isHipaaCompliantWorkspace": false
+ },
+ "user": {
+ "id": "user-macQZKGnWFB9d4XVc9jyShnY",
+ "email": "liuxudong9868@gmail.com",
+ "name": "xudong liu",
+ "picture": "https://lh3.googleusercontent.com/a/ACg8ocIHtC8L13BXgLJiovUZSmPTz9dcUVY6OrmxgmUKIgaXx-JhZg=s96-c",
+ "image": "https://lh3.googleusercontent.com/a/ACg8ocIHtC8L13BXgLJiovUZSmPTz9dcUVY6OrmxgmUKIgaXx-JhZg=s96-c",
+ "iat": 1791254540,
+ "amr": [
+ "urn:openai:amr:google"
+ ],
+ "mfa": false,
+ "created": 1682214906
+ },
+ "authProvider": "openai",
+ "expires": "2027-02-23T10:46:17.001Z",
+ "sessionToken": "eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..UpfpsdwPyI2JAvuK.vxHXlGZJscYucaEtO5uC1VRzwYHpBDKaKF7rbODjNjnGIuBzpFcsj2KLLUJCmWVndKQJVfqnQO_xJHy9gBCDUAVgKydAj0R8yiRWX8etL4v3tOIOLKETqrmqjVN1CLUW8fJ-CucwrvrnivR8LM898rScyPA8QKklmA934A2dp-eoNkQ_h9m7hSUennjynO18we-wVvRANNIkVl6Lcae_fBEWBlbn48mPvViJ5GcmZSsJAh3mLwJWJUo81Iaxw4ZItM9ubOhfec5dR9XeIOOHUPDcBD5HdHbOzYwkkYFQGOk7y7G_HQTeR1f_8fQzdI9QqWbz0Wl7LRXrvVms_nDKU5_LcNxQ9bBOrALA8xGPWpItP4ep13n2EjMdBeEA6J9rLA-xhLuLM8pWcfyY7cvbacEPsL6J1-gvO3vEF1uUX9NXsrSKgGIOevfwxV5BRyHRgQJUD1tk638Tp0LPOXNmXVZUy4ZqNOZCqROGkGNCVbMiyhLuQBZv112SH-xE5QM45PldipxW67-OnQvRjlApQLHws7EcjlLYhYiiycNv2n7FQUunVNg79H_2nx1KqlrPytwqYAVJ5_OrODU_hVcK9KStoxrHHww_SfJuTywtvHRAogz_LOT4T4I5QUOIkGOur475BRhqsMOiCQeR9u-I2gmCxCBskWnD08Vp5SHyy33zb9otI-hakOIVtPmgWiIf024w-HMCHY0MiJ2p4yyLQhSIxZEWUNGUewKy2NADynLzp8ZknmC--V7Hs33pFXSG5_ngWPNQZitdRLK11YLPBXWxVBl-5yT9nMBXGs2YyZxsoc5aq-aFmXsfa30fUDtBVNIjLCRa64B_rgTSveUVLGjBYBhpxwAr9-wSP5BQGZrt1lceNd6MRRAkaYm-MzYwxyPDPpYsDVcfIQFSq6vvWZU2f-DQn4FVT6ESiP8cDOG0fjU33xRFhgxgeKlKahLWQPc1Sd6XXlxMwlYwUNRvYefPGfECsQ9QEkKl3NoHrnay5faW-XTWJTuufPLLk-n7lnHbH4U3D0vRnv1QvrATcBowoPWrr9B7BUHNdUdByYX7CJMfUnrFxbC0Yn0ZH4GYiFVn-2IefO82_d6uCs00W9ijOpsh435hv1wUKdk8_pi_Nm13JZ_JQ4bN2n21IASFQY88rfi803SYIsbv6_Q_7BcL3gH8pSGjHin74o_rrTTpPxpOJDDedR81C1yWnThNdtnwE7QLVaS_G5nsGRCiXLJhqncLeJcbWkzDbiyT5I07eaUsXSnlodi8qDsg6ZVlUjxlNGZjP64v6Yypvr8zofHSqbQEYHG_3BhFguyOnvZZD0g-rebZ0ymWZTJjnmaCbh27RoJNl9H0GQEOIkNzj3LRIEz-bVSyzFG5cHCvPr-o9Vp4L7xiV3p9NkdDKGo49dcYSQ37qRFdAEFRaJ8HHHourqZ6ubjRPP5ZTf9outUMJlrYqW29gZ9z3Cn95jfp7fK4AXfnNPUnXER0qnBkp6Xw-ryT1TU6L4oSp_w5k0YU_evuGOnBf8SaBpLP1CaphX1ixa9-s-4eheBrvkOcbXuKhKMgdw3WY_Fzt07FmekZwwKhgXc0P9-xTu61Ld9k8s1qRiZgVZfQ1XHc4R1h78-XB7Gt_aS049vPMwiUugFDYeGTF72kiwudT5zfy-b67Pub3Uzw4_wb8kzADeny4D203cGPyDF-Kyj7miHc-aXeWmoR9q_ns_yMCz93ZEcrK3OG2gaj2bzrzXpy8ZH6pyM7EvF4MiUXh9nG1LVEqoj7tR2rKIjSBcK_y7N1_0fYAjA0u49xfBvo101Eqs0j366e414BsAkhV2podqeB2wED8MltUgY3qSzzrgs-VqkKB76l2cFza61zF8IKc43AS1B4VkZH1NxUkppj9TXm4RNZYoz2tlfElFOT_ANnctwZSOOXfvM-xJzpsb-TwgDn9MBfP9xuIa1XjONlaJi1IYoa3qNM5WocIZJxtdU24JsshL2BqajoQZEPeOVq3D532VAJy8vC5YU5P4B5uhJ5WR1vlhFSvZxHccA7snXo0umYNE57tK9IKNPEw0MK6ewe3ymqIjIgKEOkFI52BihEsGRPPjHxUbYO6Ay6me3Uf6S6UfL7izWBG4u9B_nUj3__Su_W3j3NGWEySf0ZiXyJgd54CJLSnmSIxqB3wxQ1HVksBh5i53m1iaV-zTKfjd048XOEYyTdQhePNeCNnpLCaZ7oLGz44h_EdOh18EGAgYu0AkmstNvVxuu2UW46i-bdOmTP8fzqgm6ppRlD8pJA5cBlHNW61GkiMjFaBt0FGO8LNGhKWO15Nh4oEdnBs2uFeFkGetcX28XeEoe1TPpEUQ4SgxbKEB0S4nplHvm9_wWGJOsOM5xqfbfP2QOAvQV7zvJVSMYLMtDnYZB76Q0v0V6lkdyB1fCtQqYF7CjnHE6hrRXaRDqDWFRg-a4Zn3KteCdc7_HLVMMI8irp0PZy6HlfEpa_k0oxlU0TEZofa2hhiDCvGjfjc3y33T27ytwFKGdTfgy2by0w2U0lXuG0QN2KjyRL5TwogYuWBOvBRneKSvNZnbsXmJnMmOSoUPsT9GvVIuLCMYkDx-YJnl9HDuFgtv4n3LEooqtJ_uQGaRIFTClICfZRvsMu4QzT9itr28s0Pv6lFfgUCTdBMPJJG4TdyKeKKhOPUazNvJ76dzqNeR4GmnF5JWPGk8S3BrJYwdCGaWx8tDlCKqNCI5-N84ffE0TASFh3jZhP0coQPTfBW7hEnAU2qI2Csvi3PhfWi-zW4VZ73wXt58kJGLRv_OwGsJXKuBqIRC8B8-_6Cc-um752DNMp7nmzpjKVLhxtKXubv0nEQHlcR5imjSvKvXHIoJdlWAFvgiZq57jW979h59kQc8dg0V2ZPdUxN3w98OjYtLuAMxiJoFcS0Omu17YUouWxQeiuWNK7Td3OYZkEN1zI43UILiytjKEbP8AMuVzI6gIGh7r3vIJ5vmoqxPvy1nFVDxzKJnWVKnu9d8atXbbaosy9BEWuCTq6m8j3fjsGYmJMPHSDUqJl56NCM44ujlpJ0RvZzcvUHnFVQY2M5f8vdo2ktZ6pJHfCxZDGjvW5BDGK_qpXrsCMP6hcZ56W_L741Rd54lcL-OGTXk0D-JOwvP3J9S2U_7RJzAHzsau1bvzAwm-VZzNuw-rtzCGPdAeMhYkG617_hPOk880bqnGrZtn8gtHEVhLVxezzXfX7f8w7Ri69Ix1ZqVu8IAygnQB9o1Ljr0WA23Mu59e-OaAHrU4HTnMGJ5gpDwKxWLWVFHzzK_B64FJW3cc8eOlYncl5H9b7Egry4T7btl55oR1Je8iMiBd0XZCqtCfs1kYVepzrDmlZrtQVnV5a0Ar4PjHLuVo4Iv95vegrWIRIb9_zTnJ2S7JflfiRrETKrx7UlqLP2g2vi2awGFVsHmvL6mpzi5eHwjNpw-Zq0jkBRY4OIB8layauCKxyQ_lLqHwCAtgsMMe7Qbazll0XECr2jv9DloLszS_PUeQBFbz75roYATe0iD75bzrIvDefUBCAUFfNaxi7XSgDvZDNguvF-29XgUavNUOtQdnmcOTQIXI0hbbmdW028kyzM-8xDRo13dXvJMmAVZOnlufvr1l0an0B5ew1W8N9d3AqpzCGA2D53imkXT-3mt1al-E4oTkXNgQT9hxB0d7e72KqxA5wqpTGTwgccCe0-6i_0T7hV1liCXQIRLC3CigT-PYv3aiYOzlluv1ZWuFiER8aWyn7PnjoViW_JV7WYbFnJlyExx8XdrHOwl2K8dz6ABzU-2Ptv5KD4o35i6Oz1SLeERUY-KftNswcG7BNrUC10ODaxV3D6k50MftE_SasG4SdS7I01wgx1uBsTXNa3HoCEyck1zME8ZEA996rkVFi_JcrkydCb0PIJ2kwOga7DARUVYr1W1OldDl8_1PTwrjcVQEd_1_CALG5vnEbmpGLYC9wwODyC2zHJyPP9wcIxB1xVGGqLriE5I_TeDF0mkiuZmIqpNNfqf-7zWuI-jYRbNYDtbQUt3-qSkktYNV4_md5OG4JcbltZAo-pBUSJ09MeZdCLwuir2-M2Zxb4mLRh2bJ1gOx2Kiw9PAcciRRCXnkwuY5Qgcb2j4RbdClFoNoOOTA1KxK7kfjSyUmBrchBcXtNBP0DVb1-FgW0mMIcOI60yKkDz_JI1TVg0I9gMFCWkI5FkUJ1mWqTkcFGWAqaMnO_l-VNuofsKrqxHJQZuH0k6dLvqtf03QIORA52GNx1m7MYmNdigtzap7y3ozA0sSz7A2T9M8BHOT9TPRXzukv-YIYRBcIuvdxBhScE6KXt7O-m7BFFp2ULAwRGoqM8Ogy-mUnDGKmthLzueCQla6l0O-qtXte7AFFyWT2j9jU_R0oRsUhxyJj0mB1gZnjvRsOyie_k1wUTBKxdIJ_iuX5SaGfuXMVoewL1W3iRkaiTTodqxV89e-bd2Zg-PHyPhA1YoObItSV3YFGcOugPGRryh2Sxc-wxYv_W9Rk6W_qad_qW89n4WVRN7QlChWUuFA1UAvQDUvls2C4JUsRa2nv3gfYLt_IbSJfWdSB0_eLVvkHtKTXAqLuDINeATp5Cn82UlgtqxN_nNUsexHHV7DJ9oB5FUH2el2KL5Hy9bMStrS_sdhkEV49tqSjJlFDhTwlOXjNYzqTx_o9Nga-9YAhCLwjRNxyOppXdpwTrK114J1FWU_Bc05tzJBiYBTypkFeDeXMwW0PsSZfeFFp27U.9dAwuA7VEWD13HreU_va2w",
+ "statsigContext": {
+ "locale": "zh-CN",
+ "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
+ "ip": "14.137.153.221",
+ "country": "JP",
+ "region": "Tokyo",
+ "regionCode": "13",
+ "deviceId": "de405dbb-d7f4-4052-bfcf-124d3c80efb5",
+ "adsSegmentId": 8541
+ },
+ "marketingEligibility": {
+ "bazaar": {
+ "shouldTrackMarketingID": false,
+ "events": {
+ "chatgpt-subscription-complete-pro": {
+ "2oJTF6JdhTi2cZN6Jxy28K": {
+ "mappedEventName": "subscription_created",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": false,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "enterprise-form-fill": {
+ "2oJTF6JdhTi2cZN6Jxy28K": {
+ "mappedEventName": "registration_completed",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": false,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-subscription-complete-go": {
+ "2oJTF6JdhTi2cZN6Jxy28K": {
+ "mappedEventName": "appointment_scheduled",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": false,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-single-subscription-complete": {
+ "2oJTF6JdhTi2cZN6Jxy28K": {
+ "mappedEventName": "trial_started",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": false,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-subscription-complete-plus": {
+ "2oJTF6JdhTi2cZN6Jxy28K": {
+ "mappedEventName": "order_created",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": false,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-subscription-complete-pro-lite": {
+ "2oJTF6JdhTi2cZN6Jxy28K": {
+ "mappedEventName": "trial_started",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": false,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "codex-download": {
+ "2oJTF6JdhTi2cZN6Jxy28K": {
+ "mappedEventName": "contents_viewed",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": false,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "selfserve-business-workspace-created": {
+ "2oJTF6JdhTi2cZN6Jxy28K": {
+ "mappedEventName": "checkout_started",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": false,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ }
+ }
+ },
+ "pioneer": {
+ "shouldTrackMarketingID": true,
+ "events": {
+ "chatgpt-pro-intent-to-pay": {
+ "AW-16679965591": {
+ "mappedEventName": "vEXOCMPBkYUbEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "enterprise-api-form-fill": {
+ "AW-16679965591": {
+ "mappedEventName": "zd-BCJK5k_wbEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true,
+ "additionalEvents": [
+ {
+ "mappedEventName": "7746560388",
+ "webEnabled": false,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ ]
+ }
+ },
+ "chatgpt-sign-up": {
+ "AW-16679965591": {
+ "mappedEventName": "1dOfCL2W9ZYbEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": true,
+ "additionalEvents": [
+ {
+ "mappedEventName": "7788134290",
+ "webEnabled": false,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": true
+ }
+ ]
+ }
+ },
+ "chatgpt-subscription-complete-pro-max": {
+ "AW-16679965591": {
+ "mappedEventName": "1RmlCOORhZcdEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ },
+ "chatgpt-subscription-complete-pro": {
+ "AW-16679965591": {
+ "mappedEventName": "AZZZCLO02b0bEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true,
+ "additionalEvents": [
+ {
+ "mappedEventName": "7746399326",
+ "webEnabled": false,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ ]
+ }
+ },
+ "chatgpt-subscription-start": {
+ "AW-16679965591": {
+ "mappedEventName": "fQSPCKP20r0bEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true,
+ "additionalEvents": [
+ {
+ "mappedEventName": "7788140818",
+ "webEnabled": false,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ ]
+ }
+ },
+ "chatgpt-subscription-complete-pro-lite": {
+ "AW-16679965591": {
+ "mappedEventName": "OePOCIHxpIccEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true,
+ "additionalEvents": [
+ {
+ "mappedEventName": "7746550258",
+ "webEnabled": false,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ ]
+ }
+ },
+ "chatgpt-single-pro-subscription-complete": {
+ "AW-16679965591": {
+ "mappedEventName": "m9yuCP7t_ZYdEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ },
+ "chatgpt-subscription-complete-go": {
+ "AW-16679965591": {
+ "mappedEventName": "rQqJCK202b0bEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true,
+ "additionalEvents": [
+ {
+ "mappedEventName": "7746394748",
+ "webEnabled": false,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ ]
+ }
+ },
+ "chatgpt-subscription-complete-plus": {
+ "AW-16679965591": {
+ "mappedEventName": "zJU3CLC02b0bEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true,
+ "additionalEvents": [
+ {
+ "mappedEventName": "7746595629",
+ "webEnabled": false,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ ]
+ }
+ },
+ "chatgpt-go-intent-to-pay": {
+ "AW-16679965591": {
+ "mappedEventName": "WLICCMbBkYUbEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "codex-start": {
+ "AW-16679965591": {
+ "mappedEventName": "lgvPCJ3j6dEbEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "enterprise-start": {
+ "AW-16679965591": {
+ "mappedEventName": "4W8sCNu7x7QcEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true,
+ "additionalEvents": [
+ {
+ "mappedEventName": "7788138132",
+ "webEnabled": false,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ ]
+ }
+ },
+ "selfserve-business-intent-to-pay": {
+ "AW-16679965591": {
+ "mappedEventName": "GuBcCP3CkYUbEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true,
+ "additionalEvents": [
+ {
+ "mappedEventName": "7745996374",
+ "webEnabled": false,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ ]
+ }
+ },
+ "selfserve-business-start": {
+ "AW-16679965591": {
+ "mappedEventName": "qdZOCN-224sbEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true,
+ "additionalEvents": [
+ {
+ "mappedEventName": "7745999971",
+ "webEnabled": false,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ ]
+ }
+ },
+ "chatgpt-single-subscription-complete": {
+ "AW-16679965591": {
+ "mappedEventName": "h4VjCNL4iPwbEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true,
+ "additionalEvents": [
+ {
+ "mappedEventName": "7746392807",
+ "webEnabled": false,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ ]
+ }
+ },
+ "chatgpt-web-app-download": {
+ "AW-16679965591": {
+ "mappedEventName": "RGFcCIvtx7QcEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "enterprise-form-fill": {
+ "AW-16679965591": {
+ "mappedEventName": "X1ZvCLPptJQbEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true,
+ "additionalEvents": [
+ {
+ "mappedEventName": "7746510409",
+ "webEnabled": false,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ ]
+ }
+ },
+ "selfserve-business-workspace-created": {
+ "AW-16679965591": {
+ "mappedEventName": "XTwNCLa02b0bEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true,
+ "additionalEvents": [
+ {
+ "mappedEventName": "7746049389",
+ "webEnabled": false,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ ]
+ }
+ },
+ "codex-download": {
+ "AW-16679965591": {
+ "mappedEventName": "vKMuCKnkmO8bEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true,
+ "additionalEvents": [
+ {
+ "mappedEventName": "7746356069",
+ "webEnabled": false,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ ]
+ }
+ },
+ "chatgpt-plus-intent-to-pay": {
+ "AW-16679965591": {
+ "mappedEventName": "_IcwCPrEnYQbEJen0JE-",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ }
+ }
+ },
+ "maverick": {
+ "shouldTrackMarketingID": true,
+ "events": {
+ "selfserve-business-intent-to-pay": {
+ "1299700488741927": {
+ "mappedEventName": "orange_nitrogen",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-single-pro-subscription-complete": {
+ "1299700488741927": {
+ "mappedEventName": "blue_uranium",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ },
+ "chatgpt-plus-intent-to-pay": {
+ "1299700488741927": {
+ "mappedEventName": "blue_helium",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-subscription-complete-go": {
+ "1299700488741927": {
+ "mappedEventName": "blue_lead",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ },
+ "chatgpt-subscription-complete-plus": {
+ "1299700488741927": {
+ "mappedEventName": "blue_silver",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ },
+ "chatgpt-web-app-download": {
+ "1299700488741927": {
+ "mappedEventName": "blue_argon",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "selfserve-business-start": {
+ "1299700488741927": {
+ "mappedEventName": "orange_neon",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "enterprise-start": {
+ "1299700488741927": {
+ "mappedEventName": "red_iodine",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-sign-up": {
+ "1299700488741927": {
+ "mappedEventName": "blue_hydrogen",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ },
+ "chatgpt-subscription-complete-pro": {
+ "1299700488741927": {
+ "mappedEventName": "blue_tin",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ },
+ "codex-mobile-start": {
+ "1299700488741927": {
+ "mappedEventName": "purple_cobalt",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "enterprise-api-form-fill": {
+ "1299700488741927": {
+ "mappedEventName": "red_silicon",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-subscription-complete-pro-max": {
+ "1299700488741927": {
+ "mappedEventName": "blue_krypton",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ },
+ "chatgpt-single-subscription-complete": {
+ "1299700488741927": {
+ "mappedEventName": "blue_nickel",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true,
+ "additionalEvents": [
+ {
+ "mappedEventName": "Purchase",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ ]
+ }
+ },
+ "chatgpt-subscription-start": {
+ "1299700488741927": {
+ "mappedEventName": "blue_gold",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "codex-business-start": {
+ "1299700488741927": {
+ "mappedEventName": "purple_sulfur",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "selfserve-business-workspace-created": {
+ "1299700488741927": {
+ "mappedEventName": "orange_sodium",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ },
+ "chatgpt-subscription-complete-pro-lite": {
+ "1299700488741927": {
+ "mappedEventName": "blue_calcium",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ },
+ "codex-download": {
+ "1299700488741927": {
+ "mappedEventName": "purple_zinc",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ },
+ "codex-start": {
+ "1299700488741927": {
+ "mappedEventName": "purple_copper",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "enterprise-form-fill": {
+ "1299700488741927": {
+ "mappedEventName": "red_oxygen",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ },
+ "chatgpt-go-intent-to-pay": {
+ "1299700488741927": {
+ "mappedEventName": "blue_iron",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-pro-intent-to-pay": {
+ "1299700488741927": {
+ "mappedEventName": "blue_carbon",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ }
+ }
+ },
+ "trailblazer": {
+ "shouldTrackMarketingID": false,
+ "events": {
+ "chatgpt-sign-up": {
+ "a2_f1c16ccvsrrl": {
+ "mappedEventName": "Lead",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": false,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "selfserve-business-start": {
+ "a2_f1c16ccvsrrl": {
+ "mappedEventName": "PageVisit",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": false,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false,
+ "additionalEvents": [
+ {
+ "mappedEventName": "orange_neon",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": false,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ ]
+ }
+ },
+ "selfserve-business-workspace-created": {
+ "a2_f1c16ccvsrrl": {
+ "mappedEventName": "Purchase",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": false,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false,
+ "additionalEvents": [
+ {
+ "mappedEventName": "orange_sodium",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": false,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ ]
+ }
+ },
+ "chatgpt-single-pro-subscription-complete": {
+ "a2_f1c16ccvsrrl": {
+ "mappedEventName": "SignUp",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": false,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-single-subscription-complete": {
+ "a2_f1c16ccvsrrl": {
+ "mappedEventName": "AddToCart",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": false,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ }
+ }
+ },
+ "seeker": {
+ "shouldTrackMarketingID": true,
+ "events": {
+ "chatgpt-plus-intent-to-pay": {
+ "7057666": {
+ "mappedEventName": "22738410",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ },
+ "8245332": {
+ "mappedEventName": "22332932",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-subscription-complete-pro": {
+ "7057666": {
+ "mappedEventName": "24300490",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ },
+ "8245332": {
+ "mappedEventName": "22333020",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "enterprise-start": {
+ "7057666": {
+ "mappedEventName": "27902146",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ },
+ "8245332": {
+ "mappedEventName": "26410204",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-sign-up": {
+ "8245332": {
+ "mappedEventName": "22332924",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-pro-intent-to-pay": {
+ "7057666": {
+ "mappedEventName": "22738418",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ },
+ "8245332": {
+ "mappedEventName": "22332940",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "enterprise-api-form-fill": {
+ "7057666": {
+ "mappedEventName": "26103010",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ },
+ "8245332": {
+ "mappedEventName": "25205260",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-subscription-complete-plus": {
+ "7057666": {
+ "mappedEventName": "24300482",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ },
+ "8245332": {
+ "mappedEventName": "24300474",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-go-intent-to-pay": {
+ "7057666": {
+ "mappedEventName": "22738426",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ },
+ "8245332": {
+ "mappedEventName": "22332948",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "codex-start": {
+ "7057666": {
+ "mappedEventName": "25010242",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ },
+ "8245332": {
+ "mappedEventName": "23286204",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-subscription-start": {
+ "7057666": {
+ "mappedEventName": "24300506",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ },
+ "8245332": {
+ "mappedEventName": "22333036",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-web-app-download": {
+ "7057666": {
+ "mappedEventName": "27902162",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ },
+ "8245332": {
+ "mappedEventName": "26410220",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-subscription-complete-go": {
+ "7057666": {
+ "mappedEventName": "24300474",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ },
+ "8245332": {
+ "mappedEventName": "22333004",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-single-subscription-complete": {
+ "8245332": {
+ "mappedEventName": "24800700",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "selfserve-business-intent-to-pay": {
+ "7057666": {
+ "mappedEventName": "22738434",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ },
+ "8245332": {
+ "mappedEventName": "22332956",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "selfserve-business-workspace-created": {
+ "7057666": {
+ "mappedEventName": "24300498",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ },
+ "8245332": {
+ "mappedEventName": "22333028",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "codex-download": {
+ "7057666": {
+ "mappedEventName": "27756177",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ },
+ "8245332": {
+ "mappedEventName": "23863004",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "selfserve-business-start": {
+ "7057666": {
+ "mappedEventName": "22837578",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ },
+ "8245332": {
+ "mappedEventName": "22332972",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "enterprise-form-fill": {
+ "7057666": {
+ "mappedEventName": "22998554",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ },
+ "8245332": {
+ "mappedEventName": "22332964",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ }
+ }
+ },
+ "stratos": {
+ "shouldTrackMarketingID": true,
+ "events": {
+ "selfserve-business-workspace-created": {
+ "CVVCC3RC77U3KIMPRRG0": {
+ "mappedEventName": "Schedule",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ },
+ "enterprise-form-fill": {
+ "CVVCC3RC77U3KIMPRRG0": {
+ "mappedEventName": "ViewContent",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ },
+ "selfserve-business-start": {
+ "CVVCC3RC77U3KIMPRRG0": {
+ "mappedEventName": "Subscribe",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ },
+ "chatgpt-sign-up": {
+ "CVVCC3RC77U3KIMPRRG0": {
+ "mappedEventName": "Purchase",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ },
+ "chatgpt-single-pro-subscription-complete": {
+ "CVVCC3RC77U3KIMPRRG0": {
+ "mappedEventName": "blue_uranium",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ },
+ "chatgpt-single-subscription-complete": {
+ "CVVCC3RC77U3KIMPRRG0": {
+ "mappedEventName": "AddToWishlist",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ },
+ "chatgpt-subscription-complete-pro-max": {
+ "CVVCC3RC77U3KIMPRRG0": {
+ "mappedEventName": "blue_krypton",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ },
+ "chatgpt-subscription-complete-pro-lite": {
+ "CVVCC3RC77U3KIMPRRG0": {
+ "mappedEventName": "blue_calcium",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ },
+ "chatgpt-subscription-complete-pro": {
+ "CVVCC3RC77U3KIMPRRG0": {
+ "mappedEventName": "blue_tin",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": true
+ }
+ }
+ }
+ },
+ "wayfinder": {
+ "shouldTrackMarketingID": true,
+ "events": {
+ "chatgpt-sign-up": {
+ "187204252": {
+ "mappedEventName": "blue_hydrogen",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "selfserve-business-intent-to-pay": {
+ "187204252": {
+ "mappedEventName": "orange_nitrogen",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "codex-start-for-teams": {
+ "187204252": {
+ "mappedEventName": "purple_sulfur",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "enterprise-api-form-fill": {
+ "187204252": {
+ "mappedEventName": "red_silicon",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-subscription-complete-plus": {
+ "187204252": {
+ "mappedEventName": "blue_silver",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "selfserve-business-start": {
+ "187204252": {
+ "mappedEventName": "orange_neon",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "selfserve-business-workspace-created": {
+ "187204252": {
+ "mappedEventName": "orange_sodium",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "codex-mobile-start": {
+ "187204252": {
+ "mappedEventName": "purple_cobalt",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-go-intent-to-pay": {
+ "187204252": {
+ "mappedEventName": "blue_iron",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-subscription-start": {
+ "187204252": {
+ "mappedEventName": "blue_gold",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-subscription-complete-pro": {
+ "187204252": {
+ "mappedEventName": "blue_tin",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "enterprise-start": {
+ "187204252": {
+ "mappedEventName": "red_iodine",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "codex-download": {
+ "187204252": {
+ "mappedEventName": "purple_zinc",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-pro-intent-to-pay": {
+ "187204252": {
+ "mappedEventName": "blue_carbon",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-subscription-complete-go": {
+ "187204252": {
+ "mappedEventName": "blue_lead",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-single-subscription-complete": {
+ "187204252": {
+ "mappedEventName": "blue_nickel",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "codex-business-start": {
+ "187204252": {
+ "mappedEventName": "purple_sulfur",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "enterprise-form-fill": {
+ "187204252": {
+ "mappedEventName": "red_oxygen",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": true,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-web-app-download": {
+ "187204252": {
+ "mappedEventName": "blue_argon",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-plus-intent-to-pay": {
+ "187204252": {
+ "mappedEventName": "blue_helium",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ }
+ }
+ },
+ "impact": {
+ "shouldTrackMarketingID": true,
+ "events": {
+ "chatgpt-subscription-complete-go": {
+ "55700": {
+ "mappedEventName": "91955",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-subscription-complete-plus": {
+ "55700": {
+ "mappedEventName": "91956",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-subscription-complete-pro-lite": {
+ "55700": {
+ "mappedEventName": "91957",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-subscription-complete-pro-max": {
+ "55700": {
+ "mappedEventName": "91959",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-sign-up": {
+ "55700": {
+ "mappedEventName": "77185",
+ "webEnabled": false,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ },
+ "chatgpt-subscription-complete-pro": {
+ "55700": {
+ "mappedEventName": "91958",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": true,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ }
+ }
+ },
+ "snapchat": {
+ "shouldTrackMarketingID": false,
+ "events": {
+ "chatgpt-sign-up": {
+ "1ee24ec1-3450-4acf-93ef-66192667bb64": {
+ "mappedEventName": "ADD_CART",
+ "webEnabled": true,
+ "s2sEnabled": true,
+ "marketingEligibleAttributed": false,
+ "marketingEligibleNonAttributed": false,
+ "piiAllowed": false
+ }
+ }
+ }
+ }
+ }
+ }
